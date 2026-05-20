@@ -1666,19 +1666,21 @@ class PurchasePostingAdapterTests(SimpleTestCase):
         kwargs = posting_instance.post.call_args.kwargs
         jl_inputs = kwargs["jl_inputs"]
 
-        vendor_dr = [
-            x for x in jl_inputs
-            if x.account_id == header.vendor_id and x.drcr is True and x.amount == Decimal("5.00")
-            and "gst-tds deducted" in x.description.lower()
-        ]
         gst_tds_cr = [
             x for x in jl_inputs
             if x.account_id == 8109 and x.drcr is False and x.amount == Decimal("5.00")
             and "gst-tds payable" in x.description.lower()
         ]
+        vendor_cr = [
+            x for x in jl_inputs
+            if x.account_id == header.vendor_id and x.drcr is False and x.amount == Decimal("95.00")
+            and "vendor payable" in x.description.lower()
+        ]
+        vendor_dr = [x for x in jl_inputs if x.account_id == header.vendor_id and x.drcr is True]
 
-        self.assertTrue(vendor_dr, "Expected DR Vendor entry for GST-TDS deduction.")
         self.assertTrue(gst_tds_cr, "Expected CR GST-TDS Payable entry.")
+        self.assertTrue(vendor_cr, "Expected vendor payable to be reduced by GST-TDS deduction.")
+        self.assertFalse(vendor_dr, "Did not expect a separate DR Vendor line for GST-TDS deduction.")
 
     @patch("posting.adapters.purchase_invoice.PostingService")
     @patch("posting.adapters.purchase_invoice.Product.objects")
@@ -1741,7 +1743,15 @@ class PurchasePostingAdapterTests(SimpleTestCase):
             x for x in jl_inputs
             if x.account_id == 9901 and x.ledger_id == 9902 and x.drcr is False and x.amount == Decimal("10.00")
         ]
+        vendor_cr = [
+            x for x in jl_inputs
+            if x.account_id == header.vendor_id and x.drcr is False and x.amount == Decimal("90.00")
+            and "vendor payable" in x.description.lower()
+        ]
+        vendor_dr = [x for x in jl_inputs if x.account_id == header.vendor_id and x.drcr is True]
         self.assertTrue(tds_payable, "Expected TDS payable posting to use section-specific mapping.")
+        self.assertTrue(vendor_cr, "Expected vendor payable to be net of TDS deduction.")
+        self.assertFalse(vendor_dr, "Did not expect a separate DR Vendor line for TDS deduction.")
 
     @patch("posting.adapters.purchase_invoice.PostingService")
     @patch("posting.adapters.purchase_invoice.Product.objects")

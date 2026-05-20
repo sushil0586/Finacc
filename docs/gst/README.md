@@ -70,6 +70,96 @@ Use it when:
 - aligning screen shells and shared components
 - reducing maintenance risk without changing user behavior
 
+### 5. Reconciliation Framework Architecture
+
+File:
+- `gst_reconciliation_framework_architecture.md`
+
+Best for:
+- backend developers
+- architects
+- technical leads
+
+Use it when:
+- planning centralized GST reconciliation
+- designing import, matching, and review workflows
+- phasing rollout without breaking existing GST reports
+
+### 6. Reconciliation UAT Checklist
+
+File:
+- `gst_reconciliation_uat_checklist.md`
+
+Best for:
+- QA teams
+- pilot testers
+- implementation teams
+
+Use it when:
+- validating the reconciliation workflow end-to-end
+- checking reviewer actions and permission safety
+- preparing controlled rollout evidence
+
+### 7. Reconciliation Performance And UAT Hardening
+
+File:
+- `gst_reconciliation_performance_uat.md`
+
+Best for:
+- backend developers
+- implementation leads
+- support teams
+
+Use it when:
+- benchmarking large runs
+- reviewing slow endpoints
+- validating performance during pilot
+
+### 8. Reconciliation Rollout Readiness
+
+File:
+- `gst_reconciliation_rollout_readiness.md`
+
+Best for:
+- release owners
+- support leads
+- deployment teams
+
+Use it when:
+- preparing deployment
+- checking permissions and rollback steps
+- reviewing known limitations before pilot
+
+### 9. Reconciliation UAT Signoff Tracker
+
+File:
+- `gst_reconciliation_uat_signoff_tracker.md`
+
+Best for:
+- QA teams
+- business testers
+- project managers
+
+Use it when:
+- tracking pass/fail signoff
+- collecting pilot evidence
+- closing UAT
+
+### 10. Reconciliation Pilot Readiness
+
+File:
+- `gst_reconciliation_pilot_readiness.md`
+
+Best for:
+- project managers
+- support owners
+- pilot coordinators
+
+Use it when:
+- deciding pilot user access
+- planning pilot data scope
+- setting issue categories and support process
+
 ## Recommended Reading Order
 
 For business users:
@@ -84,6 +174,12 @@ For future frontend engineering work:
 1. `gst_reports_frontend_refactor_guide.md`
 2. `gst_reports_user_guide.md`
 
+For backend GST reconciliation work:
+1. `gst_reconciliation_framework_architecture.md`
+2. `gst_reconciliation_uat_checklist.md`
+3. `gst_reconciliation_performance_uat.md`
+4. `gst_reconciliation_rollout_readiness.md`
+
 ## Suggested Handover Pack
 
 If you are sharing GST Reports with a customer or internal finance team, send:
@@ -96,3 +192,4 @@ If you are sharing GST Reports with a customer or internal finance team, send:
 - GST Reports are reporting and compliance outputs, not source transaction-entry screens.
 - If report values look incorrect, first verify invoice posting, tax setup, financial year scope, and entity/subentity selection.
 - GSTR-1, GSTR-3B, and GSTR-9 should be treated as related but separate reporting workspaces.
+- GST Reconciliation is a separate pilot-capable workspace and should not be used as a reason to retire old GST reports or purchase statutory screens prematurely.

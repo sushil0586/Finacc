@@ -356,6 +356,123 @@ class SalesPostingAdapterUnitTests(SimpleTestCase):
         defaults.update(overrides)
         return SimpleNamespace(**defaults)
 
+    @patch("posting.adapters.sales_invoice.PostingService")
+    @patch("posting.adapters.sales_invoice.Product.objects")
+    @patch("posting.adapters.sales_invoice.ProductAccountResolver")
+    @patch("posting.adapters.sales_invoice.StaticAccountResolver")
+    def test_posts_tcs_with_single_net_customer_receivable(
+        self,
+        mock_static_resolver_cls,
+        mock_product_resolver_cls,
+        mock_product_objects,
+        mock_posting_service_cls,
+    ):
+        code_map = {
+            StaticAccountCodes.ROUND_OFF_INCOME: 8101,
+            StaticAccountCodes.ROUND_OFF_EXPENSE: 8102,
+            StaticAccountCodes.OUTPUT_CGST: 8103,
+            StaticAccountCodes.OUTPUT_SGST: 8104,
+            StaticAccountCodes.OUTPUT_IGST: 8105,
+            StaticAccountCodes.OUTPUT_CESS: 8106,
+            StaticAccountCodes.SALES_DEFAULT: 8107,
+            StaticAccountCodes.SALES_REVENUE: 8108,
+            StaticAccountCodes.TCS_PAYABLE: 8109,
+        }
+        resolver = mock_static_resolver_cls.return_value
+        resolver.get_account_id.side_effect = lambda code, required=False: code_map.get(code)
+        resolver.get_ledger_id.side_effect = lambda code, required=False: code_map.get(code)
+        mock_product_resolver_cls.return_value.sales_account_id.return_value = 5000
+        mock_product_objects.filter.return_value.select_related.return_value.prefetch_related.return_value = []
+        mock_posting_service_cls.return_value.post.return_value = SimpleNamespace(id=999)
+
+        SalesInvoicePostingAdapter.post_sales_invoice.__wrapped__(
+            header=self._base_header(grand_total=Decimal("250.00"), tcs_amount=Decimal("5.00")),
+            lines=[self._line()],
+            user_id=1,
+            config=SalesInvoicePostingConfig(post_inventory=False),
+        )
+
+        jl_inputs = mock_posting_service_cls.return_value.post.call_args.kwargs["jl_inputs"]
+        tcs_payable = [
+            x for x in jl_inputs
+            if x.account_id == 8109 and x.drcr is False and x.amount == Decimal("5.00")
+            and "tcs payable" in x.description.lower()
+        ]
+        customer_dr = [
+            x for x in jl_inputs
+            if x.account_id == 7001 and x.drcr is True and x.amount == Decimal("255.00")
+            and "customer receivable" in x.description.lower()
+        ]
+        extra_customer_tcs_lines = [
+            x for x in jl_inputs
+            if x.account_id == 7001 and "tcs" in x.description.lower() and x.amount == Decimal("5.00")
+        ]
+
+        self.assertTrue(tcs_payable, "Expected TCS payable credit line.")
+        self.assertTrue(customer_dr, "Expected single net customer receivable including TCS.")
+        self.assertFalse(extra_customer_tcs_lines, "Did not expect a separate customer TCS line.")
+
+    @patch("posting.adapters.sales_invoice.PostingService")
+    @patch("posting.adapters.sales_invoice.Product.objects")
+    @patch("posting.adapters.sales_invoice.ProductAccountResolver")
+    @patch("posting.adapters.sales_invoice.StaticAccountResolver")
+    def test_posts_tcs_reversal_with_single_net_customer_reversal(
+        self,
+        mock_static_resolver_cls,
+        mock_product_resolver_cls,
+        mock_product_objects,
+        mock_posting_service_cls,
+    ):
+        code_map = {
+            StaticAccountCodes.ROUND_OFF_INCOME: 8101,
+            StaticAccountCodes.ROUND_OFF_EXPENSE: 8102,
+            StaticAccountCodes.OUTPUT_CGST: 8103,
+            StaticAccountCodes.OUTPUT_SGST: 8104,
+            StaticAccountCodes.OUTPUT_IGST: 8105,
+            StaticAccountCodes.OUTPUT_CESS: 8106,
+            StaticAccountCodes.SALES_DEFAULT: 8107,
+            StaticAccountCodes.SALES_REVENUE: 8108,
+            StaticAccountCodes.TCS_PAYABLE: 8109,
+        }
+        resolver = mock_static_resolver_cls.return_value
+        resolver.get_account_id.side_effect = lambda code, required=False: code_map.get(code)
+        resolver.get_ledger_id.side_effect = lambda code, required=False: code_map.get(code)
+        mock_product_resolver_cls.return_value.sales_account_id.return_value = 5000
+        mock_product_objects.filter.return_value.select_related.return_value.prefetch_related.return_value = []
+        mock_posting_service_cls.return_value.post.return_value = SimpleNamespace(id=1000)
+
+        SalesInvoicePostingAdapter.post_sales_invoice.__wrapped__(
+            header=self._base_header(
+                doc_type=2,
+                grand_total=Decimal("250.00"),
+                tcs_amount=Decimal("5.00"),
+                tcs_is_reversal=True,
+            ),
+            lines=[self._line()],
+            user_id=1,
+            config=SalesInvoicePostingConfig(post_inventory=False),
+        )
+
+        jl_inputs = mock_posting_service_cls.return_value.post.call_args.kwargs["jl_inputs"]
+        tcs_reversal = [
+            x for x in jl_inputs
+            if x.account_id == 8109 and x.drcr is True and x.amount == Decimal("5.00")
+            and "tcs reversal" in x.description.lower()
+        ]
+        customer_cr = [
+            x for x in jl_inputs
+            if x.account_id == 7001 and x.drcr is False and x.amount == Decimal("255.00")
+            and "customer reversal" in x.description.lower()
+        ]
+        extra_customer_tcs_lines = [
+            x for x in jl_inputs
+            if x.account_id == 7001 and "tcs" in x.description.lower() and x.amount == Decimal("5.00")
+        ]
+
+        self.assertTrue(tcs_reversal, "Expected TCS payable reversal debit line.")
+        self.assertTrue(customer_cr, "Expected single net customer reversal including TCS reversal.")
+        self.assertFalse(extra_customer_tcs_lines, "Did not expect a separate customer TCS reversal line.")
+
     @patch("posting.adapters.sales_invoice.resolve_posting_location_id", return_value=5)
     @patch("posting.adapters.sales_invoice.PostingService")
     @patch("posting.adapters.sales_invoice.Product.objects")

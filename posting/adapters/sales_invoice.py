@@ -359,7 +359,8 @@ class SalesInvoicePostingAdapter:
             tcs_payable_ac = resolver.get_account_id(StaticAccountCodes.TCS_PAYABLE, required=True)
             tcs_payable_ledger = resolver.get_ledger_id(StaticAccountCodes.TCS_PAYABLE, required=True)
             if tcs_is_reversal:
-                # Credit-note reversal style: reduce TCS payable and increase customer credit.
+                # Post only the payable reversal leg here; the customer balancing
+                # line below will settle to the net customer credit after TCS reversal.
                 jl.append(JLInput(
                     account_id=int(tcs_payable_ac),
                     ledger_id=int(tcs_payable_ledger),
@@ -367,22 +368,9 @@ class SalesInvoicePostingAdapter:
                     amount=tcs,
                     description=f"{narration} (TCS reversal)",
                 ))
-                jl.append(JLInput(
-                    account_id=int(header.customer_id),
-                    ledger_id=int(customer_ledger_id),
-                    drcr=False,  # CR
-                    amount=tcs,
-                    description=f"{narration} (Customer TCS reversal)",
-                ))
             else:
-                # Standard collection style.
-                jl.append(JLInput(
-                    account_id=int(header.customer_id),
-                    ledger_id=int(customer_ledger_id),
-                    drcr=True,  # DR
-                    amount=tcs,
-                    description=f"{narration} (TCS collected)",
-                ))
+                # Post only the payable leg here; the customer balancing line
+                # below will settle to the gross receivable including TCS.
                 jl.append(JLInput(
                     account_id=int(tcs_payable_ac),
                     ledger_id=int(tcs_payable_ledger),
@@ -415,7 +403,7 @@ class SalesInvoicePostingAdapter:
         ))
 
         # strict total check vs header totals (compare absolute customer amount)
-        expected_customer_amt = header_grand_total
+        expected_customer_amt = q2(header_grand_total + tcs)
         if expected_customer_amt > ZERO2:
             if (customer_amt - expected_customer_amt).copy_abs() > cfg.totals_tolerance:
                 raise ValueError(

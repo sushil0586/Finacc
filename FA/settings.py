@@ -74,6 +74,14 @@ META_CACHE_VERSION = config('META_CACHE_VERSION', default='1')
 META_CACHE_OBSERVABILITY_ENABLED = config('META_CACHE_OBSERVABILITY_ENABLED', default=False, cast=_cast_boolish_env)
 META_CACHE_LOG_LEVEL = config('META_CACHE_LOG_LEVEL', default='INFO')
 
+# GST reconciliation rollout/performance controls.
+# Keep defaults conservative for pilot rollout.
+GST_RECON_CACHE_ENABLED = config('GST_RECON_CACHE_ENABLED', default=True, cast=_cast_boolish_env)
+GST_RECON_CACHE_TTL_SECONDS = config('GST_RECON_CACHE_TTL_SECONDS', default=60, cast=int)
+GST_RECON_PERF_LOGGING = config('GST_RECON_PERF_LOGGING', default=False, cast=_cast_boolish_env)
+GST_RECON_ASYNC_MATCH_ENABLED = config('GST_RECON_ASYNC_MATCH_ENABLED', default=False, cast=_cast_boolish_env)
+GST_RECON_ASYNC_MATCH_HANDLER = config('GST_RECON_ASYNC_MATCH_HANDLER', default='')
+
 # ---------------------------------------------------------------------------
 # Test / conditional app flags
 # ---------------------------------------------------------------------------
@@ -126,6 +134,7 @@ INSTALLED_APPS = [
     "sales.apps.SalesConfig",
     "withholding",
     "gst_tds",
+    "gst_reconciliation.apps.GstReconciliationConfig",
     "rbac",
     "subscriptions",
     "bank_reconciliation.apps.BankReconciliationConfig",

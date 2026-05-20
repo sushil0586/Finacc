@@ -523,16 +523,8 @@ class PurchaseInvoicePostingAdapter:
                 resolver=resolver,
             )
 
-            # Dr Vendor Payable (reduce vendor liability)
-            jl.append(JLInput(
-                account_id=int(header.vendor_id),
-                ledger_id=supplier_ledger_id,
-                drcr=True,  # DR
-                amount=tds,
-                description=f"{narration} (TDS deducted)",
-            ))
-
-            # Cr TDS Payable
+            # Post only the payable leg here; the vendor balancing line below
+            # will naturally settle to the net vendor payable after deductions.
             jl.append(JLInput(
                 account_id=int(tds_payable_ac),
                 ledger_id=int(tds_payable_ledger) if tds_payable_ledger else None,
@@ -546,16 +538,8 @@ class PurchaseInvoicePostingAdapter:
             gst_tds_payable_ac = resolver.get_account_id(StaticAccountCodes.GST_TDS_PAYABLE, required=True)
             gst_tds_payable_ledger = resolver.get_ledger_id(StaticAccountCodes.GST_TDS_PAYABLE, required=True)
 
-            # Dr Vendor Payable (reduce vendor liability)
-            jl.append(JLInput(
-                account_id=int(header.vendor_id),
-                ledger_id=supplier_ledger_id,
-                drcr=True,  # DR
-                amount=gst_tds,
-                description=f"{narration} (GST-TDS deducted)",
-            ))
-
-            # Cr GST-TDS Payable
+            # Post only the payable leg here; the vendor balancing line below
+            # will naturally settle to the net vendor payable after deductions.
             jl.append(JLInput(
                 account_id=int(gst_tds_payable_ac),
                 ledger_id=int(gst_tds_payable_ledger),
@@ -593,6 +577,8 @@ class PurchaseInvoicePostingAdapter:
                 or (rcm_tax["cgst"] + rcm_tax["sgst"] + rcm_tax["igst"] + rcm_tax["cess"])
             )
             expected_vendor_amt = q2(header_grand_total - total_gst)
+
+        expected_vendor_amt = q2(expected_vendor_amt - tds - (gst_tds if cfg.post_gst_tds_on_invoice else ZERO2))
 
         if expected_vendor_amt > ZERO2:
             if (vendor_amt - expected_vendor_amt).copy_abs() > cfg.totals_tolerance:
