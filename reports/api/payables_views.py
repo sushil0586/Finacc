@@ -13,6 +13,7 @@ from reports.schemas.common import build_report_envelope
 from reports.schemas.payables_reports import PayableAgingScopeSerializer, PayableReportScopeSerializer
 from reports.services.payables import (
     build_ap_aging_report,
+    build_msme_overdue_report,
     build_payables_dashboard_summary,
     build_upcoming_payments_calendar_report,
     build_vendor_outstanding_report,
@@ -374,6 +375,44 @@ class UpcomingPaymentsCalendarAPIView(_BasePayableAPIView):
         )
 
 
+class MsmeOverdueReportAPIView(_BasePayableAPIView):
+    serializer_class = PayableReportScopeSerializer
+
+    def get(self, request):
+        scope = self.get_scope(request)
+        self.assert_report_permission(request, scope, "msme_overdue")
+        payload = build_msme_overdue_report(
+            entity_id=scope["entity"],
+            entityfin_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
+            from_date=scope.get("from_date"),
+            to_date=scope.get("to_date"),
+            as_of_date=scope.get("as_of_date"),
+            vendor_id=scope.get("vendor"),
+            vendor_group=scope.get("vendor_group"),
+            region_id=scope.get("region"),
+            currency=scope.get("currency"),
+            overdue_only=scope.get("overdue_only", True),
+            search=scope.get("search"),
+            sort_by=scope.get("sort_by"),
+            sort_order=scope.get("sort_order", "desc"),
+            page=scope.get("page", 1),
+            page_size=scope.get("page_size", PAYABLE_DEFAULTS["default_page_size"]),
+            include_trace=scope.get("include_trace", True),
+            user=request.user,
+        )
+        return Response(
+            self.build_envelope(
+                report_code="msme_overdue",
+                report_name="MSME Overdue Report",
+                payload=payload,
+                scope=scope,
+                request=request,
+                export_base_path="/api/reports/payables/msme-overdue/",
+            )
+        )
+
+
 class _BasePayableExportAPIView(_BasePayableAPIView):
     file_type = None
     export_mode = "attachment"
@@ -695,4 +734,96 @@ class UpcomingPaymentsCalendarPDFAPIView(_UpcomingPaymentsCalendarExportMixin):
 
 
 class UpcomingPaymentsCalendarPrintAPIView(UpcomingPaymentsCalendarPDFAPIView):
+    export_mode = "inline"
+
+
+class _MsmeOverdueExportMixin(_BasePayableExportAPIView):
+    serializer_class = PayableReportScopeSerializer
+
+    def report_data(self, request):
+        scope = self.get_scope(request)
+        self.assert_report_permission(request, scope, "msme_overdue")
+        scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
+        data = build_msme_overdue_report(
+            entity_id=scope["entity"],
+            entityfin_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
+            from_date=scope.get("from_date"),
+            to_date=scope.get("to_date"),
+            as_of_date=scope.get("as_of_date"),
+            vendor_id=scope.get("vendor"),
+            vendor_group=scope.get("vendor_group"),
+            region_id=scope.get("region"),
+            currency=scope.get("currency"),
+            overdue_only=scope.get("overdue_only", True),
+            search=scope.get("search"),
+            sort_by=scope.get("sort_by"),
+            sort_order=scope.get("sort_order", "desc"),
+            page=1,
+            page_size=100000,
+            include_trace=scope.get("include_trace", True),
+            user=request.user,
+        )
+        fallback_keys = [
+            "vendor_name",
+            "vendor_code",
+            "msme_status",
+            "udyam_no",
+            "bill_number",
+            "bill_date",
+            "msme_due_date",
+            "balance",
+            "msme_days_overdue",
+            "overdue_bucket",
+            "has_written_payment_terms",
+            "msme_allowed_credit_days",
+            "branch",
+        ]
+        columns = _export_columns_from_report_meta(data, fallback_keys=fallback_keys)
+        headers = [label for _key, label in columns]
+        rows = [[row.get(key, "") for key, _label in columns] for row in data["rows"]]
+        subtitle = (
+            f"Entity: {scope_names['entity_name'] or 'Selected entity'} | "
+            f"Subentity: {scope_names['subentity_name'] or 'All subentities'} | "
+            f"As of: {data.get('as_of_date') or scope.get('as_of_date') or scope.get('to_date') or ''}"
+        )
+        numeric_fields = {"balance", "msme_days_overdue", "msme_allowed_credit_days"}
+        numeric_columns = {index for index, (key, _label) in enumerate(columns) if key in numeric_fields}
+        return scope, headers, rows, subtitle, numeric_columns
+
+
+class MsmeOverdueExcelAPIView(_MsmeOverdueExportMixin):
+    def get(self, request):
+        scope, headers, rows, subtitle, numeric_columns = self.report_data(request)
+        content = _write_excel("MSME Overdue Report", subtitle, headers, rows, numeric_columns=numeric_columns)
+        return self.export_response(
+            filename=f"MsmeOverdue_{scope.get('as_of_date') or scope.get('to_date') or 'report'}.xlsx",
+            content=content,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+
+class MsmeOverdueCSVAPIView(_MsmeOverdueExportMixin):
+    def get(self, request):
+        scope, headers, rows, _subtitle, _numeric_columns = self.report_data(request)
+        content = _write_csv(headers, rows)
+        return self.export_response(
+            filename=f"MsmeOverdue_{scope.get('as_of_date') or scope.get('to_date') or 'report'}.csv",
+            content=content,
+            content_type="text/csv",
+        )
+
+
+class MsmeOverduePDFAPIView(_MsmeOverdueExportMixin):
+    def get(self, request):
+        scope, headers, rows, subtitle, _numeric_columns = self.report_data(request)
+        content = _write_pdf("MSME Overdue Report", subtitle, headers, rows)
+        return self.export_response(
+            filename=f"MsmeOverdue_{scope.get('as_of_date') or scope.get('to_date') or 'report'}.pdf",
+            content=content,
+            content_type="application/pdf",
+        )
+
+
+class MsmeOverduePrintAPIView(MsmeOverduePDFAPIView):
     export_mode = "inline"

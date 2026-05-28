@@ -27,6 +27,54 @@ def _raise_validation_error(err: ValueError) -> None:
     raise_structured_validation_error(payload)
 
 
+def _workflow_feedback(message: str) -> dict:
+    trimmed = str(message or "").strip()
+    lower = trimmed.lower()
+    if lower.startswith("posted with warnings:"):
+        warning_text = trimmed.split(":", 1)[1].strip() if ":" in trimmed else ""
+        warnings = [item.strip() for item in warning_text.split("|") if item.strip()]
+        return {
+            "notice": "Posting completed with policy warnings.",
+            "warnings": warnings,
+        }
+    return {
+        "notice": trimmed,
+        "warnings": [],
+    }
+
+
+def _duplicate_reference_warnings(voucher: PaymentVoucherHeader) -> list[str]:
+    reference = str(getattr(voucher, "reference_number", "") or "").strip()
+    if not reference:
+        return []
+    duplicates = PaymentVoucherHeader.objects.filter(
+        entity_id=voucher.entity_id,
+        entityfinid_id=voucher.entityfinid_id,
+        reference_number__iexact=reference,
+        paid_to_id=voucher.paid_to_id,
+    ).exclude(pk=voucher.id).order_by("-voucher_date", "-id")
+    if getattr(voucher, "subentity_id", None):
+        duplicates = duplicates.filter(subentity_id=voucher.subentity_id)
+    first = duplicates.only("voucher_code", "doc_code", "doc_no").first()
+    if not first:
+        return []
+    voucher_label = getattr(first, "voucher_code", None) or f"{getattr(first, 'doc_code', '')}-{getattr(first, 'doc_no', '')}".strip("-")
+    if voucher_label:
+        return [f"Reference already appears on voucher {voucher_label}. Please double-check before proceeding."]
+    return ["Reference already appears on another payment voucher. Please double-check before proceeding."]
+
+
+def _attach_reference_feedback(response: Response, voucher: PaymentVoucherHeader) -> Response:
+    if voucher is None or not isinstance(getattr(response, "data", None), dict):
+        return response
+    warnings = _duplicate_reference_warnings(voucher)
+    if not warnings:
+        return response
+    response.data["notice"] = "Saved with review warnings."
+    response.data["warnings"] = warnings
+    return response
+
+
 def _payment_permission_code(action: str) -> str:
     return f"voucher.payment.{action}"
 
@@ -102,7 +150,7 @@ class PaymentVoucherListCreateAPIView(generics.ListCreateAPIView):
         return ctx
 
     def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
+        self._saved_instance = serializer.save(created_by=self.request.user)
 
     def create(self, request, *args, **kwargs):
         payload = request.data if isinstance(getattr(request, "data", None), dict) else {}
@@ -114,7 +162,8 @@ class PaymentVoucherListCreateAPIView(generics.ListCreateAPIView):
         except (TypeError, ValueError):
             raise ValidationError({"entity": "Must be an integer."})
         _require_payment_permission(request.user, entity_id=entity_id, action="create")
-        return super().create(request, *args, **kwargs)
+        response = super().create(request, *args, **kwargs)
+        return _attach_reference_feedback(response, getattr(self, "_saved_instance", None))
 
 
 class PaymentVoucherRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
@@ -161,15 +210,19 @@ class PaymentVoucherRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyA
         serializer = self.get_serializer(instance)
         return Response(serializer.data)
 
-    def update(self, request, *args, **kwargs):
-        instance = self.get_object()
-        _require_payment_permission(request.user, entity_id=instance.entity_id, action="update")
-        return super().update(request, *args, **kwargs)
-
     def partial_update(self, request, *args, **kwargs):
         instance = self.get_object()
         _require_payment_permission(request.user, entity_id=instance.entity_id, action="update")
         return super().partial_update(request, *args, **kwargs)
+
+    def perform_update(self, serializer):
+        self._saved_instance = serializer.save()
+
+    def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        _require_payment_permission(request.user, entity_id=instance.entity_id, action="update")
+        response = super().update(request, *args, **kwargs)
+        return _attach_reference_feedback(response, getattr(self, "_saved_instance", None))
 
     def perform_destroy(self, instance):
         if int(instance.status) != int(PaymentVoucherHeader.Status.DRAFT):
@@ -194,6 +247,7 @@ class PaymentVoucherConfirmAPIView(APIView):
             _raise_validation_error(e)
         return Response({
             "message": result.message,
+            **_workflow_feedback(result.message),
             "data": PaymentVoucherHeaderSerializer(result.header).data,
         })
 
@@ -210,6 +264,7 @@ class PaymentVoucherPostAPIView(APIView):
             _raise_validation_error(e)
         return Response({
             "message": result.message,
+            **_workflow_feedback(result.message),
             "data": PaymentVoucherHeaderSerializer(result.header).data,
         })
 
@@ -238,6 +293,7 @@ class PaymentVoucherApprovalAPIView(APIView):
         out = PaymentVoucherHeaderSerializer(result.header).data
         return Response({
             "message": result.message,
+            **_workflow_feedback(result.message),
             "approval_status": out.get("approval_status", "DRAFT"),
             "approval_status_name": out.get("approval_status_name", "Draft"),
             "data": out,
@@ -257,6 +313,7 @@ class PaymentVoucherCancelAPIView(APIView):
             _raise_validation_error(e)
         return Response({
             "message": result.message,
+            **_workflow_feedback(result.message),
             "data": PaymentVoucherHeaderSerializer(result.header).data,
         }, status=status.HTTP_200_OK)
 
@@ -273,6 +330,7 @@ class PaymentVoucherUnpostAPIView(APIView):
             _raise_validation_error(e)
         return Response({
             "message": result.message,
+            **_workflow_feedback(result.message),
             "data": PaymentVoucherHeaderSerializer(result.header).data,
         }, status=status.HTTP_200_OK)
 

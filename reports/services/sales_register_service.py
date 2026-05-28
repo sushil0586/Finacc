@@ -8,6 +8,7 @@ from django.db.models import (
     CharField,
     Count,
     DecimalField,
+    Exists,
     F,
     OuterRef,
     Q,
@@ -102,6 +103,7 @@ class SalesRegisterService:
             .annotate(total=Coalesce(Sum("discount_amount"), ZERO))
             .values("total")[:1]
         )
+        service_line_exists = SalesInvoiceLine.objects.filter(header_id=OuterRef("pk"), is_service=True)
         sign_multiplier = Case(
             When(status=SalesInvoiceHeader.Status.CANCELLED, then=Value(Decimal("0"))),
             When(doc_type__in=self._negative_doc_type_values(), then=Value(Decimal("-1"))),
@@ -142,6 +144,9 @@ class SalesRegisterService:
             ),
             supply_classification=F("supply_category"),
             supply_classification_name=Case(
+                When(taxability=SalesInvoiceHeader.Taxability.EXEMPT, then=Value("Exempt")),
+                When(taxability=SalesInvoiceHeader.Taxability.NIL_RATED, then=Value("Nil-rated")),
+                When(taxability=SalesInvoiceHeader.Taxability.NON_GST, then=Value("Non-GST")),
                 *[
                     When(supply_category=choice.value, then=Value(self._supply_classification_label(choice)))
                     for choice in SalesInvoiceHeader.SupplyCategory
@@ -175,6 +180,7 @@ class SalesRegisterService:
             e_invoice_date=F("einvoice_artifact__ack_date"),
             e_way_bill_no=Coalesce(F("eway_artifact__ewb_no"), Value(""), output_field=CharField()),
             e_way_bill_date=F("eway_artifact__ewb_date"),
+            service_line_exists=Exists(service_line_exists),
             affects_totals=affects_totals,
             taxable_amount=F("total_taxable_value") * sign_multiplier,
             cgst_amount=F("total_cgst") * sign_multiplier,
@@ -227,6 +233,7 @@ class SalesRegisterService:
         """Return stable frontend identifiers for opening the sales document detail."""
         return {
             "target": "sales_invoice_detail",
+            "route": "/saleserviceinvoice" if getattr(row, "service_line_exists", False) else "/saleinvoice",
             "id": row.id,
             "doc_type": row.doc_type,
             "invoice_number": row.invoice_number,

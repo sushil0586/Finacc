@@ -23,7 +23,7 @@ from pypdf import PdfReader, PdfWriter
 
 from financial.profile_access import account_pan
 from purchase.models.purchase_core import PurchaseInvoiceHeader
-from purchase.models.purchase_statutory import PurchaseStatutoryChallan, PurchaseStatutoryReturn
+from purchase.models.purchase_statutory import PurchaseStatutoryChallan, PurchaseStatutoryReturn, PurchaseStatutoryReturnLine
 from rbac.services import EffectivePermissionService
 from purchase.serializers.purchase_statutory import (
     PurchaseStatutoryChallanSerializer,
@@ -1274,6 +1274,12 @@ class PurchaseStatutoryCaPackExportAPIView(APIView):
         filed_value = decimal_or_zero(global_summary.get("filed"))
         pending_deposit_value = decimal_or_zero(global_summary.get("pending_deposit"))
         pending_filing_value = decimal_or_zero(global_summary.get("pending_filing"))
+        pending_deposit_text = f"{max(pending_deposit_value, Decimal('0.00')).quantize(Decimal('0.01'))}"
+        pending_filing_text = f"{max(pending_filing_value, Decimal('0.00')).quantize(Decimal('0.01'))}"
+        it_pending_deposit_text = f"{max(decimal_or_zero(it_summary.get('pending_deposit')), Decimal('0.00')).quantize(Decimal('0.01'))}"
+        it_pending_filing_text = f"{max(decimal_or_zero(it_summary.get('pending_filing')), Decimal('0.00')).quantize(Decimal('0.01'))}"
+        gst_pending_deposit_text = f"{max(decimal_or_zero(gst_summary.get('pending_deposit')), Decimal('0.00')).quantize(Decimal('0.01'))}"
+        gst_pending_filing_text = f"{max(decimal_or_zero(gst_summary.get('pending_filing')), Decimal('0.00')).quantize(Decimal('0.01'))}"
         if deducted_value > 0:
             closure_rate = min(Decimal("100.00"), (filed_value / deducted_value) * Decimal("100.00"))
         elif pending_deposit_value > 0 or pending_filing_value > 0:
@@ -1293,8 +1299,8 @@ class PurchaseStatutoryCaPackExportAPIView(APIView):
                 ("Deducted Value", global_summary.get("deducted", "0.00"), it_summary.get("deducted", "0.00"), gst_summary.get("deducted", "0.00"), "Source statutory value booked in the current period."),
                 ("Deposited Value", global_summary.get("deposited", "0.00"), it_summary.get("deposited", "0.00"), gst_summary.get("deposited", "0.00"), "Value already covered through challan deposit."),
                 ("Filed Value", global_summary.get("filed", "0.00"), it_summary.get("filed", "0.00"), gst_summary.get("filed", "0.00"), "Value already closed through return filing."),
-                ("Pending Deposit", global_summary.get("pending_deposit", "0.00"), it_summary.get("pending_deposit", "0.00"), gst_summary.get("pending_deposit", "0.00"), "Deducted but not yet deposited."),
-                ("Pending Filing", global_summary.get("pending_filing", "0.00"), it_summary.get("pending_filing", "0.00"), gst_summary.get("pending_filing", "0.00"), "Deposited but not yet filed."),
+                ("Pending Deposit", pending_deposit_text, it_pending_deposit_text, gst_pending_deposit_text, "Deducted but not yet deposited."),
+                ("Pending Filing", pending_filing_text, it_pending_filing_text, gst_pending_filing_text, "Deposited but not yet filed."),
                 ("Draft Challans", len(open_draft_challans), len(open_it_draft_challans), len(open_gst_draft_challans), "Open challan drafts still needing action."),
                 ("Draft Returns", len(open_draft_returns), len(open_it_draft_returns), len(open_gst_draft_returns), "Open return drafts still needing action."),
                 ("Reconciliation Exceptions", len(it_exc.get("invoices_pending_challan_mapping", {}).get("rows", [])) + len(it_exc.get("challan_lines_pending_return_mapping", {}).get("rows", [])) + len(gst_exc.get("invoices_pending_challan_mapping", {}).get("rows", [])) + len(gst_exc.get("challan_lines_pending_return_mapping", {}).get("rows", [])), len(it_exc.get("invoices_pending_challan_mapping", {}).get("rows", [])) + len(it_exc.get("challan_lines_pending_return_mapping", {}).get("rows", [])), len(gst_exc.get("invoices_pending_challan_mapping", {}).get("rows", [])) + len(gst_exc.get("challan_lines_pending_return_mapping", {}).get("rows", [])), "Open mapping exceptions visible in reconciliation helpers."),
@@ -1514,16 +1520,28 @@ class PurchaseStatutoryCaPackExportAPIView(APIView):
 
         for filing in it_returns:
             for line in filing.lines.all():
+                filing_return_code = (getattr(filing, "return_code", "") or "").strip().upper()
                 residency = (getattr(line, "deductee_residency_snapshot", "") or "").strip().upper()
                 pan = (getattr(line, "deductee_pan_snapshot", "") or "").strip().upper()
                 tax_id = (getattr(line, "deductee_tax_id_snapshot", "") or "").strip()
                 vendor_name = getattr(getattr(line, "header", None), "vendor_name", "") or ""
                 section_code = getattr(line, "section_snapshot_code", "") or "UNSPECIFIED"
-                missing_pan = not bool(pan)
+                requires_pan = (
+                    residency == PurchaseStatutoryReturnLine.DeducteeResidency.RESIDENT
+                    or (not residency and filing_return_code == "26Q")
+                )
+                requires_tax_id = (
+                    residency == PurchaseStatutoryReturnLine.DeducteeResidency.NON_RESIDENT
+                    or (not residency and filing_return_code == "27Q")
+                )
+                missing_pan = requires_pan and not bool(pan)
                 invalid_pan = bool(pan) and not PurchaseStatutoryService._is_valid_pan(pan)
-                missing_tax_id = not bool(tax_id)
-                pan_status = "VALID" if pan and not invalid_pan else ("INVALID" if invalid_pan else "MISSING")
-                tax_id_status = "PRESENT" if tax_id else "MISSING"
+                missing_tax_id = requires_tax_id and not bool(tax_id)
+                if not requires_pan and not pan:
+                    pan_status = "NOT_REQUIRED"
+                else:
+                    pan_status = "VALID" if pan and not invalid_pan else ("INVALID" if invalid_pan else "MISSING")
+                tax_id_status = "PRESENT" if tax_id else ("MISSING" if requires_tax_id else "NOT_REQUIRED")
                 it_return_rows.append(
                     (
                         filing.return_code, filing.period_from, filing.period_to,
@@ -1623,7 +1641,14 @@ class PurchaseStatutoryCaPackExportAPIView(APIView):
         add_sheet(
             "10_Reconciliation",
             ["Metric", "IT_TDS", "GST_TDS"],
-            [(k, it_summary.get(k, "0.00"), gst_summary.get(k, "0.00")) for k in ["deducted", "deposited", "filed", "pending_deposit", "pending_filing", "draft_challan", "draft_return"]],
+            [
+                (
+                    k,
+                    it_pending_deposit_text if k == "pending_deposit" else it_pending_filing_text if k == "pending_filing" else it_summary.get(k, "0.00"),
+                    gst_pending_deposit_text if k == "pending_deposit" else gst_pending_filing_text if k == "pending_filing" else gst_summary.get(k, "0.00"),
+                )
+                for k in ["deducted", "deposited", "filed", "pending_deposit", "pending_filing", "draft_challan", "draft_return"]
+            ],
         )
 
         add_sheet(

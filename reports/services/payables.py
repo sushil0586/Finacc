@@ -168,6 +168,7 @@ def _date_or_none(value):
 
 
 def _vendor_meta(vendor, *, subentity_name=None):
+    msme_profile = _vendor_msme_profile(vendor)
     return {
         "vendor_id": vendor.id,
         "vendor_name": vendor.effective_accounting_name,
@@ -180,6 +181,79 @@ def _vendor_meta(vendor, *, subentity_name=None):
         "gstin": account_gstno(vendor),
         "vendor_group": account_agent(vendor),
         "region": getattr(account_region_state(vendor), "statename", None) or getattr(account_region_state(vendor), "state", None),
+        "is_msme": msme_profile["is_msme"],
+        "msme_status": msme_profile["msme_status"] or ("small" if msme_profile["legacy_msme"] else None),
+        "udyam_no": msme_profile["udyam_no"],
+        "has_written_payment_terms": msme_profile["has_written_payment_terms"],
+        "msme_allowed_credit_days": (
+            min(max(int(msme_profile["explicit_msme_credit_days"]), 0), 45)
+            if msme_profile["explicit_msme_credit_days"] is not None
+            else None
+        ),
+    }
+
+
+def _vendor_msme_profile(vendor):
+    compliance = getattr(vendor, "compliance_profile", None)
+    commercial = getattr(vendor, "commercial_profile", None)
+    msme_status = (getattr(compliance, "msme_status", None) or "").strip().lower() or None
+    legacy_msme = (getattr(compliance, "msme", None) or "").strip() or None
+    is_msme = msme_status in {"micro", "small"} or bool(legacy_msme)
+    has_written_terms = bool(getattr(compliance, "has_written_payment_terms", False))
+    explicit_msme_credit_days = getattr(compliance, "msme_credit_days", None)
+    default_credit_days = getattr(commercial, "creditdays", None)
+    return {
+        "is_msme": is_msme,
+        "legacy_msme": legacy_msme,
+        "msme_status": msme_status,
+        "udyam_no": getattr(compliance, "udyam_no", None),
+        "has_written_payment_terms": has_written_terms,
+        "explicit_msme_credit_days": explicit_msme_credit_days,
+        "default_credit_days": default_credit_days,
+    }
+
+
+def _msme_due_snapshot(*, vendor, bill_date, as_of_date):
+    profile = _vendor_msme_profile(vendor)
+    if not profile["is_msme"] or not bill_date:
+        return {
+            "is_msme_applicable": False,
+            "msme_status": profile["msme_status"],
+            "legacy_msme": profile["legacy_msme"],
+            "udyam_no": profile["udyam_no"],
+            "has_written_payment_terms": profile["has_written_payment_terms"],
+            "msme_allowed_credit_days": None,
+            "msme_due_date": None,
+            "msme_days_overdue": None,
+            "is_msme_overdue": False,
+        }
+
+    raw_credit_days = (
+        profile["explicit_msme_credit_days"]
+        if profile["explicit_msme_credit_days"] is not None
+        else profile["default_credit_days"]
+    )
+    if profile["has_written_payment_terms"]:
+        try:
+            allowed_credit_days = int(raw_credit_days) if raw_credit_days is not None else 45
+        except (TypeError, ValueError):
+            allowed_credit_days = 45
+        allowed_credit_days = min(max(allowed_credit_days, 0), 45)
+    else:
+        allowed_credit_days = 15
+
+    msme_due_date = bill_date + timedelta(days=allowed_credit_days)
+    msme_days_overdue = max((as_of_date - msme_due_date).days, 0)
+    return {
+        "is_msme_applicable": True,
+        "msme_status": profile["msme_status"] or ("small" if profile["legacy_msme"] else None),
+        "legacy_msme": profile["legacy_msme"],
+        "udyam_no": profile["udyam_no"],
+        "has_written_payment_terms": profile["has_written_payment_terms"],
+        "msme_allowed_credit_days": allowed_credit_days,
+        "msme_due_date": msme_due_date,
+        "msme_days_overdue": msme_days_overdue,
+        "is_msme_overdue": msme_days_overdue > 0,
     }
 
 
@@ -324,7 +398,7 @@ def _sort_rows(rows, sort_by, sort_order):
     field = (sort_by or "").strip().lower()
 
     def key(row):
-        if field in {"outstanding", "net_outstanding", "overdue_amount", "opening_balance", "bill_amount", "balance", "original_amount", "settled_amount", "outstanding_amount", "days_to_due"}:
+        if field in {"outstanding", "net_outstanding", "overdue_amount", "opening_balance", "bill_amount", "balance", "original_amount", "settled_amount", "outstanding_amount", "days_to_due", "msme_days_overdue", "msme_allowed_credit_days"}:
             return q2(row.get(field) or row.get("net_outstanding") or ZERO)
         if field in {"vendor_code", "voucher_no", "bill_ref_no", "voucher_type_name"}:
             return str(row.get(field) or row.get("vendor_code") or row.get("voucher_no") or row.get("bill_ref_no") or "").lower()
@@ -557,6 +631,7 @@ def build_vendor_outstanding_report(
             days_overdue = max(days_delta, 0)
             bucket = _vendor_outstanding_bucket(days_overdue)
             is_not_due = bool(reference_date and reference_date > as_of)
+            msme_snapshot = _msme_due_snapshot(vendor=vendor, bill_date=item.bill_date, as_of_date=as_of)
             if outstanding_amount > ZERO:
                 vendor_positive_outstanding = q2(vendor_positive_outstanding + outstanding_amount)
                 if is_not_due:
@@ -583,6 +658,14 @@ def build_vendor_outstanding_report(
                     "bill_ref_no": item.supplier_invoice_number or item.purchase_number or item.reference_no or f"BILL-{item.id}",
                     "due_date": item.due_date or item.bill_date,
                     "days_overdue": days_overdue,
+                    "msme_due_date": msme_snapshot["msme_due_date"],
+                    "msme_days_overdue": msme_snapshot["msme_days_overdue"],
+                    "is_msme_overdue": msme_snapshot["is_msme_overdue"],
+                    "is_msme_applicable": msme_snapshot["is_msme_applicable"],
+                    "msme_status": msme_snapshot["msme_status"],
+                    "udyam_no": msme_snapshot["udyam_no"],
+                    "has_written_payment_terms": msme_snapshot["has_written_payment_terms"],
+                    "msme_allowed_credit_days": msme_snapshot["msme_allowed_credit_days"],
                     "original_amount": bill_amount,
                     "settled_amount": settled_amount,
                     "outstanding_amount": outstanding_amount,
@@ -625,6 +708,9 @@ def build_vendor_outstanding_report(
                     open_item_id=item.id,
                     bill_date=_iso_date(item.bill_date),
                     due_date=_iso_date(item.due_date or item.bill_date),
+                    msme_due_date=_iso_date(msme_snapshot["msme_due_date"]),
+                    msme_days_overdue=msme_snapshot["msme_days_overdue"],
+                    is_msme_overdue=msme_snapshot["is_msme_overdue"],
                     aging_basis=normalized_aging_basis,
                     aging_bucket=bucket,
                     settled_amount=f"{settled_amount:.2f}",
@@ -977,6 +1063,7 @@ def build_ap_aging_report(
         if outstanding > ZERO:
             paid_amount = _paid_amount_asof(item, settled)
             doc_type_name = item.header.get_doc_type_display() if getattr(item, "header", None) else str(item.doc_type)
+            msme_snapshot = _msme_due_snapshot(vendor=item.vendor, bill_date=item.bill_date, as_of_date=as_of)
             drilldown = {
                 "invoice_list": _drilldown_item(
                     label="AP Aging Invoice",
@@ -1031,6 +1118,7 @@ def build_ap_aging_report(
                         "bill_date": item.bill_date,
                         "due_date": item.due_date or item.bill_date,
                         "credit_days": ((item.due_date - item.bill_date).days if item.due_date else None),
+                        **msme_snapshot,
                         "bill_amount": q2(item.original_amount),
                         "paid_amount": q2(paid_amount),
                         "residual_before_credit": q2(outstanding),
@@ -1051,6 +1139,7 @@ def build_ap_aging_report(
                         open_item_id=item.id,
                         bill_date=_iso_date(item.bill_date),
                         due_date=_iso_date(item.due_date or item.bill_date),
+                        msme_due_date=_iso_date(msme_snapshot["msme_due_date"]),
                         settled_amount=f"{q2(settled):.2f}",
                         outstanding_amount=f"{q2(outstanding):.2f}",
                         derived_from=["purchase.VendorBillOpenItem", "purchase.VendorSettlementLine"],
@@ -1239,6 +1328,284 @@ def build_ap_aging_report(
             required_menu_code="reports.accountspayableaging",
             required_permissions=["reports.accountspayableaging.view"],
             feature_state={"view": "summary", "include_trace": include_trace},
+            user=user,
+        ),
+    }
+
+
+def build_msme_overdue_report(
+    *,
+    entity_id,
+    entityfin_id=None,
+    subentity_id=None,
+    as_of_date=None,
+    from_date=None,
+    to_date=None,
+    vendor_id=None,
+    vendor_group=None,
+    region_id=None,
+    currency=None,
+    overdue_only=True,
+    search=None,
+    sort_by=None,
+    sort_order="desc",
+    page=1,
+    page_size=100,
+    include_trace=True,
+    user=None,
+):
+    """Build invoice-level MSME overdue reporting for vendor payables."""
+    entity_id, entityfin_id, subentity_id = normalize_scope_ids(entity_id, entityfin_id, subentity_id)
+    resolved_from, resolved_to = resolve_scope_dates(entityfin_id, from_date, to_date, as_of_date)
+    as_of = coerce_date(as_of_date) or resolved_to
+    if not as_of:
+        raise ValueError("as_of_date or entity financial year scope is required.")
+
+    vendors = list(
+        vendor_queryset(
+            entity_id=entity_id,
+            vendor_id=vendor_id,
+            vendor_group=vendor_group,
+            region_id=region_id,
+            currency=currency,
+            search=search,
+            msme=True,
+        )
+    )
+    vendor_by_id = {vendor.id: vendor for vendor in vendors}
+    vendor_ids = set(vendor_by_id.keys())
+    if not vendor_ids:
+        return {
+            "entity_id": entity_id,
+            "entityfin_id": entityfin_id,
+            "subentity_id": subentity_id,
+            "as_of_date": as_of,
+            "from_date": resolved_from,
+            "to_date": resolved_to,
+            "rows": [],
+            "totals": {
+                "open_amount": "0.00",
+                "overdue_amount": "0.00",
+            },
+            "pagination": {"page": page, "page_size": page_size, "total_rows": 0, "paginated": True},
+            "summary": {
+                "bill_count": 0,
+                "vendor_count": 0,
+                "overdue_bill_count": 0,
+                "overdue_vendor_count": 0,
+            },
+            **_report_meta_payload(
+                report_code="msme_overdue",
+                report_name="MSME Overdue Report",
+                entity_id=entity_id,
+                entityfin_id=entityfin_id,
+                subentity_id=subentity_id,
+                from_date=resolved_from,
+                to_date=resolved_to,
+                as_of_date=as_of,
+                vendor_id=vendor_id,
+                required_menu_code="reports.payables.msme_overdue",
+                required_permissions=["reports.payables.view"],
+                feature_state={"overdue_only": overdue_only, "include_trace": include_trace},
+                user=user,
+            ),
+        }
+
+    rows = []
+    totals = defaultdict(lambda: ZERO)
+    overdue_vendor_ids = set()
+    oldest_overdue_row = None
+
+    for item, settled, outstanding in asof_open_item_balances(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        upto_date=as_of,
+        vendor_ids=vendor_ids,
+    ):
+        if outstanding <= ZERO:
+            continue
+        if resolved_from and item.bill_date and item.bill_date < resolved_from:
+            continue
+        if resolved_to and item.bill_date and item.bill_date > resolved_to:
+            continue
+
+        msme_snapshot = _msme_due_snapshot(vendor=item.vendor, bill_date=item.bill_date, as_of_date=as_of)
+        if not msme_snapshot["is_msme_applicable"]:
+            continue
+        if overdue_only and not msme_snapshot["is_msme_overdue"]:
+            continue
+
+        overdue_days = int(msme_snapshot["msme_days_overdue"] or 0)
+        if overdue_days <= 0:
+            overdue_bucket = "Not Due"
+        elif overdue_days <= 15:
+            overdue_bucket = "1-15"
+        elif overdue_days <= 45:
+            overdue_bucket = "16-45"
+        elif overdue_days <= 90:
+            overdue_bucket = "46-90"
+        else:
+            overdue_bucket = "90+"
+
+        doc_number = item.purchase_number or item.supplier_invoice_number or f"BILL-{item.id}"
+        doc_type_name = item.header.get_doc_type_display() if getattr(item, "header", None) else str(item.doc_type)
+        row = _row_with_meta(
+            {
+                "item_id": item.id,
+                "header_id": item.header_id,
+                "vendor_id": item.vendor_id,
+                "vendor_name": item.vendor.effective_accounting_name,
+                "vendor_code": item.vendor.effective_accounting_code,
+                "msme_status": msme_snapshot["msme_status"],
+                "udyam_no": msme_snapshot["udyam_no"],
+                "bill_number": doc_number,
+                "supplier_invoice_number": item.supplier_invoice_number,
+                "document_type_name": doc_type_name,
+                "bill_date": item.bill_date,
+                "due_date": item.due_date or item.bill_date,
+                "msme_due_date": msme_snapshot["msme_due_date"],
+                "balance": q2(outstanding),
+                "paid_amount": q2(_paid_amount_asof(item, settled)),
+                "credit_days": ((item.due_date - item.bill_date).days if item.due_date else None),
+                "msme_allowed_credit_days": msme_snapshot["msme_allowed_credit_days"],
+                "msme_days_overdue": overdue_days,
+                "is_msme_overdue": msme_snapshot["is_msme_overdue"],
+                "has_written_payment_terms": msme_snapshot["has_written_payment_terms"],
+                "overdue_bucket": overdue_bucket,
+                "branch": getattr(item.subentity, "subentityname", None),
+                "currency": getattr(getattr(item, "header", None), "currency_code", None) or account_currency(item.vendor) or "INR",
+                "gstin": account_gstno(item.vendor),
+            },
+            drilldown={
+                "bill_detail": _drilldown_item(
+                    label="Purchase Document Detail",
+                    target="purchase_document_detail",
+                    params={"id": item.header_id, "entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id},
+                ),
+                "vendor_outstanding": _drilldown_item(
+                    label="Vendor Outstanding",
+                    target="vendor_outstanding",
+                    report_code="vendor_outstanding",
+                    path="/api/reports/payables/vendor-outstanding/",
+                    params={
+                        "entity": entity_id,
+                        "entityfinid": entityfin_id,
+                        "subentity": subentity_id,
+                        "vendor": item.vendor_id,
+                        "view": "detailed",
+                        "as_of_date": as_of,
+                        "show_not_due": True,
+                        "include_zero_balance": False,
+                    },
+                ),
+                "ap_aging": _drilldown_item(
+                    label="AP Aging Invoice",
+                    target="ap_aging",
+                    report_code="ap_aging",
+                    path="/api/reports/payables/aging/",
+                    params={
+                        "entity": entity_id,
+                        "entityfinid": entityfin_id,
+                        "subentity": subentity_id,
+                        "vendor": item.vendor_id,
+                        "as_of_date": as_of,
+                        "view": "invoice",
+                    },
+                ),
+                "vendor_statement": _drilldown_item(
+                    label="Vendor Statement",
+                    target="vendor_ledger_statement",
+                    report_code="vendor_ledger_statement",
+                    path="/api/reports/payables/vendor-ledger/",
+                    params={
+                        "entity": entity_id,
+                        "entityfinid": entityfin_id,
+                        "subentity": subentity_id,
+                        "vendor": item.vendor_id,
+                        "from_date": resolved_from,
+                        "to_date": resolved_to or as_of,
+                    },
+                ),
+            },
+            trace=_trace_payload(
+                source_model="purchase.VendorBillOpenItem",
+                source_id=item.id,
+                source_document_id=item.header_id,
+                source_document_number=doc_number,
+                source_document_type=doc_type_name,
+                vendor_id=item.vendor_id,
+                bill_date=_iso_date(item.bill_date),
+                due_date=_iso_date(item.due_date or item.bill_date),
+                msme_due_date=_iso_date(msme_snapshot["msme_due_date"]),
+                msme_days_overdue=overdue_days,
+                msme_status=msme_snapshot["msme_status"],
+                udyam_no=msme_snapshot["udyam_no"],
+                outstanding_amount=f"{q2(outstanding):.2f}",
+                derived_from=["purchase.VendorBillOpenItem", "financial.AccountComplianceProfile"],
+            ) if include_trace else None,
+        )
+        rows.append(row)
+        totals["open_amount"] += q2(outstanding)
+        if msme_snapshot["is_msme_overdue"]:
+            totals["overdue_amount"] += q2(outstanding)
+            overdue_vendor_ids.add(item.vendor_id)
+            if oldest_overdue_row is None or overdue_days > int(oldest_overdue_row["msme_days_overdue"] or 0):
+                oldest_overdue_row = {
+                    "vendor_name": item.vendor.effective_accounting_name,
+                    "bill_number": doc_number,
+                    "msme_days_overdue": overdue_days,
+                }
+
+    _sort_rows(rows, sort_by or "msme_days_overdue", sort_order)
+    paged_rows, total_rows = _paginate(rows, page, page_size)
+    _stringify_amount_fields(paged_rows, ("balance", "paid_amount"))
+
+    unique_vendor_ids = {row["vendor_id"] for row in rows}
+    reporting_note = (
+        f"{sum(1 for row in rows if row['is_msme_overdue'])} overdue MSME bills across "
+        f"{len(overdue_vendor_ids)} vendors amounting to {q2(totals['overdue_amount']):.2f} as of {as_of.isoformat()}."
+    )
+    return {
+        "entity_id": entity_id,
+        "entityfin_id": entityfin_id,
+        "subentity_id": subentity_id,
+        "as_of_date": as_of,
+        "from_date": resolved_from,
+        "to_date": resolved_to,
+        "rows": paged_rows,
+        "totals": {
+            "open_amount": f"{q2(totals['open_amount']):.2f}",
+            "overdue_amount": f"{q2(totals['overdue_amount']):.2f}",
+        },
+        "pagination": {"page": page, "page_size": page_size, "total_rows": total_rows, "paginated": True},
+        "summary": {
+            "bill_count": len(rows),
+            "vendor_count": len(unique_vendor_ids),
+            "overdue_bill_count": sum(1 for row in rows if row["is_msme_overdue"]),
+            "overdue_vendor_count": len(overdue_vendor_ids),
+            "open_amount": f"{q2(totals['open_amount']):.2f}",
+            "overdue_amount": f"{q2(totals['overdue_amount']):.2f}",
+            "oldest_overdue_days": int(oldest_overdue_row["msme_days_overdue"]) if oldest_overdue_row else 0,
+            "oldest_overdue_bill": (
+                f"{oldest_overdue_row['vendor_name']} / {oldest_overdue_row['bill_number']}"
+                if oldest_overdue_row else ""
+            ),
+            "reporting_note": reporting_note,
+        },
+        **_report_meta_payload(
+            report_code="msme_overdue",
+            report_name="MSME Overdue Report",
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            from_date=resolved_from,
+            to_date=resolved_to,
+            as_of_date=as_of,
+            vendor_id=vendor_id,
+            required_menu_code="reports.payables.msme_overdue",
+            required_permissions=["reports.payables.view"],
+            feature_state={"overdue_only": overdue_only, "include_trace": include_trace},
             user=user,
         ),
     }
@@ -1560,8 +1927,31 @@ def build_payables_dashboard_summary(
         view="summary",
         user=user,
     )
+    msme_payload = build_msme_overdue_report(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        as_of_date=as_of_date,
+        vendor_id=vendor_id,
+        vendor_group=vendor_group,
+        region_id=region_id,
+        currency=currency,
+        overdue_only=True,
+        search=search,
+        sort_by="msme_days_overdue",
+        sort_order="desc",
+        page=1,
+        page_size=100000,
+        include_trace=True,
+        user=user,
+    )
     rows = summary_payload["rows"]
     top_vendors = sorted(rows, key=lambda row: q2(row.get("outstanding") or ZERO), reverse=True)[:10]
+    top_msme_overdue_vendors = sorted(
+        msme_payload["rows"],
+        key=lambda row: (q2(row.get("balance") or ZERO), q2(row.get("msme_days_overdue") or ZERO)),
+        reverse=True,
+    )[:5]
     return {
         "entity_id": summary_payload["entity_id"],
         "entityfin_id": summary_payload["entityfin_id"],
@@ -1575,11 +1965,16 @@ def build_payables_dashboard_summary(
             "bucket_31_60": summary_payload["totals"].get("bucket_31_60", "0.00"),
             "bucket_61_90": summary_payload["totals"].get("bucket_61_90", "0.00"),
             "bucket_90_plus": summary_payload["totals"].get("bucket_90_plus", "0.00"),
+            "msme_overdue_amount": msme_payload.get("summary", {}).get("overdue_amount", "0.00"),
         },
         "vendor_count_with_open_balance": summary_payload.get("summary", {}).get("vendor_count", 0),
         "summary": {
             "vendor_count_with_open_balance": summary_payload.get("summary", {}).get("vendor_count", 0),
             "top_vendor_count": len(top_vendors),
+            "msme_overdue_bill_count": msme_payload.get("summary", {}).get("overdue_bill_count", 0),
+            "msme_overdue_vendor_count": msme_payload.get("summary", {}).get("overdue_vendor_count", 0),
+            "msme_oldest_overdue_days": msme_payload.get("summary", {}).get("oldest_overdue_days", 0),
+            "msme_reporting_note": msme_payload.get("summary", {}).get("reporting_note", ""),
         },
         "pagination": {"page": 1, "page_size": len(top_vendors), "total_rows": len(top_vendors), "paginated": False},
         "top_vendors": [
@@ -1599,6 +1994,20 @@ def build_payables_dashboard_summary(
                 "_meta": row.get("_meta", {}),
             }
             for row in top_vendors
+        ],
+        "top_msme_overdue_vendors": [
+            {
+                "vendor_id": row["vendor_id"],
+                "vendor_name": row["vendor_name"],
+                "vendor_code": row["vendor_code"],
+                "msme_status": row.get("msme_status"),
+                "bill_number": row.get("bill_number"),
+                "balance": row.get("balance"),
+                "msme_days_overdue": row.get("msme_days_overdue"),
+                "overdue_bucket": row.get("overdue_bucket"),
+                "_meta": row.get("_meta", {}),
+            }
+            for row in top_msme_overdue_vendors
         ],
         **_report_meta_payload(
             report_code="payables_dashboard_summary",

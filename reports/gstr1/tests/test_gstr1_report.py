@@ -506,6 +506,22 @@ class Gstr1ReportAPITests(APITestCase):
         self.assertIn("gstn_json", payload["actions"]["export_urls"])
         self.assertIn("gstn_json", payload["available_exports"])
 
+    def test_readiness_source_document_drilldown_uses_service_invoice_route_for_service_rows(self):
+        invoice = self._create_sales_document(
+            customer=self.customer_alpha,
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B,
+            invoice_number="SRV-001",
+            customer_gstin="",
+        )
+        invoice.lines.update(is_service=True, hsn_sac_code="9983")
+
+        response = self.client.get(self.readiness_url, self.base_params)
+
+        self.assertEqual(response.status_code, 200)
+        readiness = response.json()["readiness"]
+        invoice_warning = next(item for item in readiness["warnings"] if item.get("invoice_id") == invoice.id)
+        self.assertEqual(invoice_warning["drilldowns"]["source_document"]["route"], "/saleserviceinvoice")
+
     def test_readiness_endpoint_returns_review_status_for_tax_mismatch(self):
         invoice = self._create_sales_document(customer=self.customer_alpha, invoice_number="REVIEW-001")
         invoice.lines.update(line_total=Decimal("10.00"))
@@ -660,6 +676,527 @@ class Gstr1ReportAPITests(APITestCase):
         payload = response.json()
         self.assertEqual(payload["coverage"]["status"], "implemented")
         self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["groups"]["11A"]["count"], 1)
+        self.assertEqual(payload["groups"]["11B"]["count"], 0)
+
+    def test_table_endpoint_splits_advance_receipts_and_adjustments(self):
+        invoice = self._create_sales_document(customer=self.customer_alpha)
+        SalesAdvanceAdjustment.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            voucher_date="2025-04-20",
+            voucher_number="ADV-001",
+            customer=self.customer_alpha,
+            customer_name=self.customer_alpha.accountname or "Alpha Retail",
+            customer_gstin=account_gstno(self.customer_alpha),
+            place_of_supply_state_code="27",
+            entry_type=SalesAdvanceAdjustment.EntryType.ADVANCE_RECEIPT,
+            taxable_value=Decimal("500.00"),
+            cgst_amount=Decimal("45.00"),
+            sgst_amount=Decimal("45.00"),
+        )
+        SalesAdvanceAdjustment.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            voucher_date="2025-04-25",
+            voucher_number="ADJ-001",
+            customer=self.customer_alpha,
+            customer_name=self.customer_alpha.accountname or "Alpha Retail",
+            customer_gstin=account_gstno(self.customer_alpha),
+            place_of_supply_state_code="27",
+            entry_type=SalesAdvanceAdjustment.EntryType.ADVANCE_ADJUSTMENT,
+            taxable_value=Decimal("300.00"),
+            cgst_amount=Decimal("27.00"),
+            sgst_amount=Decimal("27.00"),
+            linked_invoice=invoice,
+        )
+        response = self.client.get(self.table_url("TABLE_11"), self.base_params)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["coverage"]["status"], "implemented")
+        self.assertEqual(payload["count"], 2)
+        self.assertEqual(payload["groups"]["11A"]["count"], 1)
+        self.assertEqual(payload["groups"]["11B"]["count"], 1)
+        self.assertEqual(payload["groups"]["11B"]["rows"][0]["linked_invoice_id"], invoice.id)
+
+    def test_gstn_json_export_keeps_table_11_group_counts_and_adjustment_linkage_consistent(self):
+        invoice = self._create_sales_document(customer=self.customer_alpha, invoice_number="ADV-LINK-001")
+        receipt = SalesAdvanceAdjustment.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            voucher_date="2025-04-20",
+            voucher_number="ADV-JSON-001",
+            customer=self.customer_alpha,
+            customer_name=self.customer_alpha.accountname or "Alpha Retail",
+            customer_gstin=account_gstno(self.customer_alpha),
+            place_of_supply_state_code="27",
+            entry_type=SalesAdvanceAdjustment.EntryType.ADVANCE_RECEIPT,
+            taxable_value=Decimal("500.00"),
+            cgst_amount=Decimal("45.00"),
+            sgst_amount=Decimal("45.00"),
+        )
+        adjustment = SalesAdvanceAdjustment.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            voucher_date="2025-04-25",
+            voucher_number="ADJ-JSON-001",
+            customer=self.customer_alpha,
+            customer_name=self.customer_alpha.accountname or "Alpha Retail",
+            customer_gstin=account_gstno(self.customer_alpha),
+            place_of_supply_state_code="27",
+            entry_type=SalesAdvanceAdjustment.EntryType.ADVANCE_ADJUSTMENT,
+            taxable_value=Decimal("300.00"),
+            cgst_amount=Decimal("27.00"),
+            sgst_amount=Decimal("27.00"),
+            linked_invoice=invoice,
+        )
+
+        response = self.client.get(self.export_url, {**self.base_params, "format": "gstn_json"})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        table11 = payload["tables"]["11"]
+        table11a = payload["tables"]["11A"]
+        table11b = payload["tables"]["11B"]
+        self.assertEqual(len(table11), 2)
+        self.assertEqual(len(table11a), 1)
+        self.assertEqual(len(table11b), 1)
+        self.assertEqual({row["id"] for row in table11}, {receipt.id, adjustment.id})
+        self.assertEqual(table11a[0]["entry_type"], SalesAdvanceAdjustment.EntryType.ADVANCE_RECEIPT)
+        self.assertEqual(table11b[0]["entry_type"], SalesAdvanceAdjustment.EntryType.ADVANCE_ADJUSTMENT)
+        self.assertEqual(table11b[0]["linked_invoice_id"], invoice.id)
+
+    def test_gstn_json_export_core_section_counts_and_taxables_match_summary(self):
+        self._create_sales_document(
+            customer=self.customer_alpha,
+            invoice_number="B2B-SUM-001",
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B,
+            taxable="100.00",
+            cgst="9.00",
+            sgst="9.00",
+            grand_total="118.00",
+        )
+        self._create_sales_document(
+            customer=self.customer_beta,
+            invoice_number="B2CL-SUM-001",
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2C,
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTER_STATE,
+            place_of_supply="29",
+            taxable="250000.00",
+            cgst="0.00",
+            sgst="0.00",
+            igst="45000.00",
+            grand_total="295000.00",
+        )
+        self._create_sales_document(
+            customer=self.customer_beta,
+            invoice_number="B2CS-SUM-001",
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2C,
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTRA_STATE,
+            place_of_supply="27",
+            taxable="200.00",
+            cgst="18.00",
+            sgst="18.00",
+            grand_total="236.00",
+        )
+        export_invoice = self._create_sales_document(
+            customer=self.customer_beta,
+            invoice_number="EXP-SUM-001",
+            supply_category=SalesInvoiceHeader.SupplyCategory.EXPORT_WITH_IGST,
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTER_STATE,
+            place_of_supply="96",
+            taxable="800.00",
+            cgst="0.00",
+            sgst="0.00",
+            igst="144.00",
+            grand_total="944.00",
+        )
+        self._create_sales_document(
+            customer=self.customer_alpha,
+            invoice_number="CDNR-SUM-001",
+            doc_type=SalesInvoiceHeader.DocType.CREDIT_NOTE,
+            original_invoice=export_invoice,
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B,
+            taxable="50.00",
+            cgst="4.50",
+            sgst="4.50",
+            grand_total="59.00",
+        )
+        self._create_sales_document(
+            customer=self.customer_beta,
+            invoice_number="CDNUR-SUM-001",
+            doc_type=SalesInvoiceHeader.DocType.CREDIT_NOTE,
+            original_invoice=export_invoice,
+            customer_gstin="",
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2C,
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTER_STATE,
+            place_of_supply="29",
+            taxable="75.00",
+            cgst="0.00",
+            sgst="0.00",
+            igst="13.50",
+            grand_total="88.50",
+        )
+
+        summary_response = self.client.get(self.summary_url, self.base_params)
+        export_response = self.client.get(self.export_url, {**self.base_params, "format": "gstn_json"})
+
+        self.assertEqual(summary_response.status_code, 200)
+        self.assertEqual(export_response.status_code, 200)
+
+        summary_payload = summary_response.json()["summary"]["sections"]
+        export_payload = export_response.json()["tables"]
+
+        summary_by_section = {row["section"]: row for row in summary_payload}
+        table_map = {
+            "B2B": "4",
+            "B2CL": "5",
+            "EXP": "6",
+            "B2CS": "7",
+            "CDNUR": "10",
+        }
+
+        for section_code, table_key in table_map.items():
+            export_rows = export_payload[table_key]
+            summary_row = summary_by_section[section_code]
+            export_count = len(export_rows)
+            taxable_field = "taxable_value" if table_key == "7" else "taxable_amount"
+            export_taxable = sum(Decimal(str(row.get(taxable_field) or "0")) for row in export_rows)
+            self.assertEqual(export_count, int(summary_row["document_count"]), msg=section_code)
+            self.assertEqual(export_taxable, Decimal(str(summary_row["taxable_amount"])), msg=section_code)
+
+    def test_gstn_json_export_table_12_hsn_summary_matches_signed_summary(self):
+        invoice = self._create_sales_document(
+            customer=self.customer_alpha,
+            invoice_number="HSN-INV-001",
+            taxable="200.00",
+            cgst="18.00",
+            sgst="18.00",
+            grand_total="236.00",
+            hsn_code="9983",
+        )
+        note = self._create_sales_document(
+            customer=self.customer_alpha,
+            invoice_number="HSN-CN-001",
+            doc_type=SalesInvoiceHeader.DocType.CREDIT_NOTE,
+            original_invoice=invoice,
+            taxable="50.00",
+            cgst="4.50",
+            sgst="4.50",
+            grand_total="59.00",
+            hsn_code="9983",
+        )
+        note.lines.update(qty=Decimal("1.000"), taxable_value=Decimal("50.00"), cgst_amount=Decimal("4.50"), sgst_amount=Decimal("4.50"), line_total=Decimal("59.00"))
+
+        summary_response = self.client.get(self.summary_url, self.base_params)
+        export_response = self.client.get(self.export_url, {**self.base_params, "format": "gstn_json"})
+
+        self.assertEqual(summary_response.status_code, 200)
+        self.assertEqual(export_response.status_code, 200)
+
+        hsn_summary = summary_response.json()["summary"]["hsn_summary"]
+        table12 = export_response.json()["tables"]["12"]
+
+        summary_row = next(row for row in hsn_summary if row["hsn_sac_code"] == "9983")
+        table_row = next(row for row in table12 if row["hsn_sac_code"] == "9983")
+
+        self.assertEqual(Decimal(str(table_row["total_qty"])), Decimal(str(summary_row["total_qty"])))
+        self.assertEqual(Decimal(str(table_row["taxable_value"])), Decimal(str(summary_row["taxable_value"])))
+        self.assertEqual(Decimal(str(table_row["cgst_amount"])), Decimal(str(summary_row["cgst_amount"])))
+        self.assertEqual(Decimal(str(table_row["sgst_amount"])), Decimal(str(summary_row["sgst_amount"])))
+
+    def test_gstn_json_export_preserves_eco_table_14_15_totals_and_splits(self):
+        SalesEcommerceSupply.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            invoice_date="2025-04-12",
+            invoice_number="ECO-B2B-001",
+            operator_gstin="27OPERA1234F1Z5",
+            supplier_eco_gstin="27SUPPL1234F1Z5",
+            supply_split=SalesEcommerceSupply.SupplySplit.B2B,
+            taxable_value=Decimal("1000.00"),
+            cgst_amount=Decimal("90.00"),
+            sgst_amount=Decimal("90.00"),
+            igst_amount=Decimal("0.00"),
+            cess_amount=Decimal("0.00"),
+        )
+        SalesEcommerceSupply.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            invoice_date="2025-04-15",
+            invoice_number="ECO-B2C-001",
+            operator_gstin="27OPERA1234F1Z5",
+            supplier_eco_gstin="27SUPPL1234F1Z5",
+            supply_split=SalesEcommerceSupply.SupplySplit.B2C,
+            taxable_value=Decimal("500.00"),
+            cgst_amount=Decimal("45.00"),
+            sgst_amount=Decimal("45.00"),
+            igst_amount=Decimal("0.00"),
+            cess_amount=Decimal("0.00"),
+        )
+
+        response = self.client.get(self.export_url, {**self.base_params, "format": "gstn_json"})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        table14 = payload["tables"]["14"]
+        table15 = payload["tables"]["15"]
+
+        self.assertEqual(len(table14), 1)
+        self.assertEqual(table14[0]["supplier_eco_gstin"], "27SUPPL1234F1Z5")
+        self.assertEqual(Decimal(str(table14[0]["taxable_value"])), Decimal("1500.00"))
+        self.assertEqual(Decimal(str(table14[0]["cgst_amount"])), Decimal("135.00"))
+        self.assertEqual(Decimal(str(table14[0]["sgst_amount"])), Decimal("135.00"))
+
+        self.assertEqual(len(table15), 2)
+        table15_by_split = {row["supply_split"]: row for row in table15}
+        self.assertEqual(set(table15_by_split), {"B2B", "B2C"})
+        self.assertEqual(Decimal(str(table15_by_split["B2B"]["taxable_value"])), Decimal("1000.00"))
+        self.assertEqual(Decimal(str(table15_by_split["B2C"]["taxable_value"])), Decimal("500.00"))
+
+    def test_gstn_json_export_preserves_eco_amendment_linkage_in_table_14a_15a(self):
+        original = SalesEcommerceSupply.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            invoice_date="2025-04-12",
+            invoice_number="ECO-ORIG-001",
+            operator_gstin="27OPERA1234F1Z5",
+            supplier_eco_gstin="27SUPPL1234F1Z5",
+            supply_split=SalesEcommerceSupply.SupplySplit.B2B,
+            taxable_value=Decimal("1000.00"),
+            cgst_amount=Decimal("90.00"),
+            sgst_amount=Decimal("90.00"),
+            igst_amount=Decimal("0.00"),
+            cess_amount=Decimal("0.00"),
+        )
+        amendment = SalesEcommerceSupply.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            invoice_date="2025-04-20",
+            invoice_number="ECO-AMD-001",
+            operator_gstin="27OPERA1234F1Z5",
+            supplier_eco_gstin="27SUPPL1234F1Z5",
+            supply_split=SalesEcommerceSupply.SupplySplit.B2C,
+            taxable_value=Decimal("1200.00"),
+            cgst_amount=Decimal("108.00"),
+            sgst_amount=Decimal("108.00"),
+            igst_amount=Decimal("0.00"),
+            cess_amount=Decimal("0.00"),
+            original_row=original,
+            is_amendment=True,
+        )
+
+        response = self.client.get(self.export_url, {**self.base_params, "format": "gstn_json"})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        table14a = payload["tables"]["14A"]
+        table15a = payload["tables"]["15A"]
+
+        self.assertEqual(len(table14a), 1)
+        self.assertEqual(table14a[0]["id"], amendment.id)
+        self.assertEqual(table14a[0]["original_row_id"], original.id)
+        self.assertEqual(table14a[0]["supplier_eco_gstin"], "27SUPPL1234F1Z5")
+
+        self.assertEqual(len(table15a), 1)
+        self.assertEqual(table15a[0]["id"], amendment.id)
+        self.assertEqual(table15a[0]["original_row_id"], original.id)
+        self.assertEqual(table15a[0]["operator_gstin"], "27OPERA1234F1Z5")
+        self.assertEqual(table15a[0]["supply_split"], SalesEcommerceSupply.SupplySplit.B2C)
+
+    def test_table_6_includes_export_without_igst_and_sez_without_igst(self):
+        export = self._create_sales_document(
+            customer=self.customer_beta,
+            invoice_number="EXP-LUT-001",
+            taxable="800.00",
+            cgst="0.00",
+            sgst="0.00",
+            igst="0.00",
+            grand_total="800.00",
+            supply_category=SalesInvoiceHeader.SupplyCategory.EXPORT_WITHOUT_IGST,
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTER_STATE,
+            is_igst=True,
+            place_of_supply="96",
+        )
+        sez = self._create_sales_document(
+            customer=self.customer_alpha,
+            invoice_number="SEZ-WO-001",
+            taxable="600.00",
+            cgst="0.00",
+            sgst="0.00",
+            igst="0.00",
+            grand_total="600.00",
+            supply_category=SalesInvoiceHeader.SupplyCategory.SEZ_WITHOUT_IGST,
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTER_STATE,
+            is_igst=True,
+            place_of_supply="29",
+        )
+
+        response = self.client.get(self.table_url("TABLE_6"), self.base_params)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["coverage"]["status"], "implemented")
+        rows = {row["invoice_number"]: row for row in payload["rows"]}
+        self.assertEqual(Decimal(str(rows["EXP-LUT-001"]["igst_amount"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(rows["SEZ-WO-001"]["igst_amount"])), Decimal("0.00"))
+        self.assertEqual(rows["EXP-LUT-001"]["invoice_id"], export.id)
+        self.assertEqual(rows["SEZ-WO-001"]["invoice_id"], sez.id)
+
+    def test_table_6_includes_sez_with_igst(self):
+        sez = self._create_sales_document(
+            customer=self.customer_alpha,
+            invoice_number="SEZ-W-001",
+            taxable="600.00",
+            cgst="0.00",
+            sgst="0.00",
+            igst="108.00",
+            grand_total="708.00",
+            supply_category=SalesInvoiceHeader.SupplyCategory.SEZ_WITH_IGST,
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTER_STATE,
+            is_igst=True,
+            place_of_supply="29",
+        )
+
+        response = self.client.get(self.table_url("TABLE_6"), self.base_params)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        rows = {row["invoice_number"]: row for row in payload["rows"]}
+        self.assertEqual(Decimal(str(rows["SEZ-W-001"]["igst_amount"])), Decimal("108.00"))
+        self.assertEqual(rows["SEZ-W-001"]["invoice_id"], sez.id)
+
+    def test_table_4_excludes_sez_and_deemed_export_rows(self):
+        b2b = self._create_sales_document(
+            customer=self.customer_alpha,
+            invoice_number="B2B-ONLY-001",
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B,
+        )
+        sez = self._create_sales_document(
+            customer=self.customer_alpha,
+            invoice_number="SEZ-EXCLUDE-001",
+            taxable="600.00",
+            cgst="0.00",
+            sgst="0.00",
+            igst="108.00",
+            grand_total="708.00",
+            supply_category=SalesInvoiceHeader.SupplyCategory.SEZ_WITH_IGST,
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTER_STATE,
+            is_igst=True,
+            place_of_supply="29",
+        )
+        deemed = self._create_sales_document(
+            customer=self.customer_alpha,
+            invoice_number="DEEMED-EXCLUDE-001",
+            taxable="500.00",
+            cgst="45.00",
+            sgst="45.00",
+            grand_total="590.00",
+            supply_category=SalesInvoiceHeader.SupplyCategory.DEEMED_EXPORT,
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTRA_STATE,
+            is_igst=False,
+            place_of_supply="27",
+        )
+
+        response = self.client.get(self.table_url("TABLE_4"), self.base_params)
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        invoice_numbers = {row["invoice_number"] for row in payload["rows"]}
+        self.assertIn(b2b.invoice_number, invoice_numbers)
+        self.assertNotIn(sez.invoice_number, invoice_numbers)
+        self.assertNotIn(deemed.invoice_number, invoice_numbers)
+
+    def test_gstn_json_export_keeps_sez_and_deemed_export_rows_out_of_table_4(self):
+        b2b = self._create_sales_document(
+            customer=self.customer_alpha,
+            invoice_number="B2B-GSTN-001",
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B,
+        )
+        sez = self._create_sales_document(
+            customer=self.customer_alpha,
+            invoice_number="SEZ-GSTN-001",
+            taxable="600.00",
+            cgst="0.00",
+            sgst="0.00",
+            igst="108.00",
+            grand_total="708.00",
+            supply_category=SalesInvoiceHeader.SupplyCategory.SEZ_WITH_IGST,
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTER_STATE,
+            is_igst=True,
+            place_of_supply="29",
+        )
+        deemed = self._create_sales_document(
+            customer=self.customer_alpha,
+            invoice_number="DEEMED-GSTN-001",
+            taxable="500.00",
+            cgst="45.00",
+            sgst="45.00",
+            grand_total="590.00",
+            supply_category=SalesInvoiceHeader.SupplyCategory.DEEMED_EXPORT,
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTRA_STATE,
+            is_igst=False,
+            place_of_supply="27",
+        )
+
+        response = self.client.get(self.export_url, {**self.base_params, "format": "gstn_json"})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        table_4_numbers = {row["invoice_number"] for row in payload["tables"]["4"]}
+        table_6_numbers = {row["invoice_number"] for row in payload["tables"]["6"]}
+        self.assertIn(b2b.invoice_number, table_4_numbers)
+        self.assertNotIn(sez.invoice_number, table_4_numbers)
+        self.assertNotIn(deemed.invoice_number, table_4_numbers)
+        self.assertIn(sez.invoice_number, table_6_numbers)
+        self.assertIn(deemed.invoice_number, table_6_numbers)
+
+    def test_table_8_includes_nil_rated_and_non_gst_buckets(self):
+        nil_invoice = self._create_sales_document(
+            customer=self.customer_beta,
+            invoice_number="NIL-001",
+            taxable="250.00",
+            cgst="0.00",
+            sgst="0.00",
+            igst="0.00",
+            grand_total="250.00",
+            taxability=SalesInvoiceHeader.Taxability.NIL_RATED,
+        )
+        SalesTaxSummary.objects.filter(header=nil_invoice).update(
+            taxability=SalesInvoiceHeader.Taxability.NIL_RATED,
+            cgst_amount=Decimal("0.00"),
+            sgst_amount=Decimal("0.00"),
+            igst_amount=Decimal("0.00"),
+        )
+        non_gst_invoice = self._create_sales_document(
+            customer=self.customer_beta,
+            invoice_number="NG-001",
+            taxable="400.00",
+            cgst="0.00",
+            sgst="0.00",
+            igst="0.00",
+            grand_total="400.00",
+            taxability=SalesInvoiceHeader.Taxability.NON_GST,
+        )
+        SalesTaxSummary.objects.filter(header=non_gst_invoice).update(
+            taxability=SalesInvoiceHeader.Taxability.NON_GST,
+            cgst_amount=Decimal("0.00"),
+            sgst_amount=Decimal("0.00"),
+            igst_amount=Decimal("0.00"),
+        )
+
+        response = self.client.get(self.table_url("TABLE_8"), self.base_params)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        rows = {row["taxability"]: row for row in payload["rows"]}
+        self.assertEqual(Decimal(str(rows[SalesInvoiceHeader.Taxability.NIL_RATED]["taxable_value"])), Decimal("250.00"))
+        self.assertEqual(Decimal(str(rows[SalesInvoiceHeader.Taxability.NON_GST]["taxable_value"])), Decimal("400.00"))
 
     def test_table_4_gst_rate_excludes_cess(self):
         invoice = self._create_sales_document(
@@ -965,7 +1502,11 @@ class Gstr1ReportAPITests(APITestCase):
             key_value=note.id,
             taxable_field="taxable_amount",
             grand_total_field="grand_total",
-            expected_grand_total="24125.00",
+            expected_grand_total="-24125.00",
+            expected_taxable_by_rate={
+                Decimal("5.00"): Decimal("-500.00"),
+                Decimal("18.00"): Decimal("-20000.00"),
+            },
         )
 
     def test_table_10_splits_mixed_rate_note_into_multiple_rows(self):
@@ -1043,8 +1584,86 @@ class Gstr1ReportAPITests(APITestCase):
             key_value=note.id,
             taxable_field="taxable_amount",
             grand_total_field="grand_total",
-            expected_grand_total="24125.00",
+            expected_grand_total="-24125.00",
+            expected_taxable_by_rate={
+                Decimal("5.00"): Decimal("-500.00"),
+                Decimal("18.00"): Decimal("-20000.00"),
+            },
         )
+
+    def test_table_9_uses_gstin_format_rules_for_amendment_target_section(self):
+        original = self._create_sales_document(
+            customer=self.customer_beta,
+            invoice_number="ORIG-MALFORMED-GSTIN-001",
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2C,
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTER_STATE,
+            customer_gstin="BADGSTIN",
+            place_of_supply="29",
+            taxable="300000.00",
+            cgst="0.00",
+            sgst="0.00",
+            igst="54000.00",
+            grand_total="354000.00",
+        )
+        note = self._create_sales_document(
+            customer=self.customer_beta,
+            invoice_number="NOTE-MALFORMED-GSTIN-001",
+            doc_type=SalesInvoiceHeader.DocType.CREDIT_NOTE,
+            original_invoice=original,
+            customer_gstin="BADGSTIN",
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2C,
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTER_STATE,
+            place_of_supply="29",
+            taxable="300000.00",
+            cgst="0.00",
+            sgst="0.00",
+            igst="54000.00",
+            grand_total="354000.00",
+        )
+
+        response = self.client.get(self.table_url("TABLE_9"), self.base_params)
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        row = next(r for r in payload["rows"] if r["note_id"] == note.id)
+        self.assertEqual(row["amendment_target_section"], "B2CL")
+
+    def test_gstn_json_export_keeps_malformed_gstin_amendments_out_of_b2b_targeting(self):
+        original = self._create_sales_document(
+            customer=self.customer_beta,
+            invoice_number="ORIG-GSTN-MALFORMED-001",
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2C,
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTER_STATE,
+            customer_gstin="BADGSTIN",
+            place_of_supply="29",
+            taxable="300000.00",
+            cgst="0.00",
+            sgst="0.00",
+            igst="54000.00",
+            grand_total="354000.00",
+        )
+        note = self._create_sales_document(
+            customer=self.customer_beta,
+            invoice_number="NOTE-GSTN-MALFORMED-001",
+            doc_type=SalesInvoiceHeader.DocType.CREDIT_NOTE,
+            original_invoice=original,
+            customer_gstin="BADGSTIN",
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2C,
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTER_STATE,
+            place_of_supply="29",
+            taxable="300000.00",
+            cgst="0.00",
+            sgst="0.00",
+            igst="54000.00",
+            grand_total="354000.00",
+        )
+
+        response = self.client.get(self.export_url, {**self.base_params, "format": "gstn_json"})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        row = next(r for r in payload["tables"]["9"] if r["note_id"] == note.id)
+        self.assertEqual(row["amendment_target_section"], "B2CL")
 
     def test_table_endpoints_5_7_10(self):
         b2cl = self._create_sales_document(

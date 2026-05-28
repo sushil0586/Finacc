@@ -30,6 +30,7 @@ from withholding.services import (
     determine_fy_quarter,
     q2,
 )
+from financial.models import AccountComplianceProfile
 
 
 APPLICABILITY_ALLOWED_KEYS = {
@@ -44,6 +45,16 @@ APPLICABILITY_ALLOWED_KEYS = {
 }
 APPLICABILITY_RESIDENT_STATUSES = {"resident", "non_resident"}
 APPLICABILITY_THRESHOLD_MODES = {"single_txn", "cumulative"}
+
+
+def _json_safe_value(value):
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, dict):
+        return {key: _json_safe_value(val) for key, val in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_value(item) for item in value]
+    return value
 
 
 class RejectWorkflowManagedFieldsMixin:
@@ -377,14 +388,30 @@ class EntityPartyTaxProfileSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
+        compliance_profile = getattr(getattr(instance, "party_account", None), "compliance_profile", None)
+        pan_value = str(getattr(compliance_profile, "pan", None) or "").strip().upper() or None
+        if not pan_value:
+            compliance_profile = (
+                AccountComplianceProfile.objects.filter(account_id=instance.party_account_id)
+                .only("pan")
+                .first()
+            )
+            pan_value = str(getattr(compliance_profile, "pan", None) or "").strip().upper() or None
+        if pan_value:
+            data["pan"] = pan_value
+            data["is_pan_available"] = True
+            return data
+
         party_profile = getattr(getattr(instance, "party_account", None), "tax_profile", None)
-        if party_profile is None:
+        party_pan = str(getattr(party_profile, "pan", None) or "").strip().upper() or None
+        if party_profile is None or (not party_pan and not bool(getattr(party_profile, "is_pan_available", False))):
             party_profile = (
                 PartyTaxProfile.objects.filter(party_account_id=instance.party_account_id)
                 .only("pan", "is_pan_available")
                 .first()
             )
-        data["pan"] = getattr(party_profile, "pan", None) if party_profile else None
+            party_pan = str(getattr(party_profile, "pan", None) or "").strip().upper() or None
+        data["pan"] = party_pan
         data["is_pan_available"] = bool(getattr(party_profile, "is_pan_available", False)) if party_profile else False
         return data
 
@@ -405,6 +432,15 @@ class EntityPartyTaxProfileSerializer(serializers.ModelSerializer):
             defaults["is_pan_available"] = bool(normalized_pan)
 
         if defaults:
+            normalized_pan = defaults.get("pan")
+            if normalized_pan is not None:
+                AccountComplianceProfile.objects.update_or_create(
+                    account_id=instance.party_account_id,
+                    defaults={
+                        "entity_id": instance.entity_id,
+                        "pan": normalized_pan,
+                    },
+                )
             PartyTaxProfile.objects.update_or_create(
                 party_account_id=instance.party_account_id,
                 defaults=defaults,
@@ -834,27 +870,30 @@ class TcsDepositAllocationSerializer(serializers.ModelSerializer):
         read_only_fields = ["created_at"]
 
 
-class TcsQuarterlyReturnSerializer(RejectWorkflowManagedFieldsMixin, serializers.ModelSerializer):
-    workflow_managed_write_errors = {
-        "status": "status is managed by the TCS workflow and cannot be set directly.",
-        "ack_no": "ack_no is managed by the TCS workflow and cannot be set directly.",
-        "filed_on": "filed_on is managed by the TCS workflow and cannot be set directly.",
-        "json_snapshot": "json_snapshot is managed by the TCS workflow and cannot be set directly.",
-        "file_path": "file_path is managed by the TCS workflow and cannot be set directly.",
-    }
-
+class TcsQuarterlyReturnSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         data = super().validate(attrs)
         instance = getattr(self, "instance", None)
+        is_filed_metadata_update = False
         if instance is not None and instance.status == TcsQuarterlyReturn.Status.FILED:
-            raise serializers.ValidationError(
-                {"status": "Filed returns cannot be edited. Create a correction return for changes."}
-            )
+            allowed_fields = {"ack_no", "file_path", "notes", "filed_on", "original_return"}
+            changed_fields = set(data.keys())
+            if changed_fields.issubset(allowed_fields):
+                is_filed_metadata_update = True
+            else:
+                raise serializers.ValidationError(
+                    {"status": "Filed returns cannot be edited except for evidence metadata or correction linkage."}
+                )
         fy = (data.get("fy") or getattr(instance, "fy", "") or "").strip()
         quarter = (data.get("quarter") or getattr(instance, "quarter", "") or "").strip().upper()
         form_name = (data.get("form_name") or getattr(instance, "form_name", "") or "").strip().upper()
         return_type = data.get("return_type") or getattr(instance, "return_type", TcsQuarterlyReturn.ReturnType.ORIGINAL)
         entity = data.get("entity") or getattr(instance, "entity", None)
+        status_value = (data.get("status") or getattr(instance, "status", TcsQuarterlyReturn.Status.DRAFT) or "").strip().upper()
+        ack_no = str(data.get("ack_no") if "ack_no" in data else getattr(instance, "ack_no", "") or "").strip()
+        filed_on = data.get("filed_on") if "filed_on" in data else getattr(instance, "filed_on", None)
+        file_path = str(data.get("file_path") if "file_path" in data else getattr(instance, "file_path", "") or "").strip()
+        snapshot = data.get("json_snapshot") if "json_snapshot" in data else getattr(instance, "json_snapshot", None)
 
         if quarter and quarter not in {"Q1", "Q2", "Q3", "Q4"}:
             raise serializers.ValidationError({"quarter": "Quarter must be one of Q1, Q2, Q3, Q4."})
@@ -862,6 +901,18 @@ class TcsQuarterlyReturnSerializer(RejectWorkflowManagedFieldsMixin, serializers
             raise serializers.ValidationError({"fy": "FY must be like 2025-26 (single-year span)."})
         if form_name and form_name != "27EQ":
             raise serializers.ValidationError({"form_name": "Only form 27EQ is supported in this endpoint."})
+        if status_value not in {
+            TcsQuarterlyReturn.Status.DRAFT,
+            TcsQuarterlyReturn.Status.VALIDATED,
+            TcsQuarterlyReturn.Status.FILED,
+        }:
+            raise serializers.ValidationError({"status": "Status must be one of DRAFT, VALIDATED, FILED."})
+        if status_value == TcsQuarterlyReturn.Status.FILED and not ack_no and not is_filed_metadata_update:
+            raise serializers.ValidationError({"ack_no": "Acknowledgement No is required when status is FILED."})
+        if status_value == TcsQuarterlyReturn.Status.FILED and filed_on is None and not is_filed_metadata_update:
+            raise serializers.ValidationError({"filed_on": "Filed On date is required when status is FILED."})
+        if status_value in {TcsQuarterlyReturn.Status.VALIDATED, TcsQuarterlyReturn.Status.FILED} and not snapshot and not is_filed_metadata_update:
+            raise serializers.ValidationError({"json_snapshot": "Snapshot is required before validation or filing."})
         if return_type == TcsQuarterlyReturn.ReturnType.ORIGINAL and entity and fy and quarter:
             clash_qs = TcsQuarterlyReturn.objects.filter(
                 entity=entity,
@@ -890,7 +941,42 @@ class TcsQuarterlyReturnSerializer(RejectWorkflowManagedFieldsMixin, serializers
                 raise serializers.ValidationError({"original_return": "Original return must belong to the same quarter."})
             if getattr(original_return, "status", None) != TcsQuarterlyReturn.Status.FILED:
                 raise serializers.ValidationError({"original_return": "Correction return requires a filed original return."})
+            active_correction_qs = TcsQuarterlyReturn.objects.filter(
+                entity_id=getattr(entity, "id", entity),
+                fy=fy,
+                quarter=quarter,
+                form_name="27EQ",
+                return_type=TcsQuarterlyReturn.ReturnType.CORRECTION,
+                original_return_id=getattr(original_return, "id", original_return),
+                status__in=[
+                    TcsQuarterlyReturn.Status.DRAFT,
+                    TcsQuarterlyReturn.Status.VALIDATED,
+                ],
+            )
+            if instance is not None:
+                active_correction_qs = active_correction_qs.exclude(pk=getattr(instance, "pk", None))
+            if active_correction_qs.exists():
+                raise serializers.ValidationError(
+                    {"return_type": "An active correction 27EQ return already exists for this original return. Finish or file that correction first."}
+                )
+        if "json_snapshot" in data:
+            data["json_snapshot"] = _json_safe_value(data.get("json_snapshot"))
         return data
+
+    def create(self, validated_data):
+        if "json_snapshot" in validated_data:
+            validated_data["json_snapshot"] = _json_safe_value(validated_data.get("json_snapshot"))
+        validated_data["form_name"] = str(validated_data.get("form_name") or "27EQ").strip().upper() or "27EQ"
+        return TcsQuarterlyReturn.objects.create(**validated_data)
+
+    def update(self, instance, validated_data):
+        if "json_snapshot" in validated_data:
+            validated_data["json_snapshot"] = _json_safe_value(validated_data.get("json_snapshot"))
+        validated_data["form_name"] = str(validated_data.get("form_name") or instance.form_name or "27EQ").strip().upper() or "27EQ"
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        return instance
 
     class Meta:
         model = TcsQuarterlyReturn
@@ -912,11 +998,6 @@ class TcsQuarterlyReturnSerializer(RejectWorkflowManagedFieldsMixin, serializers
             "updated_at",
         ]
         read_only_fields = [
-            "status",
-            "ack_no",
-            "filed_on",
-            "json_snapshot",
-            "file_path",
             "created_at",
             "updated_at",
         ]

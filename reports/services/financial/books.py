@@ -13,10 +13,10 @@ from financial.profile_access import account_partytype
 from assets.models import DepreciationRun, FixedAsset
 from payments.models.payment_core import PaymentVoucherHeader
 from posting.models import Entry, EntryStatus, EntityStaticAccountMap, JournalLine, StaticAccount, TxnType
-from purchase.models.purchase_core import PurchaseInvoiceHeader
+from purchase.models.purchase_core import PurchaseInvoiceHeader, PurchaseInvoiceLine
 from receipts.models.receipt_core import ReceiptVoucherHeader
 from reports.selectors.financial import normalize_scope_ids, resolve_date_window, resolve_scope_names
-from sales.models.sales_core import SalesInvoiceHeader
+from sales.models.sales_core import SalesInvoiceHeader, SalesInvoiceLine
 from vouchers.models.voucher_core import VoucherHeader
 
 ZERO = Decimal("0.00")
@@ -120,6 +120,30 @@ def _drilldown_target_for_txn(txn_type: str) -> str:
         TxnType.PAYMENT: "payment_voucher_detail",
     }
     return mapping.get(txn_type, "journal_entry_detail")
+
+
+def _invoice_drilldown_route(txn_type: str | None, txn_id: int | None) -> str | None:
+    if not txn_id:
+        return None
+    if txn_type in {
+        TxnType.PURCHASE,
+        TxnType.PURCHASE_CREDIT_NOTE,
+        TxnType.PURCHASE_DEBIT_NOTE,
+        TxnType.PURCHASE_RETURN,
+    }:
+        if PurchaseInvoiceLine.objects.filter(header_id=txn_id, is_service=True).exists():
+            return "/purchaseserviceinvoice"
+        return "/purchaseinvoice"
+    if txn_type in {
+        TxnType.SALES,
+        TxnType.SALES_CREDIT_NOTE,
+        TxnType.SALES_DEBIT_NOTE,
+        TxnType.SALES_RETURN,
+    }:
+        if SalesInvoiceLine.objects.filter(header_id=txn_id, is_service=True).exists():
+            return "/saleserviceinvoice"
+        return "/saleinvoice"
+    return None
 
 
 def _document_lookup_binding(document_type: str, source_module: str | None):
@@ -364,6 +388,7 @@ def _drilldown_payload(entry: Entry, *, entity_id, entityfin_id, subentity_id):
         "txn_id": entry.txn_id,
         "source_module": source_module,
         "drilldown_target": _drilldown_target_for_txn(entry.txn_type),
+        "drilldown_route": _invoice_drilldown_route(entry.txn_type, entry.txn_id),
         "drilldown_params": {
             "id": entry.txn_id,
             "entry_id": entry.id,

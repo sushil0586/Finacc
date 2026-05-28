@@ -304,6 +304,14 @@ class SalesMetaBaseAPIView(ScopedEntitlementMixin, APIView):
         is_confirmed = int(header.status) == int(SalesInvoiceHeader.Status.CONFIRMED)
         is_posted = int(header.status) == int(SalesInvoiceHeader.Status.POSTED)
         is_cancelled = int(header.status) == int(SalesInvoiceHeader.Status.CANCELLED)
+        delete_allowed = False
+        if not is_cancelled:
+            if policy.delete_policy == "draft_only":
+                delete_allowed = is_draft
+            elif policy.delete_policy == "non_posted":
+                delete_allowed = not is_posted
+            else:
+                delete_allowed = False
 
         return build_document_action_flags(
             status_value=int(header.status),
@@ -316,6 +324,7 @@ class SalesMetaBaseAPIView(ScopedEntitlementMixin, APIView):
             allow_unpost_posted=allow_unpost_posted,
             include_reverse=True,
             include_rebuild_tax_summary=True,
+            can_delete=delete_allowed,
         )
 
     def _compliance_action_flags(self, header: SalesInvoiceHeader):

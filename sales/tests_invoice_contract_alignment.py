@@ -31,6 +31,8 @@ from financial.models import (
 from financial.services import create_account_with_synced_ledger
 from geography.models import City, Country, District, State
 from sales.models import SalesInvoiceHeader, SalesInvoiceLine
+from sales.models.sales_ar import CustomerBillOpenItem
+from sales.models.sales_compliance import SalesEInvoice, SalesEInvoiceStatus, SalesEWayBill, SalesEWayStatus
 from sales.models.sales_settings import SalesChoiceOverride
 from sales.serializers.sales_invoice_serializers import SalesInvoiceHeaderSerializer
 from sales.services.sales_invoice_service import SalesInvoiceService
@@ -155,6 +157,190 @@ class SalesInvoiceContractAlignmentTests(APITestCase):
         self.assertEqual(contract["header_fields"]["due_date"]["ui_state"], "read_only")
         self.assertEqual(contract["header_fields"]["tax_regime"]["ui_state"], "read_only")
         self.assertEqual(contract["line_fields"]["cess_amount"]["ui_state"], "provisional")
+
+    def test_sales_detail_meta_reflects_recovered_compliance_flags_and_artifacts(self):
+        invoice = SalesInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            doc_type=SalesInvoiceHeader.DocType.TAX_INVOICE,
+            status=SalesInvoiceHeader.Status.POSTED,
+            bill_date=datetime(2025, 4, 10).date(),
+            posting_date=datetime(2025, 4, 10).date(),
+            due_date=datetime(2025, 4, 15).date(),
+            doc_code="SI",
+            doc_no=101,
+            invoice_number="SI/101",
+            customer=self.customer,
+            customer_ledger=self.customer.ledger,
+            customer_name="Alpha Retail",
+            customer_gstin="27ABCDE1234F1Z5",
+            customer_state_code="27",
+            seller_gstin="27AAAAA9999A1Z5",
+            seller_state_code="27",
+            place_of_supply_state_code="27",
+            place_of_supply_pincode="400001",
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B,
+            taxability=SalesInvoiceHeader.Taxability.TAXABLE,
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTRA_STATE,
+            gst_compliance_mode=SalesInvoiceHeader.GstComplianceMode.EINVOICE_AND_EWAY,
+            is_einvoice_applicable=True,
+            is_eway_applicable=True,
+        )
+        SalesInvoiceLine.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            header=invoice,
+            line_no=1,
+            product=self.product,
+            uom=self.uom,
+            hsn_sac_code="8471",
+            is_service=False,
+            qty=Decimal("1.000"),
+            free_qty=Decimal("0.000"),
+            rate=Decimal("100.0000"),
+            discount_type=SalesInvoiceLine.DiscountType.NONE,
+            discount_percent=Decimal("0.0000"),
+            discount_amount=Decimal("0.00"),
+            gst_rate=Decimal("18.00"),
+            taxable_value=Decimal("100.00"),
+            cgst_amount=Decimal("9.00"),
+            sgst_amount=Decimal("9.00"),
+            igst_amount=Decimal("0.00"),
+            cess_percent=Decimal("0.00"),
+            cess_amount=Decimal("0.00"),
+            line_total=Decimal("118.00"),
+        )
+        SalesEInvoice.objects.create(
+            invoice=invoice,
+            status=SalesEInvoiceStatus.GENERATED,
+            irn="IRN123",
+            ack_no="ACK123",
+            created_by=self.user,
+            updated_by=self.user,
+        )
+        SalesEWayBill.objects.create(
+            invoice=invoice,
+            status=SalesEWayStatus.GENERATED,
+            ewb_no="171001234567",
+            created_by=self.user,
+            updated_by=self.user,
+        )
+
+        response = self.client.get(
+            reverse("sales-invoice-detail-form-meta"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "invoice": invoice.id,
+                "line_mode": "goods",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["invoice"]["einvoice_artifact"]["irn"], "IRN123")
+        self.assertEqual(response.data["invoice"]["eway_artifact"]["ewb_no"], "171001234567")
+        self.assertEqual(response.data["invoice"]["compliance_action_flags"]["can_generate_irn"], False)
+        self.assertEqual(response.data["invoice"]["compliance_action_flags"]["can_cancel_eway"], True)
+        self.assertEqual(response.data["compliance_action_flags"]["can_cancel_eway"], True)
+
+    def test_customer_statement_open_items_expose_service_invoice_route(self):
+        invoice = SalesInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            doc_type=SalesInvoiceHeader.DocType.TAX_INVOICE,
+            status=SalesInvoiceHeader.Status.POSTED,
+            bill_date=datetime(2025, 4, 20).date(),
+            posting_date=datetime(2025, 4, 20).date(),
+            due_date=datetime(2025, 4, 25).date(),
+            doc_code="SI",
+            doc_no=202,
+            invoice_number="SI/202",
+            customer=self.customer,
+            customer_ledger=self.customer.ledger,
+            customer_name="Alpha Retail",
+            customer_gstin="27ABCDE1234F1Z5",
+            customer_state_code="27",
+            seller_gstin="27AAAAA9999A1Z5",
+            seller_state_code="27",
+            place_of_supply_state_code="27",
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B,
+            taxability=SalesInvoiceHeader.Taxability.TAXABLE,
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTRA_STATE,
+            total_taxable_value=Decimal("100.00"),
+            total_cgst=Decimal("9.00"),
+            total_sgst=Decimal("9.00"),
+            total_igst=Decimal("0.00"),
+            total_cess=Decimal("0.00"),
+            total_discount=Decimal("0.00"),
+            round_off=Decimal("0.00"),
+            grand_total=Decimal("118.00"),
+            created_by=self.user,
+        )
+        SalesInvoiceLine.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            header=invoice,
+            line_no=1,
+            product=self.product,
+            uom=self.uom,
+            hsn_sac_code="9983",
+            is_service=True,
+            qty=Decimal("1.000"),
+            free_qty=Decimal("0.000"),
+            rate=Decimal("100.0000"),
+            discount_type=SalesInvoiceLine.DiscountType.NONE,
+            discount_percent=Decimal("0.0000"),
+            discount_amount=Decimal("0.00"),
+            gst_rate=Decimal("18.00"),
+            taxable_value=Decimal("100.00"),
+            cgst_amount=Decimal("9.00"),
+            sgst_amount=Decimal("9.00"),
+            igst_amount=Decimal("0.00"),
+            cess_percent=Decimal("0.00"),
+            cess_amount=Decimal("0.00"),
+            line_total=Decimal("118.00"),
+        )
+        CustomerBillOpenItem.objects.create(
+            header=invoice,
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            customer=self.customer,
+            customer_ledger=self.customer.ledger,
+            doc_type=invoice.doc_type,
+            bill_date=invoice.bill_date,
+            due_date=invoice.due_date,
+            invoice_number=invoice.invoice_number,
+            customer_reference_number="REF-202",
+            original_amount=Decimal("118.00"),
+            gross_amount=Decimal("118.00"),
+            net_receivable_amount=Decimal("118.00"),
+            settled_amount=Decimal("0.00"),
+            outstanding_amount=Decimal("118.00"),
+            is_open=True,
+        )
+
+        with patch("sales.views.sales_ar.require_sales_scope_permission", return_value=self.entity):
+            response = self.client.get(
+                reverse("sales-ar-customer-statement"),
+                {
+                    "entity": self.entity.id,
+                    "entityfinid": self.entityfin.id,
+                    "subentity": self.subentity.id,
+                    "customer": self.customer.id,
+                },
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        open_item = next(item for item in response.data["open_items"] if item["invoice_number"] == invoice.invoice_number)
+        self.assertEqual(open_item["source_route"], "/saleserviceinvoice")
 
     @override_settings(META_CACHE_ENABLED=True, META_CACHE_FORM_TTL_SECONDS=600, META_CACHE_VERSION="test")
     def test_sales_form_meta_uses_cache_on_repeated_requests(self):

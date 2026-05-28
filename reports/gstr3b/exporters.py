@@ -125,8 +125,18 @@ def export_gstr3b_excel(*, summary: dict, warnings: list[dict], audit_context: d
     _write_sheet(
         wb,
         "Warnings",
-        ["Severity", "Code", "Message"],
-        [[w.get("severity"), w.get("code"), w.get("message")] for w in warnings],
+        ["Severity", "Code", "Message", "Section Route", "Section", "Related Report Route"],
+        [
+            [
+                w.get("severity"),
+                w.get("code"),
+                w.get("message"),
+                (((w.get("drilldowns") or {}).get("section_view") or {}).get("route")),
+                ((((w.get("drilldowns") or {}).get("section_view") or {}).get("params") or {}).get("section")),
+                (((w.get("drilldowns") or {}).get("related_report") or {}).get("route")),
+            ]
+            for w in warnings
+        ],
         numeric_columns=set(),
         header_font=header_font,
         header_fill=header_fill,
@@ -144,24 +154,75 @@ def export_gstr3b_excel(*, summary: dict, warnings: list[dict], audit_context: d
 
 
 def export_gstr3b_csv_rows(*, summary: dict, warnings: list[dict]) -> bytes:
-    headers = ["Section", "Row", "Taxable Value", "CGST", "SGST", "IGST", "Cess", "Total Tax", "Severity", "Code", "Message"]
+    headers = [
+        "Section",
+        "Row",
+        "Taxable Value",
+        "CGST",
+        "SGST",
+        "IGST",
+        "Cess",
+        "Total Tax",
+        "Severity",
+        "Code",
+        "Message",
+        "Section Route",
+        "Section Key",
+        "Related Report Route",
+    ]
     rows = []
-    rows.extend(
-        [
-            ["3.1", "Outward taxable supplies", *(_bucket_values(summary["section_3_1"]["outward_taxable_supplies"])), "", "", ""],
-            ["3.1", "Outward zero-rated supplies", *(_bucket_values(summary["section_3_1"]["outward_zero_rated_supplies"])), "", "", ""],
-            ["3.1", "Inward supplies liable to reverse charge", *(_bucket_values(summary["section_3_1"]["inward_supplies_reverse_charge"])), "", "", ""],
-            ["3.2", "Inter-state to unregistered", *(_bucket_values(summary["section_3_2"]["interstate_supplies_to_unregistered"])), "", "", ""],
-            ["4", "Net ITC", *(_bucket_values(summary["section_4"]["net_itc"])), "", "", ""],
-            ["6.1", "Tax payable", *(_bucket_values(summary["section_6_1"]["tax_payable"])), "", "", ""],
-            ["6.1", "Paid through ITC", *(_bucket_values(summary["section_6_1"]["tax_paid_itc"])), "", "", ""],
-            ["6.1", "Paid in cash", *(_bucket_values(summary["section_6_1"]["tax_paid_cash"])), "", "", ""],
-            ["6.1", "Balance payable", *(_bucket_values(summary["section_6_1"]["balance_payable"])), "", "", ""],
-        ]
-    )
+    rows.extend(_csv_section_rows("3.1", summary.get("section_3_1", {}).get("rows", [])))
+    rows.extend(_csv_section_rows("3.2", summary.get("section_3_2", {}).get("rows", [])))
+    rows.extend(_csv_section_rows("4", summary.get("section_4", {}).get("rows", [])))
+    rows.extend(_csv_section_rows("5.1", summary.get("section_5_1", {}).get("rows", [])))
+    rows.extend(_csv_section_rows("6.1", summary.get("section_6_1", {}).get("rows", [])))
     for warning in warnings:
-        rows.append(["WARN", "", "", "", "", "", "", "", warning.get("severity"), warning.get("code"), warning.get("message")])
+        drilldowns = warning.get("drilldowns") or {}
+        section_view = drilldowns.get("section_view") or {}
+        related_report = drilldowns.get("related_report") or {}
+        rows.append(
+            [
+                "WARN",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                warning.get("severity"),
+                warning.get("code"),
+                warning.get("message"),
+                section_view.get("route"),
+                (section_view.get("params") or {}).get("section"),
+                related_report.get("route"),
+            ]
+        )
     return _write_csv(headers, rows)
+
+
+def _csv_section_rows(section: str, section_rows: list[dict]) -> list[list]:
+    rows = []
+    for row in section_rows:
+        rows.append(
+            [
+                section,
+                row.get("label", ""),
+                row.get("taxable_value", 0),
+                row.get("cgst", 0),
+                row.get("sgst", 0),
+                row.get("igst", 0),
+                row.get("cess", 0),
+                row.get("total_tax", 0),
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ]
+        )
+    return rows
 
 
 def _bucket_values(bucket: dict) -> list:

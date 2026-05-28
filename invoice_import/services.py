@@ -561,6 +561,85 @@ def _validate_row(*, job: ImportJob, row: dict[str, Any], row_no: int) -> RowVal
             if not _normalize_text(row.get("party_gstin")):
                 errors.append({"field": "party_gstin", "message": "party_gstin is required for live B2B compliance."})
 
+    purchase_reverse_charge = _to_bool(row.get("is_reverse_charge"), default=False)
+    if job.module == ImportJob.Module.PURCHASE:
+        supplier_invoice_date_raw = _normalize_text(row.get("supplier_invoice_date"))
+        if not supplier_invoice_date_raw:
+            errors.append({"field": "supplier_invoice_date", "message": "supplier_invoice_date is required."})
+
+        supply_category_raw = _to_int(row.get("supply_category"))
+        if supply_category_raw is not None and supply_category_raw not in {
+            int(PurchaseInvoiceHeader.SupplyCategory.DOMESTIC),
+            int(PurchaseInvoiceHeader.SupplyCategory.IMPORT_GOODS),
+            int(PurchaseInvoiceHeader.SupplyCategory.IMPORT_SERVICES),
+            int(PurchaseInvoiceHeader.SupplyCategory.SEZ),
+        }:
+            errors.append({"field": "supply_category", "message": "Invalid supply_category for purchase import."})
+
+        taxability_raw = _to_int(row.get("taxability"))
+        if taxability_raw is not None and taxability_raw not in {
+            int(PurchaseInvoiceHeader.Taxability.TAXABLE),
+            int(PurchaseInvoiceHeader.Taxability.EXEMPT),
+            int(PurchaseInvoiceHeader.Taxability.NIL_RATED),
+            int(PurchaseInvoiceHeader.Taxability.NON_GST),
+        }:
+            errors.append({"field": "taxability", "message": "Invalid taxability for purchase import."})
+
+        compliance = getattr(party, "compliance_profile", None) if party is not None else None
+        gstregtype = str(getattr(compliance, "gstregtype", "") or "").strip()
+        party_gstin = _normalize_text(row.get("party_gstin"))
+        registered_types = {"Regular", "Composition", "SEZ", "UIN"}
+        if gstregtype in registered_types and not party_gstin:
+            errors.append({"field": "party_gstin", "message": f"party_gstin is required for {gstregtype.lower()} vendors."})
+
+        supplier_invoice_number = _normalize_text(row.get("supplier_invoice_number"))
+        supplier_invoice_date = _to_date(row.get("supplier_invoice_date")) if supplier_invoice_date_raw else None
+        if getattr(party, "id", None) and supplier_invoice_number and supplier_invoice_date:
+            duplicate_exists = PurchaseInvoiceHeader.objects.filter(
+                entity=job.entity,
+                vendor_id=party.id,
+                supplier_invoice_number__iexact=supplier_invoice_number,
+                supplier_invoice_date=supplier_invoice_date,
+                grand_total=grand_total,
+            ).exclude(status=PurchaseInvoiceHeader.Status.CANCELLED).exists()
+            if duplicate_exists:
+                errors.append(
+                    {
+                        "field": "supplier_invoice_number",
+                        "message": "Duplicate supplier invoice detected for this vendor, invoice number, invoice date, and amount.",
+                    }
+                )
+
+        gst_total_import = total_cgst + total_sgst + total_igst + total_cess
+        if not party_gstin and not purchase_reverse_charge and gst_total_import > ZERO2:
+            errors.append({"field": "totals", "message": "URD purchase rows cannot include supplier GST unless reverse charge applies."})
+
+        if gstregtype.lower() == "composition":
+            if gst_total_import > ZERO2:
+                errors.append({"field": "totals", "message": "Composition vendor purchase rows cannot include supplier GST."})
+
+        supply_category_value = supply_category_raw or int(PurchaseInvoiceHeader.SupplyCategory.DOMESTIC)
+        tax_regime_value = _to_int(row.get("tax_regime")) or int(PurchaseInvoiceHeader.TaxRegime.INTRA)
+        if supply_category_value in {
+            int(PurchaseInvoiceHeader.SupplyCategory.IMPORT_GOODS),
+            int(PurchaseInvoiceHeader.SupplyCategory.IMPORT_SERVICES),
+            int(PurchaseInvoiceHeader.SupplyCategory.SEZ),
+        } and tax_regime_value != int(PurchaseInvoiceHeader.TaxRegime.INTER):
+            errors.append({"field": "tax_regime", "message": "Import and SEZ purchase rows must use INTER tax regime."})
+
+        if supply_category_value == int(PurchaseInvoiceHeader.SupplyCategory.IMPORT_GOODS) and gst_total_import > ZERO2:
+            errors.append({"field": "totals", "message": "Import goods purchase rows should not include supplier GST amounts in this flow."})
+
+        if supply_category_value == int(PurchaseInvoiceHeader.SupplyCategory.IMPORT_SERVICES) and not purchase_reverse_charge:
+            errors.append({"field": "is_reverse_charge", "message": "Import service purchase rows must be marked reverse charge."})
+
+        if purchase_reverse_charge:
+            gst_rate_value = _to_decimal(row.get("gst_rate"), default=ZERO2)
+            if gst_rate_value <= ZERO2 and gst_total_import <= ZERO2:
+                errors.append({"field": "gst_rate", "message": "gst_rate is required for reverse charge purchase rows."})
+            if not (_normalize_text(row.get("place_of_supply_state")) or _normalize_text(row.get("place_of_supply_state_code"))):
+                errors.append({"field": "place_of_supply_state", "message": "place_of_supply_state is required for reverse charge purchase rows."})
+
     normalized = {
         "entityfinid_id": getattr(entityfin, "id", None),
         "subentity_id": getattr(subentity, "id", None),
@@ -582,6 +661,7 @@ def _validate_row(*, job: ImportJob, row: dict[str, Any], row_no: int) -> RowVal
         "taxability": _to_int(row.get("taxability")),
         "supply_category": _to_int(row.get("supply_category")),
         "tax_regime": _to_int(row.get("tax_regime")),
+        "is_reverse_charge": purchase_reverse_charge,
         "reference": _normalize_text(row.get("reference")),
         "remarks": _normalize_text(row.get("remarks")),
         "original_source_key": original_source_key,
@@ -1264,6 +1344,7 @@ def _create_purchase_header(job: ImportJob, normalized: dict[str, Any], *, origi
         default_taxability=int(normalized.get("taxability") or PurchaseInvoiceHeader.Taxability.TAXABLE),
         tax_regime=int(normalized.get("tax_regime") or PurchaseInvoiceHeader.TaxRegime.INTRA),
         is_igst=int(normalized.get("tax_regime") or PurchaseInvoiceHeader.TaxRegime.INTRA) == int(PurchaseInvoiceHeader.TaxRegime.INTER),
+        is_reverse_charge=bool(normalized.get("is_reverse_charge")),
         total_taxable=Decimal(normalized["total_taxable"]),
         total_cgst=Decimal(normalized["total_cgst"]),
         total_sgst=Decimal(normalized["total_sgst"]),

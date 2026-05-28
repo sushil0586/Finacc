@@ -186,6 +186,65 @@ def _named_taxable(label: str, taxable_value: Decimal | None) -> dict:
     }
 
 
+def _sum_purchase_itc_buckets(qs) -> tuple[dict, dict]:
+    available = {"taxable": ZERO, "cgst": ZERO, "sgst": ZERO, "igst": ZERO, "cess": ZERO}
+    reversed_ = {"taxable": ZERO, "cgst": ZERO, "sgst": ZERO, "igst": ZERO, "cess": ZERO}
+
+    for header in qs.prefetch_related("tax_summaries"):
+        sign = Decimal("-1.00") if int(getattr(header, "doc_type", 0)) == int(PurchaseInvoiceHeader.DocType.CREDIT_NOTE) else Decimal("1.00")
+        summaries = list(header.tax_summaries.all())
+        eligible_tax = sum((Decimal(getattr(row, "itc_eligible_tax", ZERO) or ZERO) for row in summaries), ZERO)
+        ineligible_tax = sum((Decimal(getattr(row, "itc_ineligible_tax", ZERO) or ZERO) for row in summaries), ZERO)
+
+        if summaries and (eligible_tax != ZERO or ineligible_tax != ZERO):
+            total_tax = Decimal(getattr(header, "total_gst", ZERO) or ZERO)
+            if total_tax != ZERO:
+                tax_parts = {
+                    "cgst": Decimal(getattr(header, "total_cgst", ZERO) or ZERO),
+                    "sgst": Decimal(getattr(header, "total_sgst", ZERO) or ZERO),
+                    "igst": Decimal(getattr(header, "total_igst", ZERO) or ZERO),
+                    "cess": Decimal(getattr(header, "total_cess", ZERO) or ZERO),
+                }
+                eligible_ratio = eligible_tax / total_tax
+                ineligible_ratio = ineligible_tax / total_tax
+                for key, amount in tax_parts.items():
+                    available[key] += amount * eligible_ratio * sign
+                    reversed_[key] += amount * ineligible_ratio * sign
+            continue
+
+        target = available if bool(getattr(header, "is_itc_eligible", False)) else reversed_
+        target["taxable"] += Decimal(getattr(header, "total_taxable", ZERO) or ZERO) * sign
+        target["cgst"] += Decimal(getattr(header, "total_cgst", ZERO) or ZERO) * sign
+        target["sgst"] += Decimal(getattr(header, "total_sgst", ZERO) or ZERO) * sign
+        target["igst"] += Decimal(getattr(header, "total_igst", ZERO) or ZERO) * sign
+        target["cess"] += Decimal(getattr(header, "total_cess", ZERO) or ZERO) * sign
+
+    return _bucket(available), _bucket(reversed_)
+
+
+def _sum_reverse_charge_buckets(qs) -> dict:
+    total = {"taxable": ZERO, "cgst": ZERO, "sgst": ZERO, "igst": ZERO, "cess": ZERO}
+
+    for header in qs.prefetch_related("tax_summaries"):
+        sign = Decimal("-1.00") if int(getattr(header, "doc_type", 0)) == int(PurchaseInvoiceHeader.DocType.CREDIT_NOTE) else Decimal("1.00")
+        summaries = [row for row in header.tax_summaries.all() if bool(getattr(row, "is_reverse_charge", False))]
+        if summaries:
+            total["taxable"] += sum((Decimal(getattr(row, "taxable_value", ZERO) or ZERO) for row in summaries), ZERO) * sign
+            total["cgst"] += sum((Decimal(getattr(row, "cgst_amount", ZERO) or ZERO) for row in summaries), ZERO) * sign
+            total["sgst"] += sum((Decimal(getattr(row, "sgst_amount", ZERO) or ZERO) for row in summaries), ZERO) * sign
+            total["igst"] += sum((Decimal(getattr(row, "igst_amount", ZERO) or ZERO) for row in summaries), ZERO) * sign
+            total["cess"] += sum((Decimal(getattr(row, "cess_amount", ZERO) or ZERO) for row in summaries), ZERO) * sign
+            continue
+
+        total["taxable"] += Decimal(getattr(header, "total_taxable", ZERO) or ZERO) * sign
+        total["cgst"] += Decimal(getattr(header, "total_cgst", ZERO) or ZERO) * sign
+        total["sgst"] += Decimal(getattr(header, "total_sgst", ZERO) or ZERO) * sign
+        total["igst"] += Decimal(getattr(header, "total_igst", ZERO) or ZERO) * sign
+        total["cess"] += Decimal(getattr(header, "total_cess", ZERO) or ZERO) * sign
+
+    return _bucket(total)
+
+
 class Gstr3bSummaryService:
     ZERO_RATED_SUPPLY_CATEGORIES = (
         SalesInvoiceHeader.SupplyCategory.EXPORT_WITH_IGST,
@@ -264,18 +323,14 @@ class Gstr3bSummaryService:
             ["total_taxable_value"],
         )
 
-        inward_reverse_charge_row = _sum_dict(
-            purchase_qs.filter(is_reverse_charge=True),
-            ["total_taxable", "total_cgst", "total_sgst", "total_igst", "total_cess"],
+        inward_reverse_charge = _sum_reverse_charge_buckets(purchase_qs.filter(is_reverse_charge=True))
+        normal_itc_qs = (
+            purchase_qs.filter(default_taxability=PurchaseInvoiceHeader.Taxability.TAXABLE)
+            .exclude(Q(vendor_gstin__in=["", None]) & Q(is_reverse_charge=False))
+            .exclude(vendor__compliance_profile__gstregtype__iexact="Composition")
+            .exclude(supply_category=PurchaseInvoiceHeader.SupplyCategory.IMPORT_GOODS)
         )
-        itc_available_row = _sum_dict(
-            purchase_qs.filter(is_itc_eligible=True, default_taxability=PurchaseInvoiceHeader.Taxability.TAXABLE),
-            ["total_taxable", "total_cgst", "total_sgst", "total_igst", "total_cess"],
-        )
-        itc_reversed_row = _sum_dict(
-            purchase_qs.filter(is_itc_eligible=False, default_taxability=PurchaseInvoiceHeader.Taxability.TAXABLE),
-            ["total_taxable", "total_cgst", "total_sgst", "total_igst", "total_cess"],
-        )
+        itc_available, itc_reversed = _sum_purchase_itc_buckets(normal_itc_qs)
         inward_exempt_row = _sum_dict(
             purchase_qs.filter(
                 default_taxability__in=[
@@ -315,33 +370,6 @@ class Gstr3bSummaryService:
                 "sgst": outward_zero_rated_row["total_sgst"],
                 "igst": outward_zero_rated_row["total_igst"],
                 "cess": outward_zero_rated_row["total_cess"],
-            }
-        )
-        inward_reverse_charge = _bucket(
-            {
-                "taxable": inward_reverse_charge_row["total_taxable"],
-                "cgst": inward_reverse_charge_row["total_cgst"],
-                "sgst": inward_reverse_charge_row["total_sgst"],
-                "igst": inward_reverse_charge_row["total_igst"],
-                "cess": inward_reverse_charge_row["total_cess"],
-            }
-        )
-        itc_available = _bucket(
-            {
-                "taxable": itc_available_row["total_taxable"],
-                "cgst": itc_available_row["total_cgst"],
-                "sgst": itc_available_row["total_sgst"],
-                "igst": itc_available_row["total_igst"],
-                "cess": itc_available_row["total_cess"],
-            }
-        )
-        itc_reversed = _bucket(
-            {
-                "taxable": itc_reversed_row["total_taxable"],
-                "cgst": itc_reversed_row["total_cgst"],
-                "sgst": itc_reversed_row["total_sgst"],
-                "igst": itc_reversed_row["total_igst"],
-                "cess": itc_reversed_row["total_cess"],
             }
         )
         net_itc = _sub(itc_available, itc_reversed)

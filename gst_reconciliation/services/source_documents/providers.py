@@ -27,7 +27,18 @@ class PurchaseSourceProvider(BaseSourceDocumentProvider):
         queryset = PurchaseInvoiceHeader.objects.filter(
             entity_id=entity_id,
             entityfinid_id=entityfinid_id,
-        ).exclude(status=PurchaseInvoiceHeader.Status.CANCELLED)
+        ).exclude(
+            status=PurchaseInvoiceHeader.Status.CANCELLED
+        ).exclude(
+            vendor_gstin__in=["", None]
+        ).exclude(
+            vendor__compliance_profile__gstregtype__iexact="Composition"
+        ).exclude(
+            supply_category__in=[
+                PurchaseInvoiceHeader.SupplyCategory.IMPORT_GOODS,
+                PurchaseInvoiceHeader.SupplyCategory.IMPORT_SERVICES,
+            ]
+        )
         if subentity_id is None:
             queryset = queryset.filter(subentity__isnull=True)
         else:

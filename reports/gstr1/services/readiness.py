@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections import OrderedDict
 
+from sales.models import SalesInvoiceLine
+
 
 READINESS_GROUPS = OrderedDict(
     [
@@ -253,15 +255,20 @@ class Gstr1ReadinessService:
         return payload
 
     def _build_source_document_drilldown(self, *, invoice_id: int) -> dict:
+        route = self._resolve_source_document_route(invoice_id=invoice_id)
         return {
             "target": "sales_invoice_detail",
             "label": "Open source invoice",
             "kind": "document",
-            "route": "/saleinvoice",
+            "route": route,
             "params": {
                 "transactionid": int(invoice_id),
             },
         }
+
+    def _resolve_source_document_route(self, *, invoice_id: int) -> str:
+        has_service_lines = SalesInvoiceLine.objects.filter(header_id=invoice_id, is_service=True).exists()
+        return "/saleserviceinvoice" if has_service_lines else "/saleinvoice"
 
     def _build_posting_lookup_drilldown(self, *, invoice_id: int) -> dict:
         return {

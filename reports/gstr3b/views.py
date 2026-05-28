@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from django.core.exceptions import ValidationError
 from django.http import HttpResponse
+from django.utils import timezone
 from rest_framework import permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -150,7 +151,14 @@ class Gstr3bExportAPIView(ScopedEntitlementMixin, APIView):
             content = export_gstr3b_csv_rows(summary=summary, warnings=warnings)
             return _file_response("GSTR3B_Summary.csv", content, "text/csv")
         if export_format == "xlsx":
-            content = export_gstr3b_excel(summary=summary, warnings=warnings)
+            content = export_gstr3b_excel(
+                summary=summary,
+                warnings=warnings,
+                audit_context={
+                    "generated_on": timezone.now().isoformat(),
+                    "scope": _format_audit_scope(scope),
+                },
+            )
             return _file_response(
                 "GSTR3B_Summary.xlsx",
                 content,
@@ -163,3 +171,14 @@ def _file_response(filename, content, content_type):
     response = HttpResponse(content, content_type=content_type)
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
     return response
+
+
+def _format_audit_scope(scope) -> str:
+    parts = [
+        f"entity={scope.entity_id}",
+        f"entityfinid={scope.entityfinid_id}",
+        f"subentity={scope.subentity_id or '-'}",
+        f"from_date={scope.from_date.isoformat()}",
+        f"to_date={scope.to_date.isoformat()}",
+    ]
+    return ", ".join(parts)

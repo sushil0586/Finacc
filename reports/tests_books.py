@@ -15,9 +15,9 @@ from financial.services import apply_normalized_profile_payload, create_account_
 from geography.models import City, Country, District, State
 from payments.models.payment_core import PaymentVoucherHeader
 from posting.models import Entry, EntryStatus, PostingBatch, JournalLine, StaticAccount, EntityStaticAccountMap, TxnType
-from purchase.models.purchase_core import PurchaseInvoiceHeader
+from purchase.models.purchase_core import PurchaseInvoiceHeader, PurchaseInvoiceLine
 from receipts.models.receipt_core import ReceiptVoucherHeader
-from sales.models.sales_core import SalesInvoiceHeader
+from sales.models.sales_core import SalesInvoiceHeader, SalesInvoiceLine
 from vouchers.models.voucher_core import VoucherHeader
 
 
@@ -500,6 +500,220 @@ class BookReportAPITests(APITestCase):
         self.assertEqual(rows[0]["drilldown_params"]["id"], 46)
         self.assertEqual(rows[0]["txn_id"], 46)
 
+    def test_daybook_purchase_service_rows_expose_service_invoice_route(self):
+        purchase_document = PurchaseInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            created_by=self.user,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            status=PurchaseInvoiceHeader.Status.POSTED,
+            bill_date=date(2025, 4, 7),
+            posting_date=date(2025, 4, 7),
+            doc_code="PSI",
+            doc_no=47,
+            purchase_number="PSI-47",
+        )
+        PurchaseInvoiceLine.objects.create(
+            header=purchase_document,
+            line_no=1,
+            is_service=True,
+            purchase_behavior="expense",
+            product_desc="Consulting service",
+        )
+        purchase_entry = self._create_entry(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.PURCHASE,
+            txn_id=purchase_document.id,
+            voucher_no="PSI-47",
+            posting_date=date(2025, 4, 7),
+            voucher_date=date(2025, 4, 7),
+            status=EntryStatus.POSTED,
+            narration="Service purchase invoice PSI-47",
+            lines=[
+                {"account": self.expense_account, "drcr": True, "amount": "25.00", "description": "Purchase Dr"},
+                {"account": self.ap_account, "drcr": False, "amount": "25.00", "description": "Purchase Cr"},
+            ],
+        )
+
+        response = self.client.get(
+            reverse("reports_api:financial-daybook"),
+            {"entity": self.entity.id, "entityfinid": self.entityfin.id, "subentity": self.subentity.id},
+        )
+        self.assertEqual(response.status_code, 200)
+        rows = [row for row in response.json()["results"] if row["entry_id"] == purchase_entry.id]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["drilldown_target"], "purchase_invoice_detail")
+        self.assertEqual(rows[0]["drilldown_route"], "/purchaseserviceinvoice")
+
+    def test_daybook_sales_service_rows_expose_service_invoice_route(self):
+        sales_document = SalesInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            created_by=self.user,
+            doc_type=SalesInvoiceHeader.DocType.TAX_INVOICE,
+            status=SalesInvoiceHeader.Status.POSTED,
+            bill_date=date(2025, 4, 7),
+            posting_date=date(2025, 4, 7),
+            doc_code="SSI",
+            doc_no=57,
+            invoice_number="SSI-57",
+        )
+        SalesInvoiceLine.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            header=sales_document,
+            line_no=1,
+            is_service=True,
+            hsn_sac_code="9983",
+            qty=Decimal("1.000"),
+            rate=Decimal("25.00"),
+            taxable_value=Decimal("25.00"),
+            line_total=Decimal("25.00"),
+        )
+        sales_entry = self._create_entry(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.SALES,
+            txn_id=sales_document.id,
+            voucher_no="SSI-57",
+            posting_date=date(2025, 4, 7),
+            voucher_date=date(2025, 4, 7),
+            status=EntryStatus.POSTED,
+            narration="Service sales invoice SSI-57",
+            lines=[
+                {"account": self.cash_account, "drcr": True, "amount": "25.00", "description": "Receivable Dr"},
+                {"account": self.income_account, "drcr": False, "amount": "25.00", "description": "Revenue Cr"},
+            ],
+        )
+
+        response = self.client.get(
+            reverse("reports_api:financial-daybook"),
+            {"entity": self.entity.id, "entityfinid": self.entityfin.id, "subentity": self.subentity.id},
+        )
+        self.assertEqual(response.status_code, 200)
+        rows = [row for row in response.json()["results"] if row["entry_id"] == sales_entry.id]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["drilldown_target"], "sales_invoice_detail")
+        self.assertEqual(rows[0]["drilldown_route"], "/saleserviceinvoice")
+
+    def test_ledger_book_purchase_service_rows_expose_service_invoice_route(self):
+        purchase_document = PurchaseInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            created_by=self.user,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            status=PurchaseInvoiceHeader.Status.POSTED,
+            bill_date=date(2025, 4, 8),
+            posting_date=date(2025, 4, 8),
+            doc_code="PSI",
+            doc_no=48,
+            purchase_number="PSI-48",
+        )
+        PurchaseInvoiceLine.objects.create(
+            header=purchase_document,
+            line_no=1,
+            is_service=True,
+            purchase_behavior="expense",
+            product_desc="Legal service",
+        )
+        self._create_entry(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.PURCHASE,
+            txn_id=purchase_document.id,
+            voucher_no="PSI-48",
+            posting_date=date(2025, 4, 8),
+            voucher_date=date(2025, 4, 8),
+            status=EntryStatus.POSTED,
+            narration="Service purchase invoice PSI-48",
+            lines=[
+                {"account": self.expense_account, "drcr": True, "amount": "40.00", "description": "Expense Dr"},
+                {"account": self.ap_account, "drcr": False, "amount": "40.00", "description": "AP Cr"},
+            ],
+        )
+
+        response = self.client.get(
+            reverse("reports_api:financial-ledger-book"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "ledger": self.expense_ledger.id,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        rows = [row for row in response.json()["rows"] if row["txn_id"] == purchase_document.id]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["drilldown_target"], "purchase_invoice_detail")
+        self.assertEqual(rows[0]["drilldown_route"], "/purchaseserviceinvoice")
+
+    def test_ledger_book_sales_service_rows_expose_service_invoice_route(self):
+        sales_document = SalesInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            created_by=self.user,
+            doc_type=SalesInvoiceHeader.DocType.TAX_INVOICE,
+            status=SalesInvoiceHeader.Status.POSTED,
+            bill_date=date(2025, 4, 8),
+            posting_date=date(2025, 4, 8),
+            doc_code="SSI",
+            doc_no=58,
+            invoice_number="SSI-58",
+        )
+        SalesInvoiceLine.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            header=sales_document,
+            line_no=1,
+            is_service=True,
+            hsn_sac_code="9984",
+            qty=Decimal("1.000"),
+            rate=Decimal("40.00"),
+            taxable_value=Decimal("40.00"),
+            line_total=Decimal("40.00"),
+        )
+        self._create_entry(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.SALES,
+            txn_id=sales_document.id,
+            voucher_no="SSI-58",
+            posting_date=date(2025, 4, 8),
+            voucher_date=date(2025, 4, 8),
+            status=EntryStatus.POSTED,
+            narration="Service sales invoice SSI-58",
+            lines=[
+                {"account": self.cash_account, "drcr": True, "amount": "40.00", "description": "Receivable Dr"},
+                {"account": self.income_account, "drcr": False, "amount": "40.00", "description": "Revenue Cr"},
+            ],
+        )
+
+        response = self.client.get(
+            reverse("reports_api:financial-ledger-book"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "ledger": self.income_ledger.id,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        rows = [row for row in response.json()["rows"] if row["txn_id"] == sales_document.id]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["drilldown_target"], "sales_invoice_detail")
+        self.assertEqual(rows[0]["drilldown_route"], "/saleserviceinvoice")
+
     def test_posting_lookup_resolves_purchase_invoice_entry(self):
         purchase_document = PurchaseInvoiceHeader.objects.create(
             entity=self.entity,
@@ -609,6 +823,116 @@ class BookReportAPITests(APITestCase):
         self.assertEqual([row["voucher_number"] for row in data["results"]], ["CV-001"])
         self.assertEqual(data["results"][0]["running_balance"], "150.00")
 
+    def test_cashbook_service_purchase_rows_expose_service_invoice_route(self):
+        purchase_document = PurchaseInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            created_by=self.user,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            status=PurchaseInvoiceHeader.Status.POSTED,
+            bill_date=date(2025, 4, 11),
+            posting_date=date(2025, 4, 11),
+            doc_code="PSI",
+            doc_no=49,
+            purchase_number="PSI-49",
+        )
+        PurchaseInvoiceLine.objects.create(
+            header=purchase_document,
+            line_no=1,
+            is_service=True,
+            purchase_behavior="expense",
+            product_desc="Maintenance service",
+        )
+        self._create_entry(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.PURCHASE,
+            txn_id=purchase_document.id,
+            voucher_no="PSI-49",
+            posting_date=date(2025, 4, 11),
+            voucher_date=date(2025, 4, 11),
+            status=EntryStatus.POSTED,
+            narration="Service purchase via cashbook",
+            lines=[
+                {"account": self.expense_account, "drcr": True, "amount": "55.00", "description": "Service expense"},
+                {"account": self.cash_account, "drcr": False, "amount": "55.00", "description": "Cash paid"},
+            ],
+        )
+
+        response = self.client.get(
+            reverse("reports_api:financial-cashbook"),
+            {
+                "entity": self.entity.id,
+                "cash_account": str(self.cash_account.id),
+                "from_date": "2025-04-01",
+                "to_date": "2025-04-30",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        rows = [row for row in response.json()["results"] if row["drilldown"]["txn_id"] == purchase_document.id]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["drilldown"]["drilldown_route"], "/purchaseserviceinvoice")
+
+    def test_cashbook_service_sales_rows_expose_service_invoice_route(self):
+        sales_document = SalesInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            created_by=self.user,
+            doc_type=SalesInvoiceHeader.DocType.TAX_INVOICE,
+            status=SalesInvoiceHeader.Status.POSTED,
+            bill_date=date(2025, 4, 12),
+            posting_date=date(2025, 4, 12),
+            doc_code="SSI",
+            doc_no=59,
+            invoice_number="SSI-59",
+        )
+        SalesInvoiceLine.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            header=sales_document,
+            line_no=1,
+            is_service=True,
+            hsn_sac_code="9985",
+            qty=Decimal("1.000"),
+            rate=Decimal("65.00"),
+            taxable_value=Decimal("65.00"),
+            line_total=Decimal("65.00"),
+        )
+        self._create_entry(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.SALES,
+            txn_id=sales_document.id,
+            voucher_no="SSI-59",
+            posting_date=date(2025, 4, 12),
+            voucher_date=date(2025, 4, 12),
+            status=EntryStatus.POSTED,
+            narration="Service sales via cashbook",
+            lines=[
+                {"account": self.cash_account, "drcr": True, "amount": "65.00", "description": "Cash received"},
+                {"account": self.income_account, "drcr": False, "amount": "65.00", "description": "Revenue"},
+            ],
+        )
+
+        response = self.client.get(
+            reverse("reports_api:financial-cashbook"),
+            {
+                "entity": self.entity.id,
+                "cash_account": str(self.cash_account.id),
+                "from_date": "2025-04-01",
+                "to_date": "2025-04-30",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        rows = [row for row in response.json()["results"] if row["drilldown"]["txn_id"] == sales_document.id]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["drilldown"]["drilldown_route"], "/saleserviceinvoice")
+
     def test_cashbook_bank_mode_uses_backdated_entry_for_opening(self):
         response = self.client.get(reverse("reports_api:financial-cashbook"), {"entity": self.entity.id, "bank_account": str(self.bank_account.id), "from_date": "2025-04-05", "to_date": "2025-04-30"})
         self.assertEqual(response.status_code, 200)
@@ -686,6 +1010,166 @@ class BookReportAPITests(APITestCase):
         self.assertIn("account_id", summary)
         self.assertIn("opening_balance", summary)
         self.assertIn("closing_balance", summary)
+
+    def test_trial_balance_totals_match_posted_ledger_movements(self):
+        response = self.client.get(
+            reverse("reports_api:financial-trial-balance"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "from_date": "2025-04-01",
+                "to_date": "2025-04-30",
+                "group_by": "ledger",
+                "posted_only": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+
+        rows = {row["ledger_name"]: row for row in data["rows"]}
+        self.assertEqual(Decimal(str(data["totals"]["opening"])), Decimal("300.00"))
+        self.assertEqual(Decimal(str(data["totals"]["debit"])), Decimal("115.00"))
+        self.assertEqual(Decimal(str(data["totals"]["credit"])), Decimal("115.00"))
+        self.assertEqual(Decimal(str(data["totals"]["closing"])), Decimal("300.00"))
+
+        self.assertEqual(Decimal(str(rows["Cash In Hand"]["opening"])), Decimal("100.00"))
+        self.assertEqual(Decimal(str(rows["Cash In Hand"]["debit"])), Decimal("50.00"))
+        self.assertEqual(Decimal(str(rows["Cash In Hand"]["credit"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(rows["Cash In Hand"]["closing"])), Decimal("150.00"))
+
+        self.assertEqual(Decimal(str(rows["Main Bank"]["opening"])), Decimal("200.00"))
+        self.assertEqual(Decimal(str(rows["Main Bank"]["debit"])), Decimal("40.00"))
+        self.assertEqual(Decimal(str(rows["Main Bank"]["credit"])), Decimal("25.00"))
+        self.assertEqual(Decimal(str(rows["Main Bank"]["closing"])), Decimal("215.00"))
+
+        self.assertEqual(Decimal(str(rows["Office Expense"]["debit"])), Decimal("25.00"))
+        self.assertEqual(Decimal(str(rows["Sales Income"]["credit"])), Decimal("90.00"))
+
+    def test_profit_loss_totals_match_posted_income_and_expense_ledgers(self):
+        expense_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Indirect Expenses",
+            accounttypecode="5200",
+            createdby=self.user,
+        )
+        income_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Indirect Income",
+            accounttypecode="6200",
+            createdby=self.user,
+        )
+        pl_expense_head = accountHead.objects.create(
+            entity=self.entity,
+            name="Administrative Expense",
+            code=5201,
+            detailsingroup=2,
+            balanceType="Debit",
+            drcreffect="Debit",
+            accounttype=expense_type,
+            createdby=self.user,
+        )
+        pl_income_head = accountHead.objects.create(
+            entity=self.entity,
+            name="Service Income",
+            code=6201,
+            detailsingroup=2,
+            balanceType="Credit",
+            drcreffect="Credit",
+            accounttype=income_type,
+            createdby=self.user,
+        )
+        pl_expense_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=5201,
+            name="Administrative Expense",
+            accounthead=pl_expense_head,
+            accounttype=expense_type,
+            createdby=self.user,
+        )
+        pl_income_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=6201,
+            name="Service Income",
+            accounthead=pl_income_head,
+            accounttype=income_type,
+            createdby=self.user,
+        )
+        pl_expense_account = create_account_with_synced_ledger(
+            account_data={"entity": self.entity, "ledger": pl_expense_ledger, "accountname": "Administrative Expense", "createdby": self.user},
+            ledger_overrides={"ledger_code": 5201, "accounthead": pl_expense_head, "is_party": True},
+        )
+        pl_income_account = create_account_with_synced_ledger(
+            account_data={"entity": self.entity, "ledger": pl_income_ledger, "accountname": "Service Income", "createdby": self.user},
+            ledger_overrides={"ledger_code": 6201, "accounthead": pl_income_head, "is_party": True},
+        )
+        self._create_entry(
+            txn_type=TxnType.JOURNAL,
+            txn_id=108,
+            voucher_no="JV-PL-001",
+            posting_date="2025-04-09",
+            voucher_date="2025-04-09",
+            status=EntryStatus.POSTED,
+            narration="Profit and loss classification test",
+            subentity=self.subentity,
+            lines=[
+                (pl_expense_account, pl_expense_ledger, True, "25.00", "Administrative expense"),
+                (pl_income_account, pl_income_ledger, False, "90.00", "Service income"),
+                (self.cash_account, self.cash_ledger, True, "65.00", "Balancing cash"),
+            ],
+        )
+
+        response = self.client.get(
+            reverse("reports_api:financial-profit-loss"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "from_date": "2025-04-01",
+                "to_date": "2025-04-30",
+                "posted_only": True,
+                "group_by": "ledger",
+                "view_type": "summary",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+
+        self.assertEqual(Decimal(str(data["totals"]["income"])), Decimal("90.00"))
+        self.assertEqual(Decimal(str(data["totals"]["expense"])), Decimal("25.00"))
+        self.assertEqual(Decimal(str(data["totals"]["net_profit"])), Decimal("65.00"))
+
+        income_labels = {row.get("label") or row.get("ledger_name") for row in data["income"]}
+        expense_labels = {row.get("label") or row.get("ledger_name") for row in data["expenses"]}
+        self.assertIn("Service Income", income_labels)
+        self.assertIn("Administrative Expense", expense_labels)
+
+    def test_profit_loss_export_urls_keep_current_scope_filters(self):
+        response = self.client.get(
+            reverse("reports_api:financial-profit-loss"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "from_date": "2025-04-01",
+                "to_date": "2025-04-30",
+                "posted_only": True,
+                "group_by": "ledger",
+                "search": "Sales",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        export_urls = response.json()["actions"]["export_urls"]
+
+        for key in ["csv", "print", "pdf_landscape", "excel_landscape"]:
+            with self.subTest(key=key):
+                self.assertIn("entity=", export_urls[key])
+                self.assertIn(f"entityfinid={self.entityfin.id}", export_urls[key])
+                self.assertIn(f"subentity={self.subentity.id}", export_urls[key])
+                self.assertIn("from_date=2025-04-01", export_urls[key])
+                self.assertIn("to_date=2025-04-30", export_urls[key])
+                self.assertIn("group_by=ledger", export_urls[key])
+                self.assertIn("search=Sales", export_urls[key])
 
     def test_balance_sheet_moves_negative_bank_balance_to_liabilities(self):
         self._create_entry(

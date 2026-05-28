@@ -655,6 +655,11 @@ def build_payables_close_pack(
         payload["overview"] = {
             "total_vendor_outstanding": dashboard["totals"]["vendor_outstanding"],
             "overdue_outstanding": dashboard.get("overdue_outstanding", "0.00"),
+            "msme_overdue_amount": dashboard["totals"].get("msme_overdue_amount", "0.00"),
+            "msme_overdue_bill_count": dashboard["summary"].get("msme_overdue_bill_count", 0),
+            "msme_overdue_vendor_count": dashboard["summary"].get("msme_overdue_vendor_count", 0),
+            "msme_oldest_overdue_days": dashboard["summary"].get("msme_oldest_overdue_days", 0),
+            "msme_reporting_note": dashboard["summary"].get("msme_reporting_note", ""),
             "open_vendor_count": close_summary["open_vendor_count"],
             "negative_balance_vendor_count": close_summary["negative_balance_vendor_count"],
             "stale_advance_count": close_summary["stale_advance_count"],
@@ -688,6 +693,7 @@ def build_payables_close_pack(
         payload["top_vendors"] = {
             "top_overdue_vendors": top_overdue_vendors,
             "top_outstanding_vendors": top_outstanding_vendors,
+            "top_msme_overdue_vendors": dashboard.get("top_msme_overdue_vendors", []),
         }
 
     payload.update(
@@ -719,6 +725,32 @@ def build_payables_close_pack(
 
 
 def close_pack_export_rows(payload):
+    def _scalar_export_value(value):
+        if value is None:
+            return ""
+        if isinstance(value, (str, int, float, Decimal)):
+            return value
+        if isinstance(value, bool):
+            return "Yes" if value else "No"
+        if hasattr(value, "isoformat"):
+            try:
+                return value.isoformat()
+            except Exception:
+                return str(value)
+        return str(value)
+
+    def _append_flat_rows(section_label, key, value):
+        if isinstance(value, list):
+            rows.append([section_label, key, len(value), "list"])
+            for index, item in enumerate(value, start=1):
+                _append_flat_rows(section_label, f"{key}[{index}]", item)
+            return
+        if isinstance(value, dict):
+            for sub_key, sub_value in value.items():
+                _append_flat_rows(section_label, f"{key}.{sub_key}", sub_value)
+            return
+        rows.append([section_label, key, _scalar_export_value(value), "value"])
+
     rows = []
     for section_meta in resolve_close_pack_sections(payload.get("included_sections", [])):
         section = section_meta["code"]
@@ -726,11 +758,5 @@ def close_pack_export_rows(payload):
         if not isinstance(block, dict):
             continue
         for key, value in block.items():
-            if isinstance(value, list):
-                rows.append([section_meta["label"], key, len(value), "list"])
-            elif isinstance(value, dict):
-                for sub_key, sub_value in value.items():
-                    rows.append([section_meta["label"], f"{key}.{sub_key}", sub_value, "value"])
-            else:
-                rows.append([section_meta["label"], key, value, "value"])
+            _append_flat_rows(section_meta["label"], key, value)
     return rows

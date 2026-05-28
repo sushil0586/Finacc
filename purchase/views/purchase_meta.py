@@ -25,6 +25,7 @@ from purchase.models.purchase_addons import PurchaseChargeType
 from purchase.models.purchase_statutory import PurchaseStatutoryChallan, PurchaseStatutoryReturn
 from purchase.serializers.purchase_invoice import PurchaseInvoiceHeaderSerializer
 from purchase.services.purchase_choice_service import PurchaseChoiceService
+from purchase.services.purchase_invoice_service import PurchaseInvoiceService
 from purchase.services.purchase_settings_service import PurchaseSettingsService
 from helpers.utils.document_actions import build_document_action_flags
 from core.invoice_ui_contracts import purchase_invoice_ui_contract
@@ -324,6 +325,9 @@ class PurchaseMetaBaseAPIView(ScopedEntitlementMixin, APIView):
         is_cancelled = int(header.status) == int(PurchaseInvoiceHeader.Status.CANCELLED)
         allow_edit_confirmed = str(policy.controls.get("allow_edit_confirmed", "on")).lower().strip() == "on"
         allow_unpost_posted = str(policy.controls.get("allow_unpost_posted", "on")).lower().strip() == "on"
+        amendment_window = PurchaseInvoiceService.amendment_window_for_header(header)
+        is_tax_invoice = int(getattr(header, "doc_type", 0)) == int(PurchaseInvoiceHeader.DocType.TAX_INVOICE)
+        can_correct_locked_posted = is_posted and is_tax_invoice and amendment_window.amendment_required
 
         delete_allowed = False
         if not is_cancelled:
@@ -345,6 +349,15 @@ class PurchaseMetaBaseAPIView(ScopedEntitlementMixin, APIView):
             allow_unpost_posted=allow_unpost_posted,
             include_rebuild_tax_summary=True,
             can_delete=delete_allowed,
+            extra={
+                "can_correct_locked_posted": can_correct_locked_posted,
+                "locked_correction_modes": ["full_reversal", "reduce", "increase"] if can_correct_locked_posted else [],
+                "locked_correction_date": amendment_window.correction_date.isoformat() if can_correct_locked_posted and amendment_window.correction_date else None,
+                "locked_correction_message": (
+                    "This invoice is in a filed/locked period. Create a current-period correction draft instead of editing or unposting it."
+                    if can_correct_locked_posted else None
+                ),
+            },
         )
 
     def _vendor_block(self, header: PurchaseInvoiceHeader):

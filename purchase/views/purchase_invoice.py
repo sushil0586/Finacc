@@ -285,7 +285,7 @@ class PurchaseInvoiceRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroy
             raise ValidationError({"detail": "Only draft purchase invoices can be deleted. Use cancel/credit-note flow."})
         if policy.delete_policy == "non_posted" and int(instance.status) == int(PurchaseInvoiceHeader.Status.POSTED):
             raise ValidationError({"detail": "Posted purchase invoices cannot be deleted."})
-        super().perform_destroy(instance)
+        instance.delete()
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()

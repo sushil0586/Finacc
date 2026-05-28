@@ -17,6 +17,7 @@ from rest_framework.test import APIClient, APITestCase
 
 from Authentication.models import User
 from entity.models import Entity, EntityFinancialYear, EntityPolicy, GstRegistrationType, SubEntity
+from financial.models import AccountComplianceProfile, account
 from gst_reconciliation.models import (
     GstImportedReturn,
     GstImportedReturnRow,
@@ -173,6 +174,99 @@ class GstReconciliationPhaseOneTests(TestCase):
                 action_type=GstReconciliationActionLog.ActionType.IMPORTED,
             ).exists()
         )
+
+    def test_purchase_source_provider_excludes_unregistered_vendor_invoices(self):
+        PurchaseInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            vendor_name="Registered Vendor",
+            vendor_gstin="29ABCDE1234F1Z5",
+            supplier_invoice_number="PINV-REG-1",
+            supplier_invoice_date=datetime(2025, 4, 10).date(),
+            bill_date=datetime(2025, 4, 10).date(),
+            total_taxable="500.00",
+            total_cgst="45.00",
+            total_sgst="45.00",
+            grand_total="590.00",
+            created_by=self.user,
+        )
+        PurchaseInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            vendor_name="Unregistered Vendor",
+            vendor_gstin="",
+            supplier_invoice_number="PINV-URD-1",
+            supplier_invoice_date=datetime(2025, 4, 11).date(),
+            bill_date=datetime(2025, 4, 11).date(),
+            total_taxable="300.00",
+            total_cgst="0.00",
+            total_sgst="0.00",
+            grand_total="300.00",
+            created_by=self.user,
+        )
+
+        provider = SourceDocumentProviderRegistry.get_provider("purchase_invoice_header")
+        queryset = provider.get_queryset_for_scope(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+        )
+
+        self.assertEqual(list(queryset.values_list("supplier_invoice_number", flat=True)), ["PINV-REG-1"])
+
+    def test_purchase_source_provider_excludes_composition_and_import_purchase_invoices(self):
+        composition_vendor = account.objects.create(entity=self.entity, accountname="Composition Vendor")
+        AccountComplianceProfile.objects.create(
+            entity=self.entity,
+            account=composition_vendor,
+            gstno="29COMP1234C1Z5",
+            gstregtype="Composition",
+            createdby=self.user,
+        )
+        PurchaseInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            vendor=composition_vendor,
+            vendor_name="Composition Vendor",
+            vendor_gstin="29COMP1234C1Z5",
+            supplier_invoice_number="PINV-COMP-1",
+            supplier_invoice_date=datetime(2025, 4, 12).date(),
+            bill_date=datetime(2025, 4, 12).date(),
+            total_taxable="500.00",
+            total_cgst="0.00",
+            total_sgst="0.00",
+            grand_total="500.00",
+            created_by=self.user,
+        )
+        PurchaseInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            vendor_name="Import Vendor",
+            vendor_gstin="99IMPORT1234Z9Z9",
+            supply_category=PurchaseInvoiceHeader.SupplyCategory.IMPORT_GOODS,
+            supplier_invoice_number="PINV-IMP-1",
+            supplier_invoice_date=datetime(2025, 4, 13).date(),
+            bill_date=datetime(2025, 4, 13).date(),
+            total_taxable="1000.00",
+            total_cgst="0.00",
+            total_sgst="0.00",
+            total_igst="0.00",
+            grand_total="1000.00",
+            created_by=self.user,
+        )
+
+        provider = SourceDocumentProviderRegistry.get_provider("purchase_invoice_header")
+        queryset = provider.get_queryset_for_scope(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+        )
+
+        self.assertEqual(list(queryset.values_list("supplier_invoice_number", flat=True)), [])
 
 
 @override_settings(ROOT_URLCONF="FA.urls", AUTH_PASSWORD_VALIDATORS=[], RBAC_DEV_ALLOW_ALL_ACCESS=True)
@@ -960,6 +1054,41 @@ class GstReconciliationPhaseEightHardeningTests(APITestCase):
             )
         self.assertEqual(response.status_code, 400)
         self.assertIn("return period", response.json()["detail"])
+
+    def test_reopen_api_resets_reviewer_resolution_fields(self):
+        self.item.resolution_status = GstReconciliationItem.ResolutionStatus.IGNORED
+        self.item.reviewer_note = "old reviewer note"
+        self.item.reviewed_by = self.user
+        self.item.reviewed_at = timezone.now()
+        self.item.resolved_by = self.user
+        self.item.resolved_at = timezone.now()
+        self.item.save(
+            update_fields=[
+                "resolution_status",
+                "reviewer_note",
+                "reviewed_by",
+                "reviewed_at",
+                "resolved_by",
+                "resolved_at",
+                "updated_at",
+            ]
+        )
+
+        with self._entity_access_patch(), self._permission_patch({"gst.reconciliation.view", "gst.reconciliation.review"}):
+            response = self.client.post(
+                reverse("gst_reconciliation_api:item-reopen", args=[self.item.id]),
+                {"note": "reopen for another pass"},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.resolution_status, GstReconciliationItem.ResolutionStatus.REOPENED)
+        self.assertEqual(self.item.reviewer_note, "reopen for another pass")
+        self.assertIsNone(self.item.reviewed_by_id)
+        self.assertIsNone(self.item.reviewed_at)
+        self.assertIsNone(self.item.resolved_by_id)
+        self.assertIsNone(self.item.resolved_at)
 
     def test_closed_run_cannot_be_modified(self):
         self.run.status = GstReconciliationRun.Status.CLOSED

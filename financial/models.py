@@ -1,3 +1,4 @@
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.utils.translation import gettext as _
 from django.core.exceptions import ValidationError
@@ -655,6 +656,11 @@ class AccountAddress(TrackingModel):
 
 
 class AccountComplianceProfile(TrackingModel):
+    class MsmeStatus(models.TextChoices):
+        NON_MSME = "non_msme", "Non-MSME"
+        MICRO = "micro", "Micro"
+        SMALL = "small", "Small"
+
     account = models.OneToOneField(account, on_delete=models.CASCADE, related_name="compliance_profile")
     entity = models.ForeignKey("entity.Entity", null=True, blank=True, on_delete=models.CASCADE)
     createdby = models.ForeignKey(to=User, on_delete=models.CASCADE, null=True, blank=True)
@@ -667,6 +673,14 @@ class AccountComplianceProfile(TrackingModel):
 
     cin = models.CharField(max_length=50, null=True, blank=True)
     msme = models.CharField(max_length=50, null=True, blank=True)
+    msme_status = models.CharField(max_length=20, null=True, blank=True, choices=MsmeStatus.choices)
+    udyam_no = models.CharField(max_length=30, null=True, blank=True)
+    has_written_payment_terms = models.BooleanField(default=False)
+    msme_credit_days = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(0), MaxValueValidator(45)],
+    )
     gsttdsno = models.CharField(max_length=50, null=True, blank=True)
     tdsno = models.CharField(max_length=50, null=True, blank=True)
     tdsrate = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)

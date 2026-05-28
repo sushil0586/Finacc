@@ -49,6 +49,15 @@ class Gstr2bImportRowReviewSerializer(serializers.Serializer):
     comment = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=1000)
     matched_purchase = serializers.IntegerField(required=False, allow_null=True)
 
+    def validate(self, attrs):
+        normalized_status = str(attrs.get("match_status") or "").strip().upper()
+        matched_purchase = attrs.get("matched_purchase")
+        if normalized_status in {"MATCHED", "PARTIAL"} and not matched_purchase:
+            raise serializers.ValidationError({
+                "matched_purchase": "A linked purchase invoice is required when marking a GSTR-2B row as matched or partial."
+            })
+        return attrs
+
 
 class Gstr2bImportRowInputSerializer(serializers.Serializer):
     supplier_gstin = serializers.CharField(required=False, allow_blank=True, allow_null=True)

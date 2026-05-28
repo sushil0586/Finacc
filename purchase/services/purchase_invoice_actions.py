@@ -25,6 +25,7 @@ from purchase.services.purchase_settings_service import PurchaseSettingsService
 
 from purchase.services.purchase_asset_intake_service import PurchaseAssetIntakeService
 from purchase.services.purchase_invoice_service import PurchaseInvoiceService
+from purchase.services.purchase_note_factory import PurchaseNoteFactory
 from purchase.services.purchase_ap_service import PurchaseApService
 from purchase.models.purchase_ap import VendorBillOpenItem
 
@@ -40,6 +41,22 @@ class ActionResult:
 
 
 class PurchaseInvoiceActions:
+    @staticmethod
+    def _has_posted_payment_for_rcm_itc(header: PurchaseInvoiceHeader) -> bool:
+        open_item = getattr(header, "ap_open_item", None)
+        if not open_item:
+            open_item = VendorBillOpenItem.objects.filter(header_id=header.id).first()
+        if not open_item:
+            return False
+
+        PaymentVoucherHeader = apps.get_model("payments", "PaymentVoucherHeader")
+        VendorSettlement = apps.get_model("purchase", "VendorSettlement")
+        return open_item.settlement_lines.filter(
+            settlement__status=VendorSettlement.Status.POSTED,
+            settlement__settlement_type=VendorSettlement.SettlementType.PAYMENT,
+            settlement__payment_voucher__status=PaymentVoucherHeader.Status.POSTED,
+        ).exists()
+
     @staticmethod
     def _log_itc_action(
         *,
@@ -233,7 +250,7 @@ class PurchaseInvoiceActions:
         confirm_lock_level = policy.level("confirm_lock_check", "hard")
         if confirm_lock_level != "off":
             try:
-                PurchaseInvoiceService.assert_not_locked(h.entity_id, h.subentity_id, h.bill_date)
+                PurchaseInvoiceService.assert_not_locked(h.entity_id, h.subentity_id, h.bill_date, h.entityfinid_id)
             except ValueError:
                 if confirm_lock_level == "hard":
                     raise
@@ -288,7 +305,7 @@ class PurchaseInvoiceActions:
         if int(h.status) != int(Status.CONFIRMED):
             raise ValueError("Only CONFIRMED documents can be posted.")
 
-        PurchaseInvoiceService.assert_not_locked(h.entity_id, h.subentity_id, h.bill_date)
+        PurchaseInvoiceService.assert_not_locked(h.entity_id, h.subentity_id, h.bill_date, h.entityfinid_id)
 
         # Safety: if someone bypassed confirm, allocate here too
         PurchaseInvoiceActions._allocate_final_number_if_missing(h)
@@ -342,6 +359,12 @@ class PurchaseInvoiceActions:
         policy = PurchaseSettingsService.get_policy(h.entity_id, h.subentity_id)
         if str(policy.controls.get("allow_unpost_posted", "on")).lower().strip() == "off":
             raise ValueError("Unpost after posting is disabled by purchase policy.")
+        window = PurchaseInvoiceService.amendment_window_for_header(h)
+        if window.amendment_required:
+            raise ValueError(
+                "Posted purchase invoice belongs to a locked/filed period and cannot be unposted. "
+                "Create a current-period correction document instead."
+            )
 
         PurchaseAssetIntakeService.revert_asset_intakes_for_unpost(header=h)
 
@@ -470,7 +493,23 @@ class PurchaseInvoiceActions:
         old_scope_key = GstTdsService._scope_key_for_header(h)
 
         if int(h.status) == int(Status.POSTED):
-            raise ValueError("Posted document cannot be cancelled. Create a Credit Note instead.")
+            window = PurchaseInvoiceService.amendment_window_for_header(h)
+            if not window.amendment_required:
+                raise ValueError("Posted document cannot be cancelled. Create a Credit Note instead.")
+            res = PurchaseNoteFactory.create_note_from_invoice(
+                invoice_id=h.id,
+                note_type=PurchaseInvoiceHeader.DocType.CREDIT_NOTE,
+                note_reason=PurchaseInvoiceHeader.NoteReason.OTHER,
+                created_by_id=cancelled_by_id,
+                correction_reason=reason,
+            )
+            note = res.header
+            PurchaseInvoiceActions.confirm(note.id, confirmed_by_id=cancelled_by_id)
+            posted = PurchaseInvoiceActions.post(note.id, posted_by_id=cancelled_by_id)
+            return ActionResult(
+                posted.header,
+                "Locked-period purchase cannot be cancelled directly. A current-period reversal credit note was created and posted.",
+            )
         if int(h.status) == int(Status.CANCELLED):
             return ActionResult(h, "Already cancelled.")
 
@@ -601,7 +640,7 @@ class PurchaseInvoiceActions:
 
         if not h.is_itc_eligible:
             raise ValueError("Cannot claim ITC: document is not ITC-eligible.")
-        if bool(getattr(h, "is_reverse_charge", False)):
+        if bool(getattr(h, "is_reverse_charge", False)) and not PurchaseInvoiceActions._has_posted_payment_for_rcm_itc(h):
             raise ValueError("RCM ITC should be claimed only after reverse-charge tax payment is tracked.")
 
         try:

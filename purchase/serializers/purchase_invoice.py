@@ -618,8 +618,10 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
             payload = ex.args[0] if ex.args else str(ex)
             raise serializers.ValidationError(payload if isinstance(payload, dict) else {"non_field_errors": [str(payload)]})
 
-        if inst and inst.status in (Status.POSTED, Status.CANCELLED):
-            raise serializers.ValidationError("Cannot edit a POSTED or CANCELLED purchase document.")
+        if inst and inst.status == Status.CANCELLED:
+            raise serializers.ValidationError("Cannot edit a CANCELLED purchase document.")
+        if inst and inst.status == Status.POSTED:
+            raise serializers.ValidationError(PurchaseInvoiceService.blocked_edit_message(inst))
 
         # note_reason / affects_inventory are only meaningful on CN/DN
         doc_type = attrs.get("doc_type") or getattr(inst, "doc_type", None)
@@ -656,6 +658,7 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
                 entity_id=entity.id if hasattr(entity, "id") else entity,
                 subentity_id=subentity.id if hasattr(subentity, "id") else subentity,
                 bill_date=bill_date,
+                entityfinid_id=entityfinid.id if hasattr(entityfinid, "id") else entityfinid,
             )
 
         # GST regime consistency

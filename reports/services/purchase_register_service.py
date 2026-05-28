@@ -79,6 +79,10 @@ class PurchaseRegisterService:
         blocked_line_exists = PurchaseInvoiceLine.objects.filter(
             header_id=OuterRef("pk")
         ).filter(Q(is_itc_eligible=False) | (Q(itc_block_reason__isnull=False) & ~Q(itc_block_reason="")))
+        service_line_exists = PurchaseInvoiceLine.objects.filter(
+            header_id=OuterRef("pk"),
+            is_service=True,
+        )
 
         sign_multiplier = Case(
             When(status=PurchaseInvoiceHeader.Status.CANCELLED, then=Value(Decimal("0"))),
@@ -102,6 +106,11 @@ class PurchaseRegisterService:
         queryset = queryset.annotate(
             supplier_name=Coalesce(F("vendor_name"), F("vendor__accountname"), Value(""), output_field=CharField()),
             supplier_gstin=Coalesce(F("vendor_gstin"), F("vendor__compliance_profile__gstno"), Value(""), output_field=CharField()),
+            supplier_registration_type=Coalesce(
+                F("vendor__compliance_profile__gstregtype"),
+                Value(""),
+                output_field=CharField(),
+            ),
             place_of_supply=Coalesce(F("place_of_supply_state__statename"), Value(""), output_field=CharField()),
             supply_type=F("supply_category"),
             supply_type_name=Case(
@@ -160,6 +169,7 @@ class PurchaseRegisterService:
             discount_total_signed=F("discount_total") * sign_multiplier,
             itc_eligibility=F("is_itc_eligible"),
             reverse_charge=F("is_reverse_charge"),
+            service_line_exists=Exists(service_line_exists),
         )
 
         if include_outstanding:
@@ -232,6 +242,7 @@ class PurchaseRegisterService:
             "id": row.id,
             "doc_type": row.doc_type,
             "purchase_number": row.purchase_number,
+            "route": "/purchaseserviceinvoice" if getattr(row, "service_line_exists", False) else "/purchaseinvoice",
         }
 
     def build_payables_drilldown(self, row, *, entity_id, entityfin_id=None, subentity_id=None, as_of_date=None):

@@ -13,7 +13,7 @@ from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
-from entity.models import Entity, EntityFinancialYear, EntityOwnershipV2, EntityTaxProfile, Godown, GstRegistrationType, SubEntity, UnitType
+from entity.models import Entity, EntityBankAccountV2, EntityFinancialYear, EntityOwnershipV2, EntityTaxProfile, Godown, GstRegistrationType, SubEntity, UnitType
 from financial.models import Ledger, account, accountHead, accounttype
 from posting.models import Entry, EntryStatus, EntityStaticAccountMap, JournalLine, PostingBatch, StaticAccount, StaticAccountGroup
 from posting.adapters.year_opening import YearOpeningPostingAdapter
@@ -752,6 +752,34 @@ class StaticAccountSettingsPermissionTests(APITestCase):
                 "is_active": True,
             },
         )
+        self.bank_head = accountHead.objects.create(
+            entity=self.entity,
+            name="Bank Head",
+            code=1100,
+            drcreffect="Debit",
+        )
+        self.bank_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=5100,
+            name="HDFC Bank Ledger",
+            accounthead=self.bank_head,
+            is_party=True,
+            createdby=self.user,
+        )
+        self.bank_account_profile = account.objects.create(
+            entity=self.entity,
+            accountname="HDFC Bank Account",
+            ledger=self.bank_ledger,
+            createdby=self.user,
+        )
+        self.entity_bank_account = EntityBankAccountV2.objects.create(
+            entity=self.entity,
+            bank_name="HDFC",
+            branch="Main",
+            account_number="123456789012",
+            ifsc_code="HDFC0001234",
+            createdby=self.user,
+        )
 
     def _grant(self, code: str):
         action = code.rsplit(".", 1)[-1]
@@ -787,3 +815,21 @@ class StaticAccountSettingsPermissionTests(APITestCase):
         allowed = self.client.get(url)
         self.assertEqual(allowed.status_code, 200)
         self.assertIn("summary", allowed.json())
+        self.assertIn("eligible_bank_ledgers", allowed.json())
+        self.assertIn("bank_account_mappings", allowed.json())
+
+    def test_bank_account_mapping_update_persists_explicit_ledger(self):
+        self._grant("posting.static_account_settings.update")
+        url = reverse(
+            "posting:bank-account-mapping-detail",
+            kwargs={"entity_id": self.entity.id, "bank_account_id": self.entity_bank_account.id},
+        )
+
+        response = self.client.put(url, {"ledger_id": self.bank_ledger.id}, format="json")
+
+        self.assertEqual(response.status_code, 200, response.json())
+        self.entity_bank_account.refresh_from_db()
+        self.assertEqual(self.entity_bank_account.book_ledger_id, self.bank_ledger.id)
+        self.assertEqual(response.json()["ledger_id"], self.bank_ledger.id)
+        self.assertEqual(response.json()["account_id"], self.bank_account_profile.id)
+        self.assertEqual(response.json()["mapping_source"], "explicit")

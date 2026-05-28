@@ -387,7 +387,16 @@ class SalesInvoiceGetIRNDetailsAPIView(_InvoiceMixin, GenericAPIView):
             out = svc.get_irn_details(**ser.validated_data)
         except COMPLIANCE_EXCEPTIONS as e:
             return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
-        return Response(out, status=status.HTTP_200_OK)
+        invoice_data = SalesInvoiceHeaderSerializer(invoice, context={"request": request}).data
+        return Response(
+            {
+                "ok": True,
+                **out,
+                "invoice": invoice_data,
+                "compliance": self._compliance_summary(invoice),
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class SalesInvoiceGetEWayByIRNAPIView(_InvoiceMixin, GenericAPIView):
@@ -410,7 +419,16 @@ class SalesInvoiceGetEWayByIRNAPIView(_InvoiceMixin, GenericAPIView):
             out = svc.get_eway_details_by_irn(**ser.validated_data)
         except COMPLIANCE_EXCEPTIONS as e:
             return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
-        return Response(out, status=status.HTTP_200_OK)
+        invoice_data = SalesInvoiceHeaderSerializer(invoice, context={"request": request}).data
+        return Response(
+            {
+                "ok": True,
+                **out,
+                "invoice": invoice_data,
+                "compliance": self._compliance_summary(invoice),
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class SalesInvoiceGenerateEWayAPIView(_InvoiceMixin, GenericAPIView):

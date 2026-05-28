@@ -9,6 +9,7 @@ from rest_framework.test import APIClient, APITestCase
 
 from Authentication.models import User
 from reports.tests_support.compliance_golden_dataset import build_compliance_golden_scope
+from reports.services.gst_reconciliation import _build_source_document_drilldown
 
 
 @override_settings(ROOT_URLCONF="FA.urls", AUTH_PASSWORD_VALIDATORS=[])
@@ -82,6 +83,9 @@ class GstReconciliationAPITests(APITestCase):
         self.assertEqual(payload["rows"][0]["drilldowns"]["gstr1_workspace"]["route"], "/gstreport")
         self.assertEqual(payload["rows"][0]["drilldowns"]["gstr3b_workspace"]["route"], "/gstr3breport")
         self.assertEqual(payload["rows"][0]["drilldowns"]["gstr1_workspace"]["params"]["entityfinid"], self.entityfin.id)
+        self.assertEqual(payload["rows"][0]["drilldowns"]["gstr3b_workspace"]["params"]["entityfinid"], self.entityfin.id)
+        self.assertEqual(payload["rows"][0]["drilldowns"]["gstr3b_workspace"]["params"]["from_date"], self.params["from_date"])
+        self.assertEqual(payload["rows"][0]["drilldowns"]["gstr3b_workspace"]["params"]["to_date"], self.params["to_date"])
 
     @patch("reports.api.gst_reconciliation_views.Gstr1VsGstr3bReconciliationExportAPIView.enforce_scope")
     @patch("reports.api.gst_reconciliation_views.Gstr3bSummaryService.build")
@@ -114,3 +118,12 @@ class GstReconciliationAPITests(APITestCase):
     def test_export_denies_when_report_permission_is_missing(self, _assert_permission):
         response = self.client.get(self.export_url, {**self.params, "format": "csv"})
         self.assertEqual(response.status_code, 403)
+
+    @patch("reports.services.gst_reconciliation.SalesInvoiceLine.objects.filter")
+    def test_source_document_drilldown_uses_service_invoice_route_when_service_lines_exist(self, mocked_filter):
+        mocked_filter.return_value.exists.return_value = True
+
+        drilldown = _build_source_document_drilldown(invoice_id=404)
+
+        self.assertEqual(drilldown["route"], "/saleserviceinvoice")
+        self.assertEqual(drilldown["params"]["transactionid"], 404)

@@ -18,7 +18,7 @@ from financial.profile_access import (
 from financial.models import AccountAddress, account
 from sales.models.sales_ar import CustomerAdvanceBalance, CustomerBillOpenItem, CustomerSettlement, CustomerSettlementLine
 from receipts.models import ReceiptVoucherHeader
-from sales.models.sales_core import SalesInvoiceHeader
+from sales.models.sales_core import SalesInvoiceHeader, SalesInvoiceLine
 from sales.services.sales_ar_service import SalesArService
 from reports.selectors.financial import normalize_scope_ids, resolve_date_window
 
@@ -106,6 +106,13 @@ def _scope_filter(qs, *, entity_id, entityfin_id, subentity_id):
 
 def _exclude_cancelled_open_items(qs):
     return qs.exclude(header__status=SalesInvoiceHeader.Status.CANCELLED)
+
+
+def _sales_invoice_route(*, invoice_id: int | None) -> str:
+    if not invoice_id:
+        return "/saleinvoice"
+    has_service_lines = SalesInvoiceLine.objects.filter(header_id=invoice_id, is_service=True).exists()
+    return "/saleserviceinvoice" if has_service_lines else "/saleinvoice"
 
 
 def _settlement_line_sums(*, entity_id, entityfin_id, subentity_id, upto_date):
@@ -939,6 +946,7 @@ def build_receivable_aging_report(
                 },
                 "invoice": {
                     "target": "sales_invoice",
+                    "route": _sales_invoice_route(invoice_id=item.header_id),
                     "params": {"id": item.header_id, "entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id},
                 },
                 "payment_allocation": {
@@ -1179,6 +1187,7 @@ def build_open_items_report(
             drilldown={
                 "invoice": {
                     "target": "sales_invoice",
+                    "route": _sales_invoice_route(invoice_id=item.header_id),
                     "params": {"id": item.header_id, "entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id},
                 },
                 "customer_statement": {

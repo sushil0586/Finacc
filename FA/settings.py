@@ -138,6 +138,7 @@ INSTALLED_APPS = [
     "rbac",
     "subscriptions",
     "bank_reconciliation.apps.BankReconciliationConfig",
+    "bank_reco.apps.BankRecoConfig",
 ]
 
 INSTALLED_APPS += ['auditlogger']

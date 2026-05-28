@@ -3,7 +3,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
 from financial.gstin import validate_financial_gstin
-from financial.models import Ledger, account
+from financial.models import AccountComplianceProfile, Ledger, account
 from financial.profile_access import (
     account_primary_address,
     account_primary_bank_account,
@@ -18,6 +18,96 @@ from financial.services import (
     create_account_with_synced_ledger,
     sync_ledger_for_account,
 )
+from withholding.models import EntityPartyTaxProfile
+
+
+WITHHOLDING_PROFILE_FIELDS = (
+    "subentity",
+    "residency_status",
+    "tax_identifier",
+    "declaration_reference",
+    "treaty_article",
+    "treaty_rate",
+    "treaty_valid_from",
+    "treaty_valid_to",
+    "surcharge_rate",
+    "cess_rate",
+    "is_exempt_withholding",
+    "is_specified_person_206ab",
+    "specified_person_valid_from",
+    "specified_person_valid_to",
+    "lower_deduction_rate",
+    "lower_deduction_valid_from",
+    "lower_deduction_valid_to",
+    "is_active",
+)
+
+
+def _account_withholding_subentity_id(serializer) -> int | None:
+    request = serializer.context.get("request") if isinstance(serializer.context, dict) else None
+    if request is None:
+        return None
+    query_params = getattr(request, "query_params", None)
+    if query_params is None:
+        query_params = getattr(request, "GET", None)
+    if query_params is None:
+        return None
+    raw = query_params.get("subentity_id")
+    if raw in (None, "", "null", "None"):
+        return None
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _resolve_account_withholding_profile(*, acc, serializer):
+    entity_id = getattr(acc, "entity_id", None)
+    if not entity_id:
+        return None
+    subentity_id = _account_withholding_subentity_id(serializer)
+    qs = EntityPartyTaxProfile.objects.filter(
+        entity_id=entity_id,
+        party_account_id=acc.id,
+        is_active=True,
+    )
+    if subentity_id is not None:
+        scoped = qs.filter(subentity_id=subentity_id).order_by("-id").first()
+        if scoped is not None:
+            return scoped
+    return qs.filter(subentity__isnull=True).order_by("-id").first()
+
+
+def _serialize_account_withholding_profile(*, acc, serializer):
+    profile = _resolve_account_withholding_profile(acc=acc, serializer=serializer)
+    compliance = getattr(acc, "compliance_profile", None)
+    pan = getattr(compliance, "pan", None) if compliance else None
+    payload = {
+        "id": getattr(profile, "id", None),
+        "party_account": acc.id,
+        "pan": pan,
+        "is_pan_available": bool((pan or "").strip()),
+        "subentity": getattr(profile, "subentity_id", None),
+        "residency_status": getattr(profile, "residency_status", "unknown") if profile else "unknown",
+        "tax_identifier": getattr(profile, "tax_identifier", None) if profile else None,
+        "declaration_reference": getattr(profile, "declaration_reference", None) if profile else None,
+        "treaty_article": getattr(profile, "treaty_article", None) if profile else None,
+        "treaty_rate": getattr(profile, "treaty_rate", None) if profile else None,
+        "treaty_valid_from": getattr(profile, "treaty_valid_from", None) if profile else None,
+        "treaty_valid_to": getattr(profile, "treaty_valid_to", None) if profile else None,
+        "surcharge_rate": getattr(profile, "surcharge_rate", None) if profile else None,
+        "cess_rate": getattr(profile, "cess_rate", None) if profile else None,
+        "is_exempt_withholding": bool(getattr(profile, "is_exempt_withholding", False)),
+        "is_specified_person_206ab": bool(getattr(profile, "is_specified_person_206ab", False)),
+        "specified_person_valid_from": getattr(profile, "specified_person_valid_from", None) if profile else None,
+        "specified_person_valid_to": getattr(profile, "specified_person_valid_to", None) if profile else None,
+        "lower_deduction_rate": getattr(profile, "lower_deduction_rate", None) if profile else None,
+        "lower_deduction_valid_from": getattr(profile, "lower_deduction_valid_from", None) if profile else None,
+        "lower_deduction_valid_to": getattr(profile, "lower_deduction_valid_to", None) if profile else None,
+        "is_active": bool(getattr(profile, "is_active", True)) if profile else True,
+    }
+    return payload
 
 
 class LedgerSerializer(serializers.ModelSerializer):
@@ -231,6 +321,7 @@ class AccountProfileV2WriteSerializer(serializers.ModelSerializer):
     ledger = AccountProfileLedgerInputSerializer(required=False, write_only=True)
     compliance_profile = serializers.DictField(required=False, write_only=True)
     commercial_profile = serializers.DictField(required=False, write_only=True)
+    withholding_profile = serializers.DictField(required=False, write_only=True)
     primary_address = serializers.DictField(required=False, write_only=True)
     primary_contact = serializers.DictField(required=False, write_only=True)
     primary_bank = serializers.DictField(required=False, write_only=True)
@@ -261,6 +352,7 @@ class AccountProfileV2WriteSerializer(serializers.ModelSerializer):
             "ledger",
             "compliance_profile",
             "commercial_profile",
+            "withholding_profile",
             "primary_address",
             "primary_contact",
             "primary_bank",
@@ -277,7 +369,33 @@ class AccountProfileV2WriteSerializer(serializers.ModelSerializer):
                 compliance["gstno"] = validate_financial_gstin(compliance.get("gstno"))
             except DjangoValidationError as exc:
                 raise serializers.ValidationError({"compliance_profile": {"gstno": exc.messages[0]}})
-            attrs["compliance_profile"] = compliance
+        if "udyam_no" in compliance:
+            compliance["udyam_no"] = (str(compliance.get("udyam_no") or "").strip().upper() or None)
+        if "msme_status" in compliance:
+            valid_statuses = {choice[0] for choice in AccountComplianceProfile.MsmeStatus.choices}
+            msme_status = str(compliance.get("msme_status") or "").strip().lower() or None
+            if msme_status and msme_status not in valid_statuses:
+                raise serializers.ValidationError(
+                    {"compliance_profile": {"msme_status": "Select a valid MSME status."}}
+                )
+            compliance["msme_status"] = msme_status
+        if "msme_credit_days" in compliance:
+            raw_days = compliance.get("msme_credit_days")
+            if raw_days in ("", None):
+                compliance["msme_credit_days"] = None
+            else:
+                try:
+                    msme_credit_days = int(raw_days)
+                except (TypeError, ValueError):
+                    raise serializers.ValidationError(
+                        {"compliance_profile": {"msme_credit_days": "Enter a valid number of MSME credit days."}}
+                    )
+                if msme_credit_days < 0 or msme_credit_days > 45:
+                    raise serializers.ValidationError(
+                        {"compliance_profile": {"msme_credit_days": "MSME credit days must be between 0 and 45."}}
+                    )
+                compliance["msme_credit_days"] = msme_credit_days
+        attrs["compliance_profile"] = compliance
         if self.instance is None and not attrs.get("entity"):
             raise serializers.ValidationError({"entity": "Entity is required."})
         if self.instance is None and not attrs.get("accountname"):
@@ -323,6 +441,7 @@ class AccountProfileV2WriteSerializer(serializers.ModelSerializer):
     def _extract_normalized_profile_payload(self, validated_data):
         compliance = dict(validated_data.pop("compliance_profile", {}) or {})
         commercial = dict(validated_data.pop("commercial_profile", {}) or {})
+        withholding = dict(validated_data.pop("withholding_profile", {}) or {})
         primary_address = dict(validated_data.pop("primary_address", {}) or {})
         primary_contact = dict(validated_data.pop("primary_contact", {}) or {})
         primary_bank = dict(validated_data.pop("primary_bank", {}) or {})
@@ -346,12 +465,12 @@ class AccountProfileV2WriteSerializer(serializers.ModelSerializer):
                 if value not in (None, "") and key not in primary_bank:
                     primary_bank[key] = value
 
-        return compliance, commercial, primary_address, primary_contact, primary_bank
+        return withholding, compliance, commercial, primary_address, primary_contact, primary_bank
 
     @transaction.atomic
     def create(self, validated_data):
         accounting = self._resolve_accounting_payload(validated_data)
-        compliance_payload, commercial_payload, primary_address_payload, primary_contact_payload, primary_bank_payload = self._extract_normalized_profile_payload(
+        withholding_payload, compliance_payload, commercial_payload, primary_address_payload, primary_contact_payload, primary_bank_payload = self._extract_normalized_profile_payload(
             validated_data
         )
         request = self.context.get("request")
@@ -392,12 +511,13 @@ class AccountProfileV2WriteSerializer(serializers.ModelSerializer):
             primary_bank_data=primary_bank_payload if primary_bank_payload else None,
             createdby=validated_data.get("createdby"),
         )
+        self._sync_withholding_profile(acc=acc, withholding_payload=withholding_payload)
         return acc
 
     @transaction.atomic
     def update(self, instance, validated_data):
         accounting = self._resolve_accounting_payload(validated_data)
-        compliance_payload, commercial_payload, primary_address_payload, primary_contact_payload, primary_bank_payload = self._extract_normalized_profile_payload(
+        withholding_payload, compliance_payload, commercial_payload, primary_address_payload, primary_contact_payload, primary_bank_payload = self._extract_normalized_profile_payload(
             validated_data
         )
         for field, value in validated_data.items():
@@ -444,7 +564,34 @@ class AccountProfileV2WriteSerializer(serializers.ModelSerializer):
             primary_bank_data=primary_bank_payload if primary_bank_payload else None,
             createdby=actor,
         )
+        self._sync_withholding_profile(acc=instance, withholding_payload=withholding_payload)
         return instance
+
+    def _sync_withholding_profile(self, *, acc, withholding_payload):
+        if not withholding_payload:
+            return
+        payload = dict(withholding_payload)
+        payload.pop("id", None)
+        payload.pop("party_account", None)
+        payload.pop("pan", None)
+        payload.pop("is_pan_available", None)
+        if "subentity" in payload:
+            payload["subentity_id"] = self._normalize_fk_value(payload.pop("subentity"))
+
+        defaults = {}
+        for field_name in WITHHOLDING_PROFILE_FIELDS:
+            source_key = "subentity_id" if field_name == "subentity" else field_name
+            if source_key in payload:
+                defaults[source_key] = payload[source_key]
+        if not defaults:
+            return
+
+        EntityPartyTaxProfile.objects.update_or_create(
+            entity_id=acc.entity_id,
+            party_account=acc,
+            subentity_id=defaults.pop("subentity_id", None),
+            defaults=defaults,
+        )
 
 
 class AccountProfileV2ReadSerializer(serializers.ModelSerializer):
@@ -483,11 +630,16 @@ class AccountProfileV2ReadSerializer(serializers.ModelSerializer):
     cin = serializers.SerializerMethodField()
     msme = serializers.SerializerMethodField()
     gsttdsno = serializers.SerializerMethodField()
+    msme_status = serializers.SerializerMethodField()
+    udyam_no = serializers.SerializerMethodField()
+    has_written_payment_terms = serializers.SerializerMethodField()
+    msme_credit_days = serializers.SerializerMethodField()
     emailid = serializers.SerializerMethodField()
     contactno = serializers.SerializerMethodField()
     contactperson = serializers.SerializerMethodField()
     bankname = serializers.SerializerMethodField()
     banKAcno = serializers.SerializerMethodField()
+    withholding_profile = serializers.SerializerMethodField()
 
     class Meta:
         model = account
@@ -504,6 +656,10 @@ class AccountProfileV2ReadSerializer(serializers.ModelSerializer):
             "contactperson",
             "cin",
             "msme",
+            "msme_status",
+            "udyam_no",
+            "has_written_payment_terms",
+            "msme_credit_days",
             "gsttdsno",
             "gstintype",
             "gstregtype",
@@ -534,6 +690,7 @@ class AccountProfileV2ReadSerializer(serializers.ModelSerializer):
             "bankname",
             "banKAcno",
             "website",
+            "withholding_profile",
             "agent",
             "reminders",
             "ledger_mode",
@@ -677,3 +834,18 @@ class AccountProfileV2ReadSerializer(serializers.ModelSerializer):
 
     def get_gsttdsno(self, obj):
         return getattr(self._get_compliance(obj), "gsttdsno", None)
+
+    def get_msme_status(self, obj):
+        return getattr(self._get_compliance(obj), "msme_status", None)
+
+    def get_udyam_no(self, obj):
+        return getattr(self._get_compliance(obj), "udyam_no", None)
+
+    def get_has_written_payment_terms(self, obj):
+        return getattr(self._get_compliance(obj), "has_written_payment_terms", None)
+
+    def get_msme_credit_days(self, obj):
+        return getattr(self._get_compliance(obj), "msme_credit_days", None)
+
+    def get_withholding_profile(self, obj):
+        return _serialize_account_withholding_profile(acc=obj, serializer=self)

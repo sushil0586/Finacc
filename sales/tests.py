@@ -6,7 +6,7 @@ from datetime import date
 from django.test import SimpleTestCase
 from django.utils import timezone
 from rest_framework.test import APIRequestFactory, force_authenticate
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from sales.models import SalesInvoiceHeader, SalesSettings
 from sales.services.sales_invoice_service import SalesInvoiceService
@@ -30,6 +30,10 @@ from sales.views.sales_invoice_views import (
     SalesInvoiceReverseAPIView,
     SalesInvoiceRetrieveUpdateAPIView,
 )
+from sales.views.sales_invoice_compliance_api import SalesInvoiceGenerateIRNAndEWayAPIView
+from sales.views.sales_invoice_compliance_api import SalesInvoiceGenerateIRNAPIView
+from sales.views.sales_invoice_compliance_api import SalesInvoiceGetIRNDetailsAPIView
+from sales.views.sales_invoice_compliance_api import SalesInvoiceGetEWayByIRNAPIView
 from sales.views.sales_ar_exports import CustomerStatementExcelAPIView
 from posting.adapters.sales_invoice import SalesInvoicePostingAdapter, SalesInvoicePostingConfig
 from posting.common.static_accounts import StaticAccountCodes
@@ -175,6 +179,149 @@ class SalesInvoiceServiceUnitTests(SimpleTestCase):
         self.assertTrue(res.enabled)
         self.assertEqual(res.amount, Decimal("0.00"))
         self.assertEqual(res.reason_code, "NOT_APPLICABLE_BASE_RULE_CONTEXT")
+
+    @patch("sales.services.sales_withholding_service._apply_section_threshold")
+    @patch("sales.services.sales_withholding_service.WithholdingResolver.resolve_rate")
+    @patch("sales.services.sales_withholding_service.WithholdingResolver.resolve_party_profile")
+    @patch("sales.services.sales_withholding_service.WithholdingResolver.get_entity_config")
+    def test_compute_tcs_applies_when_206c1h_threshold_crosses_in_current_invoice(
+        self,
+        mocked_get_cfg,
+        mocked_resolve_party_profile,
+        mocked_resolve_rate,
+        mocked_apply_threshold,
+    ):
+        mocked_get_cfg.return_value = SimpleNamespace(enable_tcs=True, apply_tcs_206c1h=True)
+        mocked_resolve_party_profile.return_value = None
+        mocked_resolve_rate.return_value = SimpleNamespace(
+            rate=Decimal("0.1000"),
+            reason=None,
+            reason_code=None,
+            no_pan_applied=False,
+            sec_206ab_applied=False,
+            lower_rate_applied=False,
+        )
+        mocked_apply_threshold.return_value = (
+            Decimal("500.00"),
+            "Threshold crossed in current transaction (cumulative mode).",
+            "THRESHOLD_CROSSED_CUMULATIVE",
+        )
+        header = SimpleNamespace(
+            id=55,
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            tcs_section=SimpleNamespace(
+                id=11,
+                section_code="206C(1H)",
+                base_rule=1,
+                rate_default=Decimal("0.1000"),
+                threshold_default=Decimal("5000000.00"),
+                applicability_json={"threshold_mode": "cumulative"},
+            ),
+        )
+
+        res = SalesWithholdingService.compute_tcs(
+            header=header,
+            customer_account_id=10,
+            invoice_date=date(2026, 4, 1),
+            taxable_total=Decimal("1000.00"),
+            gross_total=Decimal("1180.00"),
+        )
+
+        self.assertTrue(res.enabled)
+        self.assertEqual(res.base_amount, Decimal("500.00"))
+        self.assertEqual(res.amount, Decimal("0.50"))
+        self.assertEqual(res.reason_code, "THRESHOLD_CROSSED_CUMULATIVE")
+
+    @patch("sales.services.sales_withholding_service.WithholdingResolver.resolve_rate")
+    @patch("sales.services.sales_withholding_service.WithholdingResolver.resolve_party_profile")
+    @patch("sales.services.sales_withholding_service.WithholdingResolver.get_entity_config")
+    def test_compute_tcs_applies_no_pan_higher_rate_for_customer_profile(
+        self,
+        mocked_get_cfg,
+        mocked_resolve_party_profile,
+        mocked_resolve_rate,
+    ):
+        mocked_get_cfg.return_value = SimpleNamespace(enable_tcs=True, apply_tcs_206c1h=True)
+        mocked_resolve_party_profile.return_value = SimpleNamespace(is_pan_available=False)
+        mocked_resolve_rate.return_value = SimpleNamespace(
+            rate=Decimal("1.0000"),
+            reason="Higher rate (PAN missing 206AA)",
+            reason_code="NO_PAN_206AA",
+            no_pan_applied=True,
+            sec_206ab_applied=False,
+            lower_rate_applied=False,
+        )
+        header = SimpleNamespace(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            tcs_section=SimpleNamespace(
+                section_code="206C(1H)",
+                base_rule=1,
+                rate_default=Decimal("0.1000"),
+                threshold_default=Decimal("0.00"),
+                applicability_json={"threshold_mode": "cumulative"},
+            ),
+        )
+
+        res = SalesWithholdingService.compute_tcs(
+            header=header,
+            customer_account_id=10,
+            invoice_date=date(2026, 4, 1),
+            taxable_total=Decimal("1000.00"),
+            gross_total=Decimal("1180.00"),
+        )
+
+        self.assertTrue(res.enabled)
+        self.assertEqual(res.rate, Decimal("1.0000"))
+        self.assertEqual(res.base_amount, Decimal("1000.00"))
+        self.assertEqual(res.amount, Decimal("10.00"))
+        self.assertEqual(res.reason_code, "NO_PAN_206AA")
+        self.assertTrue(res.no_pan_applied)
+
+    @patch("sales.services.sales_withholding_service.WithholdingResolver.resolve_party_profile")
+    @patch("sales.services.sales_withholding_service.WithholdingResolver.get_entity_config")
+    def test_compute_tcs_skips_for_exempt_customer_profile(
+        self,
+        mocked_get_cfg,
+        mocked_resolve_party_profile,
+    ):
+        mocked_get_cfg.return_value = SimpleNamespace(enable_tcs=True, apply_tcs_206c1h=True)
+        mocked_resolve_party_profile.return_value = SimpleNamespace(
+            is_exempt_withholding=True,
+            is_pan_available=True,
+        )
+        header = SimpleNamespace(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            tcs_section=SimpleNamespace(
+                id=11,
+                section_code="206C(1H)",
+                base_rule=1,
+                rate_default=Decimal("0.1000"),
+                threshold_default=Decimal("0.00"),
+                applicability_json={"threshold_mode": "cumulative"},
+                requires_pan=False,
+                higher_rate_no_pan=None,
+                higher_rate_206ab=None,
+            ),
+        )
+
+        res = SalesWithholdingService.compute_tcs(
+            header=header,
+            customer_account_id=10,
+            invoice_date=date(2026, 4, 1),
+            taxable_total=Decimal("1000.00"),
+            gross_total=Decimal("1180.00"),
+        )
+
+        self.assertTrue(res.enabled)
+        self.assertEqual(res.amount, Decimal("0.00"))
+        self.assertEqual(res.reason_code, "EXEMPT")
+        self.assertEqual(res.rate, Decimal("0.0000"))
 
     def test_reverse_move_type(self):
         self.assertEqual(SalesInvoiceService._reverse_move_type("IN"), "OUT")
@@ -411,6 +558,63 @@ class SalesPostingAdapterUnitTests(SimpleTestCase):
         self.assertTrue(tcs_payable, "Expected TCS payable credit line.")
         self.assertTrue(customer_dr, "Expected single net customer receivable including TCS.")
         self.assertFalse(extra_customer_tcs_lines, "Did not expect a separate customer TCS line.")
+        gst_output_lines = [
+            x for x in jl_inputs
+            if x.account_id in {8103, 8104, 8105, 8106}
+        ]
+        self.assertFalse(gst_output_lines, "TCS-only fixture should not create or distort GST output lines.")
+
+    @patch("sales.services.sales_invoice_service.SalesWithholdingService.compute_tcs")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService.get_settings")
+    def test_apply_tcs_keeps_gst_taxable_totals_unchanged(self, mocked_get_settings, mocked_compute_tcs):
+        mocked_get_settings.return_value = SimpleNamespace(tcs_credit_note_policy="REVERSE")
+        section = SimpleNamespace(id=11, section_code="206C(1H)")
+        mocked_compute_tcs.return_value = WithholdingResult(
+            enabled=True,
+            section=section,
+            rate=Decimal("0.1000"),
+            base_amount=Decimal("1000.00"),
+            amount=Decimal("5.00"),
+            reason="Threshold crossed in current transaction (cumulative mode).",
+            reason_code="THRESHOLD_CROSSED_CUMULATIVE",
+        )
+
+        class Header:
+            withholding_enabled = True
+            doc_type = int(SalesInvoiceHeader.DocType.TAX_INVOICE)
+            tcs_section = section
+            tcs_section_id = 11
+            tcs_rate = Decimal("0.0000")
+            tcs_base_amount = Decimal("0.00")
+            tcs_amount = Decimal("0.00")
+            tcs_reason = ""
+            tcs_is_reversal = False
+            entity_id = 1
+            entityfinid_id = 1
+            subentity_id = None
+            customer_id = 1
+            bill_date = date(2026, 4, 1)
+            grand_total = Decimal("1180.00")
+            total_taxable_value = Decimal("1000.00")
+            total_cgst = Decimal("90.00")
+            total_sgst = Decimal("90.00")
+            total_igst = Decimal("0.00")
+            legacy_behavior_flags = {}
+            customer_receivable = Decimal("1180.00")
+
+            def save(self, **kwargs):
+                return None
+
+        h = Header()
+        SalesInvoiceService._apply_tcs(header=h, user=None)
+
+        self.assertEqual(h.total_taxable_value, Decimal("1000.00"))
+        self.assertEqual(h.total_cgst, Decimal("90.00"))
+        self.assertEqual(h.total_sgst, Decimal("90.00"))
+        self.assertEqual(h.total_igst, Decimal("0.00"))
+        self.assertEqual(h.grand_total, Decimal("1180.00"))
+        self.assertEqual(h.customer_receivable, Decimal("1185.00"))
+        self.assertEqual(h.tcs_amount, Decimal("5.00"))
 
     @patch("posting.adapters.sales_invoice.PostingService")
     @patch("posting.adapters.sales_invoice.Product.objects")
@@ -1017,6 +1221,61 @@ class SalesInvoiceAdditionalServiceUnitTests(SimpleTestCase):
 
     @patch("sales.services.sales_invoice_service.SalesWithholdingService.compute_tcs")
     @patch("sales.services.sales_invoice_service.SalesInvoiceService.get_settings")
+    def test_apply_tcs_sales_return_credit_note_marks_tcs_reversal(
+        self,
+        mocked_get_settings,
+        mocked_compute_tcs,
+    ):
+        mocked_get_settings.return_value = SimpleNamespace(tcs_credit_note_policy="REVERSE")
+        section = SimpleNamespace(id=11, section_code="206C(1H)")
+        mocked_compute_tcs.return_value = WithholdingResult(
+            enabled=True,
+            section=section,
+            rate=Decimal("0.1000"),
+            base_amount=Decimal("100.00"),
+            amount=Decimal("10.00"),
+            reason="sales return tcs reversal",
+            reason_code="OK",
+        )
+
+        class Header:
+            withholding_enabled = True
+            doc_type = int(SalesInvoiceHeader.DocType.CREDIT_NOTE)
+            note_reason = SalesInvoiceHeader.NoteReason.QUANTITY_RETURN
+            affects_inventory = True
+            tcs_section = section
+            tcs_section_id = 11
+            tcs_rate = Decimal("0.0000")
+            tcs_base_amount = Decimal("0.00")
+            tcs_amount = Decimal("0.00")
+            tcs_reason = ""
+            tcs_is_reversal = False
+            entity_id = 1
+            entityfinid_id = 1
+            subentity_id = None
+            customer_id = 1
+            bill_date = date(2026, 4, 1)
+            grand_total = Decimal("1180.00")
+            total_taxable_value = Decimal("1000.00")
+            legacy_behavior_flags = {}
+            customer_receivable = Decimal("1180.00")
+
+            def save(self, **kwargs):
+                return None
+
+        h = Header()
+        SalesInvoiceService._apply_tcs(header=h, user=None)
+
+        self.assertEqual(h.tcs_amount, Decimal("10.00"))
+        self.assertTrue(h.tcs_is_reversal)
+        self.assertEqual(h.customer_receivable, Decimal("1190.00"))
+        runtime = (h.legacy_behavior_flags or {}).get("tcs_runtime_result", {})
+        self.assertEqual(runtime.get("reason_code"), "OK")
+        self.assertTrue(h.affects_inventory)
+        self.assertEqual(h.note_reason, SalesInvoiceHeader.NoteReason.QUANTITY_RETURN)
+
+    @patch("sales.services.sales_invoice_service.SalesWithholdingService.compute_tcs")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService.get_settings")
     def test_apply_tcs_persists_runtime_snapshot_for_zero_collection_reason(
         self,
         mocked_get_settings,
@@ -1557,6 +1816,80 @@ class SalesInvoiceViewUnitTests(SimpleTestCase):
         self._assert_serializer_context(mocked_serializer_cls, expected_line_mode="goods")
 
     @patch("sales.views.sales_invoice_views.require_sales_request_permission")
+    @patch("sales.views.sales_invoice_views.SalesInvoiceService.requires_current_period_correction")
+    @patch("sales.views.sales_invoice_views.SalesInvoiceService.cancel")
+    @patch("sales.views.sales_invoice_views.SalesInvoiceHeaderSerializer")
+    @patch.object(SalesInvoiceCancelAPIView, "_get_scoped_header")
+    def test_cancel_view_requires_credit_note_permissions_for_locked_period_auto_reversal(
+        self,
+        mocked_get_header,
+        mocked_serializer_cls,
+        mocked_cancel,
+        mocked_requires_correction,
+        mocked_require_permission,
+    ):
+        mocked_get_header.return_value = self.header
+        mocked_cancel.return_value = self.header
+        mocked_requires_correction.return_value = True
+        mocked_serializer_cls.return_value.data = {"id": 10, "status_name": "Posted"}
+
+        request = self._build_request(
+            "/api/sales/invoices/10/cancel/?line_mode=service",
+            {"reason": "Customer requested cancellation."},
+        )
+
+        response = SalesInvoiceCancelAPIView.as_view()(request, pk=10)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mocked_require_permission.call_count, 3)
+        self.assertEqual(
+            mocked_require_permission.call_args_list[0].kwargs,
+            {"user": self.user, "entity_id": 1, "doc_type": int(SalesInvoiceHeader.DocType.TAX_INVOICE), "action": "cancel"},
+        )
+        self.assertEqual(
+            mocked_require_permission.call_args_list[1].kwargs,
+            {"user": self.user, "entity_id": 1, "doc_type": SalesInvoiceHeader.DocType.CREDIT_NOTE, "action": "create"},
+        )
+        self.assertEqual(
+            mocked_require_permission.call_args_list[2].kwargs,
+            {"user": self.user, "entity_id": 1, "doc_type": SalesInvoiceHeader.DocType.CREDIT_NOTE, "action": "post"},
+        )
+        mocked_cancel.assert_called_once_with(
+            header=self.header,
+            user=self.user,
+            reason="Customer requested cancellation.",
+        )
+        self._assert_serializer_context(mocked_serializer_cls, expected_line_mode="service")
+
+    @patch("sales.views.sales_invoice_views.require_sales_request_permission")
+    @patch("sales.views.sales_invoice_views.SalesInvoiceService.requires_current_period_correction")
+    @patch("sales.views.sales_invoice_views.SalesInvoiceService.cancel")
+    @patch.object(SalesInvoiceCancelAPIView, "_get_scoped_header")
+    def test_cancel_view_blocks_locked_period_auto_reversal_without_credit_note_permissions(
+        self,
+        mocked_get_header,
+        mocked_cancel,
+        mocked_requires_correction,
+        mocked_require_permission,
+    ):
+        mocked_get_header.return_value = self.header
+        mocked_requires_correction.return_value = True
+        mocked_require_permission.side_effect = [
+            None,
+            PermissionDenied({"detail": "Missing permission: sales.credit_note.create"}),
+        ]
+
+        request = self._build_request(
+            "/api/sales/invoices/10/cancel/",
+            {"reason": "Customer requested cancellation."},
+        )
+
+        response = SalesInvoiceCancelAPIView.as_view()(request, pk=10)
+
+        self.assertEqual(response.status_code, 403)
+        mocked_cancel.assert_not_called()
+
+    @patch("sales.views.sales_invoice_views.require_sales_request_permission")
     @patch("sales.views.sales_invoice_views.SalesInvoiceService.cancel")
     @patch("sales.views.sales_invoice_views.SalesInvoiceHeaderSerializer")
     @patch.object(SalesInvoiceCancelAPIView, "_get_scoped_header")
@@ -1617,6 +1950,334 @@ class SalesInvoiceViewUnitTests(SimpleTestCase):
             reason="Posting reversed for correction.",
         )
         self._assert_serializer_context(mocked_serializer_cls, expected_line_mode="goods")
+
+
+class SalesComplianceViewUnitTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.user = SimpleNamespace(is_authenticated=True, id=7)
+        self.header = SimpleNamespace(entity_id=1, id=10, is_eway_applicable=True, entity=SimpleNamespace(id=1))
+
+    def _build_request(self, path: str, payload: dict | None = None):
+        request = self.factory.post(path, payload or {}, format="json")
+        force_authenticate(request, user=self.user)
+        return request
+
+    @patch("sales.views.sales_invoice_compliance_api.SalesInvoiceHeaderSerializer")
+    @patch("sales.views.sales_invoice_compliance_api.SalesComplianceService")
+    @patch.object(SalesInvoiceGenerateIRNAndEWayAPIView, "_require_any_permission")
+    @patch.object(SalesInvoiceGenerateIRNAndEWayAPIView, "get_invoice")
+    def test_generate_irn_and_eway_view_returns_partial_success_errors_with_resolution(
+        self,
+        mocked_get_invoice,
+        mocked_require_permission,
+        mocked_service_cls,
+        mocked_serializer_cls,
+    ):
+        mocked_get_invoice.return_value = self.header
+        mocked_serializer_cls.return_value.data = {"id": 10, "status_name": "Confirmed"}
+        mocked_service_cls.return_value.generate_irn.return_value = SimpleNamespace(
+            id=21,
+            status=2,
+            irn="IRN123",
+            ack_no="ACK123",
+            ack_date="2026-05-23",
+        )
+        mocked_service_cls.generate_eway.side_effect = ValidationError({
+            "message": "Duplicate E-Way request.",
+            "code": "EWB_DUP",
+            "resolution": "Review transporter details and retry.",
+        })
+
+        request = self._build_request(
+            "/api/sales/sales-invoices/10/compliance/generate-irn-and-eway/",
+            {
+                "generate_eway": True,
+                "distance_km": 120,
+                "trans_mode": "1",
+                "transporter_id": "05AAACG0904A1ZL",
+                "transporter_name": "ABC Logistics",
+                "vehicle_no": "MH12AB1234",
+                "vehicle_type": "R",
+            },
+        )
+
+        response = SalesInvoiceGenerateIRNAndEWayAPIView.as_view()(request, pk=10)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.data["ok"])
+        self.assertEqual(response.data["workflow_status"], "PARTIAL_SUCCESS")
+        self.assertEqual(response.data["eway"]["status"], "FAILED")
+        self.assertEqual(response.data["eway"]["errors"][0]["message"], "Duplicate E-Way request.")
+        self.assertEqual(
+            response.data["eway"]["errors"][0]["resolution"],
+            "Review transporter details and retry.",
+        )
+
+    @patch("sales.views.sales_invoice_compliance_api.SalesEInvoice.objects")
+    @patch("sales.views.sales_invoice_compliance_api.SalesComplianceService")
+    @patch.object(SalesInvoiceGenerateIRNAPIView, "_require_any_permission")
+    @patch.object(SalesInvoiceGenerateIRNAPIView, "get_invoice")
+    def test_generate_irn_view_returns_structured_duplicate_error_reason_and_resolution(
+        self,
+        mocked_get_invoice,
+        mocked_require_permission,
+        mocked_service_cls,
+        mocked_einvoice_objects,
+    ):
+        mocked_get_invoice.return_value = self.header
+        mocked_einvoice_objects.filter.return_value.only.return_value.first.return_value = None
+        mocked_service_cls.return_value.generate_irn.side_effect = ValidationError({
+            "message": "Duplicate IRN",
+            "code": "2150",
+            "reason": "IRN already exists for this document.",
+            "resolution": "Use IRN Details to sync the existing IRN.",
+        })
+
+        request = self._build_request(
+            "/api/sales/sales-invoices/10/compliance/generate-irn/",
+            {},
+        )
+
+        response = SalesInvoiceGenerateIRNAPIView.as_view()(request, pk=10)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["errors"][0]["message"], "Duplicate IRN")
+        self.assertEqual(response.data["errors"][0]["code"], "2150")
+        self.assertEqual(response.data["errors"][0]["reason"], "IRN already exists for this document.")
+        self.assertEqual(
+            response.data["errors"][0]["resolution"],
+            "Use IRN Details to sync the existing IRN.",
+        )
+
+    @patch.object(SalesInvoiceGetIRNDetailsAPIView, "_compliance_summary")
+    @patch("sales.views.sales_invoice_compliance_api.SalesInvoiceHeaderSerializer")
+    @patch("sales.views.sales_invoice_compliance_api.SalesComplianceService")
+    @patch.object(SalesInvoiceGetIRNDetailsAPIView, "_require_any_permission")
+    @patch.object(SalesInvoiceGetIRNDetailsAPIView, "get_invoice")
+    def test_get_irn_details_view_returns_refreshed_invoice_and_compliance_state(
+        self,
+        mocked_get_invoice,
+        mocked_require_permission,
+        mocked_service_cls,
+        mocked_serializer_cls,
+        mocked_compliance_summary,
+    ):
+        header = SimpleNamespace(
+            entity_id=1,
+            id=10,
+            status=int(SalesInvoiceHeader.Status.POSTED),
+            is_einvoice_applicable=True,
+            is_eway_applicable=True,
+            einvoice_artifact=SimpleNamespace(status=2, irn="IRN123"),
+            eway_artifact=None,
+        )
+        mocked_get_invoice.return_value = header
+        mocked_serializer_cls.return_value.data = {"id": 10, "status_name": "Posted"}
+        mocked_compliance_summary.return_value = {
+            "action_flags": {
+                "can_generate_irn": False,
+                "can_generate_eway": True,
+                "state": {"irn_generated": True, "eway_generated": False, "is_b2c": False},
+            }
+        }
+        mocked_service_cls.return_value.get_irn_details.return_value = {
+            "status": "SUCCESS",
+            "irn": "IRN123",
+            "ack_no": "ACK123",
+            "ack_date": "2026-05-23",
+            "raw": {"irn": "IRN123"},
+        }
+
+        request = self._build_request("/api/sales/sales-invoices/10/compliance/get-irn-details/", {})
+
+        response = SalesInvoiceGetIRNDetailsAPIView.as_view()(request, pk=10)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["ok"])
+        self.assertEqual(response.data["invoice"]["id"], 10)
+        self.assertEqual(response.data["compliance"]["action_flags"]["can_generate_eway"], True)
+        self.assertEqual(response.data["irn"], "IRN123")
+
+    @patch.object(SalesInvoiceGetEWayByIRNAPIView, "_compliance_summary")
+    @patch("sales.views.sales_invoice_compliance_api.SalesInvoiceHeaderSerializer")
+    @patch("sales.views.sales_invoice_compliance_api.SalesComplianceService")
+    @patch.object(SalesInvoiceGetEWayByIRNAPIView, "_require_any_permission")
+    @patch.object(SalesInvoiceGetEWayByIRNAPIView, "get_invoice")
+    def test_get_eway_by_irn_view_returns_refreshed_invoice_and_compliance_state(
+        self,
+        mocked_get_invoice,
+        mocked_require_permission,
+        mocked_service_cls,
+        mocked_serializer_cls,
+        mocked_compliance_summary,
+    ):
+        header = SimpleNamespace(
+            entity_id=1,
+            id=10,
+            status=int(SalesInvoiceHeader.Status.POSTED),
+            is_einvoice_applicable=True,
+            is_eway_applicable=True,
+            einvoice_artifact=SimpleNamespace(status=2, irn="IRN123"),
+            eway_artifact=SimpleNamespace(status=2, ewb_no="171001234567"),
+        )
+        mocked_get_invoice.return_value = header
+        mocked_serializer_cls.return_value.data = {"id": 10, "status_name": "Posted"}
+        mocked_compliance_summary.return_value = {
+            "action_flags": {
+                "can_cancel_irn": False,
+                "can_cancel_eway": True,
+                "can_update_eway_vehicle": True,
+                "state": {"irn_generated": True, "eway_generated": True, "is_b2c": False},
+            }
+        }
+        mocked_service_cls.return_value.get_eway_details_by_irn.return_value = {
+            "status": "SUCCESS",
+            "irn": "IRN123",
+            "ewb_no": "171001234567",
+            "valid_upto": "2026-05-24",
+            "raw": {"ewb_no": "171001234567"},
+        }
+
+        request = self._build_request("/api/sales/sales-invoices/10/compliance/get-eway-by-irn/", {})
+
+        response = SalesInvoiceGetEWayByIRNAPIView.as_view()(request, pk=10)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["ok"])
+        self.assertEqual(response.data["invoice"]["id"], 10)
+        self.assertEqual(response.data["compliance"]["action_flags"]["can_cancel_eway"], True)
+        self.assertEqual(response.data["ewb_no"], "171001234567")
+
+
+class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
+    databases = {"default"}
+    @patch("sales.services.sales_compliance_service.ComplianceAuditService.resolve_exception")
+    @patch("sales.services.sales_compliance_service.ComplianceAuditService.log_action")
+    @patch("sales.services.sales_compliance_service.ProviderRegistry.get_einvoice")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._ensure_einvoice_row")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService.assert_action_allowed")
+    def test_get_irn_details_success_clears_stale_error_fields(
+        self,
+        mocked_assert_allowed,
+        mocked_ensure_einv,
+        mocked_get_provider,
+        mocked_log_action,
+        mocked_resolve_exception,
+    ):
+        invoice = SimpleNamespace(id=10, entity=SimpleNamespace(id=1))
+        user = SimpleNamespace(id=7)
+        save_spy = MagicMock()
+        einv = SimpleNamespace(
+            irn="IRN123",
+            ack_no=None,
+            ack_date=None,
+            signed_invoice=None,
+            signed_qr_code=None,
+            ewb_no=None,
+            ewb_date=None,
+            ewb_valid_upto=None,
+            last_response_json={},
+            last_error_code="2150",
+            last_error_message="Duplicate IRN",
+            status=0,
+            last_success_at=None,
+            updated_by=None,
+            save=save_spy,
+        )
+        mocked_ensure_einv.return_value = einv
+        mocked_get_provider.return_value.get_irn_details.return_value = SimpleNamespace(
+            ok=True,
+            irn="IRN123",
+            ack_no="ACK123",
+            ack_date="2026-05-23 10:00:00",
+            signed_invoice=None,
+            signed_qr_code=None,
+            ewb_no=None,
+            ewb_date=None,
+            ewb_valid_upto=None,
+            raw={"irn": "IRN123"},
+        )
+
+        svc = SalesComplianceService(invoice=invoice, user=user)
+
+        result = svc.get_irn_details()
+
+        self.assertEqual(result["status"], "SUCCESS")
+        self.assertEqual(einv.last_error_code, None)
+        self.assertEqual(einv.last_error_message, None)
+        self.assertEqual(einv.irn, "IRN123")
+        save_spy.assert_called()
+        mocked_resolve_exception.assert_called_once_with(
+            invoice=invoice,
+            exception_type="IRN_GENERATION_FAILED",
+            user=user,
+        )
+
+    @patch("sales.services.sales_compliance_service.ComplianceAuditService.resolve_exception")
+    @patch("sales.services.sales_compliance_service.ComplianceAuditService.log_action")
+    @patch("sales.services.sales_compliance_service.ProviderRegistry.get_einvoice")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._ensure_eway_row")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._ensure_einvoice_row")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService.assert_action_allowed")
+    def test_get_eway_by_irn_success_clears_stale_error_fields(
+        self,
+        mocked_assert_allowed,
+        mocked_ensure_einv,
+        mocked_ensure_eway,
+        mocked_get_provider,
+        mocked_log_action,
+        mocked_resolve_exception,
+    ):
+        invoice = SimpleNamespace(id=10, entity=SimpleNamespace(id=1))
+        user = SimpleNamespace(id=7)
+        einv_save_spy = MagicMock()
+        ewb_save_spy = MagicMock()
+        einv = SimpleNamespace(
+            irn="IRN123",
+            ewb_no=None,
+            ewb_date=None,
+            ewb_valid_upto=None,
+            updated_by=None,
+            save=einv_save_spy,
+        )
+        ewb = SimpleNamespace(
+            ewb_no=None,
+            ewb_date=None,
+            valid_upto=None,
+            status=0,
+            last_success_at=None,
+            last_response_json={},
+            last_error_code="EWB_GET_FAILED",
+            last_error_message="Fetch failed",
+            updated_by=None,
+            save=ewb_save_spy,
+        )
+        mocked_ensure_einv.return_value = einv
+        mocked_ensure_eway.return_value = ewb
+        mocked_get_provider.return_value.get_eway_details_by_irn.return_value = SimpleNamespace(
+            ok=True,
+            ewb_no="171001234567",
+            ewb_date="2026-05-23 10:05:00",
+            valid_upto="2026-05-24 23:59:00",
+            raw={"ewb_no": "171001234567"},
+        )
+
+        svc = SalesComplianceService(invoice=invoice, user=user)
+
+        result = svc.get_eway_details_by_irn()
+
+        self.assertEqual(result["status"], "SUCCESS")
+        self.assertEqual(ewb.last_error_code, None)
+        self.assertEqual(ewb.last_error_message, None)
+        self.assertEqual(ewb.ewb_no, "171001234567")
+        self.assertEqual(einv.ewb_no, "171001234567")
+        ewb_save_spy.assert_called()
+        mocked_resolve_exception.assert_called_once_with(
+            invoice=invoice,
+            exception_type="EWB_GENERATION_FAILED",
+            user=user,
+        )
 
     @patch("sales.views.sales_invoice_views.require_sales_request_permission")
     @patch("rest_framework.generics.ListCreateAPIView.create")

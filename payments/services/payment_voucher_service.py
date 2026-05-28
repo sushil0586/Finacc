@@ -50,6 +50,17 @@ class PaymentVoucherResult:
 class PaymentVoucherService(SettlementVoucherRuntimeMixin):
     AUTO_WITHHOLDING_TDS_REMARK = "__AUTO_WITHHOLDING_TDS__"
 
+    @staticmethod
+    def _net_inclusive_payment_base(net_support_amount: Decimal, rate: Decimal) -> Decimal:
+        net_support = q2(net_support_amount)
+        rate = q2(rate)
+        if net_support <= ZERO2 or rate <= ZERO2:
+            return net_support
+        divisor = Decimal("1.00") - (rate / Decimal("100.00"))
+        if divisor <= ZERO2:
+            return net_support
+        return q2(net_support / divisor)
+
     @classmethod
     def _normalize_advance_adjustments(cls, rows_in: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []
@@ -230,6 +241,7 @@ class PaymentVoucherService(SettlementVoucherRuntimeMixin):
             )
             return non_runtime_rows, payload
 
+        has_allocations = cls._sum_allocation_rows(allocations) > ZERO2
         base_amount = cls._sum_allocation_rows(allocations)
         if base_amount <= ZERO2:
             base_amount = q2(cash_paid_amount)
@@ -241,7 +253,7 @@ class PaymentVoucherService(SettlementVoucherRuntimeMixin):
                 id=section_id,
                 tax_type=WithholdingTaxType.TDS,
             )
-            .only("id", "base_rule", "section_code")
+            .only("id", "base_rule", "section_code", "rate_default")
             .first()
         )
         if not section_obj:
@@ -275,11 +287,27 @@ class PaymentVoucherService(SettlementVoucherRuntimeMixin):
         if mode == "MANUAL":
             rate = q2(config.get("manual_rate") or ZERO2)
             amount = q2(config.get("manual_amount") or ZERO2)
+            if base_amount <= ZERO2 and q2(cash_paid_amount) > ZERO2:
+                base_amount = q2(cash_paid_amount)
+            if not has_allocations and base_amount > ZERO2 and rate > ZERO2:
+                manual_adjustment_total = cls._compute_adjustment_total(non_runtime_rows)
+                base_amount = cls._net_inclusive_payment_base(
+                    q2(cash_paid_amount) + q2(manual_adjustment_total),
+                    rate,
+                )
             if amount <= ZERO2:
                 amount = q2((base_amount * rate) / Decimal("100.00"))
             reason = str(config.get("manual_reason") or "MANUAL")
             reason_code = "MANUAL"
         else:
+            if not has_allocations and base_amount > ZERO2:
+                rate_hint = q2(getattr(section_obj, "rate_default", ZERO2) or ZERO2)
+                if rate_hint > ZERO2:
+                    manual_adjustment_total = cls._compute_adjustment_total(non_runtime_rows)
+                    base_amount = cls._net_inclusive_payment_base(
+                        q2(cash_paid_amount) + q2(manual_adjustment_total),
+                        rate_hint,
+                    )
             preview = compute_withholding_preview(
                 entity_id=entity_id,
                 entityfin_id=entityfinid_id,
@@ -297,6 +325,31 @@ class PaymentVoucherService(SettlementVoucherRuntimeMixin):
             reason = preview.reason
             reason_code = preview.reason_code
             section_obj = getattr(preview, "section", None)
+            if not has_allocations and rate > ZERO2:
+                manual_adjustment_total = cls._compute_adjustment_total(non_runtime_rows)
+                recomputed_base = cls._net_inclusive_payment_base(
+                    q2(cash_paid_amount) + q2(manual_adjustment_total),
+                    rate,
+                )
+                if abs(recomputed_base - base_amount) > Q2:
+                    base_amount = recomputed_base
+                    preview = compute_withholding_preview(
+                        entity_id=entity_id,
+                        entityfin_id=entityfinid_id,
+                        subentity_id=subentity_id,
+                        party_account_id=paid_to_id,
+                        tax_type=WithholdingTaxType.TDS,
+                        explicit_section_id=section_id,
+                        doc_date=voucher_date or timezone.localdate(),
+                        taxable_total=base_amount,
+                        gross_total=base_amount,
+                        allowed_base_rules=[WithholdingBaseRule.PAYMENT_VALUE],
+                    )
+                    rate = q2(preview.rate or ZERO2)
+                    amount = q2(preview.amount or ZERO2)
+                    reason = preview.reason
+                    reason_code = preview.reason_code
+                    section_obj = getattr(preview, "section", None)
 
         payload["withholding_runtime_result"] = cls._build_runtime_withholding_snapshot(
             enabled=True,
@@ -1453,12 +1506,15 @@ class PaymentVoucherService(SettlementVoucherRuntimeMixin):
             if unpost_target == "draft"
             else PaymentVoucherHeader.Status.CONFIRMED
         )
+        h.approved_at = None
+        h.approved_by_id = None
+        h.workflow_payload = PaymentVoucherService._reset_workflow_state(h.workflow_payload, status="DRAFT")
         h.workflow_payload = PaymentVoucherService._append_audit(
             h.workflow_payload,
             {"action": "UNPOSTED", "at": timezone.now().isoformat(), "by": unposted_by_id or h.created_by_id},
         )
-        h.save(update_fields=["status", "ap_settlement", "workflow_payload", "updated_at"])
-        return PaymentVoucherResult(h, "Unposted with reversal entry.")
+        h.save(update_fields=["status", "approved_at", "approved_by", "ap_settlement", "workflow_payload", "updated_at"])
+        return PaymentVoucherResult(h, "Unposted with reversal entry. Voucher reopened for correction and reposting.")
 
     @staticmethod
     @transaction.atomic

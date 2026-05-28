@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from purchase.models.purchase_core import PurchaseInvoiceLine
+from sales.models.sales_core import SalesInvoiceLine
 from financial.models import Ledger
 from posting.models import TxnType
 from reports.selectors.financial import (
@@ -20,6 +22,30 @@ SORTABLE_FIELDS = {
     "credit": lambda row: Decimal(row.get("credit") or "0.00"),
     "running_balance": lambda row: Decimal(row.get("running_balance") or "0.00"),
 }
+
+
+def _invoice_drilldown_route(txn_type: str | None, txn_id: int | None) -> str | None:
+    if not txn_id:
+        return None
+    if txn_type in {
+        TxnType.PURCHASE,
+        TxnType.PURCHASE_CREDIT_NOTE,
+        TxnType.PURCHASE_DEBIT_NOTE,
+        TxnType.PURCHASE_RETURN,
+    }:
+        if PurchaseInvoiceLine.objects.filter(header_id=txn_id, is_service=True).exists():
+            return "/purchaseserviceinvoice"
+        return "/purchaseinvoice"
+    if txn_type in {
+        TxnType.SALES,
+        TxnType.SALES_CREDIT_NOTE,
+        TxnType.SALES_DEBIT_NOTE,
+        TxnType.SALES_RETURN,
+    }:
+        if SalesInvoiceLine.objects.filter(header_id=txn_id, is_service=True).exists():
+            return "/saleserviceinvoice"
+        return "/saleinvoice"
+    return None
 
 
 def _drilldown_meta(line, *, entity_id, entityfin_id, subentity_id):
@@ -57,6 +83,7 @@ def _drilldown_meta(line, *, entity_id, entityfin_id, subentity_id):
         "source_model": source_model,
         "source_id": source_id,
         "drilldown_target": drilldown_target,
+        "drilldown_route": _invoice_drilldown_route(txn_type, source_id),
         "drilldown_params": {
             "id": source_id,
             "entity": entity_id,

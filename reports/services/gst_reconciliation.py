@@ -5,6 +5,7 @@ from decimal import Decimal
 from posting.models import Entry
 from reports.gstr1.selectors.queries import apply_scope_filters, base_queryset
 from reports.gstr1.services.classification import Gstr1ClassificationService
+from sales.models import SalesInvoiceLine
 
 ZERO = Decimal("0.00")
 TOLERANCE = Decimal("0.05")
@@ -142,15 +143,21 @@ def _build_reconciliation_drilldowns(scope_params: dict | None, code: str) -> di
 
 
 def _build_source_document_drilldown(*, invoice_id: int) -> dict:
+    route = _resolve_source_document_route(invoice_id=invoice_id)
     return {
         "target": "sales_invoice_detail",
         "label": "Open source invoice",
         "kind": "document",
-        "route": "/saleinvoice",
+        "route": route,
         "params": {
             "transactionid": int(invoice_id),
         },
     }
+
+
+def _resolve_source_document_route(*, invoice_id: int) -> str:
+    has_service_lines = SalesInvoiceLine.objects.filter(header_id=invoice_id, is_service=True).exists()
+    return "/saleserviceinvoice" if has_service_lines else "/saleinvoice"
 
 
 def _build_posting_lookup_drilldown(*, invoice_id: int) -> dict:

@@ -13,12 +13,13 @@ from rest_framework.test import APIClient, APITestCase
 from Authentication.models import User
 from catalog.models import Product, ProductCategory, UnitOfMeasure
 from entity.models import Entity, EntityAddress, EntityFinancialYear, EntityGstRegistration, GstRegistrationType, SubEntity
-from financial.models import AccountCommercialProfile, AccountComplianceProfile, Ledger, accountHead, accounttype
+from financial.models import AccountCommercialProfile, AccountComplianceProfile, Ledger, ShippingDetails, accountHead, accounttype
 from financial.services import create_account_with_synced_ledger
 from geography.models import City, Country, District, State
 from numbering.models import DocumentNumberSeries, DocumentType
 from posting.models import Entry, EntryStatus, JournalLine, PostingBatch, TxnType
-from sales.models import SalesInvoiceHeader
+from sales.models import SalesInvoiceHeader, SalesLockPeriod
+from sales.services.sales_settings_service import SalesSettingsService
 
 
 @override_settings(ROOT_URLCONF="FA.urls", AUTH_PASSWORD_VALIDATORS=[])
@@ -124,6 +125,18 @@ class SalesApiEndToEndTests(APITestCase):
             account=self.customer,
             defaults={"entity": self.entity, "gstno": "27ABCDE1234F1Z5", "createdby": self.user},
         )
+        ShippingDetails.objects.create(
+            account=self.customer,
+            entity=self.entity,
+            createdby=self.user,
+            full_name="Customer-A Shipping",
+            country=self.country,
+            state=self.state_home,
+            district=self.district,
+            city=self.city,
+            pincode="400001",
+            isprimary=True,
+        )
 
         service_ledger = Ledger.objects.create(
             entity=self.entity,
@@ -217,6 +230,7 @@ class SalesApiEndToEndTests(APITestCase):
                 "sales.credit_note.create",
                 "sales.credit_note.update",
                 "sales.credit_note.edit",
+                "sales.credit_note.confirm",
                 "sales.credit_note.post",
                 "sales.credit_note.unpost",
                 "sales.credit_note.cancel",
@@ -226,6 +240,7 @@ class SalesApiEndToEndTests(APITestCase):
                 "sales.debit_note.create",
                 "sales.debit_note.update",
                 "sales.debit_note.edit",
+                "sales.debit_note.confirm",
                 "sales.debit_note.post",
                 "sales.debit_note.unpost",
                 "sales.debit_note.cancel",
@@ -319,6 +334,155 @@ class SalesApiEndToEndTests(APITestCase):
         self.assertEqual(len(body["lines"]), 1)
         self.assertIsNotNone(body["lines"][0]["id"])
 
+    def test_patch_updates_draft_invoice_header_fields(self):
+        created = self._create_invoice(reference="SO-UPD")
+        invoice_id = created["id"]
+
+        patch_resp = self.client.patch(
+            f"/api/sales/invoices/{invoice_id}/{self._scope_qs()}",
+            {"reference": "SO-UPD-EDITED", "remarks": "Draft updated"},
+            format="json",
+        )
+        self.assertEqual(patch_resp.status_code, status.HTTP_200_OK, patch_resp.json())
+        body = patch_resp.json()
+        self.assertEqual(body["reference"], "SO-UPD-EDITED")
+        self.assertEqual(body["remarks"], "Draft updated")
+        self.assertEqual(body["status"], int(SalesInvoiceHeader.Status.DRAFT))
+
+    def test_delete_draft_invoice_is_allowed(self):
+        created = self._create_invoice(reference="SO-DEL-DRAFT")
+        invoice_id = created["id"]
+
+        delete_resp = self.client.delete(
+            f"/api/sales/invoices/{invoice_id}/{self._scope_qs()}",
+            format="json",
+        )
+        self.assertEqual(delete_resp.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(SalesInvoiceHeader.objects.filter(pk=invoice_id).exists())
+
+    def test_delete_confirmed_invoice_is_blocked_by_draft_only_policy(self):
+        settings_obj = SalesSettingsService.get_settings(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            entityfinid_id=self.entityfin.id,
+        )
+        settings_obj.policy_controls = {"delete_policy": "draft_only"}
+        settings_obj.save(update_fields=["policy_controls"])
+
+        created = self._create_invoice(reference="SO-DEL-BLOCK")
+        invoice_id = created["id"]
+        confirm_resp = self.client.post(
+            f"/api/sales/invoices/{invoice_id}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(confirm_resp.status_code, status.HTTP_200_OK, confirm_resp.json())
+
+        delete_resp = self.client.delete(
+            f"/api/sales/invoices/{invoice_id}/{self._scope_qs()}",
+            format="json",
+        )
+        self.assertEqual(delete_resp.status_code, status.HTTP_400_BAD_REQUEST, delete_resp.json())
+        self.assertIn("Only draft sale invoices can be deleted", str(delete_resp.json()))
+
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._run_auto_compliance")
+    @patch("sales.services.sales_invoice_service.SalesArService.sync_open_item_for_header")
+    @patch("sales.services.sales_invoice_service.SalesInvoicePostingAdapter.post_sales_invoice")
+    def test_same_state_taxable_invoice_uses_cgst_sgst_through_posting_flow(
+        self,
+        mocked_post_adapter,
+        mocked_sync_open_item,
+        mocked_auto_compliance,
+    ):
+        body = self._create_invoice(
+            reference="SO-SAME-STATE",
+            customer_state_code="27",
+            place_of_supply_state_code="27",
+        )
+        invoice_id = body["id"]
+        self.assertFalse(body["is_igst"])
+        self.assertEqual(Decimal(str(body["total_taxable_value"])), Decimal("1000.00"))
+        self.assertEqual(Decimal(str(body["total_cgst"])), Decimal("90.00"))
+        self.assertEqual(Decimal(str(body["total_sgst"])), Decimal("90.00"))
+        self.assertEqual(Decimal(str(body["total_igst"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(body["grand_total"])), Decimal("1180.00"))
+
+        confirm_resp = self.client.post(
+            f"/api/sales/invoices/{invoice_id}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(confirm_resp.status_code, status.HTTP_200_OK, confirm_resp.json())
+
+        post_resp = self.client.post(
+            f"/api/sales/invoices/{invoice_id}/post/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(post_resp.status_code, status.HTTP_200_OK, post_resp.json())
+        post_body = post_resp.json()
+        self.assertEqual(post_body["status"], int(SalesInvoiceHeader.Status.POSTED))
+        self.assertFalse(post_body["is_igst"])
+        self.assertEqual(Decimal(str(post_body["total_cgst"])), Decimal("90.00"))
+        self.assertEqual(Decimal(str(post_body["total_sgst"])), Decimal("90.00"))
+        self.assertEqual(Decimal(str(post_body["total_igst"])), Decimal("0.00"))
+
+        header = SalesInvoiceHeader.objects.get(pk=invoice_id)
+        self.assertFalse(header.is_igst)
+        self.assertEqual(str(header.place_of_supply_state_code), "27")
+        mocked_post_adapter.assert_called_once()
+        mocked_sync_open_item.assert_called_once()
+        mocked_auto_compliance.assert_called()
+
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._run_auto_compliance")
+    @patch("sales.services.sales_invoice_service.SalesArService.sync_open_item_for_header")
+    @patch("sales.services.sales_invoice_service.SalesInvoicePostingAdapter.post_sales_invoice")
+    def test_interstate_taxable_invoice_uses_igst_through_posting_flow(
+        self,
+        mocked_post_adapter,
+        mocked_sync_open_item,
+        mocked_auto_compliance,
+    ):
+        body = self._create_invoice(
+            reference="SO-INTERSTATE",
+            customer_state_code="29",
+            place_of_supply_state_code="29",
+        )
+        invoice_id = body["id"]
+        self.assertTrue(body["is_igst"])
+        self.assertEqual(Decimal(str(body["total_taxable_value"])), Decimal("1000.00"))
+        self.assertEqual(Decimal(str(body["total_cgst"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(body["total_sgst"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(body["total_igst"])), Decimal("180.00"))
+        self.assertEqual(Decimal(str(body["grand_total"])), Decimal("1180.00"))
+
+        confirm_resp = self.client.post(
+            f"/api/sales/invoices/{invoice_id}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(confirm_resp.status_code, status.HTTP_200_OK, confirm_resp.json())
+
+        post_resp = self.client.post(
+            f"/api/sales/invoices/{invoice_id}/post/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(post_resp.status_code, status.HTTP_200_OK, post_resp.json())
+        post_body = post_resp.json()
+        self.assertEqual(post_body["status"], int(SalesInvoiceHeader.Status.POSTED))
+        self.assertTrue(post_body["is_igst"])
+        self.assertEqual(Decimal(str(post_body["total_cgst"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(post_body["total_sgst"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(post_body["total_igst"])), Decimal("180.00"))
+
+        header = SalesInvoiceHeader.objects.get(pk=invoice_id)
+        self.assertTrue(header.is_igst)
+        self.assertEqual(str(header.place_of_supply_state_code), "29")
+        mocked_post_adapter.assert_called_once()
+        mocked_sync_open_item.assert_called_once()
+        mocked_auto_compliance.assert_called()
+
     def test_service_invoice_endpoints_only_return_service_rows(self):
         self._create_invoice(reference="SO-GOODS", lines=[self._goods_line_payload()])
         self._create_invoice(
@@ -372,6 +536,53 @@ class SalesApiEndToEndTests(APITestCase):
         self.assertEqual(confirmed["doc_no"], 1001)
         self.assertEqual(confirmed["invoice_number"], "SI-SINV-1001")
 
+    def test_confirmed_invoice_can_be_edited_when_policy_allows(self):
+        created = self._create_invoice(reference="SO-CONF-EDIT")
+        invoice_id = created["id"]
+        confirm_resp = self.client.post(
+            f"/api/sales/invoices/{invoice_id}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(confirm_resp.status_code, status.HTTP_200_OK, confirm_resp.json())
+
+        patch_resp = self.client.patch(
+            f"/api/sales/invoices/{invoice_id}/{self._scope_qs()}",
+            {"reference": "SO-CONF-EDITED", "remarks": "Confirmed edit allowed"},
+            format="json",
+        )
+        self.assertEqual(patch_resp.status_code, status.HTTP_200_OK, patch_resp.json())
+        body = patch_resp.json()
+        self.assertEqual(body["status"], int(SalesInvoiceHeader.Status.CONFIRMED))
+        self.assertEqual(body["reference"], "SO-CONF-EDITED")
+        self.assertEqual(body["remarks"], "Confirmed edit allowed")
+
+    def test_confirmed_invoice_edit_is_blocked_when_policy_disables_it(self):
+        settings_obj = SalesSettingsService.get_settings(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            entityfinid_id=self.entityfin.id,
+        )
+        settings_obj.policy_controls = {"allow_edit_confirmed": "off"}
+        settings_obj.save(update_fields=["policy_controls"])
+
+        created = self._create_invoice(reference="SO-CONF-EDIT-OFF")
+        invoice_id = created["id"]
+        confirm_resp = self.client.post(
+            f"/api/sales/invoices/{invoice_id}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(confirm_resp.status_code, status.HTTP_200_OK, confirm_resp.json())
+
+        patch_resp = self.client.patch(
+            f"/api/sales/invoices/{invoice_id}/{self._scope_qs()}",
+            {"reference": "SO-CONF-EDIT-BLOCKED"},
+            format="json",
+        )
+        self.assertEqual(patch_resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Confirmed invoice editing is disabled by sales policy.", str(patch_resp.json()))
+
     def test_post_requires_confirmed_invoice(self):
         created = self._create_invoice(reference="SO-POST-BLOCK")
         invoice_id = created["id"]
@@ -413,6 +624,53 @@ class SalesApiEndToEndTests(APITestCase):
         self.assertEqual(body["status"], int(SalesInvoiceHeader.Status.POSTED))
         header = SalesInvoiceHeader.objects.get(pk=invoice_id)
         self.assertIsNotNone(header.posted_at)
+        mocked_post_adapter.assert_called_once()
+        mocked_sync_open_item.assert_called_once()
+        mocked_auto_compliance.assert_called()
+
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._run_auto_compliance")
+    @patch("sales.services.sales_invoice_service.SalesArService.sync_open_item_for_header")
+    @patch("sales.services.sales_invoice_service.SalesInvoicePostingAdapter.post_sales_invoice")
+    def test_repeated_post_call_is_idempotent_for_posted_invoice(
+        self,
+        mocked_post_adapter,
+        mocked_sync_open_item,
+        mocked_auto_compliance,
+    ):
+        created = self._create_invoice(reference="SO-POST-IDEMPOTENT")
+        invoice_id = created["id"]
+
+        confirm_resp = self.client.post(
+            f"/api/sales/invoices/{invoice_id}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(confirm_resp.status_code, status.HTTP_200_OK, confirm_resp.json())
+
+        first_post_resp = self.client.post(
+            f"/api/sales/invoices/{invoice_id}/post/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(first_post_resp.status_code, status.HTTP_200_OK, first_post_resp.json())
+        first_body = first_post_resp.json()
+        self.assertEqual(first_body["status"], int(SalesInvoiceHeader.Status.POSTED))
+
+        header = SalesInvoiceHeader.objects.get(pk=invoice_id)
+        first_posted_at = header.posted_at
+        self.assertIsNotNone(first_posted_at)
+
+        second_post_resp = self.client.post(
+            f"/api/sales/invoices/{invoice_id}/post/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(second_post_resp.status_code, status.HTTP_200_OK, second_post_resp.json())
+        second_body = second_post_resp.json()
+        self.assertEqual(second_body["status"], int(SalesInvoiceHeader.Status.POSTED))
+
+        header.refresh_from_db()
+        self.assertEqual(header.posted_at, first_posted_at)
         mocked_post_adapter.assert_called_once()
         mocked_sync_open_item.assert_called_once()
         mocked_auto_compliance.assert_called()
@@ -539,6 +797,101 @@ class SalesApiEndToEndTests(APITestCase):
         self.assertEqual(cancel_resp.status_code, status.HTTP_200_OK, cancel_resp.json())
         self.assertEqual(cancel_resp.json()["status"], int(SalesInvoiceHeader.Status.CANCELLED))
 
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._run_auto_compliance")
+    @patch("sales.services.sales_invoice_service.SalesArService.sync_open_item_for_header")
+    @patch("sales.services.sales_invoice_service.SalesInvoicePostingAdapter.post_sales_invoice")
+    def test_cancel_locked_posted_invoice_creates_current_period_reversal_credit_note(
+        self,
+        mocked_post_adapter,
+        mocked_sync_open_item,
+        mocked_auto_compliance,
+    ):
+        original = self._create_invoice(reference="SO-CANCEL-LOCKED", bill_date="2026-04-10")
+        original_id = original["id"]
+
+        confirm_resp = self.client.post(
+            f"/api/sales/invoices/{original_id}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(confirm_resp.status_code, status.HTTP_200_OK, confirm_resp.json())
+
+        post_resp = self.client.post(
+            f"/api/sales/invoices/{original_id}/post/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(post_resp.status_code, status.HTTP_200_OK, post_resp.json())
+
+        SalesLockPeriod.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            lock_date="2026-04-30",
+            reason="April books locked",
+        )
+
+        cancel_resp = self.client.post(
+            f"/api/sales/invoices/{original_id}/cancel/{self._scope_qs()}",
+            {"reason": "Filed-period cancellation"},
+            format="json",
+        )
+        self.assertEqual(cancel_resp.status_code, status.HTTP_200_OK, cancel_resp.json())
+        body = cancel_resp.json()
+        self.assertEqual(body["doc_type"], int(SalesInvoiceHeader.DocType.CREDIT_NOTE))
+        self.assertEqual(body["status"], int(SalesInvoiceHeader.Status.POSTED))
+        self.assertEqual(body["original_invoice"], original_id)
+        self.assertEqual(body["note_reason"], SalesInvoiceHeader.NoteReason.OTHER)
+        self.assertFalse(body["affects_inventory"])
+        self.assertEqual(body["bill_date"], timezone.localdate().strftime("%d-%m-%Y"))
+
+        original_header = SalesInvoiceHeader.objects.get(pk=original_id)
+        self.assertEqual(original_header.status, SalesInvoiceHeader.Status.POSTED)
+        self.assertEqual(str(original_header.bill_date), "2026-04-10")
+        self.assertEqual(len(original_header.custom_fields_json.get("correction_history", [])), 1)
+
+        correction = SalesInvoiceHeader.objects.get(pk=body["id"])
+        self.assertEqual(correction.custom_fields_json["correction_origin"]["original_invoice_id"], original_id)
+        self.assertEqual(correction.custom_fields_json["correction_origin"]["reason"], "Filed-period cancellation")
+        self.assertGreaterEqual(mocked_post_adapter.call_count, 2)
+        self.assertGreaterEqual(mocked_sync_open_item.call_count, 2)
+        self.assertTrue(mocked_auto_compliance.called)
+
+    def test_b2b_generate_eway_is_blocked_before_irn_exists(self):
+        created = self._create_invoice(
+            reference="SO-EWAY-BLOCKED",
+            customer_state_code="27",
+            place_of_supply_state_code="27",
+            lines=[self._goods_line_payload(qty="1.000", rate="60000.0000")],
+        )
+        invoice_id = created["id"]
+
+        confirm_resp = self.client.post(
+            f"/api/sales/invoices/{invoice_id}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(confirm_resp.status_code, status.HTTP_200_OK, confirm_resp.json())
+
+        response = self.client.post(
+            f"/api/sales/sales-invoices/{invoice_id}/compliance/generate-eway/{self._scope_qs()}",
+            {
+                "distance_km": 10,
+                "trans_mode": "1",
+                "transporter_id": "05AAACG0904A1ZL",
+                "transporter_name": "ABC Logistics",
+                "trans_doc_no": "",
+                "vehicle_no": "MH12AB1234",
+                "vehicle_type": "R",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, response.json())
+        self.assertIn(
+            "Compliance action 'can_generate_eway' is not allowed for current invoice state.",
+            str(response.json()),
+        )
+
     def test_credit_note_requires_original_invoice(self):
         response = self.client.post(
             "/api/sales/invoices/",
@@ -597,6 +950,251 @@ class SalesApiEndToEndTests(APITestCase):
         self.assertEqual(body["original_invoice"], original["id"])
         self.assertEqual(body["note_reason"], SalesInvoiceHeader.NoteReason.PRICE_DIFFERENCE)
         self.assertFalse(body["affects_inventory"])
+
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._run_auto_compliance")
+    @patch("sales.services.sales_invoice_service.SalesArService.sync_open_item_for_header")
+    @patch("sales.services.sales_invoice_service.SalesInvoicePostingAdapter.post_sales_invoice")
+    def test_sales_return_credit_note_preserves_inventory_return_context_through_post_flow(
+        self,
+        mocked_post_adapter,
+        mocked_sync_open_item,
+        mocked_auto_compliance,
+    ):
+        original = self._create_invoice(reference="SO-ORIG-RETURN")
+        original_id = original["id"]
+
+        confirm_resp = self.client.post(
+            f"/api/sales/invoices/{original_id}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(confirm_resp.status_code, status.HTTP_200_OK, confirm_resp.json())
+
+        post_resp = self.client.post(
+            f"/api/sales/invoices/{original_id}/post/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(post_resp.status_code, status.HTTP_200_OK, post_resp.json())
+
+        payload = self._invoice_payload(
+            lines=[self._goods_line_payload(qty="2.000", rate="100.0000")],
+            doc_type=int(SalesInvoiceHeader.DocType.CREDIT_NOTE),
+            reference="SCR-001",
+        )
+        payload.update(
+            {
+                "doc_code": "SCN",
+                "original_invoice": original_id,
+                "note_reason": SalesInvoiceHeader.NoteReason.QUANTITY_RETURN,
+                "affects_inventory": True,
+            }
+        )
+        response = self.client.post("/api/sales/invoices/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.json())
+        body = response.json()
+        self.assertEqual(body["doc_type"], int(SalesInvoiceHeader.DocType.CREDIT_NOTE))
+        self.assertEqual(body["original_invoice"], original_id)
+        self.assertEqual(body["note_reason"], SalesInvoiceHeader.NoteReason.QUANTITY_RETURN)
+        self.assertTrue(body["affects_inventory"])
+        self.assertEqual(body["place_of_supply_state_code"], original["place_of_supply_state_code"])
+
+        note_id = body["id"]
+        confirm_note_resp = self.client.post(
+            f"/api/sales/invoices/{note_id}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(confirm_note_resp.status_code, status.HTTP_200_OK, confirm_note_resp.json())
+
+        post_note_resp = self.client.post(
+            f"/api/sales/invoices/{note_id}/post/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(post_note_resp.status_code, status.HTTP_200_OK, post_note_resp.json())
+        posted_note = post_note_resp.json()
+        self.assertEqual(posted_note["status"], int(SalesInvoiceHeader.Status.POSTED))
+        self.assertTrue(posted_note["affects_inventory"])
+        self.assertEqual(posted_note["note_reason"], SalesInvoiceHeader.NoteReason.QUANTITY_RETURN)
+
+        note_header = SalesInvoiceHeader.objects.get(pk=note_id)
+        self.assertEqual(note_header.original_invoice_id, original_id)
+        self.assertTrue(note_header.affects_inventory)
+        self.assertEqual(note_header.note_reason, SalesInvoiceHeader.NoteReason.QUANTITY_RETURN)
+        self.assertGreaterEqual(mocked_post_adapter.call_count, 2)
+        self.assertGreaterEqual(mocked_sync_open_item.call_count, 2)
+        self.assertTrue(mocked_auto_compliance.called)
+
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._run_auto_compliance")
+    @patch("sales.services.sales_invoice_service.SalesArService.sync_open_item_for_header")
+    @patch("sales.services.sales_invoice_service.SalesInvoicePostingAdapter.post_sales_invoice")
+    def test_locked_period_original_invoice_allows_current_period_credit_note_correction(
+        self,
+        mocked_post_adapter,
+        mocked_sync_open_item,
+        mocked_auto_compliance,
+    ):
+        original = self._create_invoice(reference="SO-LOCKED-ORIG", bill_date="2026-04-10")
+        original_id = original["id"]
+
+        confirm_resp = self.client.post(
+            f"/api/sales/invoices/{original_id}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(confirm_resp.status_code, status.HTTP_200_OK, confirm_resp.json())
+
+        post_resp = self.client.post(
+            f"/api/sales/invoices/{original_id}/post/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(post_resp.status_code, status.HTTP_200_OK, post_resp.json())
+
+        SalesLockPeriod.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            lock_date="2026-04-30",
+            reason="April books locked",
+        )
+
+        payload = self._invoice_payload(
+            lines=[self._goods_line_payload(qty="1.000", rate="100.0000")],
+            doc_type=int(SalesInvoiceHeader.DocType.CREDIT_NOTE),
+            reference="SO-LOCKED-CN",
+        )
+        payload.update(
+            {
+                "bill_date": "2026-05-10",
+                "doc_code": "SCN",
+                "original_invoice": original_id,
+                "note_reason": SalesInvoiceHeader.NoteReason.PRICE_DIFFERENCE,
+                "affects_inventory": False,
+                "remarks": "Filed-period correction",
+            }
+        )
+        response = self.client.post("/api/sales/invoices/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.json())
+        note = response.json()
+        self.assertEqual(note["original_invoice"], original_id)
+        self.assertEqual(note["bill_date"], "10-05-2026")
+
+        confirm_note_resp = self.client.post(
+            f"/api/sales/invoices/{note['id']}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(confirm_note_resp.status_code, status.HTTP_200_OK, confirm_note_resp.json())
+
+        post_note_resp = self.client.post(
+            f"/api/sales/invoices/{note['id']}/post/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(post_note_resp.status_code, status.HTTP_200_OK, post_note_resp.json())
+
+        original_header = SalesInvoiceHeader.objects.get(pk=original_id)
+        note_header = SalesInvoiceHeader.objects.get(pk=note["id"])
+        self.assertEqual(original_header.status, SalesInvoiceHeader.Status.POSTED)
+        self.assertEqual(str(original_header.bill_date), "2026-04-10")
+        self.assertEqual(note_header.status, SalesInvoiceHeader.Status.POSTED)
+        self.assertEqual(str(note_header.bill_date), "2026-05-10")
+        self.assertEqual(note_header.original_invoice_id, original_id)
+        self.assertEqual(len(original_header.custom_fields_json.get("correction_history", [])), 1)
+        correction_event = original_header.custom_fields_json["correction_history"][0]
+        self.assertEqual(correction_event["correction_document_id"], note_header.id)
+        self.assertEqual(correction_event["original_invoice_id"], original_id)
+        self.assertEqual(correction_event["reason"], "Filed-period correction")
+        self.assertEqual(correction_event["gst_period_impact"], "2026-05")
+        self.assertEqual(correction_event["old_value"]["bill_date"], "2026-04-10")
+        self.assertEqual(correction_event["new_value"]["bill_date"], "2026-05-10")
+        self.assertEqual(note_header.custom_fields_json["correction_origin"]["original_invoice_id"], original_id)
+        self.assertEqual(note_header.custom_fields_json["correction_origin"]["correction_document_id"], note_header.id)
+        self.assertGreaterEqual(mocked_post_adapter.call_count, 2)
+        self.assertGreaterEqual(mocked_sync_open_item.call_count, 2)
+        self.assertTrue(mocked_auto_compliance.called)
+
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._run_auto_compliance")
+    @patch("sales.services.sales_invoice_service.SalesArService.sync_open_item_for_header")
+    @patch("sales.services.sales_invoice_service.SalesInvoicePostingAdapter.post_sales_invoice")
+    def test_locked_period_posted_invoice_blocks_direct_unpost_and_requires_current_period_correction(
+        self,
+        mocked_post_adapter,
+        mocked_sync_open_item,
+        mocked_auto_compliance,
+    ):
+        original = self._create_invoice(reference="SO-LOCKED-UNPOST", bill_date="2026-04-10")
+        original_id = original["id"]
+
+        confirm_resp = self.client.post(
+            f"/api/sales/invoices/{original_id}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(confirm_resp.status_code, status.HTTP_200_OK, confirm_resp.json())
+
+        post_resp = self.client.post(
+            f"/api/sales/invoices/{original_id}/post/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(post_resp.status_code, status.HTTP_200_OK, post_resp.json())
+
+        SalesLockPeriod.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            lock_date="2026-04-30",
+            reason="April books locked",
+        )
+
+        unpost_resp = self.client.post(
+            f"/api/sales/invoices/{original_id}/reverse/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(unpost_resp.status_code, status.HTTP_400_BAD_REQUEST, unpost_resp.json())
+        self.assertEqual(
+            unpost_resp.json(),
+            {
+                "detail": (
+                    "Posted sales invoice belongs to a locked/filed period and cannot be unposted. "
+                    "Create a current-period correction document instead."
+                )
+            },
+        )
+
+        original_header = SalesInvoiceHeader.objects.get(pk=original_id)
+        self.assertEqual(original_header.status, SalesInvoiceHeader.Status.POSTED)
+        self.assertFalse(original_header.is_posting_reversed)
+        self.assertGreaterEqual(mocked_post_adapter.call_count, 1)
+        self.assertGreaterEqual(mocked_sync_open_item.call_count, 1)
+        self.assertTrue(mocked_auto_compliance.called)
+
+    def test_edit_locked_period_sales_is_blocked(self):
+        created = self._create_invoice(
+            reference="SO-LOCK-EDIT",
+            bill_date="2026-04-10",
+        )
+        invoice_id = created["id"]
+
+        SalesLockPeriod.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            lock_date="2026-04-30",
+            reason="April books locked",
+        )
+
+        patch_resp = self.client.patch(
+            f"/api/sales/invoices/{invoice_id}/{self._scope_qs()}",
+            {"reference": "SHOULD-NOT-UPDATE"},
+            format="json",
+        )
+        self.assertEqual(patch_resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Period is locked up to 2026-04-30", str(patch_resp.json()))
 
     def test_reverse_requires_posted_invoice(self):
         created = self._create_invoice(reference="SO-REVERSE-BLOCK")

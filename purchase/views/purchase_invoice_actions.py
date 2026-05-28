@@ -11,8 +11,9 @@ from purchase.serializers.purchase_actions import ItcBlockSerializer, ItcUnblock
 from gst_tds.models import GstTdsContractLedger
 
 from purchase.services.purchase_invoice_actions import PurchaseInvoiceActions
+from purchase.services.purchase_invoice_service import PurchaseInvoiceService
 from purchase.services.purchase_note_factory import PurchaseNoteFactory
-from purchase.views.rbac import require_purchase_request_permission
+from purchase.views.rbac import require_purchase_request_permission, require_purchase_scope_permission
 
 
 def _raise_validation_error(err: ValueError) -> None:
@@ -170,6 +171,23 @@ class PurchaseInvoiceCancelAPIView(APIView):
             doc_type=header.doc_type,
             action="cancel",
         )
+        if (
+            int(getattr(header, "doc_type", 0)) == int(DocType.TAX_INVOICE)
+            and int(getattr(header, "status", 0)) == int(PurchaseInvoiceHeader.Status.POSTED)
+            and PurchaseInvoiceService.amendment_window_for_header(header).amendment_required
+        ):
+            require_purchase_scope_permission(
+                user=request.user,
+                entity_id=header.entity_id,
+                doc_type=DocType.CREDIT_NOTE,
+                action="create",
+            )
+            require_purchase_scope_permission(
+                user=request.user,
+                entity_id=header.entity_id,
+                doc_type=DocType.CREDIT_NOTE,
+                action="post",
+            )
         reason = (request.data.get("reason") or "").strip() or None
         try:
             result = PurchaseInvoiceActions.cancel(pk, cancelled_by_id=request.user.id, reason=reason)
@@ -208,11 +226,17 @@ class PurchaseInvoiceCreateCreditNoteAPIView(APIView):
             doc_type=DocType.CREDIT_NOTE,
             action="create",
         )
+        note_reason = (request.data.get("note_reason") or PurchaseInvoiceHeader.NoteReason.QUANTITY_RETURN).strip()
+        reason = (request.data.get("reason") or "").strip() or None
+        allow_duplicate = bool(request.data.get("allow_duplicate"))
         try:
             res = PurchaseNoteFactory.create_note_from_invoice(
                 invoice_id=pk,
                 note_type=DocType.CREDIT_NOTE,
+                note_reason=note_reason,
                 created_by_id=request.user.id,
+                correction_reason=reason,
+                allow_duplicate=allow_duplicate,
             )
         except ValueError as e:
             _raise_validation_error(e)
@@ -232,11 +256,17 @@ class PurchaseInvoiceCreateDebitNoteAPIView(APIView):
             doc_type=DocType.DEBIT_NOTE,
             action="create",
         )
+        note_reason = (request.data.get("note_reason") or PurchaseInvoiceHeader.NoteReason.QUANTITY_RETURN).strip()
+        reason = (request.data.get("reason") or "").strip() or None
+        allow_duplicate = bool(request.data.get("allow_duplicate"))
         try:
             res = PurchaseNoteFactory.create_note_from_invoice(
                 invoice_id=pk,
                 note_type=DocType.DEBIT_NOTE,
+                note_reason=note_reason,
                 created_by_id=request.user.id,
+                correction_reason=reason,
+                allow_duplicate=allow_duplicate,
             )
         except ValueError as e:
             _raise_validation_error(e)

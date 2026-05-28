@@ -79,6 +79,16 @@ class SalesWithholdingService:
 
         # base rule (most cases excl GST)
         base = q2(taxable_total or ZERO2)
+        party_profile = WithholdingResolver.resolve_party_profile(
+            party_account_id=customer_account_id,
+            entity_id=getattr(header, "entity_id", None),
+            subentity_id=getattr(header, "subentity_id", None),
+        )
+        rate_resolution = WithholdingResolver.resolve_rate(
+            section=section,
+            party_profile=party_profile,
+            doc_date=invoice_date,
+        )
         effective_base, threshold_reason, threshold_reason_code = _apply_section_threshold(
             section=section,
             base_amount=base,
@@ -95,12 +105,26 @@ class SalesWithholdingService:
             return WithholdingResult(
                 True,
                 section,
-                rate,
+                rate_resolution.rate,
                 q2(effective_base),
                 ZERO2,
-                threshold_reason,
-                threshold_reason_code,
+                threshold_reason or rate_resolution.reason,
+                threshold_reason_code or rate_resolution.reason_code,
+                no_pan_applied=rate_resolution.no_pan_applied,
+                sec_206ab_applied=rate_resolution.sec_206ab_applied,
+                lower_rate_applied=rate_resolution.lower_rate_applied,
             )
 
-        amt = q2((effective_base * rate) / Decimal("100.0"))
-        return WithholdingResult(True, section, rate, q2(effective_base), amt, threshold_reason, threshold_reason_code)
+        amt = q2((effective_base * rate_resolution.rate) / Decimal("100.0"))
+        return WithholdingResult(
+            True,
+            section,
+            rate_resolution.rate,
+            q2(effective_base),
+            amt,
+            threshold_reason or rate_resolution.reason,
+            threshold_reason_code or rate_resolution.reason_code,
+            no_pan_applied=rate_resolution.no_pan_applied,
+            sec_206ab_applied=rate_resolution.sec_206ab_applied,
+            lower_rate_applied=rate_resolution.lower_rate_applied,
+        )

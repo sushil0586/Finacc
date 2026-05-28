@@ -14,6 +14,7 @@ class PurchaseRegisterRowSerializer(serializers.Serializer):
     purchase_number = serializers.CharField(allow_blank=True, allow_null=True)
     supplier_name = serializers.CharField(allow_blank=True, allow_null=True)
     supplier_gstin = serializers.CharField(allow_blank=True, allow_null=True)
+    supplier_registration_type = serializers.CharField(allow_blank=True, allow_null=True, required=False)
     supplier_invoice_number = serializers.CharField(allow_blank=True, allow_null=True)
     supplier_invoice_date = serializers.DateField(allow_null=True)
     place_of_supply = serializers.CharField(allow_blank=True, allow_null=True)

@@ -329,6 +329,61 @@ class PurchaseRegisterAPITests(APITestCase):
             {draft.purchase_number, cancelled.purchase_number},
         )
 
+    def test_blank_vendor_gstin_is_preserved_for_unregistered_vendor_rows(self):
+        header = PurchaseInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            status=PurchaseInvoiceHeader.Status.POSTED,
+            bill_date="2025-04-07",
+            posting_date="2025-04-07",
+            doc_code="PINV",
+            doc_no=999,
+            purchase_number="URD-001",
+            supplier_invoice_number="URD-SUP-001",
+            supplier_invoice_date="2025-04-07",
+            vendor=self.vendor_alpha,
+            vendor_ledger=self.vendor_alpha.ledger,
+            vendor_name="Unregistered Vendor",
+            vendor_gstin="",
+            place_of_supply_state=self.state,
+            supply_category=PurchaseInvoiceHeader.SupplyCategory.DOMESTIC,
+            total_taxable=Decimal("250.00"),
+            total_cgst=Decimal("0.00"),
+            total_sgst=Decimal("0.00"),
+            total_igst=Decimal("0.00"),
+            total_cess=Decimal("0.00"),
+            total_gst=Decimal("0.00"),
+            grand_total=Decimal("250.00"),
+            created_by=self.user,
+        )
+
+        response = self._get(search="URD-001")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        row = response.data["results"][0]
+        self.assertEqual(row["id"], header.id)
+        self.assertEqual(row["supplier_gstin"], "")
+
+    def test_register_exposes_supplier_registration_type_for_composition_vendor(self):
+        apply_normalized_profile_payload(
+            self.vendor_alpha,
+            compliance_data={"gstno": "27ABCDE1234F1Z5", "gstregtype": "Composition"},
+            commercial_data={"partytype": "Vendor"},
+            primary_address_data={},
+        )
+        header = self._create_purchase_document(vendor=self.vendor_alpha, purchase_number="COMP-REG-001")
+
+        response = self._get(search="COMP-REG-001")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        row = response.data["results"][0]
+        self.assertEqual(row["id"], header.id)
+        self.assertEqual(row["supplier_registration_type"], "Composition")
+
     def test_cancelled_documents_are_listed_but_zero_in_totals(self):
         active = self._create_purchase_document(
             status=PurchaseInvoiceHeader.Status.POSTED,
@@ -409,6 +464,98 @@ class PurchaseRegisterAPITests(APITestCase):
         response = self._get()
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self._money(response.data["totals"]["grand_total"]), Decimal("141.60"))
+
+    def test_original_and_correction_documents_stay_in_their_own_periods(self):
+        invoice = self._create_purchase_document(
+            status=PurchaseInvoiceHeader.Status.POSTED,
+            purchase_number="INV-AMEND-APR",
+            bill_date="2025-04-10",
+            posting_date="2025-04-10",
+            taxable="100.00",
+            cgst="9.00",
+            sgst="9.00",
+            grand_total="118.00",
+        )
+        credit = self._create_purchase_document(
+            doc_type=PurchaseInvoiceHeader.DocType.CREDIT_NOTE,
+            ref_document=invoice,
+            status=PurchaseInvoiceHeader.Status.POSTED,
+            purchase_number="CRN-AMEND-MAY",
+            bill_date="2025-05-02",
+            posting_date="2025-05-02",
+            taxable="20.00",
+            cgst="1.80",
+            sgst="1.80",
+            grand_total="23.60",
+        )
+
+        april = self._get(from_date="2025-04-01", to_date="2025-04-30")
+        self.assertEqual(april.status_code, 200)
+        self.assertEqual(april.data["count"], 1)
+        self.assertEqual(april.data["results"][0]["purchase_number"], invoice.purchase_number)
+        self.assertEqual(self._money(april.data["totals"]["grand_total"]), Decimal("118.00"))
+
+        may = self._get(from_date="2025-05-01", to_date="2025-05-31")
+        self.assertEqual(may.status_code, 200)
+        self.assertEqual(may.data["count"], 1)
+        self.assertEqual(may.data["results"][0]["purchase_number"], credit.purchase_number)
+        self.assertEqual(self._money(may.data["totals"]["grand_total"]), Decimal("-23.60"))
+
+    def test_original_and_correction_rows_keep_distinct_purchase_drilldowns(self):
+        invoice = self._create_purchase_document(
+            status=PurchaseInvoiceHeader.Status.POSTED,
+            purchase_number="INV-TRACE-001",
+            taxable="100.00",
+            cgst="9.00",
+            sgst="9.00",
+            grand_total="118.00",
+        )
+        credit = self._create_purchase_document(
+            doc_type=PurchaseInvoiceHeader.DocType.CREDIT_NOTE,
+            ref_document=invoice,
+            status=PurchaseInvoiceHeader.Status.POSTED,
+            purchase_number="CRN-TRACE-001",
+            taxable="20.00",
+            cgst="1.80",
+            sgst="1.80",
+            grand_total="23.60",
+        )
+
+        response = self._get(include_payables_drilldowns="true")
+        self.assertEqual(response.status_code, 200)
+
+        invoice_row = next(row for row in response.data["results"] if row["purchase_number"] == invoice.purchase_number)
+        credit_row = next(row for row in response.data["results"] if row["purchase_number"] == credit.purchase_number)
+
+        self.assertEqual(invoice_row["drilldown"]["target"], "purchase_document_detail")
+        self.assertEqual(invoice_row["drilldown"]["id"], invoice.id)
+        self.assertEqual(invoice_row["drilldown"]["route"], "/purchaseinvoice")
+        self.assertEqual(credit_row["drilldown"]["target"], "purchase_document_detail")
+        self.assertEqual(credit_row["drilldown"]["id"], credit.id)
+        self.assertEqual(credit_row["_meta"]["drilldown"]["document"]["params"]["id"], credit.id)
+
+    def test_service_purchase_rows_expose_service_invoice_route_in_drilldown(self):
+        invoice = self._create_purchase_document(
+            purchase_number="BILL-SVC-01",
+            bill_date="2025-04-18",
+            posting_date="2025-04-18",
+        )
+        PurchaseInvoiceLine.objects.create(
+            header=invoice,
+            line_no=99,
+            is_service=True,
+            purchase_behavior="expense",
+            product_desc="Consulting service",
+            qty=Decimal("1.0000"),
+            rate=Decimal("10.00"),
+            taxable_value=Decimal("10.00"),
+            line_total=Decimal("10.00"),
+        )
+
+        response = self._get()
+        self.assertEqual(response.status_code, 200)
+        invoice_row = next(row for row in response.data["results"] if row["purchase_number"] == invoice.purchase_number)
+        self.assertEqual(invoice_row["drilldown"]["route"], "/purchaseserviceinvoice")
 
     def test_bill_date_filtering(self):
         in_range = self._create_purchase_document(

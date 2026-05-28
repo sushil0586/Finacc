@@ -392,6 +392,7 @@ class EntityBankAccountV2(TrackingModel):
     branch = models.CharField(max_length=100, null=True, blank=True)
     account_number = models.CharField(max_length=32)
     ifsc_code = models.CharField(max_length=11)
+    book_ledger = models.ForeignKey("financial.Ledger", on_delete=models.PROTECT, null=True, blank=True, related_name="+")
     account_type = models.CharField(max_length=20, choices=[("current", "Current"), ("savings", "Savings")], default="current")
     is_primary = models.BooleanField(default=False)
     effective_from = models.DateField(null=True, blank=True)

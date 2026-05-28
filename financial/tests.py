@@ -1,9 +1,9 @@
 from django.core.exceptions import ValidationError
 from django.test import TestCase
-from rest_framework.test import APIClient
+from rest_framework.test import APIClient, APIRequestFactory
 
 from Authentication.models import User
-from entity.models import Entity
+from entity.models import Entity, SubEntity
 from financial.bulk_accounts import commit_payload as commit_accounts_bulk_payload
 from financial.bulk_accounts import export_payload as export_accounts_bulk_payload
 from financial.bulk_accounts import template_payload as accounts_bulk_template_payload
@@ -17,10 +17,12 @@ from financial.services import (
     sync_account_profiles_for_account,
     sync_ledger_for_account,
 )
+from withholding.models import EntityPartyTaxProfile
 
 
 class FinancialLedgerSyncTests(TestCase):
     def setUp(self):
+        self.factory = APIRequestFactory()
         self.user = User.objects.create_user(
             email="fin-tests@example.com",
             username="fin-tests@example.com",
@@ -29,6 +31,7 @@ class FinancialLedgerSyncTests(TestCase):
         )
         self.entity_a = Entity.objects.create(entityname="Entity A", createdby=self.user)
         self.entity_b = Entity.objects.create(entityname="Entity B", createdby=self.user)
+        self.subentity = SubEntity.objects.create(entity=self.entity_a, subentityname="Head Office")
 
     def test_create_account_with_synced_ledger_allocates_codes_and_links(self):
         a1 = create_account_with_synced_ledger(
@@ -251,6 +254,160 @@ class FinancialLedgerSyncTests(TestCase):
         self.assertIsNotNone(address)
         self.assertEqual(address.line1, "Profile Address")
         self.assertEqual(address.pincode, "560001")
+
+    def test_account_write_serializer_persists_structured_msme_fields(self):
+        head = accountHead.objects.create(
+            entity=self.entity_a,
+            name="MSME Vendors",
+            code=2002,
+            drcreffect="Credit",
+            createdby=self.user,
+        )
+        serializer = AccountProfileV2WriteSerializer(
+            data={
+                "entity": self.entity_a.id,
+                "accountname": "MSME Vendor",
+                "accounthead": head.id,
+                "compliance_profile": {
+                    "msme": "legacy-msme-ref",
+                    "msme_status": "micro",
+                    "udyam_no": " udyam-ab-123 ",
+                    "has_written_payment_terms": True,
+                    "msme_credit_days": 45,
+                },
+                "commercial_profile": {
+                    "partytype": "Vendor",
+                    "creditdays": 30,
+                },
+            },
+            context={"request": None},
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        acc = serializer.save()
+
+        compliance = AccountComplianceProfile.objects.get(account=acc)
+        self.assertEqual(compliance.msme, "legacy-msme-ref")
+        self.assertEqual(compliance.msme_status, "micro")
+        self.assertEqual(compliance.udyam_no, "UDYAM-AB-123")
+        self.assertTrue(compliance.has_written_payment_terms)
+        self.assertEqual(compliance.msme_credit_days, 45)
+
+    def test_account_write_serializer_rejects_invalid_msme_credit_days(self):
+        head = accountHead.objects.create(
+            entity=self.entity_a,
+            name="MSME Validation",
+            code=2003,
+            drcreffect="Credit",
+            createdby=self.user,
+        )
+        serializer = AccountProfileV2WriteSerializer(
+            data={
+                "entity": self.entity_a.id,
+                "accountname": "Bad MSME Vendor",
+                "accounthead": head.id,
+                "compliance_profile": {
+                    "msme_status": "small",
+                    "msme_credit_days": 60,
+                },
+            },
+            context={"request": None},
+        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("MSME credit days must be between 0 and 45.", str(serializer.errors))
+
+    def test_account_read_serializer_exposes_structured_msme_fields(self):
+        acc = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity_a,
+                "accountname": "MSME Serializer Check",
+                "createdby": self.user,
+            }
+        )
+        apply_normalized_profile_payload(
+            acc,
+            compliance_data={
+                "msme": "legacy-flag",
+                "msme_status": "small",
+                "udyam_no": "UDYAM-PB-7788",
+                "has_written_payment_terms": True,
+                "msme_credit_days": 45,
+            },
+            commercial_data={"partytype": "Vendor", "creditdays": 30},
+            createdby=self.user,
+        )
+
+        data = AccountProfileV2ReadSerializer(acc).data
+        self.assertEqual(data["msme"], "legacy-flag")
+        self.assertEqual(data["msme_status"], "small")
+        self.assertEqual(data["udyam_no"], "UDYAM-PB-7788")
+        self.assertTrue(data["has_written_payment_terms"])
+        self.assertEqual(data["msme_credit_days"], 45)
+
+    def test_account_read_serializer_includes_scoped_withholding_profile(self):
+        acc = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity_a,
+                "accountname": "Scoped Withholding Read",
+                "createdby": self.user,
+            }
+        )
+        apply_normalized_profile_payload(
+            acc,
+            compliance_data={"pan": "ABCDE1234F"},
+            createdby=self.user,
+        )
+        EntityPartyTaxProfile.objects.create(
+            entity=self.entity_a,
+            subentity=self.subentity,
+            party_account=acc,
+            residency_status="non_resident",
+            tax_identifier="TIN-001",
+            declaration_reference="DECL-9",
+            is_exempt_withholding=True,
+            is_active=True,
+        )
+
+        request = self.factory.get("/api/financial/accounts-v2/1?subentity_id=%s" % self.subentity.id)
+        data = AccountProfileV2ReadSerializer(acc, context={"request": request}).data
+
+        self.assertEqual(data["withholding_profile"]["subentity"], self.subentity.id)
+        self.assertEqual(data["withholding_profile"]["pan"], "ABCDE1234F")
+        self.assertEqual(data["withholding_profile"]["residency_status"], "non_resident")
+        self.assertEqual(data["withholding_profile"]["tax_identifier"], "TIN-001")
+        self.assertTrue(data["withholding_profile"]["is_exempt_withholding"])
+
+    def test_account_write_serializer_persists_withholding_profile(self):
+        head = accountHead.objects.create(
+            entity=self.entity_a,
+            name="Scoped Withholding Writer",
+            code=2004,
+            drcreffect="Credit",
+            createdby=self.user,
+        )
+        serializer = AccountProfileV2WriteSerializer(
+            data={
+                "entity": self.entity_a.id,
+                "accountname": "Withholding Writer",
+                "accounthead": head.id,
+                "compliance_profile": {"pan": "ABCDE1234F"},
+                "withholding_profile": {
+                    "subentity": self.subentity.id,
+                    "residency_status": "non_resident",
+                    "tax_identifier": "TIN-909",
+                    "declaration_reference": "DECL-22",
+                    "is_exempt_withholding": True,
+                },
+            },
+            context={"request": None},
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        acc = serializer.save()
+
+        scoped = EntityPartyTaxProfile.objects.get(entity=self.entity_a, subentity=self.subentity, party_account=acc)
+        self.assertEqual(scoped.residency_status, "non_resident")
+        self.assertEqual(scoped.tax_identifier, "TIN-909")
+        self.assertEqual(scoped.declaration_reference, "DECL-22")
+        self.assertTrue(scoped.is_exempt_withholding)
 
 
 class FinancialSeedTemplateTests(TestCase):

@@ -112,7 +112,7 @@ class Gstr1ClassificationService:
             return is_note & ~(registered_recipient | original_registered)
 
         if section_code == SECTION_B2B.code:
-            return is_tax_invoice & registered_recipient & ~export_supply
+            return is_tax_invoice & registered_recipient & ~export_supply & ~sez_supply & ~deemed_export
 
         if section_code == SECTION_B2CL.code:
             return (

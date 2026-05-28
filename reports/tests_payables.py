@@ -18,7 +18,7 @@ from financial.services import apply_normalized_profile_payload, create_account_
 from geography.models import City, Country, District, State
 from purchase.models.purchase_ap import VendorAdvanceBalance, VendorBillOpenItem, VendorSettlement, VendorSettlementLine
 from posting.models import Entry, EntryStatus, JournalLine, PostingBatch, TxnType
-from purchase.models.purchase_core import PurchaseInvoiceHeader
+from purchase.models.purchase_core import PurchaseInvoiceHeader, PurchaseInvoiceLine
 from rbac.models import Permission, Role, RolePermission, UserRoleAssignment
 from rbac.services import EffectiveMenuService
 
@@ -504,6 +504,173 @@ class PayableReportAPITests(APITestCase):
         self.assertEqual(row["bucket_1_30"], "650.00")
         self.assertEqual(row["_meta"]["drilldown"]["bill"]["target"], "purchase_document_detail")
 
+    def test_vendor_outstanding_detailed_rows_expose_default_msme_due_date(self):
+        apply_normalized_profile_payload(
+            self.vendor,
+            compliance_data={
+                "gstno": "03ABCDE1234F1Z5",
+                "msme": "legacy-msme",
+                "msme_status": "micro",
+                "udyam_no": "UDYAM-PB-1001",
+                "has_written_payment_terms": False,
+                "msme_credit_days": None,
+            },
+            commercial_data={
+                "partytype": "Vendor",
+                "currency": "INR",
+                "agent": "Wholesale",
+                "creditdays": 30,
+                "creditlimit": Decimal("1000.00"),
+            },
+        )
+
+        response = self.client.get(
+            reverse("reports_api:vendor-outstanding-report"),
+            self._base_scope(as_of_date="2025-04-30", view="detailed", vendor=self.vendor.id),
+        )
+        self.assertEqual(response.status_code, 200)
+        row = response.json()["rows"][0]
+        self.assertTrue(row["is_msme_applicable"])
+        self.assertEqual(row["msme_status"], "micro")
+        self.assertEqual(row["udyam_no"], "UDYAM-PB-1001")
+        self.assertFalse(row["has_written_payment_terms"])
+        self.assertEqual(row["msme_allowed_credit_days"], 15)
+        self.assertEqual(row["msme_due_date"], "2025-04-16")
+        self.assertEqual(row["msme_days_overdue"], 14)
+        self.assertTrue(row["is_msme_overdue"])
+
+    def test_ap_aging_invoice_rows_cap_msme_written_terms_at_45_days(self):
+        apply_normalized_profile_payload(
+            self.vendor,
+            compliance_data={
+                "gstno": "03ABCDE1234F1Z5",
+                "msme_status": "small",
+                "udyam_no": "UDYAM-PB-2002",
+                "has_written_payment_terms": True,
+                "msme_credit_days": None,
+            },
+            commercial_data={
+                "partytype": "Vendor",
+                "currency": "INR",
+                "agent": "Wholesale",
+                "creditdays": 60,
+                "creditlimit": Decimal("1000.00"),
+            },
+        )
+
+        response = self.client.get(
+            reverse("reports_api:ap-aging-report"),
+            self._base_scope(as_of_date="2025-04-30", view="invoice", vendor=self.vendor.id),
+        )
+        self.assertEqual(response.status_code, 200)
+        row = response.json()["rows"][0]
+        self.assertTrue(row["is_msme_applicable"])
+        self.assertEqual(row["msme_status"], "small")
+        self.assertTrue(row["has_written_payment_terms"])
+        self.assertEqual(row["msme_allowed_credit_days"], 45)
+        self.assertEqual(row["msme_due_date"], "2025-05-16")
+        self.assertEqual(row["msme_days_overdue"], 0)
+        self.assertFalse(row["is_msme_overdue"])
+
+    def test_msme_overdue_report_returns_only_msme_overdue_rows_with_drilldowns(self):
+        apply_normalized_profile_payload(
+            self.vendor,
+            compliance_data={
+                "msme_status": "micro",
+                "udyam_no": "UDYAM-PB-0001",
+                "has_written_payment_terms": False,
+                "msme_credit_days": None,
+            },
+        )
+        other_vendor_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=5003,
+            name="Non MSME Vendor",
+            accounthead=self.vendor_head,
+            createdby=self.user,
+        )
+        other_vendor = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "ledger": other_vendor_ledger,
+                "accountname": "Non MSME Vendor",
+                "createdby": self.user,
+            },
+            ledger_overrides={"ledger_code": 5003, "accounthead": self.vendor_head, "is_party": True},
+        )
+        apply_normalized_profile_payload(
+            other_vendor,
+            compliance_data={},
+            commercial_data={"partytype": "Vendor", "currency": "INR", "creditdays": 30},
+            primary_address_data={"state": self.state, "city": self.city},
+        )
+        non_msme_header = self._create_purchase_header(
+            vendor=other_vendor,
+            vendor_ledger=other_vendor_ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 2),
+            due_date=date(2025, 4, 12),
+            doc_code="PINV",
+            doc_no=1003,
+            purchase_number="PI-PINV-1003",
+            supplier_invoice_number="SUP-003",
+            amount=Decimal("300.00"),
+        )
+        self._create_open_item(
+            header=non_msme_header,
+            vendor=other_vendor,
+            vendor_ledger=other_vendor_ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 2),
+            due_date=date(2025, 4, 12),
+            purchase_number="PI-PINV-1003",
+            supplier_invoice_number="SUP-003",
+            amount=Decimal("300.00"),
+        )
+
+        response = self.client.get(
+            reverse("reports_api:msme-overdue-report"),
+            self._base_scope(as_of_date="2025-04-30"),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["report_code"], "msme_overdue")
+        self.assertEqual(payload["summary"]["bill_count"], 1)
+        self.assertEqual(payload["summary"]["vendor_count"], 1)
+        self.assertEqual(payload["summary"]["overdue_amount"], "800.00")
+        self.assertEqual(payload["summary"]["overdue_bill_count"], 1)
+        self.assertEqual(payload["summary"]["overdue_vendor_count"], 1)
+        self.assertEqual(payload["summary"]["oldest_overdue_days"], 14)
+        self.assertIn("800.00", payload["summary"]["reporting_note"])
+        row = payload["rows"][0]
+        self.assertEqual(row["vendor_name"], "ABC Traders")
+        self.assertEqual(row["msme_status"], "micro")
+        self.assertEqual(row["udyam_no"], "UDYAM-PB-0001")
+        self.assertEqual(row["msme_due_date"], "2025-04-16")
+        self.assertEqual(row["msme_days_overdue"], 14)
+        self.assertEqual(row["overdue_bucket"], "1-15")
+        self.assertEqual(row["balance"], "800.00")
+        self.assertEqual(row["_meta"]["drilldown"]["bill_detail"]["route"], "/purchaseinvoice")
+        self.assertEqual(row["_meta"]["drilldown"]["vendor_outstanding"]["report_code"], "vendor_outstanding")
+
+    def test_msme_overdue_export_endpoint_returns_csv(self):
+        apply_normalized_profile_payload(
+            self.vendor,
+            compliance_data={
+                "msme_status": "small",
+                "has_written_payment_terms": False,
+            },
+        )
+        response = self.client.get(
+            reverse("reports_api:msme-overdue-report-csv"),
+            self._base_scope(as_of_date="2025-04-30"),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response["Content-Type"].startswith("text/csv"))
+        header_line = response.content.decode("utf-8-sig").splitlines()[0]
+        self.assertIn("Vendor", header_line)
+        self.assertIn("MSME Due Date", header_line)
+
     def test_fifo_credit_application_uses_oldest_vendor_invoice_first(self):
         second_invoice = self._create_purchase_header(
             vendor=self.vendor,
@@ -698,6 +865,7 @@ class PayableReportAPITests(APITestCase):
         report_codes = {row["code"] for row in payload["reports"]}
         self.assertIn("vendor_outstanding", report_codes)
         self.assertIn("ap_aging", report_codes)
+        self.assertIn("msme_overdue", report_codes)
         self.assertIn("payables_dashboard_summary", report_codes)
         self.assertIn("upcoming_payments_calendar", report_codes)
 
@@ -723,6 +891,23 @@ class PayableReportAPITests(APITestCase):
         self.assertTrue(export_response["Content-Type"].startswith("text/csv"))
         header_line = export_response.content.decode("utf-8-sig").splitlines()[0]
         self.assertIn("Vendor", header_line)
+
+    def test_upcoming_payments_calendar_bill_detail_uses_service_route_for_service_bills(self):
+        PurchaseInvoiceLine.objects.create(
+            header=self.invoice,
+            line_no=1,
+            is_service=True,
+            purchase_behavior="expense",
+            product_desc="Annual maintenance",
+        )
+
+        response = self.client.get(
+            reverse("reports_api:upcoming-payments-calendar"),
+            self._base_scope(from_date="2025-04-01", to_date="2025-04-30"),
+        )
+        self.assertEqual(response.status_code, 200)
+        drilldown = response.json()["rows"][0]["_meta"]["drilldown"]["bill_detail"]
+        self.assertEqual(drilldown["route"], "/purchaseserviceinvoice")
 
     def test_payables_meta_filters_reports_and_report_endpoints_enforce_permissions(self):
         limited_user = self._create_limited_report_user("reports.vendoroutstanding.view")
@@ -773,6 +958,14 @@ class PayableReportAPITests(APITestCase):
         self.assertEqual(prefs.get("ap_aging", {}).get("sort_by"), "balance")
 
     def test_payables_dashboard_summary_api_returns_totals_and_top_vendors(self):
+        apply_normalized_profile_payload(
+            self.vendor,
+            compliance_data={
+                "msme_status": "micro",
+                "udyam_no": "UDYAM-PB-0001",
+                "has_written_payment_terms": False,
+            },
+        )
         response = self.client.get(
             reverse("reports_api:payables-dashboard-summary"),
             self._base_scope(as_of_date="2025-04-30"),
@@ -782,8 +975,14 @@ class PayableReportAPITests(APITestCase):
         self.assertEqual(payload["report_code"], "payables_dashboard_summary")
         self.assertEqual(payload["totals"]["vendor_outstanding"], "650.00")
         self.assertEqual(payload["totals"]["bucket_1_30"], "650.00")
+        self.assertEqual(payload["totals"]["msme_overdue_amount"], "800.00")
         self.assertEqual(payload["vendor_count_with_open_balance"], 1)
+        self.assertEqual(payload["summary"]["msme_overdue_bill_count"], 1)
+        self.assertEqual(payload["summary"]["msme_overdue_vendor_count"], 1)
+        self.assertEqual(payload["summary"]["msme_oldest_overdue_days"], 14)
+        self.assertIn("800.00", payload["summary"]["msme_reporting_note"])
         self.assertEqual(payload["top_vendors"][0]["vendor_name"], "ABC Traders")
+        self.assertEqual(payload["top_msme_overdue_vendors"][0]["vendor_name"], "ABC Traders")
         self.assertFalse(payload["actions"]["can_export_excel"])
 
     def test_report_metadata_and_drilldown_contracts_are_standardized(self):
@@ -1138,6 +1337,7 @@ class PayableReportAPITests(APITestCase):
         self.assertEqual(payables_menu["route_path"], "/reports/payables")
         child_codes = {child["menu_code"] for child in payables_menu["children"]}
         self.assertIn("reports.accountspayableaging", child_codes)
+        self.assertIn("reports.payables.msme_overdue", child_codes)
         self.assertIn("reports.payables.upcoming_payments_calendar", child_codes)
 
     def test_new_payables_control_export_endpoints_return_expected_formats(self):
@@ -1243,6 +1443,31 @@ class PayableReportAPITests(APITestCase):
         self.assertEqual(payload["rows"][0]["drilldown_target"], "purchase_invoice_detail")
         self.assertIn("vendor_settlements", payload["rows"][0]["_meta"]["drilldown"])
 
+    def test_vendor_ledger_statement_purchase_document_drilldown_uses_service_route_for_service_bills(self):
+        PurchaseInvoiceLine.objects.create(
+            header=self.invoice,
+            line_no=1,
+            is_service=True,
+            purchase_behavior="expense",
+            product_desc="AMC service",
+        )
+        self._post_vendor_statement_entry(
+            txn_type=TxnType.PURCHASE,
+            txn_id=self.invoice.id,
+            posting_date=date(2025, 4, 1),
+            amount="1000.00",
+            voucher_no="PI-PINV-1001",
+            description="Purchase invoice",
+        )
+
+        response = self.client.get(
+            reverse("reports_api:vendor-ledger-statement"),
+            self._base_scope(vendor=self.vendor.id, from_date="2025-04-01", to_date="2025-04-30"),
+        )
+        self.assertEqual(response.status_code, 200)
+        drilldown = response.json()["rows"][0]["_meta"]["drilldown"]["source_document"]
+        self.assertEqual(drilldown["route"], "/purchaseserviceinvoice")
+
     def test_vendor_ledger_statement_export_endpoints_return_expected_formats(self):
         self._post_vendor_statement_entry(txn_type=TxnType.PURCHASE, txn_id=self.invoice.id, posting_date=date(2025, 4, 1), amount="1000.00", voucher_no="PI-PINV-1001", description="Purchase invoice")
         params = self._base_scope(vendor=self.vendor.id, from_date="2025-04-01", to_date="2025-04-30")
@@ -1260,6 +1485,13 @@ class PayableReportAPITests(APITestCase):
         self.assertTrue(bytes(response.content).startswith(prefix))
 
     def test_payables_close_pack_composes_existing_control_sections(self):
+        apply_normalized_profile_payload(
+            self.vendor,
+            compliance_data={
+                "msme_status": "micro",
+                "has_written_payment_terms": False,
+            },
+        )
         self._post_vendor_gl_balance(Decimal("650.00"), posting_date=date(2025, 8, 1), txn_id=9010, voucher_no="GL-AP-10")
         response = self.client.get(
             reverse("reports_api:payables-close-pack"),
@@ -1272,9 +1504,21 @@ class PayableReportAPITests(APITestCase):
         self.assertIn("reconciliation", payload)
         self.assertIn("validation", payload)
         self.assertEqual(payload["reconciliation"]["status"], "matched")
+        self.assertEqual(payload["overview"]["msme_overdue_amount"], "800.00")
+        self.assertEqual(payload["overview"]["msme_overdue_bill_count"], 1)
+        self.assertEqual(payload["overview"]["msme_overdue_vendor_count"], 1)
+        self.assertIn("800.00", payload["overview"]["msme_reporting_note"])
         self.assertIn("top_vendors", payload)
+        self.assertEqual(payload["top_vendors"]["top_msme_overdue_vendors"][0]["vendor_name"], "ABC Traders")
 
     def test_payables_close_pack_export_endpoints_return_expected_formats(self):
+        apply_normalized_profile_payload(
+            self.vendor,
+            compliance_data={
+                "msme_status": "micro",
+                "has_written_payment_terms": False,
+            },
+        )
         self._post_vendor_gl_balance(Decimal("650.00"), posting_date=date(2025, 8, 1), txn_id=9011, voucher_no="GL-AP-11")
         params = self._base_scope(as_of_date="2025-08-01")
         export_checks = [
@@ -1286,9 +1530,14 @@ class PayableReportAPITests(APITestCase):
         for route_name, content_type, prefix in export_checks:
             with self.subTest(route_name=route_name):
                 response = self.client.get(reverse(route_name), params)
-        self.assertEqual(response.status_code, 200)
-        self.assertTrue(response["Content-Type"].startswith(content_type))
-        self.assertTrue(bytes(response.content).startswith(prefix))
+                self.assertEqual(response.status_code, 200)
+                self.assertTrue(response["Content-Type"].startswith(content_type))
+                self.assertTrue(bytes(response.content).startswith(prefix))
+        csv_response = self.client.get(reverse("reports_api:payables-close-pack-csv"), params)
+        csv_text = csv_response.content.decode("utf-8-sig")
+        self.assertIn("Overview,msme_reporting_note", csv_text)
+        self.assertIn("top_msme_overdue_vendors[1].vendor_name", csv_text)
+        self.assertIn("ABC Traders", csv_text)
 
     def test_payables_meta_exposes_centralized_report_definitions(self):
         response = self.client.get(reverse("reports_api:payables-meta"), self._base_scope())
@@ -1296,10 +1545,13 @@ class PayableReportAPITests(APITestCase):
         payload = response.json()
         definitions = {row["code"]: row for row in payload["report_definitions"]}
         self.assertIn("vendor_outstanding", definitions)
+        self.assertIn("msme_overdue", definitions)
         self.assertIn("purchase_register", definitions)
         self.assertIn("payables_close_pack", definitions)
         self.assertIn("vendor_name", definitions["vendor_outstanding"]["enabled_columns"])
         self.assertIn("totals", definitions["vendor_outstanding"]["enabled_summary_blocks"])
+        self.assertIn("msme_due_date", definitions["msme_overdue"]["enabled_columns"])
+        self.assertIn("reporting_note", definitions["msme_overdue"]["enabled_summary_blocks"])
         self.assertIn("include_outstanding", {flag["code"] for flag in definitions["purchase_register"]["feature_flags"]})
 
     def test_vendor_outstanding_meta_reflects_config_when_reconciliation_enabled(self):
@@ -1693,7 +1945,7 @@ class PayableReportAPITests(APITestCase):
         response = self.client.get(reverse("reports_api:payables-meta"), self._base_scope())
         self.assertEqual(response.status_code, 200)
         definitions = {row["code"]: row for row in response.json()["report_definitions"]}
-        for code in ["vendor_outstanding", "ap_aging", "vendor_settlement_history", "vendor_note_register", "vendor_ledger_statement", "payables_close_pack", "upcoming_payments_calendar"]:
+        for code in ["vendor_outstanding", "ap_aging", "msme_overdue", "vendor_settlement_history", "vendor_note_register", "vendor_ledger_statement", "payables_close_pack", "upcoming_payments_calendar"]:
             with self.subTest(code=code):
                 definition = definitions[code]
                 self.assertIn("supported_filters", definition)

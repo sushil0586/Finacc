@@ -22,6 +22,7 @@ from numbering.services import ensure_document_type, ensure_series
 from invoice_import.views import (
     PurchaseInvoiceImportJobCommitAPIView,
     PurchaseInvoiceImportJobCreateAPIView,
+    PurchaseInvoiceImportJobDetailAPIView,
     PurchaseInvoiceImportProfileListCreateAPIView,
     PurchaseInvoiceImportJobCommitAPIView,
     PurchaseInvoiceImportJobReviewAPIView,
@@ -90,7 +91,7 @@ class InvoiceImportServiceTests(TestCase):
         )
         apply_normalized_profile_payload(
             account_row,
-            compliance_data={"gstno": gstin},
+            compliance_data={"gstno": gstin, "gstregtype": "Regular" if gstin else ""},
             commercial_data={"partytype": partytype},
             createdby=self.user,
         )
@@ -121,6 +122,24 @@ class InvoiceImportServiceTests(TestCase):
             "remarks": "Imported from legacy ERP",
             "original_source_key": "",
         }
+
+    def _purchase_row(self, *, source_key: str, invoice_number: str) -> dict[str, object]:
+        row = self._base_row(
+            party_name=self.vendor.accountname,
+            source_key=source_key,
+            source_invoice_number=invoice_number,
+        )
+        row.update(
+            {
+                "party_gstin": "27AACCV1234F1Z5",
+                "supplier_invoice_number": invoice_number,
+                "supplier_invoice_date": "2025-04-01",
+                "supply_category": PurchaseInvoiceHeader.SupplyCategory.DOMESTIC,
+                "taxability": PurchaseInvoiceHeader.Taxability.TAXABLE,
+                "tax_regime": PurchaseInvoiceHeader.TaxRegime.INTRA,
+            }
+        )
+        return row
 
     def _build_job(self, *, module: str, mode: str, detail_level: str, rows: list[dict[str, object]], stock_replay: bool = False, compliance_mode: str = ImportJob.ComplianceMode.PASSIVE, withholding_mode: str = ImportJob.WithholdingMode.PRESERVE_LEGACY) -> ImportJob:
         return create_validated_job(
@@ -369,6 +388,147 @@ class InvoiceImportServiceTests(TestCase):
         row_state = job.rows.get()
         self.assertTrue(any(err["field"] == "total_taxable" for err in row_state.errors))
 
+    def test_purchase_import_requires_supplier_invoice_date(self):
+        row = self._purchase_row(source_key="purchase-missing-date-1", invoice_number="P-MISS-DATE-001")
+        row["supplier_invoice_date"] = ""
+
+        job = self._build_job(
+            module=ImportJob.Module.PURCHASE,
+            mode=ImportJob.Mode.OUTSTANDING_ONLY,
+            detail_level=ImportJob.DetailLevel.HEADER_ONLY,
+            rows=[row],
+        )
+
+        self.assertEqual(job.status, ImportJob.Status.FAILED)
+        row_state = job.rows.get()
+        self.assertTrue(any(err["field"] == "supplier_invoice_date" for err in row_state.errors))
+
+    def test_purchase_import_blocks_registered_vendor_without_gstin(self):
+        row = self._purchase_row(source_key="purchase-no-gstin-1", invoice_number="P-NO-GSTIN-001")
+        row["party_gstin"] = ""
+
+        job = self._build_job(
+            module=ImportJob.Module.PURCHASE,
+            mode=ImportJob.Mode.OUTSTANDING_ONLY,
+            detail_level=ImportJob.DetailLevel.HEADER_ONLY,
+            rows=[row],
+        )
+
+        self.assertEqual(job.status, ImportJob.Status.FAILED)
+        row_state = job.rows.get()
+        self.assertTrue(
+            any(
+                err["field"] == "party_gstin"
+                or "required for regular vendors" in str(err.get("message", "")).lower()
+                for err in row_state.errors
+            )
+        )
+
+    def test_purchase_import_blocks_urd_row_with_supplier_gst(self):
+        row = self._purchase_row(source_key="purchase-urd-gst-1", invoice_number="P-URD-GST-001")
+        row["party_gstin"] = ""
+
+        job = self._build_job(
+            module=ImportJob.Module.PURCHASE,
+            mode=ImportJob.Mode.OUTSTANDING_ONLY,
+            detail_level=ImportJob.DetailLevel.HEADER_ONLY,
+            rows=[row],
+        )
+
+        self.assertEqual(job.status, ImportJob.Status.FAILED)
+        row_state = job.rows.get()
+        self.assertTrue(any("URD purchase rows cannot include supplier GST" in err["message"] for err in row_state.errors))
+
+    def test_purchase_import_blocks_duplicate_supplier_invoice(self):
+        PurchaseInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            vendor=self.vendor,
+            vendor_name=self.vendor.accountname,
+            vendor_gstin="27AACCV1234F1Z5",
+            supplier_invoice_number="P-DUP-001",
+            supplier_invoice_date="2025-04-01",
+            bill_date="2025-04-01",
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            status=PurchaseInvoiceHeader.Status.POSTED,
+            total_taxable="1000.00",
+            total_cgst="90.00",
+            total_sgst="90.00",
+            total_igst="0.00",
+            total_cess="0.00",
+            total_gst="180.00",
+            grand_total="1180.00",
+        )
+        row = self._purchase_row(source_key="purchase-dup-1", invoice_number="P-DUP-001")
+
+        job = self._build_job(
+            module=ImportJob.Module.PURCHASE,
+            mode=ImportJob.Mode.OUTSTANDING_ONLY,
+            detail_level=ImportJob.DetailLevel.HEADER_ONLY,
+            rows=[row],
+        )
+
+        self.assertEqual(job.status, ImportJob.Status.FAILED)
+        row_state = job.rows.get()
+        self.assertTrue(any("Duplicate supplier invoice detected" in err["message"] for err in row_state.errors))
+
+    def test_purchase_import_blocks_invalid_taxability(self):
+        row = self._purchase_row(source_key="purchase-bad-taxability-1", invoice_number="P-BAD-TAX-001")
+        row["taxability"] = 99
+
+        job = self._build_job(
+            module=ImportJob.Module.PURCHASE,
+            mode=ImportJob.Mode.OUTSTANDING_ONLY,
+            detail_level=ImportJob.DetailLevel.HEADER_ONLY,
+            rows=[row],
+        )
+
+        self.assertEqual(job.status, ImportJob.Status.FAILED)
+        row_state = job.rows.get()
+        self.assertTrue(any(err["field"] == "taxability" for err in row_state.errors))
+
+    def test_purchase_import_blocks_import_service_without_reverse_charge(self):
+        row = self._purchase_row(source_key="purchase-import-service-1", invoice_number="P-IMP-SVC-001")
+        row["supply_category"] = PurchaseInvoiceHeader.SupplyCategory.IMPORT_SERVICES
+        row["tax_regime"] = PurchaseInvoiceHeader.TaxRegime.INTER
+        row["total_cgst"] = "0.00"
+        row["total_sgst"] = "0.00"
+        row["total_igst"] = "0.00"
+        row["grand_total"] = "1000.00"
+        row["is_reverse_charge"] = False
+
+        job = self._build_job(
+            module=ImportJob.Module.PURCHASE,
+            mode=ImportJob.Mode.OUTSTANDING_ONLY,
+            detail_level=ImportJob.DetailLevel.HEADER_ONLY,
+            rows=[row],
+        )
+
+        self.assertEqual(job.status, ImportJob.Status.FAILED)
+        row_state = job.rows.get()
+        self.assertTrue(any(err["field"] == "is_reverse_charge" for err in row_state.errors))
+
+    def test_purchase_import_blocks_composition_vendor_with_supplier_gst(self):
+        apply_normalized_profile_payload(
+            self.vendor,
+            compliance_data={"gstno": "27AACCV1234F1Z5", "gstregtype": "Composition"},
+            commercial_data={"partytype": "Vendor"},
+            createdby=self.user,
+        )
+        row = self._purchase_row(source_key="purchase-comp-1", invoice_number="P-COMP-001")
+
+        job = self._build_job(
+            module=ImportJob.Module.PURCHASE,
+            mode=ImportJob.Mode.OUTSTANDING_ONLY,
+            detail_level=ImportJob.DetailLevel.HEADER_ONLY,
+            rows=[row],
+        )
+
+        self.assertEqual(job.status, ImportJob.Status.FAILED)
+        row_state = job.rows.get()
+        self.assertTrue(any("Composition vendor purchase rows cannot include supplier GST" in err["message"] for err in row_state.errors))
+
     def test_purchase_review_required_blocks_commit_until_marked_reviewed(self):
         row = self._base_row(
             party_name=self.vendor.accountname,
@@ -557,8 +717,8 @@ class InvoiceImportServiceTests(TestCase):
                 "taxability": PurchaseInvoiceHeader.Taxability.TAXABLE,
                 "tax_regime": PurchaseInvoiceHeader.TaxRegime.INTRA,
                 "grand_total": "1180.00",
-                "settled_amount": "600.00",
-                "outstanding_amount": "580.00",
+                "settled_amount": "880.00",
+                "outstanding_amount": "300.00",
             }
         )
         credit_note_row = self._base_row(
@@ -581,7 +741,7 @@ class InvoiceImportServiceTests(TestCase):
                 "total_sgst": "36.00",
                 "grand_total": "472.00",
                 "settled_amount": "0.00",
-                "outstanding_amount": "700.00",
+                "outstanding_amount": "472.00",
             }
         )
         with patch("invoice_import.services.PurchaseSettingsService.get_policy", return_value=SimpleNamespace(controls={"legacy_import_note_outstanding_rule": "hard"})):
