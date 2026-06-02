@@ -4,6 +4,10 @@ import assets.models
 
 
 class Migration(migrations.Migration):
+    replaces = [
+        ("assets", "0006_assetcategory_traceability_controls"),
+        ("assets", "0007_assetcategory_accounting_controls"),
+    ]
 
     dependencies = [
         ("assets", "0005_assetbulkjob_committed_fields"),
