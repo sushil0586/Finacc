@@ -379,6 +379,10 @@ class OnboardingSeedOptionsSerializer(serializers.Serializer):
     seed_default_subentity = serializers.BooleanField(required=False, default=True)
     seed_default_roles = serializers.BooleanField(required=False, default=True)
     seed_numbering = serializers.BooleanField(required=False, default=True)
+    seed_catalog = serializers.BooleanField(required=False, default=True)
+    seed_assets = serializers.BooleanField(required=False, default=True)
+    seed_purchase_choices = serializers.BooleanField(required=False, default=True)
+    seed_sales_choices = serializers.BooleanField(required=False, default=True)
 
 
 class OnboardingComplianceCredentialSerializer(serializers.Serializer):

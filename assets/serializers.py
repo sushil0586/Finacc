@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+from django.db.models import Q
 from rest_framework import serializers
 
 from assets.models import AssetCategory, AssetSettings, DepreciationRun, DepreciationRunLine, FixedAsset
+
+
+def _run_scope_overlap_q(*, subentity_id: int | None):
+    if subentity_id is None:
+        return Q()
+    return Q(subentity_id__isnull=True) | Q(subentity_id=subentity_id)
 
 
 class AssetScopeValidationMixin:
@@ -79,7 +86,9 @@ class FixedAssetListSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
     def get_is_purchase_intake(self, obj):
-        return bool(getattr(obj, "purchase_document_no", None) or getattr(obj, "source_purchase_lines", None))
+        lines = getattr(obj, "source_purchase_lines", None)
+        has_source_lines = bool(lines.exists()) if lines is not None else False
+        return bool(getattr(obj, "purchase_document_no", None) or has_source_lines)
 
     def get_source_purchase_line_ids(self, obj):
         lines = getattr(obj, "source_purchase_lines", None)
@@ -264,9 +273,40 @@ class DepreciationRunCreateSerializer(AssetScopeValidationMixin, serializers.Mod
         instance = getattr(self, "instance", None)
         subentity = attrs.get("subentity") or getattr(instance, "subentity", None)
         entityfinid = attrs.get("entityfinid") or getattr(instance, "entityfinid", None)
+        period_from = attrs.get("period_from") or getattr(instance, "period_from", None)
+        period_to = attrs.get("period_to") or getattr(instance, "period_to", None)
+        posting_date = attrs.get("posting_date") or getattr(instance, "posting_date", None)
 
         self._validate_subentity_scope(subentity=subentity, entity_id=entity.id)
         self._validate_related_entity(obj=entityfinid, entity_id=entity.id, field_name="entityfinid")
+
+        if period_from and period_to and period_from > period_to:
+            raise serializers.ValidationError({"period_to": "Period to must be on or after period from."})
+        if posting_date and period_from and posting_date < period_from:
+            raise serializers.ValidationError({"posting_date": "Posting date cannot be earlier than period from."})
+
+        if entityfinid and period_from and period_to:
+            overlap_qs = DepreciationRun.objects.filter(
+                entity_id=entity.id,
+                entityfinid_id=entityfinid.id,
+                status__in=[
+                    DepreciationRun.RunStatus.DRAFT,
+                    DepreciationRun.RunStatus.CALCULATED,
+                    DepreciationRun.RunStatus.POSTED,
+                ],
+                period_from__lte=period_to,
+                period_to__gte=period_from,
+            ).filter(_run_scope_overlap_q(subentity_id=getattr(subentity, "id", None)))
+            if instance is not None and instance.pk:
+                overlap_qs = overlap_qs.exclude(pk=instance.pk)
+            if overlap_qs.exists():
+                raise serializers.ValidationError(
+                    {
+                        "non_field_errors": [
+                            "An overlapping depreciation run already exists in this scope. Cancel or move the existing run before creating another one."
+                        ]
+                    }
+                )
         return attrs
 
 

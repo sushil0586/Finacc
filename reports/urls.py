@@ -46,6 +46,7 @@ from reports.api.financial import (
     TrialBalanceAPIView,
 )
 from reports.api.assets_views import (
+    AssetDashboardSummaryAPIView,
     AssetEventCSVAPIView,
     AssetEventExcelAPIView,
     AssetEventPDFAPIView,
@@ -520,6 +521,7 @@ urlpatterns = [
     path("fixed-assets/events/csv/", AssetEventCSVAPIView.as_view(), name="fixed-asset-events-csv"),
     path("fixed-assets/events/print/", AssetEventPrintAPIView.as_view(), name="fixed-asset-events-print"),
     path("fixed-assets/history/", AssetHistoryAPIView.as_view(), name="fixed-asset-history"),
+    path("fixed-assets/dashboard-summary/", AssetDashboardSummaryAPIView.as_view(), name="fixed-asset-dashboard-summary"),
     path("receivables/customer-outstanding/", CustomerOutstandingReportAPIView.as_view(), name="customer-outstanding-report"),
     path("receivables/customer-outstanding/excel/", CustomerOutstandingExcelAPIView.as_view(), name="customer-outstanding-report-excel"),
     path("receivables/customer-outstanding/pdf/", CustomerOutstandingPDFAPIView.as_view(), name="customer-outstanding-report-pdf"),

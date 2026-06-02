@@ -15,6 +15,7 @@ from rest_framework.views import APIView
 
 from core.entitlements import ScopedEntitlementMixin
 from reports.schemas.assets_reports import (
+    AssetDashboardSummaryScopeSerializer,
     AssetLocationCustodianScopeSerializer,
     AssetEventReportScopeSerializer,
     AssetHistoryScopeSerializer,
@@ -256,6 +257,87 @@ class AssetHistoryAPIView(_BaseAssetReportAPIView):
             asset_id=scope["asset"],
         )
         return Response(payload)
+
+
+class AssetDashboardSummaryAPIView(_BaseAssetReportAPIView):
+
+    def get(self, request):
+        scope = self.get_scope(request, AssetDashboardSummaryScopeSerializer)
+
+        register_payload = build_fixed_asset_register(
+            entity_id=scope["entity"],
+            entityfin_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
+            as_of_date=scope.get("as_of_date"),
+            category_id=scope.get("category"),
+            status=scope.get("status"),
+            search=scope.get("search"),
+            page=1,
+            page_size=1000,
+        )
+        location_payload = build_asset_location_custodian_report(
+            entity_id=scope["entity"],
+            entityfin_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
+            as_of_date=scope.get("as_of_date"),
+            category_id=scope.get("category"),
+            status=scope.get("status"),
+            search=scope.get("search"),
+            page=1,
+            page_size=1000,
+        )
+        depreciation_payload = build_depreciation_schedule(
+            entity_id=scope["entity"],
+            entityfin_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
+            from_date=scope.get("from_date"),
+            to_date=scope.get("to_date") or scope.get("as_of_date"),
+            category_id=scope.get("category"),
+            asset_id=None,
+            page=1,
+            page_size=1000,
+        )
+        events_payload = build_asset_event_report(
+            entity_id=scope["entity"],
+            entityfin_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
+            from_date=scope.get("from_date"),
+            to_date=scope.get("to_date") or scope.get("as_of_date"),
+            event_type=None,
+            asset_id=None,
+            page=1,
+            page_size=1000,
+        )
+
+        return Response(
+            {
+                "report_code": "fixed_asset_dashboard_summary",
+                "report_name": "Fixed Asset Dashboard Summary",
+                "entity_id": scope["entity"],
+                "entityfin_id": scope.get("entityfinid"),
+                "subentity_id": scope.get("subentity"),
+                "as_of_date": scope.get("as_of_date"),
+                "from_date": scope.get("from_date"),
+                "register": register_payload,
+                "location": location_payload,
+                "depreciation": depreciation_payload,
+                "events": events_payload,
+                "summary": {
+                    "asset_count": register_payload.get("summary", {}).get("asset_count", 0),
+                    "active_asset_count": sum(
+                        1
+                        for row in register_payload.get("rows", [])
+                        if (row.get("status") or "").lower() in {"active", "posted"}
+                    ),
+                    "location_count": location_payload.get("summary", {}).get("location_count", 0),
+                    "custodian_count": location_payload.get("summary", {}).get("custodian_count", 0),
+                    "event_count": events_payload.get("pagination", {}).get("total_rows", 0),
+                    "depreciation_amount": depreciation_payload.get("totals", {}).get("depreciation_amount", "0.00"),
+                    "gross_block": register_payload.get("totals", {}).get("gross_block", "0.00"),
+                    "net_book_value": register_payload.get("totals", {}).get("net_book_value", "0.00"),
+                },
+            }
+        )
 
 
 class _BaseAssetExportAPIView(_BaseAssetReportAPIView):

@@ -289,6 +289,16 @@ class FixedAssetCapitalizeAPIView(AssetScopedAPIView):
         return Response(FixedAssetListSerializer(asset).data)
 
 
+class FixedAssetCapitalizePrecheckAPIView(AssetScopedAPIView):
+
+    def post(self, request, pk: int):
+        asset = self._scoped_asset(request, pk)
+        serializer = AssetCapitalizeSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = AssetService.capitalize_asset_precheck(asset=asset, **serializer.validated_data)
+        return Response(payload)
+
+
 class FixedAssetImpairAPIView(AssetScopedAPIView):
 
     def post(self, request, pk: int):
@@ -302,6 +312,16 @@ class FixedAssetImpairAPIView(AssetScopedAPIView):
         return Response(FixedAssetListSerializer(asset).data)
 
 
+class FixedAssetImpairPrecheckAPIView(AssetScopedAPIView):
+
+    def post(self, request, pk: int):
+        asset = self._scoped_asset(request, pk)
+        serializer = AssetImpairSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = AssetService.impair_asset_precheck(asset=asset, **serializer.validated_data)
+        return Response(payload)
+
+
 class FixedAssetTransferAPIView(AssetScopedAPIView):
 
     def post(self, request, pk: int):
@@ -313,6 +333,16 @@ class FixedAssetTransferAPIView(AssetScopedAPIView):
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(FixedAssetListSerializer(asset).data)
+
+
+class FixedAssetDisposePrecheckAPIView(AssetScopedAPIView):
+
+    def post(self, request, pk: int):
+        asset = self._scoped_asset(request, pk)
+        serializer = AssetDisposalSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = AssetService.dispose_asset_precheck(asset=asset, **serializer.validated_data)
+        return Response(payload)
 
 
 class FixedAssetDisposeAPIView(AssetScopedAPIView):
@@ -345,7 +375,7 @@ class AssetMetaAPIView(AssetScopedAPIView):
                         {"value": "purchase", "label": "Purchase Intake Review"},
                     ],
                 },
-                "categories": list(categories.values("id", "code", "name", "nature")),
+                "categories": list(categories.values("id", "code", "name", "nature", "traceability_controls", "accounting_controls")),
                 "ledgers": list(ledgers),
             }
         )

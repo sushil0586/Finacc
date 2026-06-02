@@ -25,12 +25,16 @@ from entity.models import (
 )
 from entity.policy import EntityPolicyService
 
+from assets.seeding import AssetSeedService
+from catalog.seeding import CatalogSeedService
 from financial.seeding import FinancialSeedService
-from rbac.seeding import RBACSeedService
-from rbac.models import UserRoleAssignment
-from posting.services.static_accounts import StaticAccountService
-from subscriptions.services import SubscriptionService
 from numbering.seeding import NumberingSeedService, NumberingSeedSpec
+from posting.services.static_accounts import StaticAccountService
+from purchase.seeding import PurchaseSeedService
+from rbac.models import UserRoleAssignment
+from rbac.seeding import RBACSeedService
+from sales.seeding import SalesSeedService
+from subscriptions.services import SubscriptionService
 
 # Default numbering specs mirrored from numbering.management.commands.seed_doc_sequences
 DEFAULT_NUMBERING_SPECS = [
@@ -722,6 +726,22 @@ class EntityOnboardingService:
                         )
                     )
 
+        catalog_summary = {}
+        if seed_options.get("seed_catalog", True):
+            catalog_summary = CatalogSeedService.seed_entity(entity=entity)
+
+        asset_summary = {}
+        if seed_options.get("seed_assets", True):
+            asset_summary = AssetSeedService.seed_entity(entity=entity, actor=actor)
+
+        purchase_choice_summary = {}
+        if seed_options.get("seed_purchase_choices", True):
+            purchase_choice_summary = PurchaseSeedService.seed_choice_overrides(entity=entity, subentity=None)
+
+        sales_choice_summary = {}
+        if seed_options.get("seed_sales_choices", True):
+            sales_choice_summary = SalesSeedService.seed_choice_overrides(entity=entity, subentity=None)
+
         SubscriptionService.register_entity_creation(
             entity=entity,
             owner=actor,
@@ -739,6 +759,10 @@ class EntityOnboardingService:
             "financial": financial_summary,
             "rbac": rbac_summary,
             "numbering": numbering_summary,
+            "catalog": catalog_summary,
+            "assets": asset_summary,
+            "purchase_choice_overrides": purchase_choice_summary,
+            "sales_choice_overrides": sales_choice_summary,
             "validation_warnings": validation_warnings,
         }
 

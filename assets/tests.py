@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone as dt_timezone
+from decimal import Decimal
+from unittest.mock import patch
 
 from Authentication.models import User
 from django.urls import reverse
@@ -16,6 +18,7 @@ from subscriptions.models import PlanLimit
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 from .models import AssetBulkJob, AssetCategory, DepreciationRun, FixedAsset
+from .seeding import AssetSeedService
 from .services.settings import AssetSettingsService
 
 
@@ -312,6 +315,16 @@ class AssetApiScopeTests(APITestCase):
         self.assertEqual(response.data["source_purchase_line_ids"], [purchase_line.id])
         self.assertIn(purchase_header.purchase_number, response.data["source_purchase_numbers"])
 
+    def test_regular_asset_is_not_flagged_as_purchase_intake(self):
+        response = self.client.get(
+            reverse("assets_api:fixed-asset-detail", args=[self.asset.id]),
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["is_purchase_intake"])
+        self.assertEqual(response.data["source_purchase_line_ids"], [])
+        self.assertEqual(response.data["source_purchase_numbers"], [])
+
     def test_capitalize_blocks_purchase_intake_when_review_fields_missing(self):
         purchase_asset, _, _ = self._create_purchase_intake_asset_fixture()
         purchase_asset.location_name = ""
@@ -418,6 +431,55 @@ class AssetApiScopeTests(APITestCase):
         self.asset.refresh_from_db()
         self.assertIsNone(self.asset.capitalization_date)
 
+    def test_archive_unposted_asset_deletes_record(self):
+        response = self.client.delete(
+            reverse("assets_api:fixed-asset-archive", args=[self.asset.id]),
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(FixedAsset.objects.filter(pk=self.asset.id).exists())
+
+    def test_archive_posted_asset_soft_deactivates_record(self):
+        capitalize_response = self.client.post(
+            reverse("assets_api:fixed-asset-capitalize", args=[self.asset.id]),
+            {
+                "counter_ledger_id": self.asset_ledger.id,
+                "capitalization_date": "2026-04-02",
+                "narration": "Capitalize asset",
+            },
+            format="json",
+        )
+        self.assertEqual(capitalize_response.status_code, status.HTTP_200_OK)
+
+        response = self.client.delete(
+            reverse("assets_api:fixed-asset-archive", args=[self.asset.id]),
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.asset.refresh_from_db()
+        self.assertFalse(self.asset.is_active)
+
+    def test_transfer_allows_clearing_notes(self):
+        self.asset.status = FixedAsset.AssetStatus.ACTIVE
+        self.asset.notes = "Needs reassignment"
+        self.asset.save(update_fields=["status", "notes", "updated_at"])
+
+        response = self.client.post(
+            reverse("assets_api:fixed-asset-transfer", args=[self.asset.id]),
+            {
+                "subentity_id": self.subentity.id,
+                "location_name": "Main Branch",
+                "department_name": "Admin",
+                "custodian_name": "A. Kumar",
+                "notes": "",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.asset.refresh_from_db()
+        self.assertEqual(self.asset.notes, "")
+
     def test_capitalize_blocks_below_threshold_when_policy_is_hard(self):
         self._set_asset_policy(
             entity_id=self.entity.id,
@@ -512,6 +574,129 @@ class AssetApiScopeTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("capitalization date", response.data["detail"].lower())
 
+    def test_impairment_blocks_locked_period_when_policy_is_hard(self):
+        capitalize_response = self.client.post(
+            reverse("assets_api:fixed-asset-capitalize", args=[self.asset.id]),
+            {
+                "counter_ledger_id": self.asset_ledger.id,
+                "capitalization_date": "2026-04-02",
+                "narration": "Capitalize asset",
+            },
+            format="json",
+        )
+        self.assertEqual(capitalize_response.status_code, status.HTTP_200_OK)
+
+        self.category.impairment_expense_ledger = self.dep_exp_ledger
+        self.category.impairment_reserve_ledger = self.acc_dep_ledger
+        self.category.save(update_fields=["impairment_expense_ledger", "impairment_reserve_ledger", "updated_at"])
+
+        self._set_asset_policy(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            depreciation_lock_rule="hard",
+        )
+        self.entityfin.books_locked_until = date(2026, 4, 30)
+        self.entityfin.save(update_fields=["books_locked_until", "updated_at"])
+
+        response = self.client.post(
+            reverse("assets_api:fixed-asset-impair", args=[self.asset.id]),
+            {
+                "impairment_amount": "500.00",
+                "posting_date": "2026-04-30",
+                "narration": "Impair asset",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("locked books period", response.data["detail"].lower())
+
+    def test_disposal_blocks_locked_period_when_policy_is_hard(self):
+        capitalize_response = self.client.post(
+            reverse("assets_api:fixed-asset-capitalize", args=[self.asset.id]),
+            {
+                "counter_ledger_id": self.asset_ledger.id,
+                "capitalization_date": "2026-04-02",
+                "narration": "Capitalize asset",
+            },
+            format="json",
+        )
+        self.assertEqual(capitalize_response.status_code, status.HTTP_200_OK)
+
+        self._set_asset_policy(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            depreciation_lock_rule="hard",
+        )
+        self.entityfin.books_locked_until = date(2026, 4, 30)
+        self.entityfin.save(update_fields=["books_locked_until", "updated_at"])
+
+        response = self.client.post(
+            reverse("assets_api:fixed-asset-dispose", args=[self.asset.id]),
+            {
+                "proceeds_ledger_id": self.asset_ledger.id,
+                "disposal_date": "2026-04-30",
+                "sale_proceeds": "0.00",
+                "narration": "Dispose asset",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("locked books period", response.data["detail"].lower())
+
+    def test_disposal_rejects_negative_sale_proceeds(self):
+        capitalize_response = self.client.post(
+            reverse("assets_api:fixed-asset-capitalize", args=[self.asset.id]),
+            {
+                "counter_ledger_id": self.asset_ledger.id,
+                "capitalization_date": "2026-04-02",
+                "narration": "Capitalize asset",
+            },
+            format="json",
+        )
+        self.assertEqual(capitalize_response.status_code, status.HTTP_200_OK)
+
+        response = self.client.post(
+            reverse("assets_api:fixed-asset-dispose", args=[self.asset.id]),
+            {
+                "proceeds_ledger_id": self.asset_ledger.id,
+                "disposal_date": "2026-04-30",
+                "sale_proceeds": "-10.00",
+                "narration": "Dispose asset",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("sale proceeds cannot be negative", response.data["detail"].lower())
+
+    def test_disposal_requires_proceeds_ledger_when_sale_proceeds_exist(self):
+        capitalize_response = self.client.post(
+            reverse("assets_api:fixed-asset-capitalize", args=[self.asset.id]),
+            {
+                "counter_ledger_id": self.asset_ledger.id,
+                "capitalization_date": "2026-04-02",
+                "narration": "Capitalize asset",
+            },
+            format="json",
+        )
+        self.assertEqual(capitalize_response.status_code, status.HTTP_200_OK)
+
+        response = self.client.post(
+            reverse("assets_api:fixed-asset-dispose", args=[self.asset.id]),
+            {
+                "proceeds_ledger_id": 0,
+                "disposal_date": "2026-04-30",
+                "sale_proceeds": "100.00",
+                "narration": "Dispose asset",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("proceeds ledger is required", response.data["detail"].lower())
+
     def test_depreciation_run_calculate_blocks_locked_period_when_policy_is_hard(self):
         self._set_asset_policy(
             entity_id=self.entity.id,
@@ -535,6 +720,84 @@ class AssetApiScopeTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("locked books period", response.data["detail"].lower())
+
+    def test_depreciation_run_create_blocks_overlapping_scope(self):
+        DepreciationRun.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            run_code="DEP-EXISTING",
+            period_from=date(2026, 4, 1),
+            period_to=date(2026, 4, 30),
+            posting_date=date(2026, 4, 30),
+            status=DepreciationRun.RunStatus.DRAFT,
+            created_by=self.owner,
+            updated_by=self.owner,
+        )
+
+        response = self.client.post(
+            reverse("assets_api:depreciation-run-list-create"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "run_code": "DEP-OVERLAP",
+                "period_from": "2026-04-15",
+                "period_to": "2026-05-15",
+                "posting_date": "2026-04-30",
+                "depreciation_method": "SLM",
+                "note": "Overlapping run",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("overlapping depreciation run", str(response.data).lower())
+
+    def test_depreciation_run_calculate_blocks_overlap_created_outside_api(self):
+        capitalize_response = self.client.post(
+            reverse("assets_api:fixed-asset-capitalize", args=[self.asset.id]),
+            {
+                "counter_ledger_id": self.asset_ledger.id,
+                "capitalization_date": "2026-04-02",
+                "narration": "Capitalize asset",
+            },
+            format="json",
+        )
+        self.assertEqual(capitalize_response.status_code, status.HTTP_200_OK)
+
+        DepreciationRun.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            run_code="DEP-POSTED",
+            period_from=date(2026, 4, 1),
+            period_to=date(2026, 4, 30),
+            posting_date=date(2026, 4, 30),
+            status=DepreciationRun.RunStatus.POSTED,
+            created_by=self.owner,
+            updated_by=self.owner,
+        )
+        pending_run = DepreciationRun.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            run_code="DEP-DRAFT",
+            period_from=date(2026, 4, 10),
+            period_to=date(2026, 4, 25),
+            posting_date=date(2026, 4, 25),
+            status=DepreciationRun.RunStatus.DRAFT,
+            created_by=self.owner,
+            updated_by=self.owner,
+        )
+
+        response = self.client.post(
+            reverse("assets_api:depreciation-run-calculate", args=[pending_run.id]),
+            {},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("overlapping depreciation run", response.data["detail"].lower())
 
     def test_cancel_posted_depreciation_run_preserves_audit_lines_and_marks_entry_reversed(self):
         capitalize_response = self.client.post(
@@ -824,3 +1087,183 @@ class AssetApiScopeTests(APITestCase):
             buffer.getvalue(),
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
+
+
+class AssetSeedServiceTests(APITestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="asset-seed-owner",
+            email="asset-seed-owner@example.com",
+            password="Password@123",
+        )
+        self.entity = Entity.objects.create(entityname="Seed Entity", createdby=self.owner)
+        for code, name, drcr in (
+            (2210, "Land", "Debit"),
+            (2220, "Building", "Debit"),
+            (2230, "Plant & Machinery", "Debit"),
+            (2240, "Furniture & Fixtures", "Debit"),
+            (2250, "Computers & Peripherals", "Debit"),
+            (2260, "Office Equipment", "Debit"),
+            (2270, "Vehicles", "Debit"),
+            (2280, "Intangible Assets", "Debit"),
+            (2290, "Capital Work In Progress", "Debit"),
+            (8395, "Depreciation Expense", "Debit"),
+            (7088, "Other Income", "Credit"),
+            (8350, "Other Expenses", "Debit"),
+        ):
+            accountHead.objects.create(
+                entity=self.entity,
+                name=name,
+                code=code,
+                drcreffect=drcr,
+                createdby=self.owner,
+            )
+
+    def _run_seed(self):
+        with patch("assets.seeding.FinancialSeedService.seed_entity") as financial_seed:
+            financial_seed.return_value = {
+                "template_code": "indian_accounting_final",
+                "financial_settings_id": None,
+            }
+            return AssetSeedService.seed_entity(entity=self.entity, actor=self.owner)
+
+    def test_seed_rerun_preserves_existing_category_customizations(self):
+        self._run_seed()
+
+        custom_head = accountHead.objects.create(
+            entity=self.entity,
+            name="Custom Asset Head",
+            code=9910,
+            drcreffect="Debit",
+            createdby=self.owner,
+        )
+        custom_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=9911,
+            name="Custom Computer Ledger",
+            accounthead=custom_head,
+            createdby=self.owner,
+        )
+        category = AssetCategory.objects.get(entity=self.entity, code="COMPUTER")
+        category.name = "Customer Managed Computer Category"
+        category.useful_life_months = 84
+        category.asset_ledger = custom_ledger
+        category.traceability_controls = {"serial_number_rule": "required"}
+        category.accounting_controls = {"asset_ledger_rule": "strict"}
+        category.save(
+            update_fields=[
+                "name",
+                "useful_life_months",
+                "asset_ledger",
+                "traceability_controls",
+                "accounting_controls",
+            ]
+        )
+
+        self._run_seed()
+
+        category.refresh_from_db()
+        self.assertEqual(category.name, "Customer Managed Computer Category")
+        self.assertEqual(category.useful_life_months, 84)
+        self.assertEqual(category.asset_ledger_id, custom_ledger.id)
+        self.assertEqual(category.traceability_controls, {"serial_number_rule": "required"})
+        self.assertEqual(category.accounting_controls, {"asset_ledger_rule": "strict"})
+
+    def test_seed_rerun_backfills_missing_category_ledger_without_overwriting_other_values(self):
+        self._run_seed()
+
+        category = AssetCategory.objects.get(entity=self.entity, code="PERIPHERAL")
+        category.name = "Peripheral - Custom Name"
+        category.accumulated_depreciation_ledger = None
+        category.save(update_fields=["name", "accumulated_depreciation_ledger"])
+
+        self._run_seed()
+
+        category.refresh_from_db()
+        self.assertEqual(category.name, "Peripheral - Custom Name")
+        self.assertIsNotNone(category.accumulated_depreciation_ledger_id)
+
+    def test_seed_rerun_preserves_existing_seeded_ledger_metadata(self):
+        self._run_seed()
+
+        ledger = Ledger.objects.get(entity=self.entity, ledger_code=2210)
+        custom_head = accountHead.objects.create(
+            entity=self.entity,
+            name="Custom Ledger Head",
+            code=9912,
+            drcreffect="Debit",
+            createdby=self.owner,
+        )
+        ledger.name = "Customer Computer Ledger"
+        ledger.legal_name = "Customer Computer Ledger Pvt Ltd"
+        ledger.accounthead = custom_head
+        ledger.creditaccounthead = custom_head
+        ledger.save(update_fields=["name", "legal_name", "accounthead", "creditaccounthead"])
+
+        self._run_seed()
+
+        ledger.refresh_from_db()
+        self.assertEqual(ledger.name, "Customer Computer Ledger")
+        self.assertEqual(ledger.legal_name, "Customer Computer Ledger Pvt Ltd")
+        self.assertEqual(ledger.accounthead_id, custom_head.id)
+        self.assertEqual(ledger.creditaccounthead_id, custom_head.id)
+
+    def test_seed_rerun_backfills_missing_settings_without_overwriting_custom_defaults(self):
+        self._run_seed()
+
+        settings_obj = self.entity.asset_settings.get(subentity=None)
+        settings_obj.default_doc_code_asset = ""
+        settings_obj.default_doc_code_disposal = ""
+        settings_obj.default_useful_life_months = 96
+        settings_obj.default_residual_value_percent = Decimal("10.0000")
+        settings_obj.policy_controls = {}
+        settings_obj.save(
+            update_fields=[
+                "default_doc_code_asset",
+                "default_doc_code_disposal",
+                "default_useful_life_months",
+                "default_residual_value_percent",
+                "policy_controls",
+            ]
+        )
+
+        self._run_seed()
+
+        settings_obj.refresh_from_db()
+        self.assertEqual(settings_obj.default_doc_code_asset, "FA")
+        self.assertEqual(settings_obj.default_doc_code_disposal, "FAD")
+        self.assertEqual(settings_obj.default_useful_life_months, 96)
+        self.assertEqual(settings_obj.default_residual_value_percent, Decimal("10.0000"))
+        self.assertTrue(settings_obj.policy_controls)
+
+    def test_seed_creates_day_one_category_pack_with_expected_ledger_mappings(self):
+        summary = self._run_seed()
+
+        self.assertEqual(summary["category_count"], 20)
+        self.assertEqual(AssetCategory.objects.filter(entity=self.entity).count(), 20)
+
+        land = AssetCategory.objects.get(entity=self.entity, code="LAND")
+        self.assertIsNone(land.accumulated_depreciation_ledger_id)
+        self.assertIsNone(land.depreciation_expense_ledger_id)
+        self.assertEqual(land.asset_ledger.ledger_code, 2201)
+
+        vehicle = AssetCategory.objects.get(entity=self.entity, code="VEHICLE")
+        self.assertEqual(vehicle.asset_ledger.accounthead.code, 2270)
+        self.assertEqual(vehicle.accumulated_depreciation_ledger.ledger_code, 2313)
+        self.assertEqual(vehicle.depreciation_expense_ledger.ledger_code, 8396)
+
+        software = AssetCategory.objects.get(entity=self.entity, code="SOFTWARE")
+        self.assertEqual(software.nature, AssetCategory.AssetNature.INTANGIBLE)
+        self.assertEqual(software.asset_ledger.accounthead.code, 2280)
+        self.assertEqual(software.accumulated_depreciation_ledger.ledger_code, 2314)
+        self.assertEqual(software.depreciation_expense_ledger.ledger_code, 8397)
+
+        rou_asset = AssetCategory.objects.get(entity=self.entity, code="ROU_ASSET")
+        self.assertEqual(rou_asset.nature, AssetCategory.AssetNature.ROU)
+        self.assertEqual(rou_asset.asset_ledger.accounthead.code, 2285)
+        self.assertEqual(rou_asset.accumulated_depreciation_ledger.ledger_code, 2315)
+
+        cwip = AssetCategory.objects.get(entity=self.entity, code="CWIP_GENERAL")
+        self.assertEqual(cwip.nature, AssetCategory.AssetNature.CAPITAL_WIP)
+        self.assertEqual(cwip.asset_ledger.ledger_code, 2209)
+        self.assertEqual(cwip.cwip_ledger.ledger_code, 2209)

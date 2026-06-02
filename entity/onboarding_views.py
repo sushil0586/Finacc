@@ -191,6 +191,10 @@ class EntityOnboardingMetaAPIView(APIView):
                     "seed_default_subentity": True,
                     "seed_default_roles": True,
                     "seed_numbering": True,
+                    "seed_catalog": True,
+                    "seed_assets": True,
+                    "seed_purchase_choices": True,
+                    "seed_sales_choices": True,
                 },
                 "policy": {
                     "gstin_state_match_mode": "hard",
