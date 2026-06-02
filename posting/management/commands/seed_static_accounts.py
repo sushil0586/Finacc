@@ -71,6 +71,7 @@ STATIC_MASTER: List[StaticDef] = [
     StaticDef("BANK_CHARGES", "Bank Charges", "CASH_BANK", "Bank charges expense"),
 
     # Year opening / close
+    StaticDef("OPENING_BALANCE_OFFSET", "Opening Balance Offset", "OTHER", "Configurable offset ledger used when account-level opening balances are posted as balanced opening entries"),
     StaticDef("OPENING_EQUITY_TRANSFER", "Opening Equity Transfer", "OTHER", "Destination equity/capital/retained earnings ledger for year opening"),
     StaticDef("OPENING_INVENTORY_CARRY_FORWARD", "Opening Inventory Carry Forward", "OTHER", "Destination inventory/stock ledger for year opening"),
 ]
@@ -114,6 +115,7 @@ AUTO_KEYWORDS: Dict[str, List[str]] = {
     "MANUFACTURING_ADDITIONAL_COST_EXPENSE": ["production expense", "manufacturing expense", "shop floor expense", "factory expense", "manufacturing additional cost expense"],
 
     "BANK_CHARGES": ["bank charges", "bank charge", "charges bank", "neft charges", "rtgs charges"],
+    "OPENING_BALANCE_OFFSET": ["opening balance offset", "opening balance suspense", "opening suspense", "opening adjustment", "opening difference"],
     "OPENING_EQUITY_TRANSFER": ["retained earnings", "capital", "partner capital", "owner capital", "equity"],
     "OPENING_INVENTORY_CARRY_FORWARD": ["opening stock", "closing stock", "inventory", "stock carry forward"],
 }

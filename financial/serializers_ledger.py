@@ -4,6 +4,7 @@ from rest_framework import serializers
 
 from financial.gstin import validate_financial_gstin
 from financial.models import AccountComplianceProfile, Ledger, account
+from financial.party_accounting_defaults import resolve_party_accounting_ids
 from financial.profile_access import (
     account_primary_address,
     account_primary_bank_account,
@@ -16,8 +17,10 @@ from financial.services import (
     allocate_next_ledger_code,
     apply_normalized_profile_payload,
     create_account_with_synced_ledger,
+    ledger_should_be_party,
     sync_ledger_for_account,
 )
+from financial.services_opening_balance import sync_account_opening_posting
 from withholding.models import EntityPartyTaxProfile
 
 
@@ -116,6 +119,7 @@ class LedgerSerializer(serializers.ModelSerializer):
     account_profile_gstno = serializers.SerializerMethodField()
     account_profile_pan = serializers.SerializerMethodField()
     management_mode = serializers.SerializerMethodField()
+    direct_edit_blocked = serializers.SerializerMethodField()
 
     class Meta:
         model = Ledger
@@ -140,10 +144,23 @@ class LedgerSerializer(serializers.ModelSerializer):
             "account_profile_gstno",
             "account_profile_pan",
             "management_mode",
+            "direct_edit_blocked",
         )
 
     def get_management_mode(self, obj):
-        return "auto_managed" if hasattr(obj, "account_profile") else "direct"
+        return "auto_managed" if self.get_direct_edit_blocked(obj) else "direct"
+
+    def get_direct_edit_blocked(self, obj):
+        if hasattr(obj, "account_profile"):
+            return True
+        return ledger_should_be_party(
+            entity=obj.entity,
+            is_party=obj.is_party,
+            is_system=obj.is_system,
+            accounttype_obj=getattr(obj, "accounttype", None),
+            accounthead_obj=getattr(obj, "accounthead", None),
+            creditaccounthead_obj=getattr(obj, "creditaccounthead", None),
+        )
 
     def get_account_profile_gstno(self, obj):
         acc = getattr(obj, "account_profile", None)
@@ -400,14 +417,40 @@ class AccountProfileV2WriteSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"entity": "Entity is required."})
         if self.instance is None and not attrs.get("accountname"):
             raise serializers.ValidationError({"accountname": "Account name is required."})
+        entity = attrs.get("entity") or getattr(self.instance, "entity", None)
+        commercial = dict(attrs.get("commercial_profile", {}) or {})
+        defaults = resolve_party_accounting_ids(entity=entity, partytype=commercial.get("partytype"))
+        accounttype_value = attrs.get("accounttype")
+        nested_accounttype_value = attrs.get("ledger", {}).get("accounttype")
         accounthead_value = attrs.get("accounthead")
         nested_accounthead_value = attrs.get("ledger", {}).get("accounthead")
+        creditaccounthead_value = attrs.get("creditaccounthead")
+        nested_creditaccounthead_value = attrs.get("ledger", {}).get("creditaccounthead")
+        if accounttype_value in (0, "0", ""):
+            attrs["accounttype"] = None
+            accounttype_value = None
+        if nested_accounttype_value in (0, "0", ""):
+            attrs.setdefault("ledger", {})["accounttype"] = None
+            nested_accounttype_value = None
         if accounthead_value in (0, "0", ""):
             attrs["accounthead"] = None
             accounthead_value = None
         if nested_accounthead_value in (0, "0", ""):
             attrs.setdefault("ledger", {})["accounthead"] = None
             nested_accounthead_value = None
+        if creditaccounthead_value in (0, "0", ""):
+            attrs["creditaccounthead"] = None
+            creditaccounthead_value = None
+        if nested_creditaccounthead_value in (0, "0", ""):
+            attrs.setdefault("ledger", {})["creditaccounthead"] = None
+            nested_creditaccounthead_value = None
+        if not (accounttype_value or nested_accounttype_value) and defaults.get("accounttype_id"):
+            attrs["accounttype"] = defaults["accounttype_id"]
+        if not (accounthead_value or nested_accounthead_value) and defaults.get("accounthead_id"):
+            attrs["accounthead"] = defaults["accounthead_id"]
+            accounthead_value = defaults["accounthead_id"]
+        if not (creditaccounthead_value or nested_creditaccounthead_value) and defaults.get("creditaccounthead_id"):
+            attrs["creditaccounthead"] = defaults["creditaccounthead_id"]
         if self.instance is None and not (accounthead_value or nested_accounthead_value):
             raise serializers.ValidationError({"accounthead": "Account head is required."})
         return attrs
@@ -415,6 +458,21 @@ class AccountProfileV2WriteSerializer(serializers.ModelSerializer):
     @staticmethod
     def _normalize_fk_value(value):
         return None if value in (0, "0", "") else value
+
+    @staticmethod
+    def _apply_party_accounting_defaults(*, entity, accounting, commercial_payload):
+        partytype = (commercial_payload or {}).get("partytype")
+        defaults = resolve_party_accounting_ids(entity=entity, partytype=partytype)
+        if not any(defaults.values()):
+            return accounting
+
+        if not accounting.get("accounttype") and defaults.get("accounttype_id"):
+            accounting["accounttype"] = defaults["accounttype_id"]
+        if not accounting.get("accounthead") and defaults.get("accounthead_id"):
+            accounting["accounthead"] = defaults["accounthead_id"]
+        if not accounting.get("creditaccounthead") and defaults.get("creditaccounthead_id"):
+            accounting["creditaccounthead"] = defaults["creditaccounthead_id"]
+        return accounting
 
     def _resolve_accounting_payload(self, validated_data):
         ledger_data = validated_data.pop("ledger", {}) or {}
@@ -467,6 +525,27 @@ class AccountProfileV2WriteSerializer(serializers.ModelSerializer):
 
         return withholding, compliance, commercial, primary_address, primary_contact, primary_bank
 
+    @staticmethod
+    def _raise_opening_balance_validation(exc):
+        messages = []
+        if isinstance(exc, DjangoValidationError):
+            if hasattr(exc, "message_dict"):
+                for value in exc.message_dict.values():
+                    if isinstance(value, (list, tuple)):
+                        messages.extend(str(item) for item in value)
+                    else:
+                        messages.append(str(value))
+            elif getattr(exc, "messages", None):
+                messages.extend(str(item) for item in exc.messages)
+            else:
+                messages.append(str(exc))
+        else:
+            messages.append(str(exc))
+        cleaned = [message for message in messages if message]
+        raise serializers.ValidationError(
+            {"opening_balance": cleaned or ["Unable to synchronize opening balance posting."]}
+        )
+
     @transaction.atomic
     def create(self, validated_data):
         accounting = self._resolve_accounting_payload(validated_data)
@@ -477,13 +556,24 @@ class AccountProfileV2WriteSerializer(serializers.ModelSerializer):
         if request and getattr(request, "user", None) and request.user.is_authenticated:
             validated_data["createdby"] = request.user
 
-        ledger_code = accounting.get("ledger_code")
-        if ledger_code is None and validated_data.get("entity"):
-            ledger_code = allocate_next_ledger_code(entity_id=validated_data["entity"].id)
-
         validated_data["canbedeleted"] = accounting.get("canbedeleted", True)
         if accounting.get("isactive") is not None:
             validated_data["isactive"] = accounting["isactive"]
+        accounting = self._apply_party_accounting_defaults(
+            entity=validated_data.get("entity"),
+            accounting=accounting,
+            commercial_payload=commercial_payload,
+        )
+        ledger_code = accounting.get("ledger_code")
+        if ledger_code is None and validated_data.get("entity"):
+            ledger_code = allocate_next_ledger_code(
+                entity_id=validated_data["entity"].id,
+                partytype=(commercial_payload or {}).get("partytype"),
+                account_type_id=accounting.get("accounttype"),
+                debit_head_id=accounting.get("accounthead"),
+                credit_head_id=accounting.get("creditaccounthead"),
+                allocated_by=validated_data.get("createdby"),
+            )
 
         acc = create_account_with_synced_ledger(
             account_data=validated_data,
@@ -512,13 +602,29 @@ class AccountProfileV2WriteSerializer(serializers.ModelSerializer):
             createdby=validated_data.get("createdby"),
         )
         self._sync_withholding_profile(acc=acc, withholding_payload=withholding_payload)
+        try:
+            sync_account_opening_posting(
+                acc,
+                old_opening_dr=None,
+                old_opening_cr=None,
+                actor=validated_data.get("createdby"),
+            )
+        except (DjangoValidationError, ValueError) as exc:
+            self._raise_opening_balance_validation(exc)
         return acc
 
     @transaction.atomic
     def update(self, instance, validated_data):
+        old_opening_dr = getattr(getattr(instance, "ledger", None), "openingbdr", None)
+        old_opening_cr = getattr(getattr(instance, "ledger", None), "openingbcr", None)
         accounting = self._resolve_accounting_payload(validated_data)
         withholding_payload, compliance_payload, commercial_payload, primary_address_payload, primary_contact_payload, primary_bank_payload = self._extract_normalized_profile_payload(
             validated_data
+        )
+        accounting = self._apply_party_accounting_defaults(
+            entity=getattr(instance, "entity", None),
+            accounting=accounting,
+            commercial_payload=commercial_payload,
         )
         for field, value in validated_data.items():
             setattr(instance, field, value)
@@ -535,7 +641,15 @@ class AccountProfileV2WriteSerializer(serializers.ModelSerializer):
         if ledger_code is None and getattr(instance, "ledger_id", None):
             ledger_code = instance.ledger.ledger_code
         elif ledger_code is None and instance.entity_id:
-            ledger_code = allocate_next_ledger_code(entity_id=instance.entity_id)
+            ledger_code = allocate_next_ledger_code(
+                entity_id=instance.entity_id,
+                partytype=(commercial_payload or {}).get("partytype")
+                or getattr(getattr(instance, "commercial_profile", None), "partytype", None),
+                account_type_id=accounting.get("accounttype"),
+                debit_head_id=accounting.get("accounthead"),
+                credit_head_id=accounting.get("creditaccounthead"),
+                allocated_by=instance.createdby,
+            )
         sync_ledger_for_account(
             instance,
             ledger_overrides={
@@ -565,6 +679,15 @@ class AccountProfileV2WriteSerializer(serializers.ModelSerializer):
             createdby=actor,
         )
         self._sync_withholding_profile(acc=instance, withholding_payload=withholding_payload)
+        try:
+            sync_account_opening_posting(
+                instance,
+                old_opening_dr=old_opening_dr,
+                old_opening_cr=old_opening_cr,
+                actor=actor,
+            )
+        except (DjangoValidationError, ValueError) as exc:
+            self._raise_opening_balance_validation(exc)
         return instance
 
     def _sync_withholding_profile(self, *, acc, withholding_payload):

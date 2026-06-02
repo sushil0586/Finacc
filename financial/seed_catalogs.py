@@ -489,18 +489,18 @@ INDIAN_ACCOUNTING_FINAL_TEMPLATE = {
             2000: "1200",   # Bank
             3000: "4100",   # Sale
             4000: "1200",   # Cash
-            6000: "2100",   # Advance Payable
-            6100: "1100",   # Advance Recoverable
+            6000: "1009",   # Advance Payable / party settlement
+            6100: "1009",   # Advance Recoverable / party settlement
             6200: "3100",   # Proprietor Capital
             6300: "3100",   # Partner Capital
             6500: "1100",   # GST Input / ITC
             6600: "2100",   # GST Output / liability
-            7000: "2100",   # Sundry Creditors
+            7000: "1009",   # Sundry Creditors / party control
             7088: "4200",   # Indirect Income
             7090: "4200",
             7095: "4200",
             7098: "4200",
-            8000: "1100",   # Sundry Debtors
+            8000: "1009",   # Sundry Debtors / party control
             8300: "5100",   # Direct Expenses
             8350: "5200",   # Indirect Expenses
             8360: "5200",
@@ -550,6 +550,217 @@ INDIAN_ACCOUNTING_FINAL_TEMPLATE = {
         ],
     ),
 }
+
+
+DEFAULT_GOVERNANCE_RULES = [
+    {
+        "party_type": "Customer",
+        "management_mode": "party_managed",
+        "suggested_account_type_code": "1009",
+        "suggested_debit_head_code": 8000,
+        "suggested_credit_head_code": 7000,
+        "auto_create_account": True,
+        "allow_direct_ledger_edit": False,
+        "priority": 10,
+    },
+    {
+        "party_type": "Vendor",
+        "management_mode": "party_managed",
+        "suggested_account_type_code": "1009",
+        "suggested_debit_head_code": 6100,
+        "suggested_credit_head_code": 7000,
+        "auto_create_account": True,
+        "allow_direct_ledger_edit": False,
+        "priority": 20,
+    },
+    {
+        "party_type": "Both",
+        "management_mode": "party_managed",
+        "suggested_account_type_code": "1009",
+        "suggested_debit_head_code": 8000,
+        "suggested_credit_head_code": 7000,
+        "auto_create_account": True,
+        "allow_direct_ledger_edit": False,
+        "priority": 30,
+    },
+    {
+        "party_type": "Bank",
+        "management_mode": "party_managed",
+        "suggested_account_type_code": "1200",
+        "suggested_debit_head_code": 2000,
+        "suggested_credit_head_code": 2000,
+        "auto_create_account": True,
+        "allow_direct_ledger_edit": False,
+        "priority": 40,
+    },
+    {
+        "party_type": "Employee",
+        "management_mode": "party_managed",
+        "suggested_account_type_code": "1009",
+        "suggested_debit_head_code": 6100,
+        "suggested_credit_head_code": 7000,
+        "auto_create_account": True,
+        "allow_direct_ledger_edit": False,
+        "priority": 50,
+    },
+    {
+        "party_type": "Government",
+        "management_mode": "party_managed",
+        "suggested_account_type_code": "2100",
+        "suggested_debit_head_code": 5300,
+        "suggested_credit_head_code": 5300,
+        "auto_create_account": True,
+        "allow_direct_ledger_edit": False,
+        "priority": 60,
+    },
+]
+
+
+DEFAULT_CODE_SERIES = [
+    {
+        "series_key": "BANK_PARTY",
+        "label": "Bank Party Accounts",
+        "account_type_code": "1200",
+        "debit_head_code": 2000,
+        "credit_head_code": 2000,
+        "party_type": "Bank",
+        "range_start": 2001,
+        "range_end": 2999,
+        "next_code": 2001,
+        "increment_step": 1,
+        "priority": 10,
+    },
+    {
+        "series_key": "VENDOR_PARTY",
+        "label": "Vendor Party Accounts",
+        "account_type_code": "1009",
+        "debit_head_code": 6100,
+        "credit_head_code": 7000,
+        "party_type": "Vendor",
+        "range_start": 7001,
+        "range_end": 7999,
+        "next_code": 7001,
+        "increment_step": 1,
+        "priority": 20,
+    },
+    {
+        "series_key": "CUSTOMER_PARTY",
+        "label": "Customer Party Accounts",
+        "account_type_code": "1009",
+        "debit_head_code": 8000,
+        "credit_head_code": 7000,
+        "party_type": "Customer",
+        "range_start": 8001,
+        "range_end": 8899,
+        "next_code": 8001,
+        "increment_step": 1,
+        "priority": 30,
+    },
+    {
+        "series_key": "BOTH_PARTY",
+        "label": "Customer and Vendor Party Accounts",
+        "account_type_code": "1009",
+        "debit_head_code": 8000,
+        "credit_head_code": 7000,
+        "party_type": "Both",
+        "range_start": 8901,
+        "range_end": 8999,
+        "next_code": 8901,
+        "increment_step": 1,
+        "priority": 40,
+    },
+    {
+        "series_key": "EMPLOYEE_PARTY",
+        "label": "Employee Party Accounts",
+        "account_type_code": "1009",
+        "debit_head_code": 6100,
+        "credit_head_code": 7000,
+        "party_type": "Employee",
+        "range_start": 6101,
+        "range_end": 6999,
+        "next_code": 6101,
+        "increment_step": 1,
+        "priority": 50,
+    },
+    {
+        "series_key": "GOVERNMENT_PARTY",
+        "label": "Government Party Accounts",
+        "account_type_code": "2100",
+        "debit_head_code": 5300,
+        "credit_head_code": 5300,
+        "party_type": "Government",
+        "range_start": 5301,
+        "range_end": 5399,
+        "next_code": 5301,
+        "increment_step": 1,
+        "priority": 60,
+    },
+    {
+        "series_key": "CURRENT_ASSET_MISC",
+        "label": "Current Asset Ledgers",
+        "account_type_code": "1100",
+        "range_start": 1101,
+        "range_end": 1999,
+        "next_code": 1101,
+        "increment_step": 1,
+        "priority": 110,
+    },
+    {
+        "series_key": "DIRECT_INCOME",
+        "label": "Direct Income Ledgers",
+        "account_type_code": "4100",
+        "range_start": 4101,
+        "range_end": 4199,
+        "next_code": 4101,
+        "increment_step": 1,
+        "priority": 120,
+    },
+    {
+        "series_key": "INDIRECT_INCOME",
+        "label": "Indirect Income Ledgers",
+        "account_type_code": "4200",
+        "range_start": 4201,
+        "range_end": 4299,
+        "next_code": 4201,
+        "increment_step": 1,
+        "priority": 130,
+    },
+    {
+        "series_key": "CURRENT_LIABILITY_MISC",
+        "label": "Current Liability Ledgers",
+        "account_type_code": "2100",
+        "range_start": 5401,
+        "range_end": 5999,
+        "next_code": 5401,
+        "increment_step": 1,
+        "priority": 140,
+    },
+    {
+        "series_key": "DIRECT_EXPENSE",
+        "label": "Direct Expense Ledgers",
+        "account_type_code": "5100",
+        "range_start": 5101,
+        "range_end": 5199,
+        "next_code": 5101,
+        "increment_step": 1,
+        "priority": 150,
+    },
+    {
+        "series_key": "INDIRECT_EXPENSE",
+        "label": "Indirect Expense Ledgers",
+        "account_type_code": "5200",
+        "range_start": 5201,
+        "range_end": 5299,
+        "next_code": 5201,
+        "increment_step": 1,
+        "priority": 160,
+    },
+]
+
+
+for _template in (STANDARD_TRADING_TEMPLATE, STANDARD_BUSINESS_FULL_TEMPLATE, INDIAN_ACCOUNTING_FINAL_TEMPLATE):
+    _template["governance_rules"] = [dict(row) for row in DEFAULT_GOVERNANCE_RULES]
+    _template["code_series"] = [dict(row) for row in DEFAULT_CODE_SERIES]
 
 
 FINANCIAL_TEMPLATES = {

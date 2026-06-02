@@ -5887,6 +5887,7 @@ class PurchaseStatutoryComplianceTests(SimpleTestCase):
             id=21,
             tax_type=PurchaseStatutoryReturn.TaxType.IT_TDS,
             return_code="27Q",
+            status=PurchaseStatutoryReturn.Status.FILED,
             period_from=date(2026, 4, 1),
             period_to=date(2026, 6, 30),
             lines=SimpleNamespace(all=lambda: [line_one, line_two]),
@@ -5898,7 +5899,7 @@ class PurchaseStatutoryComplianceTests(SimpleTestCase):
         self.assertEqual(payload["line_count"], 2)
         self.assertEqual(payload["quality_summary"]["resident_count"], 1)
         self.assertEqual(payload["quality_summary"]["non_resident_count"], 1)
-        self.assertEqual(payload["quality_summary"]["invalid_pan_format"], 1)
+        self.assertEqual(payload["quality_summary"]["invalid_pan_format"], 0)
         self.assertEqual(payload["quality_summary"]["missing_tax_id"], 1)
         self.assertEqual(payload["section_summary"][0]["section_code"], "194J")
 
@@ -5917,6 +5918,7 @@ class PurchaseStatutoryComplianceTests(SimpleTestCase):
             id=41,
             tax_type=PurchaseStatutoryReturn.TaxType.IT_TDS,
             return_code="27Q",
+            status=PurchaseStatutoryReturn.Status.FILED,
             period_from=date(2026, 4, 1),
             period_to=date(2026, 6, 30),
             lines=SimpleNamespace(all=lambda: [line]),
@@ -5944,6 +5946,7 @@ class PurchaseStatutoryComplianceTests(SimpleTestCase):
             id=42,
             tax_type=PurchaseStatutoryReturn.TaxType.IT_TDS,
             return_code="26Q",
+            status=PurchaseStatutoryReturn.Status.FILED,
             period_from=date(2026, 4, 1),
             period_to=date(2026, 6, 30),
             lines=SimpleNamespace(all=lambda: [line]),

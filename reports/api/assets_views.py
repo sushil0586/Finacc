@@ -1,5 +1,6 @@
 import csv
 from io import BytesIO, StringIO
+from datetime import date
 
 from django.http import HttpResponse
 from openpyxl import Workbook
@@ -15,6 +16,7 @@ from rest_framework.views import APIView
 
 from core.entitlements import ScopedEntitlementMixin
 from reports.schemas.assets_reports import (
+    AssetDashboardScopeSerializer,
     AssetLocationCustodianScopeSerializer,
     AssetEventReportScopeSerializer,
     AssetHistoryScopeSerializer,
@@ -23,6 +25,7 @@ from reports.schemas.assets_reports import (
 )
 from reports.schemas.common import build_report_envelope
 from reports.services.assets import (
+    build_asset_dashboard_summary,
     build_asset_event_report,
     build_asset_history,
     build_asset_location_custodian_report,
@@ -254,6 +257,20 @@ class AssetHistoryAPIView(_BaseAssetReportAPIView):
             entityfin_id=scope.get("entityfinid"),
             subentity_id=scope.get("subentity"),
             asset_id=scope["asset"],
+        )
+        return Response(payload)
+
+
+class AssetDashboardSummaryAPIView(_BaseAssetReportAPIView):
+
+    def get(self, request):
+        scope = self.get_scope(request, AssetDashboardScopeSerializer)
+        payload = build_asset_dashboard_summary(
+            entity_id=scope["entity"],
+            entityfin_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
+            as_of_date=scope.get("as_of_date") or date.today(),
+            from_date=scope.get("from_date"),
         )
         return Response(payload)
 

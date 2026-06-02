@@ -7,6 +7,7 @@ from decimal import Decimal
 from datetime import date as date_cls
 
 from django.http import HttpResponse
+from django.utils.dateparse import parse_date
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
@@ -84,13 +85,14 @@ def _amount(value, *, display: bool):
     return f"{decimal_value:,.2f}" if display else decimal_value
 
 
-def _build_customer_statement_payload(*, entity_id, entityfinid_id, subentity_id, customer_id, include_closed):
+def _build_customer_statement_payload(*, entity_id, entityfinid_id, subentity_id, customer_id, include_closed, as_of_date=None):
     data = SalesArService.customer_statement(
         entity_id=entity_id,
         entityfinid_id=entityfinid_id,
         subentity_id=subentity_id,
         customer_id=customer_id,
         include_closed=include_closed,
+        as_of_date=as_of_date,
     )
     customer_obj = (
         account.objects.filter(id=customer_id)
@@ -120,6 +122,7 @@ def _build_customer_statement_payload(*, entity_id, entityfinid_id, subentity_id
 
     payload = {
         "customer": customer_block,
+        "as_of_date": as_of_date,
         "totals": data["totals"],
         "open_items": _serialize_items(CustomerBillOpenItemSerializer, data["open_items"]),
         "advances": _serialize_items(CustomerAdvanceBalanceSerializer, data["advances"]),
@@ -518,6 +521,10 @@ class _CustomerStatementExportMixin(_BaseCustomerStatementExportAPIView):
         except (TypeError, ValueError):
             raise ValueError("customer must be an integer.")
         include_closed = str(request.query_params.get("include_closed") or "").lower() in ("1", "true", "yes", "y")
+        as_of_date_raw = (request.query_params.get("as_of_date") or "").strip()
+        as_of_date = parse_date(as_of_date_raw) if as_of_date_raw else None
+        if as_of_date_raw and not as_of_date:
+            raise ValueError("Invalid as_of_date. Use YYYY-MM-DD.")
 
         payload = _build_customer_statement_payload(
             entity_id=entity_id,
@@ -525,6 +532,7 @@ class _CustomerStatementExportMixin(_BaseCustomerStatementExportAPIView):
             subentity_id=subentity_id,
             customer_id=customer_id,
             include_closed=include_closed,
+            as_of_date=as_of_date,
         )
         scope_names = resolve_scope_names(entity_id, entityfinid_id, subentity_id)
         payload["financial_year_name"] = scope_names.get("entityfin_name")

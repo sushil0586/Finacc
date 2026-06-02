@@ -1,5 +1,6 @@
 from django.apps import apps
 
+from .account_opening import AccountOpeningPostingAdapter
 from .payment_voucher import PaymentVoucherPostingAdapter, PaymentVoucherPostingConfig
 from .year_opening import YearOpeningPostingAdapter
 from .purchase_invoice import PurchaseInvoicePostingAdapter, PurchaseInvoicePostingConfig
@@ -11,6 +12,7 @@ else:
     PayrollPostingAdapter = None
 
 __all__ = [
+    "AccountOpeningPostingAdapter",
     "PaymentVoucherPostingAdapter",
     "PaymentVoucherPostingConfig",
     "YearOpeningPostingAdapter",

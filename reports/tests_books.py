@@ -11,6 +11,7 @@ from rest_framework.test import APITestCase, APIClient
 from Authentication.models import User
 from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity
 from financial.models import Ledger, account, accountHead, accounttype
+from financial.services_opening_balance import account_opening_txn_id
 from financial.services import apply_normalized_profile_payload, create_account_with_synced_ledger
 from geography.models import City, Country, District, State
 from payments.models.payment_core import PaymentVoucherHeader
@@ -140,6 +141,34 @@ class BookReportAPITests(APITestCase):
         static_bank = StaticAccount.objects.create(code="BANK_MAIN", name="Bank", group="CASH_BANK")
         EntityStaticAccountMap.objects.create(entity=self.entity, static_account=static_cash, account=self.cash_account, ledger=self.cash_ledger, createdby=self.user)
         EntityStaticAccountMap.objects.create(entity=self.entity, static_account=static_bank, account=self.bank_account, ledger=self.bank_ledger, createdby=self.user)
+        self._create_entry(
+            txn_type=TxnType.OPENING_BALANCE,
+            txn_id=account_opening_txn_id(self.cash_account.id),
+            voucher_no="ACC-OPEN-CASH",
+            posting_date="2025-04-01",
+            voucher_date="2025-04-01",
+            status=EntryStatus.POSTED,
+            narration="Opening balance for Cash In Hand",
+            subentity=None,
+            lines=[
+                (self.cash_account, self.cash_ledger, True, "100.00", "Opening debit"),
+                (self.income_account, self.income_ledger, False, "100.00", "Opening offset"),
+            ],
+        )
+        self._create_entry(
+            txn_type=TxnType.OPENING_BALANCE,
+            txn_id=account_opening_txn_id(self.bank_account.id),
+            voucher_no="ACC-OPEN-BANK",
+            posting_date="2025-04-01",
+            voucher_date="2025-04-01",
+            status=EntryStatus.POSTED,
+            narration="Opening balance for Main Bank",
+            subentity=None,
+            lines=[
+                (self.bank_account, self.bank_ledger, True, "200.00", "Opening debit"),
+                (self.income_account, self.income_ledger, False, "200.00", "Opening offset"),
+            ],
+        )
         self.cash_entry = self._create_entry(
             txn_type=TxnType.JOURNAL_CASH,
             txn_id=1,
@@ -714,6 +743,78 @@ class BookReportAPITests(APITestCase):
         self.assertEqual(rows[0]["drilldown_target"], "sales_invoice_detail")
         self.assertEqual(rows[0]["drilldown_route"], "/saleserviceinvoice")
 
+    def test_ledger_book_financial_year_shows_posted_opening_as_normal_row(self):
+        response = self.client.get(
+            reverse("reports_api:financial-ledger-book"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "ledger": self.cash_ledger.id,
+                "scope_mode": "financial_year",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["opening_balance"], "0.00")
+        self.assertEqual(data["totals"]["closing_balance"], "150.00")
+        self.assertEqual([row["voucher_number"] for row in data["rows"]], ["ACC-OPEN-CASH", "CV-001"])
+        self.assertEqual(data["rows"][0]["voucher_type"], TxnType.OPENING_BALANCE)
+        self.assertEqual(data["rows"][0]["running_balance"], "100.00")
+        self.assertEqual(data["rows"][0]["drilldown_target"], "account_opening_detail")
+        self.assertEqual(data["rows"][0]["drilldown_params"]["account_id"], self.cash_account.id)
+        self.assertEqual(data["rows"][0]["drilldown_params"]["entry_id"], data["rows"][0]["entry_id"])
+
+    def test_ledger_book_custom_scope_keeps_brought_forward_opening_separate(self):
+        response = self.client.get(
+            reverse("reports_api:financial-ledger-book"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "ledger": self.cash_ledger.id,
+                "scope_mode": "custom",
+                "from_date": "2025-04-05",
+                "to_date": "2025-04-30",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["opening_balance"], "100.00")
+        self.assertEqual([row["voucher_number"] for row in data["rows"]], ["CV-001"])
+        self.assertEqual(data["totals"]["closing_balance"], "150.00")
+
+    def test_ledger_book_fixed_asset_rows_expose_asset_history_drilldown(self):
+        self._create_entry(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.FIXED_ASSET_CAPITALIZATION,
+            txn_id=901,
+            voucher_no="FA-000001",
+            posting_date=date(2025, 4, 9),
+            voucher_date=date(2025, 4, 9),
+            status=EntryStatus.POSTED,
+            narration="Fixed asset capitalization",
+            lines=[
+                {"account": self.expense_account, "drcr": True, "amount": "250.00", "description": "Asset Dr"},
+                {"account": self.ap_account, "drcr": False, "amount": "250.00", "description": "AP Cr"},
+            ],
+        )
+
+        response = self.client.get(
+            reverse("reports_api:financial-ledger-book"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "ledger": self.expense_ledger.id,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        rows = [row for row in response.json()["rows"] if row["voucher_number"] == "FA-000001"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["drilldown_target"], "asset_history_detail")
+        self.assertEqual(rows[0]["drilldown_params"]["asset_id"], 901)
+
     def test_posting_lookup_resolves_purchase_invoice_entry(self):
         purchase_document = PurchaseInvoiceHeader.objects.create(
             entity=self.entity,
@@ -1018,17 +1119,19 @@ class BookReportAPITests(APITestCase):
                 "entity": self.entity.id,
                 "entityfinid": self.entityfin.id,
                 "subentity": self.subentity.id,
+                "scope_mode": "custom",
                 "from_date": "2025-04-01",
                 "to_date": "2025-04-30",
                 "group_by": "ledger",
                 "posted_only": True,
+                "include_opening": True,
             },
         )
         self.assertEqual(response.status_code, 200)
         data = response.json()
 
         rows = {row["ledger_name"]: row for row in data["rows"]}
-        self.assertEqual(Decimal(str(data["totals"]["opening"])), Decimal("300.00"))
+        self.fail(str(data))
         self.assertEqual(Decimal(str(data["totals"]["debit"])), Decimal("115.00"))
         self.assertEqual(Decimal(str(data["totals"]["credit"])), Decimal("115.00"))
         self.assertEqual(Decimal(str(data["totals"]["closing"])), Decimal("300.00"))
@@ -1045,6 +1148,254 @@ class BookReportAPITests(APITestCase):
 
         self.assertEqual(Decimal(str(rows["Office Expense"]["debit"])), Decimal("25.00"))
         self.assertEqual(Decimal(str(rows["Sales Income"]["credit"])), Decimal("90.00"))
+
+    def test_trial_balance_financial_year_hides_opening_values_by_default(self):
+        response = self.client.get(
+            reverse("reports_api:financial-trial-balance"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "scope_mode": "financial_year",
+                "group_by": "ledger",
+                "posted_only": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        rows = {row["ledger_name"]: row for row in data["rows"]}
+        self.assertEqual(Decimal(str(data["totals"]["opening"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(rows["Cash In Hand"]["opening"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(rows["Cash In Hand"]["closing"])), Decimal("150.00"))
+
+    def test_trial_balance_prefers_posted_opening_balance_over_legacy_master_opening(self):
+        self.cash_ledger.openingbdr = Decimal("999.00")
+        self.cash_ledger.save(update_fields=["openingbdr"])
+        self._create_entry(
+            txn_type=TxnType.OPENING_BALANCE,
+            txn_id=account_opening_txn_id(self.cash_account.id),
+            voucher_no="ACC-OPEN-CASH",
+            posting_date="2025-04-01",
+            voucher_date="2025-04-01",
+            status=EntryStatus.POSTED,
+            narration="Opening balance for Cash In Hand",
+            subentity=None,
+            lines=[
+                (self.cash_account, self.cash_ledger, True, "100.00", "Opening debit"),
+                (self.income_account, self.income_ledger, False, "100.00", "Opening offset"),
+            ],
+        )
+
+        response = self.client.get(
+            reverse("reports_api:financial-trial-balance"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "scope_mode": "custom",
+                "from_date": "2025-04-01",
+                "to_date": "2025-04-30",
+                "group_by": "ledger",
+                "include_opening": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        rows = response.json()["rows"]
+        cash_row = next(row for row in rows if row["ledger_id"] == self.cash_ledger.id)
+        self.assertEqual(cash_row["opening"], "100.00")
+
+    def test_trial_balance_ignores_legacy_opening_without_posted_entry(self):
+        orphan_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=9901,
+            name="Legacy Opening Only",
+            accounthead=self.head_cash,
+            openingbdr=Decimal("500.00"),
+            createdby=self.user,
+        )
+        orphan_account = create_account_with_synced_ledger(
+            account_data={"entity": self.entity, "ledger": orphan_ledger, "accountname": "Legacy Opening Only", "createdby": self.user},
+            ledger_overrides={"ledger_code": 9901, "accounthead": self.head_cash, "is_party": True},
+        )
+
+        response = self.client.get(
+            reverse("reports_api:financial-trial-balance"),
+            {"entity": self.entity.id, "entityfinid": self.entityfin.id, "group_by": "ledger", "include_zero_balances": True},
+        )
+        self.assertEqual(response.status_code, 200)
+        rows = response.json()["rows"]
+        orphan_row = next(row for row in rows if row["ledger_id"] == orphan_ledger.id)
+        self.assertEqual(orphan_row["opening"], "0.00")
+        self.assertEqual(orphan_row["closing"], "0.00")
+
+    def test_trial_balance_includes_posted_opening_only_ledgers_in_rows_and_totals(self):
+        opening_only_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=9902,
+            name="Posted Opening Only",
+            accounthead=self.head_cash,
+            openingbdr=Decimal("500.00"),
+            createdby=self.user,
+        )
+        opening_only_account = create_account_with_synced_ledger(
+            account_data={"entity": self.entity, "ledger": opening_only_ledger, "accountname": "Posted Opening Only", "createdby": self.user},
+            ledger_overrides={"ledger_code": 9902, "accounthead": self.head_cash, "is_party": True},
+        )
+        self._create_entry(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=None,
+            txn_type=TxnType.OPENING_BALANCE,
+            txn_id=account_opening_txn_id(opening_only_account.id),
+            voucher_no="ACC-OPEN-POSTED-ONLY",
+            posting_date="2025-04-01",
+            voucher_date="2025-04-01",
+            status=EntryStatus.POSTED,
+            narration="Opening balance for posted opening only ledger",
+            lines=[
+                (opening_only_account, opening_only_ledger, True, "500.00", "Opening debit"),
+                (self.income_account, self.income_ledger, False, "500.00", "Opening offset"),
+            ],
+        )
+
+        response = self.client.get(
+            reverse("reports_api:financial-trial-balance"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "scope_mode": "custom",
+                "from_date": "2025-04-02",
+                "to_date": "2025-04-30",
+                "group_by": "ledger",
+                "posted_only": True,
+                "include_opening": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        rows = {row["ledger_name"]: row for row in data["rows"]}
+
+        self.assertEqual(Decimal(str(data["totals"]["opening"])), Decimal("800.00"))
+        self.assertEqual(Decimal(str(data["totals"]["closing"])), Decimal("890.00"))
+        self.assertEqual(Decimal(str(data["totals"]["opening_debit"])), Decimal("800.00"))
+        self.assertEqual(Decimal(str(data["totals"]["opening_credit"])), Decimal("800.00"))
+        self.assertEqual(Decimal(str(data["totals"]["closing_debit"])), Decimal("890.00"))
+        self.assertEqual(Decimal(str(data["totals"]["closing_credit"])), Decimal("890.00"))
+        self.assertEqual(Decimal(str(rows["Posted Opening Only"]["opening"])), Decimal("500.00"))
+        self.assertEqual(Decimal(str(rows["Posted Opening Only"]["closing"])), Decimal("500.00"))
+
+    def test_trial_balance_date_range_without_scope_mode_still_includes_opening(self):
+        response = self.client.get(
+            reverse("reports_api:financial-trial-balance"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "from_date": "2025-04-02",
+                "to_date": "2025-04-30",
+                "group_by": "ledger",
+                "posted_only": True,
+                "include_opening": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        rows = {row["ledger_name"]: row for row in data["rows"]}
+        self.assertEqual(Decimal(str(data["totals"]["opening"])), Decimal("300.00"), data)
+        self.assertEqual(Decimal(str(rows["Cash In Hand"]["opening"])), Decimal("100.00"))
+        self.assertEqual(Decimal(str(rows["Main Bank"]["opening"])), Decimal("200.00"))
+
+    def test_ledger_summary_date_range_without_scope_mode_still_includes_opening(self):
+        response = self.client.get(
+            reverse("reports_api:financial-ledger-summary"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "from_date": "2025-04-02",
+                "to_date": "2025-04-30",
+                "group_by": "ledger",
+                "posted_only": True,
+                "include_opening": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        rows = {row["ledger_name"]: row for row in data["rows"]}
+
+        self.assertEqual(Decimal(str(data["totals"]["opening"])), Decimal("300.00"))
+        self.assertEqual(Decimal(str(rows["Cash In Hand"]["opening"])), Decimal("100.00"))
+        self.assertEqual(Decimal(str(rows["Main Bank"]["opening"])), Decimal("200.00"))
+
+    def test_ledger_book_date_range_without_scope_mode_keeps_opening_separate(self):
+        response = self.client.get(
+            reverse("reports_api:financial-ledger-book"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "ledger": self.cash_ledger.id,
+                "from_date": "2025-04-05",
+                "to_date": "2025-04-30",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["opening_balance"], "100.00")
+        self.assertEqual([row["voucher_number"] for row in data["rows"]], ["CV-001"])
+        self.assertEqual(data["totals"]["closing_balance"], "150.00")
+
+    def test_ledger_summary_financial_year_hides_opening_values_by_default(self):
+        response = self.client.get(
+            reverse("reports_api:financial-ledger-summary"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "scope_mode": "financial_year",
+                "group_by": "ledger",
+                "posted_only": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        rows = {row["ledger_name"]: row for row in data["rows"]}
+        self.assertEqual(Decimal(str(data["totals"]["opening"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(rows["Cash In Hand"]["opening"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(rows["Cash In Hand"]["balance"])), Decimal("150.00"))
+
+    def test_ledger_summary_financial_year_scope_with_explicit_dates_keeps_single_window(self):
+        response = self.client.get(
+            reverse("reports_api:financial-ledger-summary"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "scope_mode": "financial_year",
+                "from_date": "2025-04-01",
+                "to_date": "2025-04-30",
+                "group_by": "ledger",
+                "posted_only": True,
+                "include_opening": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        rows = {row["ledger_name"]: row for row in data["rows"]}
+        self.assertEqual(Decimal(str(data["totals"]["opening"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(rows["Cash In Hand"]["opening"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(rows["Cash In Hand"]["balance"])), Decimal("150.00"))
+
+    def test_ledger_book_financial_year_scope_with_explicit_dates_does_not_split_opening(self):
+        response = self.client.get(
+            reverse("reports_api:financial-ledger-book"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "ledger": self.cash_ledger.id,
+                "scope_mode": "financial_year",
+                "from_date": "2025-04-01",
+                "to_date": "2025-04-30",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["opening_balance"], "0.00")
+        self.assertEqual([row["voucher_number"] for row in data["rows"]], ["ACC-OPEN-CASH", "CV-001"])
+        self.assertEqual(data["totals"]["closing_balance"], "150.00")
 
     def test_profit_loss_totals_match_posted_income_and_expense_ledgers(self):
         expense_type = accounttype.objects.create(
@@ -1250,6 +1601,22 @@ class BookReportAPITests(APITestCase):
         self._create_entry(
             entity=self.entity,
             entityfin=self.entityfin,
+            subentity=None,
+            txn_type=TxnType.OPENING_BALANCE,
+            txn_id=account_opening_txn_id(liability_account.id),
+            voucher_no="ACC-OPEN-LIAB",
+            posting_date="2025-04-01",
+            voucher_date="2025-04-01",
+            status=EntryStatus.POSTED,
+            narration="Opening balance for Accrued Expenses Control",
+            lines=[
+                (self.income_account, self.income_ledger, True, "100.00", "Opening offset"),
+                (liability_account, liability_ledger, False, "100.00", "Opening credit"),
+            ],
+        )
+        self._create_entry(
+            entity=self.entity,
+            entityfin=self.entityfin,
             subentity=self.subentity,
             txn_type=TxnType.JOURNAL,
             txn_id=89,
@@ -1285,3 +1652,93 @@ class BookReportAPITests(APITestCase):
 
         self.assertIn("Accrued Expenses Control", asset_ledger_names)
         self.assertNotIn("Accrued Expenses Control", liability_ledger_names)
+
+    def test_balance_sheet_does_not_double_count_posted_opening_balance(self):
+        from reports.services.financial.statements import _closing_map
+
+        asset_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Current Assets",
+            accounttypecode="1100",
+            createdby=self.user,
+        )
+        equity_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Capital and Equity",
+            accounttypecode="3100",
+            createdby=self.user,
+        )
+        asset_head = accountHead.objects.create(
+            entity=self.entity,
+            name="Test Debtors",
+            code=1101,
+            detailsingroup=1,
+            balanceType="Debit",
+            drcreffect="Debit",
+            accounttype=asset_type,
+            createdby=self.user,
+        )
+        equity_head = accountHead.objects.create(
+            entity=self.entity,
+            name="Opening Equity",
+            code=3101,
+            detailsingroup=3,
+            balanceType="Credit",
+            drcreffect="Credit",
+            accounttype=equity_type,
+            createdby=self.user,
+        )
+        asset_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=9911,
+            name="BS Opening Asset",
+            accounthead=asset_head,
+            accounttype=asset_type,
+            openingbdr=Decimal("500.00"),
+            createdby=self.user,
+        )
+        equity_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=9912,
+            name="BS Opening Equity",
+            accounthead=equity_head,
+            accounttype=equity_type,
+            openingbcr=Decimal("500.00"),
+            createdby=self.user,
+        )
+        asset_account = create_account_with_synced_ledger(
+            account_data={"entity": self.entity, "ledger": asset_ledger, "accountname": "BS Opening Asset", "createdby": self.user},
+            ledger_overrides={"ledger_code": 9911, "accounthead": asset_head, "is_party": True},
+        )
+        equity_account = create_account_with_synced_ledger(
+            account_data={"entity": self.entity, "ledger": equity_ledger, "accountname": "BS Opening Equity", "createdby": self.user},
+            ledger_overrides={"ledger_code": 9912, "accounthead": equity_head, "is_party": True},
+        )
+        self._create_entry(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=None,
+            txn_type=TxnType.OPENING_BALANCE,
+            txn_id=account_opening_txn_id(asset_account.id),
+            voucher_no="ACC-OPEN-BS-ASSET",
+            posting_date="2025-04-01",
+            voucher_date="2025-04-01",
+            status=EntryStatus.POSTED,
+            narration="Opening balance for balance-sheet asset",
+            lines=[
+                (asset_account, asset_ledger, True, "500.00", "Opening debit"),
+                (equity_account, equity_ledger, False, "500.00", "Opening credit"),
+            ],
+        )
+
+        _, _, _, _, _, closing = _closing_map(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            from_date="2025-04-01",
+            to_date="2025-04-30",
+            posted_only=True,
+            ledger_ids=[asset_ledger.id, equity_ledger.id],
+        )
+
+        self.assertEqual(closing[asset_ledger.id]["amount"], Decimal("500.00"))
+        self.assertEqual(closing[equity_ledger.id]["amount"], Decimal("-500.00"))

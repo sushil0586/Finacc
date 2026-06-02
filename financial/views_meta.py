@@ -7,6 +7,7 @@ from django.db.models import Q
 
 from core.entitlements import ScopedEntitlementMixin
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
+from .governance import PARTY_MANAGED, resolve_financial_master_rule
 
 # import the choices from your models.py
 from .models import (
@@ -26,6 +27,50 @@ from .models import (
 def _choice_list(choices):
     # choices: [("Customer","Customer"), ...]
     return [{"value": v, "label": str(lbl)} for v, lbl in choices]
+
+
+def _governance_payload(entity_id: int) -> dict:
+    party_suggestions: dict[str, dict] = {}
+    party_managed_account_type_ids: set[int] = set()
+    party_managed_head_ids: set[int] = set()
+    direct_edit_blocked_account_type_ids: set[int] = set()
+    direct_edit_blocked_head_ids: set[int] = set()
+
+    for party_value, _label in PARTY_TYPE_CHOICES:
+        rule = resolve_financial_master_rule(entity=entity_id, partytype=party_value)
+        if not rule:
+            continue
+        payload = {
+            "management_mode": rule.management_mode,
+            "auto_create_account": bool(rule.auto_create_account),
+            "allow_direct_ledger_edit": bool(rule.allow_direct_ledger_edit),
+            "account_type_id": getattr(rule.suggested_account_type, "id", None) or rule.account_type_id,
+            "debit_head_id": getattr(rule.suggested_debit_head, "id", None) or rule.debit_head_id,
+            "credit_head_id": getattr(rule.suggested_credit_head, "id", None) or rule.credit_head_id,
+        }
+        party_suggestions[party_value] = payload
+
+        candidate_type_ids = [payload["account_type_id"], rule.account_type_id]
+        candidate_head_ids = [
+            payload["debit_head_id"],
+            payload["credit_head_id"],
+            rule.debit_head_id,
+            rule.credit_head_id,
+        ]
+        if rule.management_mode == PARTY_MANAGED:
+            party_managed_account_type_ids.update(int(item) for item in candidate_type_ids if item)
+            party_managed_head_ids.update(int(item) for item in candidate_head_ids if item)
+        if not rule.allow_direct_ledger_edit:
+            direct_edit_blocked_account_type_ids.update(int(item) for item in candidate_type_ids if item)
+            direct_edit_blocked_head_ids.update(int(item) for item in candidate_head_ids if item)
+
+    return {
+        "party_suggestions": party_suggestions,
+        "party_managed_account_type_ids": sorted(party_managed_account_type_ids),
+        "party_managed_head_ids": sorted(party_managed_head_ids),
+        "direct_edit_blocked_account_type_ids": sorted(direct_edit_blocked_account_type_ids),
+        "direct_edit_blocked_head_ids": sorted(direct_edit_blocked_head_ids),
+    }
 
 
 class AccountChoicesAPIView(APIView):
@@ -119,6 +164,7 @@ class LedgerFormMetaAPIView(ScopedEntitlementMixin, APIView):
                     }
                     for row in ledgers
                 ],
+                "governance": _governance_payload(int(entity_id)),
             }
         )
 
@@ -209,6 +255,7 @@ class AccountFormMetaAPIView(ScopedEntitlementMixin, APIView):
                     for row in contra_ledgers
                 ],
                 "ledger_mode": "auto_managed",
+                "governance": _governance_payload(int(entity_id)),
             }
         )
 

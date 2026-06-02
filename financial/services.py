@@ -2,6 +2,7 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import Prefetch
 
+from financial.governance import LEDGER_ONLY, PARTY_MANAGED, allocate_from_series, resolve_management_mode
 from financial.models import (
     AccountAddress,
     AccountBankDetails,
@@ -78,6 +79,48 @@ def sync_account_profiles_for_account(acc):
     ensure_normalized_profiles_for_account(acc)
 
 
+def _is_party_account_type(account_type_obj) -> bool:
+    if not account_type_obj:
+        return False
+    type_name = str(getattr(account_type_obj, "accounttypename", "") or "").strip().lower()
+    type_code = str(getattr(account_type_obj, "accounttypecode", "") or "").strip()
+    return type_name == "party" or type_code == "1009"
+
+
+def ledger_should_be_party(
+    *,
+    entity=None,
+    partytype="",
+    is_party=False,
+    is_system=False,
+    accounttype_obj=None,
+    accounthead_obj=None,
+    creditaccounthead_obj=None,
+):
+    if is_system:
+        return False
+    resolved_mode = resolve_management_mode(
+        entity=entity,
+        partytype=partytype,
+        account_type_id=getattr(accounttype_obj, "id", None),
+        debit_head_id=getattr(accounthead_obj, "id", None),
+        credit_head_id=getattr(creditaccounthead_obj, "id", None),
+    )
+    if resolved_mode == PARTY_MANAGED:
+        return True
+    if resolved_mode == LEDGER_ONLY:
+        return False
+    if is_party:
+        return True
+    if _is_party_account_type(accounttype_obj):
+        return True
+    if _is_party_account_type(getattr(accounthead_obj, "accounttype", None)):
+        return True
+    if _is_party_account_type(getattr(creditaccounthead_obj, "accounttype", None)):
+        return True
+    return False
+
+
 def ensure_normalized_profiles_for_account(acc):
     """Ensure normalized profile rows exist for an account with structural defaults."""
     compliance_defaults = {
@@ -93,6 +136,46 @@ def ensure_normalized_profiles_for_account(acc):
 
     AccountComplianceProfile.objects.update_or_create(account=acc, defaults=compliance_defaults)
     AccountCommercialProfile.objects.update_or_create(account=acc, defaults=commercial_defaults)
+
+
+@transaction.atomic
+def ensure_account_profile_for_ledger(*, ledger, createdby=None):
+    """
+    Ensure a party-style ledger has an attached operational account profile.
+
+    This keeps Option C behavior stable:
+    - create ledger from ledger page
+    - if it behaves like a party ledger, attach an account profile to the
+      same ledger row
+    - future edits then route through the account workspace
+    """
+    existing_account = getattr(ledger, "account_profile", None)
+    account_defaults = {
+        "entity": ledger.entity,
+        "accountname": ledger.name,
+        "legalname": ledger.legal_name,
+        "canbedeleted": ledger.canbedeleted,
+        "createdby": createdby or ledger.createdby,
+        "isactive": ledger.isactive,
+    }
+
+    if existing_account:
+        update_fields = []
+        for field, value in account_defaults.items():
+            if getattr(existing_account, field) != value:
+                setattr(existing_account, field, value)
+                update_fields.append(field)
+        if existing_account.ledger_id != ledger.id:
+            existing_account.ledger = ledger
+            update_fields.append("ledger")
+        if update_fields:
+            existing_account.save(update_fields=update_fields)
+        acc = existing_account
+    else:
+        acc = account.objects.create(ledger=ledger, **account_defaults)
+
+    ensure_normalized_profiles_for_account(acc)
+    return acc
 
 
 @transaction.atomic
@@ -136,7 +219,14 @@ def create_account_with_synced_ledger(*, account_data, ledger_overrides=None):
     data = {key: value for key, value in data.items() if key in allowed_account_fields}
     entity = data.get("entity")
     if normalized_ledger_overrides.get("ledger_code") is None and entity is not None:
-        normalized_ledger_overrides["ledger_code"] = allocate_next_ledger_code(entity_id=entity.id)
+        normalized_ledger_overrides["ledger_code"] = allocate_next_ledger_code(
+            entity_id=entity.id,
+            account_type_id=normalized_ledger_overrides.get("accounttype_id") or getattr(normalized_ledger_overrides.get("accounttype"), "id", None),
+            debit_head_id=normalized_ledger_overrides.get("accounthead_id") or getattr(normalized_ledger_overrides.get("accounthead"), "id", None),
+            credit_head_id=normalized_ledger_overrides.get("creditaccounthead_id")
+            or getattr(normalized_ledger_overrides.get("creditaccounthead"), "id", None),
+            allocated_by=data.get("createdby"),
+        )
 
     acc = account.objects.create(**data)
     sync_ledger_for_account(acc, ledger_overrides=normalized_ledger_overrides)
@@ -144,7 +234,18 @@ def create_account_with_synced_ledger(*, account_data, ledger_overrides=None):
     return acc
 
 
-def allocate_next_ledger_code(*, entity_id):
+def allocate_next_ledger_code(
+    *,
+    entity_id,
+    partytype="",
+    account_type_id=None,
+    debit_head_id=None,
+    credit_head_id=None,
+    ledger=None,
+    account=None,
+    allocated_by=None,
+    allocation_reason="create",
+):
     """
     Generate the next ledger code for an entity.
 
@@ -153,6 +254,20 @@ def allocate_next_ledger_code(*, entity_id):
     supplied. This keeps the account page simple while still producing a real
     posting ledger.
     """
+    series_code = allocate_from_series(
+        entity=entity_id,
+        ledger=ledger,
+        account=account,
+        allocated_by=allocated_by,
+        partytype=partytype,
+        account_type_id=account_type_id,
+        debit_head_id=debit_head_id,
+        credit_head_id=credit_head_id,
+        allocation_reason=allocation_reason,
+    )
+    if series_code is not None:
+        return series_code
+
     max_code = (
         Ledger.objects.filter(entity_id=entity_id, ledger_code__isnull=False)
         .order_by("-ledger_code")

@@ -87,6 +87,18 @@ OPENING_BALANCE_EDIT_MODE_CHOICES = [
     ("locked", _("Locked")),
 ]
 
+MASTER_MANAGEMENT_MODE_CHOICES = [
+    ("party_managed", _("Party Managed")),
+    ("ledger_only", _("Ledger Only")),
+]
+
+CODE_SERIES_REASON_CHOICES = [
+    ("create", _("Create")),
+    ("repair", _("Repair")),
+    ("migration", _("Migration")),
+    ("import", _("Import")),
+]
+
 
 # ============================================================
 # Shared helper: enforce "no delete if referenced"
@@ -256,6 +268,145 @@ class FinancialSettings(TrackingModel):
     class Meta:
         verbose_name = _("Financial Settings")
         verbose_name_plural = _("Financial Settings")
+
+
+class FinancialMasterRule(TrackingModel):
+    entity = models.ForeignKey("entity.Entity", null=True, blank=True, on_delete=models.CASCADE, related_name="financial_master_rules")
+    template_code = models.CharField(max_length=50, null=True, blank=True)
+    party_type = models.CharField(max_length=20, null=True, blank=True, choices=PARTY_TYPE_CHOICES)
+    account_type = models.ForeignKey(
+        "financial.accounttype",
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="financial_master_rules",
+    )
+    debit_head = models.ForeignKey(
+        "financial.accountHead",
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="financial_master_debit_rules",
+    )
+    credit_head = models.ForeignKey(
+        "financial.accountHead",
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="financial_master_credit_rules",
+    )
+    management_mode = models.CharField(max_length=20, choices=MASTER_MANAGEMENT_MODE_CHOICES)
+    suggested_account_type = models.ForeignKey(
+        "financial.accounttype",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="financial_master_rule_suggestions",
+    )
+    suggested_debit_head = models.ForeignKey(
+        "financial.accountHead",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="financial_master_rule_debit_suggestions",
+    )
+    suggested_credit_head = models.ForeignKey(
+        "financial.accountHead",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="financial_master_rule_credit_suggestions",
+    )
+    auto_create_account = models.BooleanField(default=False)
+    allow_direct_ledger_edit = models.BooleanField(default=True)
+    priority = models.PositiveIntegerField(default=100)
+    createdby = models.ForeignKey(to=User, on_delete=models.CASCADE, null=True, blank=True)
+
+    def __str__(self):
+        scope = self.entity_id or self.template_code or "global"
+        return f"{scope} :: {self.management_mode} :: p{self.priority}"
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["entity", "priority"], name="ix_finrule_ent_pri"),
+            models.Index(fields=["template_code", "priority"], name="ix_finrule_tpl_pri"),
+            models.Index(fields=["party_type", "priority"], name="ix_finrule_party_pri"),
+        ]
+
+
+class FinancialCodeSeries(TrackingModel):
+    entity = models.ForeignKey("entity.Entity", null=True, blank=True, on_delete=models.CASCADE, related_name="financial_code_series")
+    template_code = models.CharField(max_length=50, null=True, blank=True)
+    series_key = models.CharField(max_length=50)
+    label = models.CharField(max_length=100)
+    account_type = models.ForeignKey(
+        "financial.accounttype",
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="financial_code_series",
+    )
+    debit_head = models.ForeignKey(
+        "financial.accountHead",
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="financial_debit_code_series",
+    )
+    credit_head = models.ForeignKey(
+        "financial.accountHead",
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="financial_credit_code_series",
+    )
+    party_type = models.CharField(max_length=20, null=True, blank=True, choices=PARTY_TYPE_CHOICES)
+    range_start = models.PositiveIntegerField()
+    range_end = models.PositiveIntegerField()
+    next_code = models.PositiveIntegerField()
+    increment_step = models.PositiveIntegerField(default=1)
+    is_reserved_anchor = models.BooleanField(default=False)
+    priority = models.PositiveIntegerField(default=100)
+    createdby = models.ForeignKey(to=User, on_delete=models.CASCADE, null=True, blank=True)
+
+    def __str__(self):
+        scope = self.entity_id or self.template_code or "global"
+        return f"{scope} :: {self.series_key} :: {self.range_start}-{self.range_end}"
+
+    def clean(self):
+        if self.range_end < self.range_start:
+            raise ValidationError({"range_end": _("Range end must be greater than or equal to range start.")})
+        if self.next_code < self.range_start or self.next_code > self.range_end:
+            raise ValidationError({"next_code": _("Next code must fall within the configured range.")})
+        if self.increment_step <= 0:
+            raise ValidationError({"increment_step": _("Increment step must be positive.")})
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["entity", "series_key"], name="uq_fincode_ent_series_key"),
+        ]
+        indexes = [
+            models.Index(fields=["entity", "priority"], name="ix_fincode_ent_pri"),
+            models.Index(fields=["template_code", "priority"], name="ix_fincode_tpl_pri"),
+            models.Index(fields=["party_type", "priority"], name="ix_fincode_party_pri"),
+        ]
+
+
+class FinancialCodeSeriesAudit(models.Model):
+    entity = models.ForeignKey("entity.Entity", on_delete=models.CASCADE, related_name="financial_code_series_audit")
+    series = models.ForeignKey(FinancialCodeSeries, on_delete=models.CASCADE, related_name="audit_rows")
+    allocated_code = models.PositiveIntegerField()
+    ledger = models.ForeignKey("financial.Ledger", null=True, blank=True, on_delete=models.SET_NULL, related_name="code_allocations")
+    account = models.ForeignKey("financial.account", null=True, blank=True, on_delete=models.SET_NULL, related_name="code_allocations")
+    allocated_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name="financial_code_allocations")
+    allocated_at = models.DateTimeField(auto_now_add=True)
+    allocation_reason = models.CharField(max_length=20, choices=CODE_SERIES_REASON_CHOICES, default="create")
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["entity", "allocated_at"], name="ix_fincodeaudit_ent_at"),
+            models.Index(fields=["series", "allocated_code"], name="ix_fincodeaudit_series_code"),
+        ]
 
 class accounttype(TrackingModel):
     """

@@ -6,7 +6,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Dict, Iterable, List, Optional
 
 from django.db import transaction
-from django.db.models import QuerySet
+from django.db.models import Max, QuerySet, Sum
 from django.utils import timezone
 
 from financial.models import account
@@ -49,6 +49,71 @@ class SettlementCancelResult:
 
 
 class SalesArService:
+    @staticmethod
+    def _coerce_date(value: Any | None) -> date | None:
+        if value is None:
+            return None
+        if isinstance(value, date):
+            return value
+        if hasattr(value, "date"):
+            return value.date()
+        return date.fromisoformat(str(value))
+
+    @staticmethod
+    def _settlement_line_applied_maps(
+        *,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: Optional[int],
+        upto_date: date,
+    ) -> tuple[Dict[int, Decimal], Dict[int, date]]:
+        qs = CustomerSettlementLine.objects.filter(
+            settlement__entity_id=entity_id,
+            settlement__entityfinid_id=entityfinid_id,
+            settlement__status=CustomerSettlement.Status.POSTED,
+            settlement__settlement_date__lte=upto_date,
+        )
+        if subentity_id is None:
+            qs = qs.filter(settlement__subentity__isnull=True)
+        else:
+            qs = qs.filter(settlement__subentity_id=subentity_id)
+        rows = qs.values("open_item_id").annotate(
+            applied=Sum("applied_amount_signed"),
+            last_settled_at=Max("settlement__settlement_date"),
+        )
+        return (
+            {row["open_item_id"]: q2(row["applied"] or ZERO2) for row in rows},
+            {row["open_item_id"]: row["last_settled_at"] for row in rows},
+        )
+
+    @staticmethod
+    def _advance_adjustment_maps(
+        *,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: Optional[int],
+        upto_date: date,
+    ) -> tuple[Dict[int, Decimal], Dict[int, date]]:
+        qs = CustomerSettlement.objects.filter(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            status=CustomerSettlement.Status.POSTED,
+            advance_balance_id__isnull=False,
+            settlement_date__lte=upto_date,
+        )
+        if subentity_id is None:
+            qs = qs.filter(subentity__isnull=True)
+        else:
+            qs = qs.filter(subentity_id=subentity_id)
+        rows = qs.values("advance_balance_id").annotate(
+            applied=Sum("total_amount"),
+            last_adjusted_at=Max("settlement_date"),
+        )
+        return (
+            {row["advance_balance_id"]: q2(row["applied"] or ZERO2) for row in rows},
+            {row["advance_balance_id"]: row["last_adjusted_at"] for row in rows},
+        )
+
     @staticmethod
     def _compute_net_receivable_from_header(header: SalesInvoiceHeader) -> Dict[str, Decimal]:
         sign = SalesArService._doc_sign(int(header.doc_type))
@@ -630,7 +695,9 @@ class SalesArService:
         subentity_id: Optional[int],
         customer_id: int,
         include_closed: bool = False,
+        as_of_date: Optional[date] = None,
     ) -> Dict[str, Any]:
+        as_of = SalesArService._coerce_date(as_of_date)
         open_items_qs = SalesArService.list_open_items(
             entity_id=entity_id,
             entityfinid_id=entityfinid_id,
@@ -653,11 +720,6 @@ class SalesArService:
             settlements_qs = settlements_qs.filter(status=CustomerSettlement.Status.POSTED)
 
         settlements_qs = settlements_qs.select_related("advance_balance").prefetch_related("lines__open_item")
-        totals = {
-            "original_total": q2(sum((q2(x.original_amount) for x in open_items_qs), ZERO2)),
-            "settled_total": q2(sum((q2(x.settled_amount) for x in open_items_qs), ZERO2)),
-            "outstanding_total": q2(sum((q2(x.outstanding_amount) for x in open_items_qs), ZERO2)),
-        }
         advances_qs = SalesArService.list_open_advances(
             entity_id=entity_id,
             entityfinid_id=entityfinid_id,
@@ -665,6 +727,51 @@ class SalesArService:
             customer_id=customer_id,
             is_open=None if include_closed else True,
         )
+
+        if as_of:
+            open_items_qs = open_items_qs.filter(bill_date__lte=as_of)
+            advances_qs = advances_qs.filter(credit_date__lte=as_of)
+            settlements_qs = settlements_qs.filter(settlement_date__lte=as_of)
+
+            applied_map, last_settled_map = SalesArService._settlement_line_applied_maps(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                upto_date=as_of,
+            )
+            advance_map, last_adjusted_map = SalesArService._advance_adjustment_maps(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                upto_date=as_of,
+            )
+
+            as_of_open_items: List[CustomerBillOpenItem] = []
+            for item in open_items_qs:
+                item.settled_amount = q2(applied_map.get(item.id, ZERO2))
+                item.outstanding_amount = q2(item.original_amount - item.settled_amount)
+                item.is_open = abs(item.outstanding_amount) > TOL
+                item.last_settled_at = last_settled_map.get(item.id)
+                if include_closed or item.is_open:
+                    as_of_open_items.append(item)
+
+            as_of_advances: List[CustomerAdvanceBalance] = []
+            for advance in advances_qs:
+                advance.adjusted_amount = q2(advance_map.get(advance.id, ZERO2))
+                advance.outstanding_amount = q2(advance.original_amount - advance.adjusted_amount)
+                advance.is_open = abs(advance.outstanding_amount) > TOL
+                advance.last_adjusted_at = last_adjusted_map.get(advance.id)
+                if include_closed or advance.is_open:
+                    as_of_advances.append(advance)
+
+            open_items_qs = as_of_open_items
+            advances_qs = as_of_advances
+
+        totals = {
+            "original_total": q2(sum((q2(x.original_amount) for x in open_items_qs), ZERO2)),
+            "settled_total": q2(sum((q2(x.settled_amount) for x in open_items_qs), ZERO2)),
+            "outstanding_total": q2(sum((q2(x.outstanding_amount) for x in open_items_qs), ZERO2)),
+        }
         totals["advance_outstanding_total"] = q2(sum((q2(x.outstanding_amount) for x in advances_qs), ZERO2))
         advance_consumed_total = settlements_qs.filter(
             settlement_type=CustomerSettlement.SettlementType.ADVANCE_ADJUSTMENT

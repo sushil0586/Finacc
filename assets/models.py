@@ -16,16 +16,50 @@ def default_asset_policy_controls():
     return {
         "capitalization_basis": "manual_or_posting",
         "capitalization_threshold_rule": "warn",
+        "purchase_review_completeness_rule": "hard",
+        "counter_ledger_match_rule": "warn",
+        "require_location_rule": "off",
+        "require_department_rule": "off",
+        "require_custodian_rule": "off",
+        "require_serial_number_rule": "off",
+        "require_manufacturer_rule": "off",
+        "require_model_number_rule": "off",
+        "require_vendor_account_rule": "off",
+        "require_asset_ledger_rule": "off",
+        "require_depreciation_ledgers_rule": "off",
+        "require_impairment_ledgers_rule": "off",
+        "require_disposal_ledgers_rule": "off",
+        "require_cwip_ledger_rule": "off",
         "depreciation_proration": "daily",
         "depreciation_posting_mode": "manual_run",
         "depreciation_lock_rule": "hard",
         "backdated_capitalization_rule": "warn",
         "backdated_disposal_rule": "hard",
         "negative_nbv_rule": "block",
+        "full_impairment_rule": "warn",
         "component_accounting": "off",
         "allow_manual_depreciation_override": "warn",
         "allow_posting_without_tag": "on",
         "multi_book_mode": "single",
+    }
+
+
+def default_asset_category_traceability_controls():
+    return {
+        "serial_number_rule": "inherit",
+        "manufacturer_rule": "inherit",
+        "model_number_rule": "inherit",
+        "vendor_account_rule": "inherit",
+    }
+
+
+def default_asset_category_accounting_controls():
+    return {
+        "asset_ledger_rule": "inherit",
+        "depreciation_ledgers_rule": "inherit",
+        "impairment_ledgers_rule": "inherit",
+        "disposal_ledgers_rule": "inherit",
+        "cwip_ledger_rule": "inherit",
     }
 
 
@@ -111,6 +145,8 @@ class AssetCategory(TrackingModel):
     cwip_ledger = models.ForeignKey("financial.Ledger", on_delete=models.PROTECT, null=True, blank=True, related_name="asset_category_cwip_ledgers")
     gain_on_sale_ledger = models.ForeignKey("financial.Ledger", on_delete=models.PROTECT, null=True, blank=True, related_name="asset_category_gain_ledgers")
     loss_on_sale_ledger = models.ForeignKey("financial.Ledger", on_delete=models.PROTECT, null=True, blank=True, related_name="asset_category_loss_ledgers")
+    traceability_controls = models.JSONField(default=default_asset_category_traceability_controls, blank=True)
+    accounting_controls = models.JSONField(default=default_asset_category_accounting_controls, blank=True)
 
     class Meta:
         constraints = [
