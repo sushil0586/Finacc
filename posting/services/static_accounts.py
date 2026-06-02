@@ -65,6 +65,7 @@ STATIC_ACCOUNT_MASTER_DEFS: Tuple[StaticAccountSeedDef, ...] = (
     StaticAccountSeedDef("MANUFACTURING_MATERIAL_VARIANCE", "Manufacturing Material Variance", StaticAccountGroup.MANUFACTURING, "Variance ledger for material over/under-consumption against standard manufacturing cost.", False),
     StaticAccountSeedDef("MANUFACTURING_YIELD_VARIANCE", "Manufacturing Yield Variance", StaticAccountGroup.MANUFACTURING, "Variance ledger for manufacturing output/yield differences against standard cost expectation.", False),
     StaticAccountSeedDef("MANUFACTURING_ADDITIONAL_COST_EXPENSE", "Manufacturing Additional Cost Expense", StaticAccountGroup.MANUFACTURING, "Expense ledger for manufacturing additional costs that should not be capitalized into finished goods.", False),
+    StaticAccountSeedDef("OPENING_BALANCE_OFFSET", "Opening Balance Offset", StaticAccountGroup.EQUITY, "Configurable offset ledger used when account-level opening balances are posted as balanced opening entries.", False),
     StaticAccountSeedDef("OPENING_EQUITY_TRANSFER", "Opening Equity Transfer", StaticAccountGroup.EQUITY, "Destination equity/capital/retained earnings ledger for year opening.", False),
     StaticAccountSeedDef("OPENING_INVENTORY_CARRY_FORWARD", "Opening Inventory Carry Forward", StaticAccountGroup.EQUITY, "Destination inventory/stock ledger for year opening.", False),
 )

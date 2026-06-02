@@ -64,6 +64,8 @@ class ImportJobCreateSerializer(serializers.Serializer):
 class ImportJobSerializer(serializers.ModelSerializer):
     error_count = serializers.SerializerMethodField()
     warning_count = serializers.SerializerMethodField()
+    document_summaries = serializers.SerializerMethodField()
+    is_reviewed = serializers.SerializerMethodField()
 
     class Meta:
         model = ImportJob
@@ -82,6 +84,12 @@ class ImportJobSerializer(serializers.ModelSerializer):
             "summary",
             "reconciliation_summary",
             "profile_snapshot",
+            "review_required",
+            "reviewed_by",
+            "reviewed_at",
+            "review_note",
+            "is_reviewed",
+            "document_summaries",
             "error_count",
             "warning_count",
             "created_at",
@@ -93,3 +101,11 @@ class ImportJobSerializer(serializers.ModelSerializer):
 
     def get_warning_count(self, obj) -> int:
         return sum(len(row.warnings or []) for row in obj.rows.all())
+
+    def get_document_summaries(self, obj) -> list[dict]:
+        summary = obj.summary if isinstance(obj.summary, dict) else {}
+        rows = summary.get("document_summaries")
+        return rows if isinstance(rows, list) else []
+
+    def get_is_reviewed(self, obj) -> bool:
+        return bool(getattr(obj, "reviewed_at", None))

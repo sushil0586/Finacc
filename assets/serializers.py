@@ -4,6 +4,7 @@ from django.db.models import Q
 from rest_framework import serializers
 
 from assets.models import AssetCategory, AssetSettings, DepreciationRun, DepreciationRunLine, FixedAsset
+from assets.services.settings import AssetSettingsService
 
 
 def _run_scope_overlap_q(*, subentity_id: int | None):
@@ -70,6 +71,48 @@ class AssetCategorySerializer(AssetScopeValidationMixin, serializers.ModelSerial
                 entity_id=entity.id,
                 field_name=field_name,
             )
+        try:
+            attrs["traceability_controls"] = AssetSettingsService.normalize_category_traceability_controls(
+                attrs.get("traceability_controls") if "traceability_controls" in attrs else getattr(getattr(self, "instance", None), "traceability_controls", {})
+            )
+        except ValueError as exc:
+            raise serializers.ValidationError({"traceability_controls": str(exc)})
+        try:
+            attrs["accounting_controls"] = AssetSettingsService.normalize_category_accounting_controls(
+                attrs.get("accounting_controls") if "accounting_controls" in attrs else getattr(getattr(self, "instance", None), "accounting_controls", {})
+            )
+        except ValueError as exc:
+            raise serializers.ValidationError({"accounting_controls": str(exc)})
+
+        settings_obj = AssetSettingsService.get_settings(entity.id, getattr(subentity, "id", None))
+        resolved_accounting_controls = AssetSettingsService.resolve_category_accounting_controls(
+            type("CategoryStub", (), {"accounting_controls": attrs.get("accounting_controls", {}), "nature": attrs.get("nature") or getattr(getattr(self, "instance", None), "nature", None)})(),
+            settings_obj,
+        )
+        accounting_errors = {}
+        if resolved_accounting_controls.get("asset_ledger_rule") == "hard" and not (attrs.get("asset_ledger") or getattr(getattr(self, "instance", None), "asset_ledger", None)):
+            accounting_errors["asset_ledger"] = ["Select the asset ledger because policy marks it as required for this category."]
+        if resolved_accounting_controls.get("depreciation_ledgers_rule") == "hard":
+            if not (attrs.get("accumulated_depreciation_ledger") or getattr(getattr(self, "instance", None), "accumulated_depreciation_ledger", None)):
+                accounting_errors["accumulated_depreciation_ledger"] = ["Select the accumulated depreciation ledger because policy marks depreciation ledgers as required."]
+            if not (attrs.get("depreciation_expense_ledger") or getattr(getattr(self, "instance", None), "depreciation_expense_ledger", None)):
+                accounting_errors["depreciation_expense_ledger"] = ["Select the depreciation expense ledger because policy marks depreciation ledgers as required."]
+        if resolved_accounting_controls.get("impairment_ledgers_rule") == "hard":
+            if not (attrs.get("impairment_expense_ledger") or getattr(getattr(self, "instance", None), "impairment_expense_ledger", None)):
+                accounting_errors["impairment_expense_ledger"] = ["Select the impairment expense ledger because policy marks impairment ledgers as required."]
+            if not (attrs.get("impairment_reserve_ledger") or getattr(getattr(self, "instance", None), "impairment_reserve_ledger", None)):
+                accounting_errors["impairment_reserve_ledger"] = ["Select the impairment reserve ledger because policy marks impairment ledgers as required."]
+        if resolved_accounting_controls.get("disposal_ledgers_rule") == "hard":
+            if not (attrs.get("gain_on_sale_ledger") or getattr(getattr(self, "instance", None), "gain_on_sale_ledger", None)):
+                accounting_errors["gain_on_sale_ledger"] = ["Select the gain on sale ledger because policy marks disposal ledgers as required."]
+            if not (attrs.get("loss_on_sale_ledger") or getattr(getattr(self, "instance", None), "loss_on_sale_ledger", None)):
+                accounting_errors["loss_on_sale_ledger"] = ["Select the loss on sale ledger because policy marks disposal ledgers as required."]
+        nature_value = attrs.get("nature") or getattr(getattr(self, "instance", None), "nature", None)
+        if resolved_accounting_controls.get("cwip_ledger_rule") == "hard" and nature_value == AssetCategory.AssetNature.CAPITAL_WIP:
+            if not (attrs.get("cwip_ledger") or getattr(getattr(self, "instance", None), "cwip_ledger", None)):
+                accounting_errors["cwip_ledger"] = ["Select the CWIP ledger because policy marks it as required for CWIP categories."]
+        if accounting_errors:
+            raise serializers.ValidationError(accounting_errors)
         return attrs
 
 
@@ -199,6 +242,30 @@ class FixedAssetWriteSerializer(AssetScopeValidationMixin, serializers.ModelSeri
                 {"status": "Status can only be set manually to Draft, Capital WIP, or Held for Sale. Use asset lifecycle actions for active or disposed states."}
             )
 
+        settings_obj = AssetSettingsService.get_settings(entity.id, getattr(subentity, "id", None))
+        controls = AssetSettingsService.resolve_policy_controls(settings_obj)
+        field_values = {
+            "location_name": attrs.get("location_name", getattr(instance, "location_name", None)),
+            "department_name": attrs.get("department_name", getattr(instance, "department_name", None)),
+            "custodian_name": attrs.get("custodian_name", getattr(instance, "custodian_name", None)),
+        }
+        field_labels = {
+            "location_name": "location",
+            "department_name": "department",
+            "custodian_name": "custodian",
+        }
+        field_rules = {
+            "location_name": controls.get("require_location_rule", "off"),
+            "department_name": controls.get("require_department_rule", "off"),
+            "custodian_name": controls.get("require_custodian_rule", "off"),
+        }
+        field_errors = {}
+        for field_name, value in field_values.items():
+            if field_rules[field_name] == "hard" and not str(value or "").strip():
+                field_errors[field_name] = [f"Enter the asset {field_labels[field_name]} before saving because policy marks it as required."]
+        if field_errors:
+            raise serializers.ValidationError(field_errors)
+
         return attrs
 
 
@@ -231,6 +298,10 @@ class AssetDisposalSerializer(serializers.Serializer):
     disposal_date = serializers.DateField()
     sale_proceeds = serializers.DecimalField(max_digits=14, decimal_places=2)
     narration = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+
+
+class AssetReverseLifecycleSerializer(serializers.Serializer):
+    reason = serializers.CharField()
 
 
 class DepreciationRunLineSerializer(serializers.ModelSerializer):

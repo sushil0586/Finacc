@@ -96,6 +96,10 @@ class AssetApiScopeTests(APITestCase):
         self.asset_ledger = Ledger.objects.create(entity=self.entity, ledger_code=1001, name="Asset Ledger", accounthead=self.entity_head, createdby=self.owner)
         self.acc_dep_ledger = Ledger.objects.create(entity=self.entity, ledger_code=1002, name="Accum Dep Ledger", accounthead=self.entity_head, createdby=self.owner)
         self.dep_exp_ledger = Ledger.objects.create(entity=self.entity, ledger_code=1003, name="Dep Exp Ledger", accounthead=self.entity_head, createdby=self.owner)
+        self.impairment_exp_ledger = Ledger.objects.create(entity=self.entity, ledger_code=1004, name="Impairment Exp Ledger", accounthead=self.entity_head, createdby=self.owner)
+        self.impairment_reserve_ledger = Ledger.objects.create(entity=self.entity, ledger_code=1005, name="Impairment Reserve Ledger", accounthead=self.entity_head, createdby=self.owner)
+        self.gain_on_sale_ledger = Ledger.objects.create(entity=self.entity, ledger_code=1006, name="Gain On Sale Ledger", accounthead=self.entity_head, createdby=self.owner)
+        self.loss_on_sale_ledger = Ledger.objects.create(entity=self.entity, ledger_code=1007, name="Loss On Sale Ledger", accounthead=self.entity_head, createdby=self.owner)
         self.foreign_ledger = Ledger.objects.create(entity=self.foreign_entity, ledger_code=2001, name="Foreign Ledger", accounthead=self.foreign_head, createdby=self.foreign_owner)
 
         self.category = AssetCategory.objects.create(
@@ -106,6 +110,10 @@ class AssetApiScopeTests(APITestCase):
             asset_ledger=self.asset_ledger,
             accumulated_depreciation_ledger=self.acc_dep_ledger,
             depreciation_expense_ledger=self.dep_exp_ledger,
+            impairment_expense_ledger=self.impairment_exp_ledger,
+            impairment_reserve_ledger=self.impairment_reserve_ledger,
+            gain_on_sale_ledger=self.gain_on_sale_ledger,
+            loss_on_sale_ledger=self.loss_on_sale_ledger,
             created_by=self.owner,
             updated_by=self.owner,
         )
@@ -232,6 +240,143 @@ class AssetApiScopeTests(APITestCase):
         self.assertIn(self.asset.id, returned_ids)
         self.assertNotIn(self.foreign_asset.id, returned_ids)
 
+    def test_asset_settings_accept_traceability_advisory_controls(self):
+        AssetSettingsService.upsert_settings(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            updates={
+                "policy_controls": {
+                    "require_serial_number_rule": "warn",
+                    "require_manufacturer_rule": "warn",
+                    "require_model_number_rule": "off",
+                    "require_vendor_account_rule": "warn",
+                }
+            },
+            user_id=self.owner.id,
+        )
+
+        settings_obj = AssetSettingsService.get_settings(self.entity.id, self.subentity.id)
+        controls = AssetSettingsService.resolve_policy_controls(settings_obj)
+
+        self.assertEqual(controls["require_serial_number_rule"], "warn")
+        self.assertEqual(controls["require_manufacturer_rule"], "warn")
+        self.assertEqual(controls["require_model_number_rule"], "off")
+        self.assertEqual(controls["require_vendor_account_rule"], "warn")
+
+    def test_asset_settings_accept_category_accounting_policy_controls(self):
+        AssetSettingsService.upsert_settings(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            updates={
+                "policy_controls": {
+                    "require_asset_ledger_rule": "hard",
+                    "require_depreciation_ledgers_rule": "warn",
+                    "require_impairment_ledgers_rule": "off",
+                    "require_disposal_ledgers_rule": "hard",
+                    "require_cwip_ledger_rule": "warn",
+                }
+            },
+            user_id=self.owner.id,
+        )
+
+        settings_obj = AssetSettingsService.get_settings(self.entity.id, self.subentity.id)
+        controls = AssetSettingsService.resolve_policy_controls(settings_obj)
+
+        self.assertEqual(controls["require_asset_ledger_rule"], "hard")
+        self.assertEqual(controls["require_depreciation_ledgers_rule"], "warn")
+        self.assertEqual(controls["require_impairment_ledgers_rule"], "off")
+        self.assertEqual(controls["require_disposal_ledgers_rule"], "hard")
+        self.assertEqual(controls["require_cwip_ledger_rule"], "warn")
+
+    def test_category_traceability_controls_override_scope_settings(self):
+        AssetSettingsService.upsert_settings(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            updates={
+                "policy_controls": {
+                    "require_serial_number_rule": "off",
+                    "require_manufacturer_rule": "warn",
+                    "require_model_number_rule": "off",
+                    "require_vendor_account_rule": "warn",
+                }
+            },
+            user_id=self.owner.id,
+        )
+        self.category.traceability_controls = {
+            "serial_number_rule": "warn",
+            "manufacturer_rule": "off",
+            "model_number_rule": "inherit",
+            "vendor_account_rule": "inherit",
+        }
+        self.category.save(update_fields=["traceability_controls", "updated_at"])
+
+        settings_obj = AssetSettingsService.get_settings(self.entity.id, self.subentity.id)
+        resolved = AssetSettingsService.resolve_category_traceability_controls(self.category, settings_obj)
+
+        self.assertEqual(resolved["serial_number_rule"], "warn")
+        self.assertEqual(resolved["manufacturer_rule"], "off")
+        self.assertEqual(resolved["model_number_rule"], "off")
+        self.assertEqual(resolved["vendor_account_rule"], "warn")
+
+    def test_category_accounting_controls_override_scope_settings(self):
+        AssetSettingsService.upsert_settings(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            updates={
+                "policy_controls": {
+                    "require_asset_ledger_rule": "off",
+                    "require_depreciation_ledgers_rule": "warn",
+                    "require_impairment_ledgers_rule": "hard",
+                    "require_disposal_ledgers_rule": "warn",
+                    "require_cwip_ledger_rule": "off",
+                }
+            },
+            user_id=self.owner.id,
+        )
+        self.category.accounting_controls = {
+            "asset_ledger_rule": "hard",
+            "depreciation_ledgers_rule": "inherit",
+            "impairment_ledgers_rule": "off",
+            "disposal_ledgers_rule": "inherit",
+            "cwip_ledger_rule": "warn",
+        }
+        self.category.save(update_fields=["accounting_controls", "updated_at"])
+
+        settings_obj = AssetSettingsService.get_settings(self.entity.id, self.subentity.id)
+        resolved = AssetSettingsService.resolve_category_accounting_controls(self.category, settings_obj)
+
+        self.assertEqual(resolved["asset_ledger_rule"], "hard")
+        self.assertEqual(resolved["depreciation_ledgers_rule"], "warn")
+        self.assertEqual(resolved["impairment_ledgers_rule"], "off")
+        self.assertEqual(resolved["disposal_ledgers_rule"], "warn")
+        self.assertEqual(resolved["cwip_ledger_rule"], "warn")
+
+    def test_category_create_blocks_missing_asset_ledger_when_policy_is_hard(self):
+        self._set_asset_policy(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            require_asset_ledger_rule="hard",
+        )
+
+        response = self.client.post(
+            reverse("assets_api:asset-category-list-create"),
+            {
+                "entity": self.entity.id,
+                "subentity": self.subentity.id,
+                "code": "MACH",
+                "name": "Machinery",
+                "nature": "TANGIBLE",
+                "depreciation_method": "SLM",
+                "useful_life_months": 60,
+                "traceability_controls": {"serial_number_rule": "inherit"},
+                "accounting_controls": {"asset_ledger_rule": "inherit"},
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("asset_ledger", response.data)
+
     def test_detail_blocks_asset_from_unrelated_entity(self):
         response = self.client.get(reverse("assets_api:fixed-asset-detail", args=[self.foreign_asset.id]))
 
@@ -274,6 +419,27 @@ class AssetApiScopeTests(APITestCase):
         self.assertEqual(response.data["summary"]["custodian_count"], 1)
         self.assertEqual(response.data["rows"][0]["location_name"], "Head Office")
         self.assertEqual(response.data["rows"][0]["custodian_name"], "A. Kumar")
+
+    def test_asset_dashboard_summary_returns_bundled_sections(self):
+        response = self.client.get(
+            reverse("reports:asset-dashboard-summary"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "as_of_date": "2026-06-02",
+                "from_date": "2026-04-01",
+            },
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["report_name"], "Asset Dashboard Summary")
+        self.assertIn("register", response.data)
+        self.assertIn("location", response.data)
+        self.assertIn("depreciation", response.data)
+        self.assertIn("events", response.data)
+        self.assertEqual(response.data["register"]["summary"]["asset_count"], 1)
+        self.assertEqual(response.data["summary"]["asset_count"], 1)
 
     def test_create_rejects_foreign_entity_ledger(self):
         payload = {
@@ -416,6 +582,63 @@ class AssetApiScopeTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("status", response.data)
 
+    def test_create_blocks_missing_location_when_policy_is_hard(self):
+        self._set_asset_policy(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            require_location_rule="hard",
+        )
+        payload = {
+            "entity": self.entity.id,
+            "subentity": self.subentity.id,
+            "entityfinid": self.entityfin.id,
+            "category": self.category.id,
+            "ledger": self.asset_ledger.id,
+            "asset_name": "Tracked Asset",
+            "asset_code": "FA-TRACK-001",
+            "acquisition_date": "2026-04-01",
+            "gross_block": "1000.00",
+            "residual_value": "0.00",
+            "depreciation_method": "SLM",
+            "useful_life_months": 12,
+            "location_name": "",
+        }
+
+        response = self.client.post(reverse("assets_api:fixed-asset-list-create"), payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("location_name", response.data)
+
+    def test_update_blocks_missing_custodian_when_policy_is_hard(self):
+        self._set_asset_policy(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            require_custodian_rule="hard",
+        )
+
+        response = self.client.put(
+            reverse("assets_api:fixed-asset-detail", args=[self.asset.id]),
+            {
+                "entity": self.entity.id,
+                "subentity": self.subentity.id,
+                "entityfinid": self.entityfin.id,
+                "category": self.category.id,
+                "ledger": self.asset_ledger.id,
+                "asset_code": self.asset.asset_code,
+                "asset_name": self.asset.asset_name,
+                "acquisition_date": "2026-04-01",
+                "gross_block": "5000.00",
+                "residual_value": "0.00",
+                "depreciation_method": "SLM",
+                "useful_life_months": 60,
+                "custodian_name": "",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("custodian_name", response.data)
+
     def test_capitalize_rejects_foreign_counter_ledger(self):
         response = self.client.post(
             reverse("assets_api:fixed-asset-capitalize", args=[self.asset.id]),
@@ -542,6 +765,50 @@ class AssetApiScopeTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("asset tag is required", response.data["detail"].lower())
 
+    def test_capitalize_blocks_same_counter_ledger_when_policy_is_hard(self):
+        self._set_asset_policy(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            counter_ledger_match_rule="hard",
+        )
+
+        response = self.client.post(
+            reverse("assets_api:fixed-asset-capitalize", args=[self.asset.id]),
+            {
+                "counter_ledger_id": self.asset_ledger.id,
+                "capitalization_date": "2026-04-02",
+                "narration": "Capitalize asset",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("counter ledger matches the asset ledger", response.data["detail"].lower())
+
+    def test_capitalize_allows_incomplete_purchase_review_when_policy_is_off(self):
+        purchase_asset, _, _ = self._create_purchase_intake_asset_fixture()
+        purchase_asset.location_name = ""
+        purchase_asset.custodian_name = ""
+        purchase_asset.save(update_fields=["location_name", "custodian_name", "updated_at"])
+        self._set_asset_policy(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            purchase_review_completeness_rule="off",
+        )
+
+        response = self.client.post(
+            reverse("assets_api:fixed-asset-capitalize", args=[purchase_asset.id]),
+            {
+                "counter_ledger_id": self.asset_ledger.id,
+                "capitalization_date": "2026-04-12",
+                "narration": "Capitalize purchase intake",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+
+
     def test_disposal_blocks_backdated_date_when_policy_is_hard(self):
         capitalize_response = self.client.post(
             reverse("assets_api:fixed-asset-capitalize", args=[self.asset.id]),
@@ -589,7 +856,6 @@ class AssetApiScopeTests(APITestCase):
         self.category.impairment_expense_ledger = self.dep_exp_ledger
         self.category.impairment_reserve_ledger = self.acc_dep_ledger
         self.category.save(update_fields=["impairment_expense_ledger", "impairment_reserve_ledger", "updated_at"])
-
         self._set_asset_policy(
             entity_id=self.entity.id,
             subentity_id=self.subentity.id,
@@ -696,7 +962,6 @@ class AssetApiScopeTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("proceeds ledger is required", response.data["detail"].lower())
-
     def test_depreciation_run_calculate_blocks_locked_period_when_policy_is_hard(self):
         self._set_asset_policy(
             entity_id=self.entity.id,
@@ -753,7 +1018,112 @@ class AssetApiScopeTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("overlapping depreciation run", str(response.data).lower())
 
-    def test_depreciation_run_calculate_blocks_overlap_created_outside_api(self):
+    def test_depreciation_run_calculate_blocks_overlap_with_existing_posted_run(self):
+        capitalize_response = self.client.post(
+            reverse("assets_api:fixed-asset-capitalize", args=[self.asset.id]),
+            {
+                "counter_ledger_id": self.asset_ledger.id,
+                "capitalization_date": "2026-04-01",
+                "narration": "Capitalize asset",
+            },
+            format="json",
+        )
+        self.assertEqual(capitalize_response.status_code, status.HTTP_200_OK)
+
+        first_run = self.client.post(
+            reverse("assets_api:depreciation-run-list-create"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "run_code": "DEP-OV-001",
+                "period_from": "2026-04-01",
+                "period_to": "2026-04-30",
+                "posting_date": "2026-04-30",
+                "depreciation_method": "SLM",
+                "note": "April depreciation",
+            },
+            format="json",
+        )
+        self.assertEqual(first_run.status_code, status.HTTP_201_CREATED)
+        first_run_id = first_run.data["id"]
+        self.assertEqual(
+            self.client.post(reverse("assets_api:depreciation-run-calculate", args=[first_run_id]), {}, format="json").status_code,
+            status.HTTP_200_OK,
+        )
+        self.assertEqual(
+            self.client.post(reverse("assets_api:depreciation-run-post", args=[first_run_id]), {}, format="json").status_code,
+            status.HTTP_200_OK,
+        )
+
+        overlapping_run = self.client.post(
+            reverse("assets_api:depreciation-run-list-create"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "run_code": "DEP-OV-002",
+                "period_from": "2026-04-15",
+                "period_to": "2026-05-15",
+                "posting_date": "2026-05-15",
+                "depreciation_method": "SLM",
+                "note": "Overlap depreciation",
+            },
+            format="json",
+        )
+        self.assertEqual(overlapping_run.status_code, status.HTTP_201_CREATED)
+
+        response = self.client.post(
+            reverse("assets_api:depreciation-run-calculate", args=[overlapping_run.data["id"]]),
+            {},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("overlaps with existing run", response.data["detail"].lower())
+
+    def test_depreciation_run_calculate_for_multi_month_slm_uses_full_period_amount(self):
+        self.asset.useful_life_months = 5
+        self.asset.save(update_fields=["useful_life_months", "updated_at"])
+        capitalize_response = self.client.post(
+            reverse("assets_api:fixed-asset-capitalize", args=[self.asset.id]),
+            {
+                "counter_ledger_id": self.asset_ledger.id,
+                "capitalization_date": "2026-04-01",
+                "narration": "Capitalize asset",
+            },
+            format="json",
+        )
+        self.assertEqual(capitalize_response.status_code, status.HTTP_200_OK)
+
+        create_response = self.client.post(
+            reverse("assets_api:depreciation-run-list-create"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "run_code": "DEP-MULTI-001",
+                "period_from": "2026-04-01",
+                "period_to": "2026-06-30",
+                "posting_date": "2026-06-30",
+                "depreciation_method": "SLM",
+                "note": "Quarter depreciation",
+            },
+            format="json",
+        )
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+
+        response = self.client.post(
+            reverse("assets_api:depreciation-run-calculate", args=[create_response.data["id"]]),
+            {},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(str(response.data["total_amount"]), "3000.00")
+        self.assertEqual(response.data["total_assets"], 1)
+
+    def test_reverse_capitalization_restores_asset_to_draft_and_marks_entry_reversed(self):
         capitalize_response = self.client.post(
             reverse("assets_api:fixed-asset-capitalize", args=[self.asset.id]),
             {
@@ -798,6 +1168,500 @@ class AssetApiScopeTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("overlapping depreciation run", response.data["detail"].lower())
+
+        response = self.client.post(
+            reverse("assets_api:fixed-asset-reverse-capitalization", args=[self.asset.id]),
+            {"reason": "Wrong capitalization"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.asset.refresh_from_db()
+        entry = Entry.objects.get(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            txn_type="FAC",
+            txn_id=self.asset.id,
+        )
+        self.assertEqual(self.asset.status, FixedAsset.AssetStatus.DRAFT)
+        self.assertIsNone(self.asset.capitalization_date)
+        self.assertIsNone(self.asset.capitalization_posting_batch_id)
+        self.assertEqual(entry.status, EntryStatus.REVERSED)
+        self.assertIn("Wrong capitalization", self.asset.notes or "")
+
+    def test_capitalization_precheck_reports_purchase_review_blocker(self):
+        self.asset.purchase_document_no = "PI-1001"
+        self.asset.location_name = ""
+        self.asset.custodian_name = ""
+        self.asset.save(update_fields=["purchase_document_no", "location_name", "custodian_name", "updated_at"])
+
+        response = self.client.post(
+            reverse("assets_api:fixed-asset-capitalize-precheck", args=[self.asset.id]),
+            {
+                "counter_ledger_id": self.asset_ledger.id,
+                "capitalization_date": "2026-04-02",
+                "narration": "Capitalize asset",
+                "location_name": "",
+                "custodian_name": "",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["allowed"])
+        self.assertTrue(any("purchase intake asset review is incomplete" in item.lower() for item in response.data["blocking_reasons"]))
+
+    def test_capitalization_precheck_warns_when_counter_ledger_matches_asset_ledger(self):
+        response = self.client.post(
+            reverse("assets_api:fixed-asset-capitalize-precheck", args=[self.asset.id]),
+            {
+                "counter_ledger_id": self.asset_ledger.id,
+                "capitalization_date": "2026-04-02",
+                "narration": "Capitalize asset",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["allowed"])
+        self.assertTrue(any("counter ledger matches the asset ledger" in item.lower() for item in response.data["warnings"]))
+
+    def test_capitalization_precheck_includes_effective_category_accounting_policy_profile(self):
+        self._set_asset_policy(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            require_asset_ledger_rule="warn",
+            require_disposal_ledgers_rule="hard",
+        )
+        self.category.accounting_controls = {
+            "asset_ledger_rule": "hard",
+            "depreciation_ledgers_rule": "inherit",
+            "impairment_ledgers_rule": "inherit",
+            "disposal_ledgers_rule": "inherit",
+            "cwip_ledger_rule": "off",
+        }
+        self.category.save(update_fields=["accounting_controls", "updated_at"])
+
+        response = self.client.post(
+            reverse("assets_api:fixed-asset-capitalize-precheck", args=[self.asset.id]),
+            {
+                "counter_ledger_id": self.acc_dep_ledger.id,
+                "capitalization_date": "2026-04-02",
+                "narration": "Capitalize asset",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("policy_profile", response.data)
+        items = {item["code"]: item for item in response.data["policy_profile"]["items"]}
+        self.assertEqual(items["asset_ledger_rule"]["effective_rule"], "hard")
+        self.assertEqual(items["asset_ledger_rule"]["source"], "category")
+        self.assertEqual(items["disposal_ledgers_rule"]["effective_rule"], "hard")
+        self.assertEqual(items["disposal_ledgers_rule"]["source"], "scope")
+
+    def test_reverse_capitalization_blocks_when_depreciation_exists(self):
+        capitalize_response = self.client.post(
+            reverse("assets_api:fixed-asset-capitalize", args=[self.asset.id]),
+            {
+                "counter_ledger_id": self.asset_ledger.id,
+                "capitalization_date": "2026-04-02",
+                "narration": "Capitalize asset",
+            },
+            format="json",
+        )
+        self.assertEqual(capitalize_response.status_code, status.HTTP_200_OK)
+
+        create_response = self.client.post(
+            reverse("assets_api:depreciation-run-list-create"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "run_code": "DEP-REV-001",
+                "period_from": "2026-04-01",
+                "period_to": "2026-04-30",
+                "posting_date": "2026-04-30",
+                "depreciation_method": "SLM",
+                "note": "April depreciation",
+            },
+            format="json",
+        )
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        calculate_response = self.client.post(
+            reverse("assets_api:depreciation-run-calculate", args=[create_response.data["id"]]),
+            {},
+            format="json",
+        )
+        self.assertEqual(calculate_response.status_code, status.HTTP_200_OK)
+
+        response = self.client.post(
+            reverse("assets_api:fixed-asset-reverse-capitalization", args=[self.asset.id]),
+            {"reason": "Need correction"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("depreciation runs exist", response.data["detail"].lower())
+
+    def test_reverse_capitalization_precheck_reports_depreciation_blocker(self):
+        capitalize_response = self.client.post(
+            reverse("assets_api:fixed-asset-capitalize", args=[self.asset.id]),
+            {
+                "counter_ledger_id": self.asset_ledger.id,
+                "capitalization_date": "2026-04-02",
+                "narration": "Capitalize asset",
+            },
+            format="json",
+        )
+        self.assertEqual(capitalize_response.status_code, status.HTTP_200_OK)
+
+        create_response = self.client.post(
+            reverse("assets_api:depreciation-run-list-create"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "run_code": "DEP-PRE-001",
+                "period_from": "2026-04-01",
+                "period_to": "2026-04-30",
+                "posting_date": "2026-04-30",
+                "depreciation_method": "SLM",
+                "note": "April depreciation",
+            },
+            format="json",
+        )
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        calculate_response = self.client.post(
+            reverse("assets_api:depreciation-run-calculate", args=[create_response.data["id"]]),
+            {},
+            format="json",
+        )
+        self.assertEqual(calculate_response.status_code, status.HTTP_200_OK)
+
+        response = self.client.get(reverse("assets_api:fixed-asset-reverse-capitalization", args=[self.asset.id]))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["allowed"])
+        self.assertTrue(any("depreciation runs exist" in item.lower() for item in response.data["blocking_reasons"]))
+
+    def test_reverse_capitalization_precheck_allows_clean_reversal(self):
+        capitalize_response = self.client.post(
+            reverse("assets_api:fixed-asset-capitalize", args=[self.asset.id]),
+            {
+                "counter_ledger_id": self.asset_ledger.id,
+                "capitalization_date": "2026-04-02",
+                "narration": "Capitalize asset",
+            },
+            format="json",
+        )
+        self.assertEqual(capitalize_response.status_code, status.HTTP_200_OK)
+
+        response = self.client.get(reverse("assets_api:fixed-asset-reverse-capitalization", args=[self.asset.id]))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["allowed"])
+        self.assertEqual(response.data["action"], "capitalization")
+        self.assertEqual(response.data["snapshot"]["posting_batch_id"], capitalize_response.data["capitalization_posting_batch"])
+
+    def test_reverse_impairment_clears_impairment_and_marks_entry_reversed(self):
+        capitalize_response = self.client.post(
+            reverse("assets_api:fixed-asset-capitalize", args=[self.asset.id]),
+            {
+                "counter_ledger_id": self.asset_ledger.id,
+                "capitalization_date": "2026-04-02",
+                "narration": "Capitalize asset",
+            },
+            format="json",
+        )
+        self.assertEqual(capitalize_response.status_code, status.HTTP_200_OK)
+        impair_response = self.client.post(
+            reverse("assets_api:fixed-asset-impair", args=[self.asset.id]),
+            {
+                "impairment_amount": "250.00",
+                "posting_date": "2026-05-01",
+                "narration": "Impair asset",
+            },
+            format="json",
+        )
+        self.assertEqual(impair_response.status_code, status.HTTP_200_OK)
+
+        response = self.client.post(
+            reverse("assets_api:fixed-asset-reverse-impairment", args=[self.asset.id]),
+            {"reason": "Impairment entered in error"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.asset.refresh_from_db()
+        entry = Entry.objects.get(posting_batch_id=impair_response.data["impairment_posting_batch"])
+        self.assertEqual(str(self.asset.impairment_amount), "0.00")
+        self.assertIsNone(self.asset.impairment_posting_batch_id)
+        self.assertEqual(entry.status, EntryStatus.REVERSED)
+
+    def test_impairment_precheck_blocks_amount_above_nbv(self):
+        capitalize_response = self.client.post(
+            reverse("assets_api:fixed-asset-capitalize", args=[self.asset.id]),
+            {
+                "counter_ledger_id": self.asset_ledger.id,
+                "capitalization_date": "2026-04-02",
+                "narration": "Capitalize asset",
+            },
+            format="json",
+        )
+        self.assertEqual(capitalize_response.status_code, status.HTTP_200_OK)
+
+        response = self.client.post(
+            reverse("assets_api:fixed-asset-impair-precheck", args=[self.asset.id]),
+            {
+                "impairment_amount": "999999.00",
+                "posting_date": "2026-05-01",
+                "narration": "Impair asset",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["allowed"])
+        self.assertTrue(any("cannot exceed current net book value" in item.lower() for item in response.data["blocking_reasons"]))
+
+    def test_impairment_precheck_blocks_full_impairment_when_policy_is_hard(self):
+        capitalize_response = self.client.post(
+            reverse("assets_api:fixed-asset-capitalize", args=[self.asset.id]),
+            {
+                "counter_ledger_id": self.acc_dep_ledger.id,
+                "capitalization_date": "2026-04-02",
+                "narration": "Capitalize asset",
+            },
+            format="json",
+        )
+        self.assertEqual(capitalize_response.status_code, status.HTTP_200_OK)
+        self._set_asset_policy(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            full_impairment_rule="hard",
+        )
+
+        response = self.client.post(
+            reverse("assets_api:fixed-asset-impair-precheck", args=[self.asset.id]),
+            {
+                "impairment_amount": "5000.00",
+                "posting_date": "2026-05-01",
+                "narration": "Impair asset",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["allowed"])
+        self.assertTrue(any("fully impair the asset" in item.lower() for item in response.data["blocking_reasons"]))
+
+    def test_reverse_impairment_precheck_reports_disposal_blocker(self):
+        capitalize_response = self.client.post(
+            reverse("assets_api:fixed-asset-capitalize", args=[self.asset.id]),
+            {
+                "counter_ledger_id": self.asset_ledger.id,
+                "capitalization_date": "2026-04-02",
+                "narration": "Capitalize asset",
+            },
+            format="json",
+        )
+        self.assertEqual(capitalize_response.status_code, status.HTTP_200_OK)
+        impair_response = self.client.post(
+            reverse("assets_api:fixed-asset-impair", args=[self.asset.id]),
+            {
+                "impairment_amount": "250.00",
+                "posting_date": "2026-05-01",
+                "narration": "Impair asset",
+            },
+            format="json",
+        )
+        self.assertEqual(impair_response.status_code, status.HTTP_200_OK)
+        dispose_response = self.client.post(
+            reverse("assets_api:fixed-asset-dispose", args=[self.asset.id]),
+            {
+                "proceeds_ledger_id": self.asset_ledger.id,
+                "disposal_date": "2026-05-10",
+                "sale_proceeds": "100.00",
+                "narration": "Dispose asset",
+            },
+            format="json",
+        )
+        self.assertEqual(dispose_response.status_code, status.HTTP_200_OK)
+
+        response = self.client.get(reverse("assets_api:fixed-asset-reverse-impairment", args=[self.asset.id]))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["allowed"])
+        self.assertTrue(any("reverse disposal first" in item.lower() for item in response.data["blocking_reasons"]))
+
+    def test_reverse_disposal_restores_active_status_and_marks_entry_reversed(self):
+        capitalize_response = self.client.post(
+            reverse("assets_api:fixed-asset-capitalize", args=[self.asset.id]),
+            {
+                "counter_ledger_id": self.asset_ledger.id,
+                "capitalization_date": "2026-04-02",
+                "narration": "Capitalize asset",
+            },
+            format="json",
+        )
+        self.assertEqual(capitalize_response.status_code, status.HTTP_200_OK)
+        dispose_response = self.client.post(
+            reverse("assets_api:fixed-asset-dispose", args=[self.asset.id]),
+            {
+                "proceeds_ledger_id": self.asset_ledger.id,
+                "disposal_date": "2026-05-10",
+                "sale_proceeds": "100.00",
+                "narration": "Dispose asset",
+            },
+            format="json",
+        )
+        self.assertEqual(dispose_response.status_code, status.HTTP_200_OK)
+
+        response = self.client.post(
+            reverse("assets_api:fixed-asset-reverse-disposal", args=[self.asset.id]),
+            {"reason": "Disposed wrong asset"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.asset.refresh_from_db()
+        entry = Entry.objects.get(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            txn_type="FADS",
+            txn_id=self.asset.id,
+        )
+        self.assertEqual(self.asset.status, FixedAsset.AssetStatus.ACTIVE)
+        self.assertIsNone(self.asset.disposal_date)
+        self.assertIsNone(self.asset.disposal_posting_batch_id)
+        self.assertEqual(str(self.asset.disposal_proceeds), "0.00")
+        self.assertEqual(entry.status, EntryStatus.REVERSED)
+
+    def test_disposal_precheck_reports_backdated_disposal_blocker(self):
+        capitalize_response = self.client.post(
+            reverse("assets_api:fixed-asset-capitalize", args=[self.asset.id]),
+            {
+                "counter_ledger_id": self.asset_ledger.id,
+                "capitalization_date": "2026-04-10",
+                "narration": "Capitalize asset",
+            },
+            format="json",
+        )
+        self.assertEqual(capitalize_response.status_code, status.HTTP_200_OK)
+
+        response = self.client.post(
+            reverse("assets_api:fixed-asset-dispose-precheck", args=[self.asset.id]),
+            {
+                "proceeds_ledger_id": self.asset_ledger.id,
+                "disposal_date": "2026-04-05",
+                "sale_proceeds": "100.00",
+                "narration": "Dispose asset",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["allowed"])
+        self.assertTrue(any("cannot be earlier than the asset capitalization date" in item.lower() for item in response.data["blocking_reasons"]))
+
+    def test_reverse_disposal_precheck_allows_disposed_asset(self):
+        capitalize_response = self.client.post(
+            reverse("assets_api:fixed-asset-capitalize", args=[self.asset.id]),
+            {
+                "counter_ledger_id": self.asset_ledger.id,
+                "capitalization_date": "2026-04-02",
+                "narration": "Capitalize asset",
+            },
+            format="json",
+        )
+        self.assertEqual(capitalize_response.status_code, status.HTTP_200_OK)
+        dispose_response = self.client.post(
+            reverse("assets_api:fixed-asset-dispose", args=[self.asset.id]),
+            {
+                "proceeds_ledger_id": self.asset_ledger.id,
+                "disposal_date": "2026-05-10",
+                "sale_proceeds": "100.00",
+                "narration": "Dispose asset",
+            },
+            format="json",
+        )
+        self.assertEqual(dispose_response.status_code, status.HTTP_200_OK)
+
+        response = self.client.get(reverse("assets_api:fixed-asset-reverse-disposal", args=[self.asset.id]))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["allowed"])
+        self.assertEqual(response.data["action"], "disposal")
+        self.assertEqual(response.data["snapshot"]["posting_batch_id"], dispose_response.data["disposal_posting_batch"])
+
+    def test_asset_history_shows_reversed_capitalization_status(self):
+        capitalize_response = self.client.post(
+            reverse("assets_api:fixed-asset-capitalize", args=[self.asset.id]),
+            {
+                "counter_ledger_id": self.asset_ledger.id,
+                "capitalization_date": "2026-04-02",
+                "narration": "Capitalize asset",
+            },
+            format="json",
+        )
+        self.assertEqual(capitalize_response.status_code, status.HTTP_200_OK)
+        reverse_response = self.client.post(
+            reverse("assets_api:fixed-asset-reverse-capitalization", args=[self.asset.id]),
+            {"reason": "Wrong capitalization"},
+            format="json",
+        )
+        self.assertEqual(reverse_response.status_code, status.HTTP_200_OK)
+
+        response = self.client.get(
+            reverse("reports:fixed-asset-history"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "asset": self.asset.id,
+            },
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        capitalization_events = [item for item in response.data["history"] if item["event_type"] == "capitalization"]
+        self.assertTrue(capitalization_events)
+        self.assertTrue(any(item.get("event_status") == "REVERSED" for item in capitalization_events))
+
+    def test_asset_event_report_shows_reversed_capitalization_status(self):
+        capitalize_response = self.client.post(
+            reverse("assets_api:fixed-asset-capitalize", args=[self.asset.id]),
+            {
+                "counter_ledger_id": self.asset_ledger.id,
+                "capitalization_date": "2026-04-02",
+                "narration": "Capitalize asset",
+            },
+            format="json",
+        )
+        self.assertEqual(capitalize_response.status_code, status.HTTP_200_OK)
+        reverse_response = self.client.post(
+            reverse("assets_api:fixed-asset-reverse-capitalization", args=[self.asset.id]),
+            {"reason": "Wrong capitalization"},
+            format="json",
+        )
+        self.assertEqual(reverse_response.status_code, status.HTTP_200_OK)
+
+        response = self.client.get(
+            reverse("reports:fixed-asset-events"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "asset": self.asset.id,
+                "event_type": "capitalization",
+            },
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["rows"])
+        self.assertEqual(response.data["rows"][0]["event_status"], "REVERSED")
 
     def test_cancel_posted_depreciation_run_preserves_audit_lines_and_marks_entry_reversed(self):
         capitalize_response = self.client.post(
@@ -880,6 +1744,31 @@ class AssetApiScopeTests(APITestCase):
         self.assertFalse(run.posting_batch.is_active)
         self.assertEqual(str(self.asset.accumulated_depreciation), "0.00")
         self.assertEqual(str(self.asset.net_book_value), "5000.00")
+
+    def test_update_posted_asset_rejects_immutable_field_changes(self):
+        capitalize_response = self.client.post(
+            reverse("assets_api:fixed-asset-capitalize", args=[self.asset.id]),
+            {
+                "counter_ledger_id": self.asset_ledger.id,
+                "capitalization_date": "2026-04-02",
+                "narration": "Capitalize asset",
+            },
+            format="json",
+        )
+        self.assertEqual(capitalize_response.status_code, status.HTTP_200_OK)
+        self.asset.refresh_from_db()
+
+        response = self.client.patch(
+            reverse("assets_api:fixed-asset-detail", args=[self.asset.id]),
+            {
+                "gross_block": "6000.00",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("posted asset fields cannot be edited directly", response.data["detail"].lower())
+        self.assertIn("gross_block", response.data["detail"])
 
     def test_cancelled_depreciation_run_is_excluded_from_asset_event_report(self):
         capitalize_response = self.client.post(

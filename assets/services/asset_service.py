@@ -7,7 +7,7 @@ from django.db import transaction
 from django.db.models import Max, Q
 from django.utils import timezone
 
-from assets.models import AssetCategory, AssetSettings, DepreciationRun, FixedAsset, default_asset_policy_controls
+from assets.models import AssetCategory, AssetSettings, DepreciationRun, DepreciationRunLine, FixedAsset, default_asset_policy_controls
 from assets.services.depreciation import attach_preview_lines, preview_run, q2 as dep_q2
 from assets.services.settings import AssetSettingsService
 from entity.models import SubEntity
@@ -109,10 +109,22 @@ def _ensure_backdated_disposal(*, asset: FixedAsset, disposal_date: date, rule: 
         _policy_block(rule, "Disposal date cannot be earlier than the asset capitalization date.")
 
 
-def _ensure_purchase_intake_ready_for_capitalization(*, asset: FixedAsset) -> None:
-    if not (getattr(asset, "purchase_document_no", None) or asset.source_purchase_lines.exists()):
-        return
+def _append_note(existing: str | None, line: str) -> str:
+    existing_text = (existing or "").strip()
+    return f"{existing_text}\n{line}".strip() if existing_text else line
 
+
+def _purchase_intake_review_missing(
+    *,
+    asset: FixedAsset,
+    location_name: str | None = None,
+    custodian_name: str | None = None,
+) -> list[str]:
+    if not (getattr(asset, "purchase_document_no", None) or asset.source_purchase_lines.exists()):
+        return []
+
+    effective_location = asset.location_name if location_name is None else location_name
+    effective_custodian = asset.custodian_name if custodian_name is None else custodian_name
     missing: list[str] = []
     if not asset.category_id:
         missing.append("asset category")
@@ -126,11 +138,119 @@ def _ensure_purchase_intake_ready_for_capitalization(*, asset: FixedAsset) -> No
         missing.append("useful life")
     if not (asset.depreciation_method or "").strip():
         missing.append("depreciation method")
-    if not (asset.location_name or "").strip():
+    if not (effective_location or "").strip():
         missing.append("location")
-    if not (asset.custodian_name or "").strip():
+    if not (effective_custodian or "").strip():
         missing.append("custodian")
+    return missing
 
+
+def _entry_for_asset_txn(*, asset: FixedAsset, txn_type: str):
+    return Entry.objects.filter(
+        entity_id=asset.entity_id,
+        entityfin_id=_resolve_entityfin_id(asset),
+        subentity_id=asset.subentity_id,
+        txn_type=txn_type,
+        txn_id=asset.id,
+    ).select_related("posting_batch").first()
+
+
+def _entry_for_posting_batch(posting_batch: PostingBatch | None):
+    if posting_batch is None:
+        return None
+    return Entry.objects.filter(posting_batch=posting_batch).select_related("posting_batch").first()
+
+
+def _reverse_entry_and_batch(*, entry: Entry | None, posting_batch: PostingBatch | None, reason: str) -> None:
+    if posting_batch:
+        posting_batch.is_active = False
+        posting_batch.note = _append_note(posting_batch.note, f"Reversed: {reason}")
+        posting_batch.save(update_fields=["is_active", "note"])
+    if entry:
+        entry.status = EntryStatus.REVERSED
+        entry.posted_at = None
+        entry.posted_by = None
+        entry.narration = _append_note(entry.narration, f"Reversed: {reason}")
+        entry.save(update_fields=["status", "posted_at", "posted_by", "narration"])
+
+
+def _locked_period_message(*, entityfinid, posting_date: date | None) -> str | None:
+    if not entityfinid or not posting_date:
+        return None
+    if entityfinid.books_locked_until and posting_date <= entityfinid.books_locked_until:
+        return "The original posting date falls inside a locked books period and cannot be reversed in this scope."
+    return None
+
+
+def _append_policy_issue(*, rule: str, message: str, blocking_reasons: list[str], warnings: list[str]) -> None:
+    if rule in {"hard", "block"}:
+        blocking_reasons.append(message)
+    elif rule == "warn":
+        warnings.append(message)
+
+
+def _precheck_payload(
+    *,
+    action: str,
+    asset: FixedAsset,
+    posting_date: date | None,
+    posting_batch_id: int | None,
+    allowed: bool,
+    blocking_reasons: list[str],
+    warnings: list[str],
+    impact: list[str],
+    policy_profile: dict | None = None,
+) -> dict:
+    return {
+        "action": action,
+        "allowed": allowed,
+        "blocking_reasons": blocking_reasons,
+        "warnings": warnings,
+        "impact": impact,
+        "policy_profile": policy_profile or {},
+        "snapshot": {
+            "asset_code": asset.asset_code,
+            "status": asset.status,
+            "posting_batch_id": posting_batch_id,
+            "posting_date": posting_date.isoformat() if posting_date else None,
+            "gross_block": str(q2(asset.gross_block)),
+            "accumulated_depreciation": str(q2(asset.accumulated_depreciation)),
+            "impairment_amount": str(q2(asset.impairment_amount)),
+            "net_book_value": str(q2(asset.net_book_value)),
+        },
+    }
+
+
+def _category_accounting_policy_profile(*, asset: FixedAsset, settings: AssetSettings | None) -> dict:
+    category_controls = getattr(asset.category, "accounting_controls", {}) or {}
+    resolved_controls = AssetSettingsService.resolve_category_accounting_controls(asset.category, settings)
+    labels = {
+        "asset_ledger_rule": "Asset Ledger",
+        "depreciation_ledgers_rule": "Depreciation Ledgers",
+        "impairment_ledgers_rule": "Impairment Ledgers",
+        "disposal_ledgers_rule": "Disposal Ledgers",
+        "cwip_ledger_rule": "CWIP Ledger",
+    }
+    items = []
+    for key, label in labels.items():
+        configured_value = category_controls.get(key, "inherit")
+        items.append(
+            {
+                "code": key,
+                "label": label,
+                "effective_rule": resolved_controls.get(key, "off"),
+                "source": "category" if configured_value not in (None, "", "inherit") else "scope",
+                "configured_value": configured_value or "inherit",
+            }
+        )
+    return {
+        "category_name": getattr(asset.category, "name", None),
+        "items": items,
+    }
+
+
+def _ensure_purchase_intake_ready_for_capitalization(*, asset: FixedAsset) -> None:
+    missing = _purchase_intake_review_missing(asset=asset)
     if missing:
         raise ValueError(
             "Purchase intake asset review is incomplete. Complete these fields before capitalization: "
@@ -238,6 +358,35 @@ def _overlapping_active_runs(*, run: DepreciationRun):
 def _ensure_no_overlapping_depreciation_run(*, run: DepreciationRun) -> None:
     if _overlapping_active_runs(run=run).exists():
         raise ValueError("An overlapping depreciation run already exists in this scope. Cancel or move the existing run before continuing.")
+
+
+def _immutable_posted_asset_field_changes(*, instance: FixedAsset, data: dict) -> list[str]:
+    if not instance.capitalization_posting_batch_id:
+        return []
+
+    changed_fields: list[str] = []
+    field_accessors = {
+        "entity": lambda obj: getattr(obj, "entity_id", None),
+        "entityfinid": lambda obj: getattr(obj, "entityfinid_id", None),
+        "subentity": lambda obj: getattr(obj, "subentity_id", None),
+        "category": lambda obj: getattr(obj, "category_id", None),
+        "gross_block": lambda obj: q2(getattr(obj, "gross_block", ZERO)),
+    }
+    immutable_fields = tuple(field_accessors.keys())
+
+    for field_name in immutable_fields:
+        if field_name not in data:
+            continue
+        incoming = data[field_name]
+        current = field_accessors[field_name](instance)
+        if field_name == "gross_block":
+            incoming_value = q2(incoming)
+        else:
+            incoming_value = getattr(incoming, "id", incoming)
+        if incoming_value != current:
+            changed_fields.append(field_name)
+
+    return changed_fields
 
 
 class AssetService:
@@ -349,10 +498,14 @@ class AssetService:
     @staticmethod
     def update_asset(*, instance: FixedAsset, data: dict, user_id: int | None = None) -> FixedAsset:
         _ensure_manual_asset_payload_allowed(data=data, instance=instance)
-        immutable_if_posted = {"entity", "entityfinid", "subentity", "category", "gross_block"}
+        immutable_changes = _immutable_posted_asset_field_changes(instance=instance, data=data)
+        if immutable_changes:
+            raise ValueError(
+                "Posted asset fields cannot be edited directly after capitalization: "
+                + ", ".join(sorted(immutable_changes))
+                + ". Reverse capitalization first if accounting data must change."
+            )
         for key, value in data.items():
-            if instance.capitalization_posting_batch_id and key in immutable_if_posted:
-                continue
             setattr(instance, key, value)
         _validate_asset_scope(
             entity_id=instance.entity_id,
@@ -375,79 +528,106 @@ class AssetService:
         asset: FixedAsset,
         counter_ledger_id: int,
         capitalization_date: date,
-        narration: str | None = None,
         location_name: str | None = None,
         department_name: str | None = None,
         custodian_name: str | None = None,
         notes: str | None = None,
+        narration: str | None = None,
     ) -> dict:
+        del notes, narration
         blocking_reasons: list[str] = []
         warnings: list[str] = []
         impact = [
-            "Asset status will move to Active after capitalization posting succeeds.",
-            "Capitalization will debit the asset ledger and credit the selected counter ledger.",
-            "Put-to-use and depreciation start dates will be set from the capitalization date when blank.",
+            "Capitalization will create a posting batch and move the asset to Active status.",
+            "Capitalization date, put-to-use date, and depreciation start date will be set on the asset record.",
+            "Net book value will be recalculated and the asset will become eligible for depreciation runs.",
         ]
 
-        preview_asset = asset
-        if location_name is not None:
-            preview_asset.location_name = location_name
-        if department_name is not None:
-            preview_asset.department_name = department_name
-        if custodian_name is not None:
-            preview_asset.custodian_name = custodian_name
-        if notes is not None:
-            preview_asset.notes = notes
+        if asset.status in {FixedAsset.AssetStatus.ACTIVE, FixedAsset.AssetStatus.DISPOSED, FixedAsset.AssetStatus.SCRAPPED}:
+            blocking_reasons.append("Only draft or capital-WIP assets can be capitalized.")
+        if asset.capitalization_posting_batch_id:
+            blocking_reasons.append("This asset is already capitalized.")
 
         settings, controls = _asset_settings_and_controls(entity_id=asset.entity_id, subentity_id=asset.subentity_id)
-        asset_ledger_id = preview_asset.ledger_id or preview_asset.category.asset_ledger_id
-        amount = q2(preview_asset.gross_block)
-
-        if preview_asset.status in {FixedAsset.AssetStatus.ACTIVE, FixedAsset.AssetStatus.DISPOSED, FixedAsset.AssetStatus.SCRAPPED}:
-            blocking_reasons.append("Only draft or capital-WIP assets can be capitalized.")
-        if preview_asset.capitalization_posting_batch_id:
-            blocking_reasons.append("This asset is already capitalized.")
+        asset_ledger_id = asset.ledger_id or asset.category.asset_ledger_id
         if not asset_ledger_id:
             blocking_reasons.append("Asset ledger is required on asset or asset category before capitalization.")
-        if not counter_ledger_id:
-            blocking_reasons.append("Counter ledger is required for capitalization.")
-        if amount <= ZERO:
-            blocking_reasons.append("Asset gross block must be greater than zero for capitalization.")
-
-        for check in (
-            lambda: _ensure_purchase_intake_ready_for_capitalization(asset=preview_asset),
-            lambda: _ensure_capitalization_threshold(asset=preview_asset, settings=settings, controls=controls),
-            lambda: _ensure_tag_for_posting(asset=preview_asset, settings=settings, controls=controls),
-            lambda: _ensure_backdated_capitalization(
-                asset=preview_asset,
-                capitalization_date=capitalization_date,
-                rule=controls.get("backdated_capitalization_rule", "warn"),
-            ),
-            lambda: _ensure_locked_period(
-                entityfinid=preview_asset.entityfinid,
-                posting_date=capitalization_date,
-                rule=controls.get("depreciation_lock_rule", "hard"),
-            ),
-        ):
+        elif not blocking_reasons:
             try:
-                check()
+                _jl_for_ledger(entity_id=asset.entity_id, ledger_id=asset_ledger_id, drcr=True, amount=q2(asset.gross_block), description=asset.asset_name)
             except ValueError as exc:
                 blocking_reasons.append(str(exc))
 
-        if controls.get("require_department_rule") == "warn" and not (preview_asset.department_name or "").strip():
-            warnings.append("Department is recommended before capitalization.")
-        if controls.get("require_location_rule") == "warn" and not (preview_asset.location_name or "").strip():
-            warnings.append("Location is recommended before capitalization.")
+        if not counter_ledger_id:
+            blocking_reasons.append("Counter ledger is required for capitalization.")
+        else:
+            try:
+                _jl_for_ledger(entity_id=asset.entity_id, ledger_id=counter_ledger_id, drcr=False, amount=q2(asset.gross_block), description=asset.asset_name)
+            except ValueError as exc:
+                blocking_reasons.append(str(exc))
 
-        return {
-            "action": "capitalize",
-            "allowed": len(blocking_reasons) == 0,
-            "blocking_reasons": blocking_reasons,
-            "warnings": warnings,
-            "impact": impact,
-            "policy_profile": _build_policy_profile(asset=preview_asset, settings=settings),
-            "snapshot": _asset_snapshot(preview_asset, posting_date=capitalization_date),
-        }
+        amount = q2(asset.gross_block)
+        if amount <= ZERO:
+            blocking_reasons.append("Asset gross block must be greater than zero for capitalization.")
+
+        missing = _purchase_intake_review_missing(
+            asset=asset,
+            location_name=location_name,
+            custodian_name=custodian_name,
+        )
+        if missing:
+            _append_policy_issue(
+                rule=controls.get("purchase_review_completeness_rule", "hard"),
+                message=(
+                    "Purchase intake asset review is incomplete. Complete these fields before capitalization: "
+                    + ", ".join(missing)
+                    + "."
+                ),
+                blocking_reasons=blocking_reasons,
+                warnings=warnings,
+            )
+
+        threshold = q2(asset.category.capitalization_threshold or settings.capitalization_threshold)
+        if threshold > ZERO and amount < threshold:
+            _append_policy_issue(
+                rule=controls.get("capitalization_threshold_rule", "warn"),
+                message=f"Asset gross block {amount} is below the capitalization threshold {threshold}.",
+                blocking_reasons=blocking_reasons,
+                warnings=warnings,
+            )
+        if not asset.asset_tag and (settings.require_asset_tag or controls.get("allow_posting_without_tag") == "off"):
+            blocking_reasons.append("Asset tag is required before posting this asset.")
+        if asset.acquisition_date and capitalization_date < asset.acquisition_date:
+            _append_policy_issue(
+                rule=controls.get("backdated_capitalization_rule", "warn"),
+                message="Capitalization date cannot be earlier than the acquisition date.",
+                blocking_reasons=blocking_reasons,
+                warnings=warnings,
+            )
+        locked_message = _locked_period_message(entityfinid=asset.entityfinid, posting_date=capitalization_date)
+        if locked_message:
+            blocking_reasons.append(locked_message)
+        if counter_ledger_id and asset_ledger_id and counter_ledger_id == asset_ledger_id:
+            _append_policy_issue(
+                rule=controls.get("counter_ledger_match_rule", "warn"),
+                message="Counter ledger matches the asset ledger. Review this carefully before posting.",
+                blocking_reasons=blocking_reasons,
+                warnings=warnings,
+            )
+        if department_name and not str(department_name).strip():
+            warnings.append("Department value is blank and will not improve downstream reporting.")
+
+        return _precheck_payload(
+            action="capitalize",
+            asset=asset,
+            posting_date=capitalization_date,
+            posting_batch_id=None,
+            allowed=not blocking_reasons,
+            blocking_reasons=blocking_reasons,
+            warnings=warnings,
+            impact=impact,
+            policy_profile=_category_accounting_policy_profile(asset=asset, settings=settings),
+        )
 
     @staticmethod
     @transaction.atomic
@@ -484,11 +664,23 @@ class AssetService:
         amount = q2(asset.gross_block)
         if amount <= ZERO:
             raise ValueError("Asset gross block must be greater than zero for capitalization.")
-        _ensure_purchase_intake_ready_for_capitalization(asset=asset)
+        missing_purchase_review_fields = _purchase_intake_review_missing(asset=asset)
+        if missing_purchase_review_fields:
+            _policy_block(
+                controls.get("purchase_review_completeness_rule", "hard"),
+                "Purchase intake asset review is incomplete. Complete these fields before capitalization: "
+                + ", ".join(missing_purchase_review_fields)
+                + ".",
+            )
         _ensure_capitalization_threshold(asset=asset, settings=settings, controls=controls)
         _ensure_tag_for_posting(asset=asset, settings=settings, controls=controls)
         _ensure_backdated_capitalization(asset=asset, capitalization_date=capitalization_date, rule=controls.get("backdated_capitalization_rule", "warn"))
         _ensure_locked_period(entityfinid=asset.entityfinid, posting_date=capitalization_date, rule=controls.get("depreciation_lock_rule", "hard"))
+        if counter_ledger_id == asset_ledger_id:
+            _policy_block(
+                controls.get("counter_ledger_match_rule", "warn"),
+                "Counter ledger matches the asset ledger. Review this carefully before posting.",
+            )
 
         posting = PostingService(
             entity_id=asset.entity_id,
@@ -546,6 +738,27 @@ class AssetService:
             raise ValueError("Cancelled depreciation run cannot be recalculated.")
         _ensure_no_overlapping_depreciation_run(run=run)
         assets_qs = AssetService.eligible_assets_for_run(run, category_id=category_id)
+        conflict = None
+        asset_ids = list(assets_qs.values_list("id", flat=True))
+        if asset_ids:
+            conflict = (
+                DepreciationRunLine.objects
+                .select_related("run", "asset")
+                .filter(
+                    asset_id__in=asset_ids,
+                    run__status__in=[DepreciationRun.RunStatus.CALCULATED, DepreciationRun.RunStatus.POSTED],
+                    period_from__lte=run.period_to,
+                    period_to__gte=run.period_from,
+                )
+                .exclude(run_id=run.id)
+                .order_by("asset__asset_code", "run__period_from", "run__id")
+                .first()
+            )
+        if conflict:
+            raise ValueError(
+                f"Depreciation period overlaps with existing run '{conflict.run.run_code}' "
+                f"for asset '{conflict.asset.asset_code}' ({conflict.period_from} to {conflict.period_to})."
+            )
         preview_lines = preview_run(assets_qs=assets_qs, period_from=run.period_from, period_to=run.period_to)
         attach_preview_lines(run, preview_lines)
         run.total_assets = len(preview_lines)
@@ -691,42 +904,54 @@ class AssetService:
         posting_date: date,
         narration: str | None = None,
     ) -> dict:
+        del narration
         blocking_reasons: list[str] = []
         warnings: list[str] = []
         impact = [
-            "Impairment will reduce net book value and increase impairment reserve.",
-            "The posting will debit impairment expense and credit impairment reserve.",
+            "Impairment will create a posting batch using the category impairment ledgers.",
+            "Impairment amount will increase on the asset and net book value will reduce immediately.",
+            "The impairment posting will remain available for governed reversal later if correction is required.",
         ]
-        amount = q2(impairment_amount)
-        category = asset.category
 
         if asset.status != FixedAsset.AssetStatus.ACTIVE:
             blocking_reasons.append("Only active assets can be impaired.")
+        amount = q2(impairment_amount)
         if amount <= ZERO:
             blocking_reasons.append("Impairment amount must be greater than zero.")
+        category = asset.category
         if not category.impairment_expense_ledger_id or not category.impairment_reserve_ledger_id:
             blocking_reasons.append("Asset category must define impairment expense and impairment reserve ledgers.")
+        else:
+            try:
+                _jl_for_ledger(entity_id=asset.entity_id, ledger_id=category.impairment_expense_ledger_id, drcr=True, amount=amount, description=asset.asset_name)
+                _jl_for_ledger(entity_id=asset.entity_id, ledger_id=category.impairment_reserve_ledger_id, drcr=False, amount=amount, description=asset.asset_name)
+            except ValueError as exc:
+                blocking_reasons.append(str(exc))
         if amount > q2(asset.net_book_value):
             blocking_reasons.append("Impairment amount cannot exceed current net book value.")
-
         settings, controls = _asset_settings_and_controls(entity_id=asset.entity_id, subentity_id=asset.subentity_id)
-        try:
-            _ensure_locked_period(entityfinid=asset.entityfinid, posting_date=posting_date, rule=controls.get("depreciation_lock_rule", "hard"))
-        except ValueError as exc:
-            blocking_reasons.append(str(exc))
-
+        locked_message = _locked_period_message(entityfinid=asset.entityfinid, posting_date=posting_date)
+        if locked_message:
+            blocking_reasons.append(locked_message)
         if amount == q2(asset.net_book_value) and amount > ZERO:
-            warnings.append("This impairment will fully consume the current net book value.")
+            _append_policy_issue(
+                rule=controls.get("full_impairment_rule", "warn"),
+                message="This posting will fully impair the asset and reduce net book value to zero.",
+                blocking_reasons=blocking_reasons,
+                warnings=warnings,
+            )
 
-        return {
-            "action": "impair",
-            "allowed": len(blocking_reasons) == 0,
-            "blocking_reasons": blocking_reasons,
-            "warnings": warnings,
-            "impact": impact,
-            "policy_profile": _build_policy_profile(asset=asset, settings=settings),
-            "snapshot": _asset_snapshot(asset, posting_date=posting_date),
-        }
+        return _precheck_payload(
+            action="impair",
+            asset=asset,
+            posting_date=posting_date,
+            posting_batch_id=None,
+            allowed=not blocking_reasons,
+            blocking_reasons=blocking_reasons,
+            warnings=warnings,
+            impact=impact,
+            policy_profile=_category_accounting_policy_profile(asset=asset, settings=settings),
+        )
 
     @staticmethod
     @transaction.atomic
@@ -750,6 +975,11 @@ class AssetService:
             raise ValueError("Impairment amount cannot exceed current net book value.")
         _, controls = _asset_settings_and_controls(entity_id=asset.entity_id, subentity_id=asset.subentity_id)
         _ensure_locked_period(entityfinid=asset.entityfinid, posting_date=posting_date, rule=controls.get("depreciation_lock_rule", "hard"))
+        if amount == q2(asset.net_book_value) and amount > ZERO:
+            _policy_block(
+                controls.get("full_impairment_rule", "warn"),
+                "This posting will fully impair the asset and reduce net book value to zero.",
+            )
 
         posting = PostingService(
             entity_id=asset.entity_id,
@@ -759,7 +989,7 @@ class AssetService:
         )
         entry = posting.post(
             txn_type=TxnType.FIXED_ASSET_IMPAIRMENT,
-            txn_id=(asset.id * 1000000) + int(timezone.now().timestamp()) % 1000000,
+            txn_id=asset.id,
             voucher_no=f"{asset.asset_code}-IMP",
             voucher_date=posting_date,
             posting_date=posting_date,
@@ -815,59 +1045,102 @@ class AssetService:
         sale_proceeds: Decimal,
         narration: str | None = None,
     ) -> dict:
+        del narration
         blocking_reasons: list[str] = []
         warnings: list[str] = []
         impact = [
-            "Asset status will move to Disposed and net book value will be set to zero.",
-            "Disposal proceeds and gain or loss will be captured on the asset record.",
-            "The posting will clear asset cost and accumulated depreciation from the books.",
+            "Disposal will create a posting batch, move the asset to Disposed status, and set net book value to zero.",
+            "Disposal proceeds and gain or loss will be stored on the asset for reporting and audit.",
+            "Any later correction will need governed disposal reversal rather than direct asset edits.",
         ]
+
+        if asset.status != FixedAsset.AssetStatus.ACTIVE:
+            blocking_reasons.append("Only active assets can be disposed.")
         category = asset.category
         settings, controls = _asset_settings_and_controls(entity_id=asset.entity_id, subentity_id=asset.subentity_id)
         asset_ledger_id = asset.ledger_id or category.asset_ledger_id
+        if not asset_ledger_id or not category.accumulated_depreciation_ledger_id:
+            blocking_reasons.append("Asset and accumulated depreciation ledgers are required for disposal.")
         proceeds = q2(sale_proceeds)
         gross = q2(asset.gross_block)
         acc_dep = q2(asset.accumulated_depreciation)
         impairment = q2(asset.impairment_amount)
         nbv = q2(gross - acc_dep - impairment)
         gain_loss = q2(proceeds - nbv)
-
-        if asset.status != FixedAsset.AssetStatus.ACTIVE:
-            blocking_reasons.append("Only active assets can be disposed.")
-        if not asset_ledger_id or not category.accumulated_depreciation_ledger_id:
-            blocking_reasons.append("Asset and accumulated depreciation ledgers are required for disposal.")
-        if proceeds < ZERO:
-            blocking_reasons.append("Sale proceeds cannot be negative.")
-        if proceeds > ZERO and not proceeds_ledger_id:
-            blocking_reasons.append("Proceeds ledger is required when sale proceeds are recorded.")
+        if nbv < ZERO:
+            _append_policy_issue(
+                rule=controls.get("negative_nbv_rule", "block"),
+                message="Asset net book value cannot be negative before disposal.",
+                blocking_reasons=blocking_reasons,
+                warnings=warnings,
+            )
+        if not proceeds_ledger_id:
+            blocking_reasons.append("Proceeds ledger is required for disposal.")
+        else:
+            try:
+                _jl_for_ledger(entity_id=asset.entity_id, ledger_id=proceeds_ledger_id, drcr=True, amount=proceeds, description=asset.asset_name)
+            except ValueError as exc:
+                blocking_reasons.append(str(exc))
+        if asset_ledger_id:
+            try:
+                _jl_for_ledger(entity_id=asset.entity_id, ledger_id=asset_ledger_id, drcr=False, amount=gross, description=asset.asset_name)
+            except ValueError as exc:
+                blocking_reasons.append(str(exc))
+        if category.accumulated_depreciation_ledger_id and acc_dep > ZERO:
+            try:
+                _jl_for_ledger(entity_id=asset.entity_id, ledger_id=category.accumulated_depreciation_ledger_id, drcr=True, amount=acc_dep, description=asset.asset_name)
+            except ValueError as exc:
+                blocking_reasons.append(str(exc))
+        if impairment > ZERO:
+            if not category.impairment_reserve_ledger_id:
+                blocking_reasons.append("Impairment reserve ledger is required to dispose an impaired asset.")
+            else:
+                try:
+                    _jl_for_ledger(entity_id=asset.entity_id, ledger_id=category.impairment_reserve_ledger_id, drcr=True, amount=impairment, description=asset.asset_name)
+                except ValueError as exc:
+                    blocking_reasons.append(str(exc))
         if gain_loss < ZERO and not category.loss_on_sale_ledger_id:
             blocking_reasons.append("Loss on sale ledger is required when disposal creates a loss.")
         if gain_loss > ZERO and not category.gain_on_sale_ledger_id:
             blocking_reasons.append("Gain on sale ledger is required when disposal creates a gain.")
-        if impairment > ZERO and not category.impairment_reserve_ledger_id:
-            blocking_reasons.append("Impairment reserve ledger is required to dispose an impaired asset.")
-        try:
-            _ensure_backdated_disposal(asset=asset, disposal_date=disposal_date, rule=controls.get("backdated_disposal_rule", "hard"))
-        except ValueError as exc:
-            blocking_reasons.append(str(exc))
-        try:
-            _ensure_locked_period(entityfinid=asset.entityfinid, posting_date=disposal_date, rule=controls.get("depreciation_lock_rule", "hard"))
-        except ValueError as exc:
-            blocking_reasons.append(str(exc))
-        if nbv < ZERO:
-            blocking_reasons.append("Asset net book value cannot be negative before disposal.")
-        if proceeds == ZERO:
-            warnings.append("This disposal records zero sale proceeds.")
+        if category.loss_on_sale_ledger_id and gain_loss < ZERO:
+            try:
+                _jl_for_ledger(entity_id=asset.entity_id, ledger_id=category.loss_on_sale_ledger_id, drcr=True, amount=abs(gain_loss), description=asset.asset_name)
+            except ValueError as exc:
+                blocking_reasons.append(str(exc))
+        if category.gain_on_sale_ledger_id and gain_loss > ZERO:
+            try:
+                _jl_for_ledger(entity_id=asset.entity_id, ledger_id=category.gain_on_sale_ledger_id, drcr=False, amount=gain_loss, description=asset.asset_name)
+            except ValueError as exc:
+                blocking_reasons.append(str(exc))
+        if asset.capitalization_date and disposal_date < asset.capitalization_date:
+            _append_policy_issue(
+                rule=controls.get("backdated_disposal_rule", "hard"),
+                message="Disposal date cannot be earlier than the asset capitalization date.",
+                blocking_reasons=blocking_reasons,
+                warnings=warnings,
+            )
+        locked_message = _locked_period_message(entityfinid=asset.entityfinid, posting_date=disposal_date)
+        if locked_message:
+            blocking_reasons.append(locked_message)
+        if gain_loss > ZERO:
+            warnings.append(f"This disposal will book a gain of {gain_loss}.")
+        elif gain_loss < ZERO:
+            warnings.append(f"This disposal will book a loss of {abs(gain_loss)}.")
+        if impairment > ZERO:
+            warnings.append("This asset already carries impairment, so disposal will also clear the impairment reserve from books.")
 
-        return {
-            "action": "dispose",
-            "allowed": len(blocking_reasons) == 0,
-            "blocking_reasons": blocking_reasons,
-            "warnings": warnings,
-            "impact": impact,
-            "policy_profile": _build_policy_profile(asset=asset, settings=settings),
-            "snapshot": _asset_snapshot(asset, posting_date=disposal_date),
-        }
+        return _precheck_payload(
+            action="dispose",
+            asset=asset,
+            posting_date=disposal_date,
+            posting_batch_id=None,
+            allowed=not blocking_reasons,
+            blocking_reasons=blocking_reasons,
+            warnings=warnings,
+            impact=impact,
+            policy_profile=_category_accounting_policy_profile(asset=asset, settings=settings),
+        )
 
     @staticmethod
     @transaction.atomic
@@ -892,6 +1165,7 @@ class AssetService:
             category=category,
             ledger=asset.ledger or category.asset_ledger,
         )
+        _ensure_locked_period(entityfinid=asset.entityfinid, posting_date=disposal_date, rule=controls.get("depreciation_lock_rule", "hard"))
         _ensure_backdated_disposal(asset=asset, disposal_date=disposal_date, rule=controls.get("backdated_disposal_rule", "hard"))
         _ensure_locked_period(entityfinid=asset.entityfinid, posting_date=disposal_date, rule=controls.get("depreciation_lock_rule", "hard"))
         proceeds = q2(sale_proceeds)
@@ -961,3 +1235,225 @@ class AssetService:
             ]
         )
         return asset
+
+    @staticmethod
+    @transaction.atomic
+    def reverse_capitalization(*, asset: FixedAsset, reason: str, user_id: int | None = None) -> FixedAsset:
+        if not asset.capitalization_posting_batch_id:
+            raise ValueError("This asset does not have a posted capitalization to reverse.")
+        if asset.disposal_posting_batch_id or asset.status == FixedAsset.AssetStatus.DISPOSED:
+            raise ValueError("Capitalization cannot be reversed after disposal. Reverse disposal first.")
+        if asset.impairment_posting_batch_id or q2(asset.impairment_amount) > ZERO:
+            raise ValueError("Capitalization cannot be reversed after impairment. Reverse impairment first.")
+        if asset.depreciation_lines.filter(run__status__in=[DepreciationRun.RunStatus.CALCULATED, DepreciationRun.RunStatus.POSTED]).exists():
+            raise ValueError("Capitalization cannot be reversed while depreciation runs exist. Cancel those runs first.")
+
+        _, controls = _asset_settings_and_controls(entity_id=asset.entity_id, subentity_id=asset.subentity_id)
+        posting_date = asset.capitalization_date or asset.acquisition_date
+        _ensure_locked_period(entityfinid=asset.entityfinid, posting_date=posting_date, rule=controls.get("depreciation_lock_rule", "hard"))
+
+        entry = _entry_for_asset_txn(asset=asset, txn_type=TxnType.FIXED_ASSET_CAPITALIZATION)
+        _reverse_entry_and_batch(entry=entry, posting_batch=asset.capitalization_posting_batch, reason=reason)
+
+        prior_capitalization_date = asset.capitalization_date
+        asset.status = FixedAsset.AssetStatus.CAPITAL_WIP if (asset.purchase_document_no or asset.source_purchase_lines.exists()) else FixedAsset.AssetStatus.DRAFT
+        asset.capitalization_date = None
+        asset.depreciation_start_date = None
+        if asset.put_to_use_date and asset.put_to_use_date == prior_capitalization_date:
+            asset.put_to_use_date = None
+        asset.capitalization_posting_batch = None
+        asset.updated_by_id = user_id
+        asset.notes = _append_note(asset.notes, f"Capitalization reversed: {reason}")
+        asset.net_book_value = q2(asset.gross_block) - q2(asset.accumulated_depreciation) - q2(asset.impairment_amount)
+        asset.save(
+            update_fields=[
+                "status",
+                "capitalization_date",
+                "depreciation_start_date",
+                "put_to_use_date",
+                "capitalization_posting_batch",
+                "notes",
+                "net_book_value",
+                "updated_by",
+                "updated_at",
+            ]
+        )
+        return asset
+
+    @staticmethod
+    def reverse_capitalization_precheck(*, asset: FixedAsset) -> dict:
+        blocking_reasons: list[str] = []
+        warnings: list[str] = []
+        impact = [
+            "Capitalization posting will be marked reversed and its posting batch will be deactivated.",
+            "Asset status will move back to Draft or Capital WIP depending on its source.",
+            "Capitalization date and depreciation start date will be cleared from the asset record.",
+        ]
+
+        if not asset.capitalization_posting_batch_id:
+            blocking_reasons.append("This asset does not have a posted capitalization to reverse.")
+        if asset.disposal_posting_batch_id or asset.status == FixedAsset.AssetStatus.DISPOSED:
+            blocking_reasons.append("Capitalization cannot be reversed after disposal. Reverse disposal first.")
+        if asset.impairment_posting_batch_id or q2(asset.impairment_amount) > ZERO:
+            blocking_reasons.append("Capitalization cannot be reversed after impairment. Reverse impairment first.")
+        if asset.depreciation_lines.filter(run__status__in=[DepreciationRun.RunStatus.CALCULATED, DepreciationRun.RunStatus.POSTED]).exists():
+            blocking_reasons.append("Capitalization cannot be reversed while depreciation runs exist. Cancel those runs first.")
+
+        posting_date = asset.capitalization_date or asset.acquisition_date
+        locked_message = _locked_period_message(entityfinid=asset.entityfinid, posting_date=posting_date)
+        if locked_message:
+            blocking_reasons.append(locked_message)
+
+        if q2(asset.accumulated_depreciation) > ZERO:
+            warnings.append("This asset already carries accumulated depreciation in its current snapshot.")
+        if asset.purchase_document_no or asset.source_purchase_lines.exists():
+            warnings.append("This asset originated from purchase intake, so reversal will restore it to Capital WIP rather than Draft.")
+
+        return _precheck_payload(
+            action="capitalization",
+            asset=asset,
+            posting_date=posting_date,
+            posting_batch_id=asset.capitalization_posting_batch_id,
+            allowed=not blocking_reasons,
+            blocking_reasons=blocking_reasons,
+            warnings=warnings,
+            impact=impact,
+        )
+
+    @staticmethod
+    @transaction.atomic
+    def reverse_impairment(*, asset: FixedAsset, reason: str, user_id: int | None = None) -> FixedAsset:
+        if not asset.impairment_posting_batch_id or q2(asset.impairment_amount) <= ZERO:
+            raise ValueError("This asset does not have a posted impairment to reverse.")
+        if asset.disposal_posting_batch_id or asset.status == FixedAsset.AssetStatus.DISPOSED:
+            raise ValueError("Impairment cannot be reversed after disposal. Reverse disposal first.")
+
+        _, controls = _asset_settings_and_controls(entity_id=asset.entity_id, subentity_id=asset.subentity_id)
+        entry = _entry_for_posting_batch(asset.impairment_posting_batch)
+        posting_date = entry.posting_date if entry else asset.capitalization_date or asset.acquisition_date
+        _ensure_locked_period(entityfinid=asset.entityfinid, posting_date=posting_date, rule=controls.get("depreciation_lock_rule", "hard"))
+
+        _reverse_entry_and_batch(entry=entry, posting_batch=asset.impairment_posting_batch, reason=reason)
+
+        asset.impairment_amount = ZERO
+        asset.impairment_posting_batch = None
+        asset.updated_by_id = user_id
+        asset.notes = _append_note(asset.notes, f"Impairment reversed: {reason}")
+        asset.net_book_value = q2(asset.gross_block) - q2(asset.accumulated_depreciation)
+        asset.save(
+            update_fields=[
+                "impairment_amount",
+                "impairment_posting_batch",
+                "notes",
+                "net_book_value",
+                "updated_by",
+                "updated_at",
+            ]
+        )
+        return asset
+
+    @staticmethod
+    def reverse_impairment_precheck(*, asset: FixedAsset) -> dict:
+        blocking_reasons: list[str] = []
+        warnings: list[str] = []
+        impact = [
+            "Impairment posting will be marked reversed and its posting batch will be deactivated.",
+            "Impairment amount will be reset to zero on the asset record.",
+            "Net book value will be recalculated from gross block and accumulated depreciation.",
+        ]
+
+        if not asset.impairment_posting_batch_id or q2(asset.impairment_amount) <= ZERO:
+            blocking_reasons.append("This asset does not have a posted impairment to reverse.")
+        if asset.disposal_posting_batch_id or asset.status == FixedAsset.AssetStatus.DISPOSED:
+            blocking_reasons.append("Impairment cannot be reversed after disposal. Reverse disposal first.")
+
+        entry = _entry_for_posting_batch(asset.impairment_posting_batch)
+        posting_date = entry.posting_date if entry else asset.capitalization_date or asset.acquisition_date
+        locked_message = _locked_period_message(entityfinid=asset.entityfinid, posting_date=posting_date)
+        if locked_message:
+            blocking_reasons.append(locked_message)
+
+        if q2(asset.accumulated_depreciation) > ZERO:
+            warnings.append("Depreciation balances will remain in place after impairment reversal.")
+
+        return _precheck_payload(
+            action="impairment",
+            asset=asset,
+            posting_date=posting_date,
+            posting_batch_id=asset.impairment_posting_batch_id,
+            allowed=not blocking_reasons,
+            blocking_reasons=blocking_reasons,
+            warnings=warnings,
+            impact=impact,
+        )
+
+    @staticmethod
+    @transaction.atomic
+    def reverse_disposal(*, asset: FixedAsset, reason: str, user_id: int | None = None) -> FixedAsset:
+        if not asset.disposal_posting_batch_id or asset.status != FixedAsset.AssetStatus.DISPOSED:
+            raise ValueError("This asset does not have a posted disposal to reverse.")
+
+        _, controls = _asset_settings_and_controls(entity_id=asset.entity_id, subentity_id=asset.subentity_id)
+        entry = _entry_for_asset_txn(asset=asset, txn_type=TxnType.FIXED_ASSET_DISPOSAL)
+        posting_date = entry.posting_date if entry else asset.disposal_date or asset.capitalization_date or asset.acquisition_date
+        _ensure_locked_period(entityfinid=asset.entityfinid, posting_date=posting_date, rule=controls.get("depreciation_lock_rule", "hard"))
+
+        _reverse_entry_and_batch(entry=entry, posting_batch=asset.disposal_posting_batch, reason=reason)
+
+        asset.status = FixedAsset.AssetStatus.ACTIVE
+        asset.disposal_date = None
+        asset.disposal_posting_batch = None
+        asset.disposal_proceeds = ZERO
+        asset.disposal_gain_loss = ZERO
+        asset.updated_by_id = user_id
+        asset.notes = _append_note(asset.notes, f"Disposal reversed: {reason}")
+        asset.net_book_value = q2(asset.gross_block) - q2(asset.accumulated_depreciation) - q2(asset.impairment_amount)
+        asset.save(
+            update_fields=[
+                "status",
+                "disposal_date",
+                "disposal_posting_batch",
+                "disposal_proceeds",
+                "disposal_gain_loss",
+                "notes",
+                "net_book_value",
+                "updated_by",
+                "updated_at",
+            ]
+        )
+        return asset
+
+    @staticmethod
+    def reverse_disposal_precheck(*, asset: FixedAsset) -> dict:
+        blocking_reasons: list[str] = []
+        warnings: list[str] = []
+        impact = [
+            "Disposal posting will be marked reversed and its posting batch will be deactivated.",
+            "Asset status will return to Active and disposal fields will be cleared.",
+            "Net book value will be restored from the current gross block, depreciation, and impairment balances.",
+        ]
+
+        if not asset.disposal_posting_batch_id or asset.status != FixedAsset.AssetStatus.DISPOSED:
+            blocking_reasons.append("This asset does not have a posted disposal to reverse.")
+
+        entry = _entry_for_asset_txn(asset=asset, txn_type=TxnType.FIXED_ASSET_DISPOSAL)
+        posting_date = entry.posting_date if entry else asset.disposal_date or asset.capitalization_date or asset.acquisition_date
+        locked_message = _locked_period_message(entityfinid=asset.entityfinid, posting_date=posting_date)
+        if locked_message:
+            blocking_reasons.append(locked_message)
+
+        if q2(asset.impairment_amount) > ZERO:
+            warnings.append("Any existing impairment balance will remain after disposal reversal.")
+        if q2(asset.accumulated_depreciation) > ZERO:
+            warnings.append("Accumulated depreciation stays on the asset when disposal is reversed.")
+
+        return _precheck_payload(
+            action="disposal",
+            asset=asset,
+            posting_date=posting_date,
+            posting_batch_id=asset.disposal_posting_batch_id,
+            allowed=not blocking_reasons,
+            blocking_reasons=blocking_reasons,
+            warnings=warnings,
+            impact=impact,
+        )

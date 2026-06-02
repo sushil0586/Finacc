@@ -17,6 +17,7 @@ from vouchers.views.voucher import (
     VoucherConfirmAPIView,
     VoucherPostAPIView,
     VoucherUnpostAPIView,
+    _duplicate_reference_warnings,
 )
 
 
@@ -185,6 +186,8 @@ class VoucherViewUnitTests(SimpleTestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["message"], "Voucher posted.")
+        self.assertEqual(response.data["notice"], "Voucher posted.")
+        self.assertEqual(response.data["warnings"], [])
         self.assertEqual(response.data["data"], {"id": 12, "status_name": "Posted"})
         mocked_require.assert_called_once_with(self.header, "post")
         mocked_post.assert_called_once_with(12, posted_by_id=7)
@@ -302,3 +305,33 @@ class VoucherViewUnitTests(SimpleTestCase):
         self.assertEqual(str(response.data["action"]), "Use submit, approve, or reject.")
         mocked_require.assert_not_called()
         mocked_error_log.assert_called_once()
+
+    @patch("vouchers.views.voucher.VoucherHeader.objects.filter")
+    def test_duplicate_reference_warnings_returns_warning_message(self, mocked_filter):
+        mocked_values = mocked_filter.return_value.filter.return_value.exclude.return_value.order_by.return_value.values.return_value
+        mocked_values.first.return_value = {"voucher_code": "BV-88", "doc_no": 88, "id": 88}
+
+        warnings = _duplicate_reference_warnings(
+            instance_id=12,
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=5,
+            voucher_type="BANK",
+            reference_number="UTR-1",
+        )
+
+        self.assertEqual(warnings, ["Reference number already exists on voucher BV-88."])
+
+    @patch("vouchers.views.voucher.VoucherHeader.objects.filter")
+    def test_duplicate_reference_warnings_returns_empty_for_blank_reference(self, mocked_filter):
+        warnings = _duplicate_reference_warnings(
+            instance_id=None,
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            voucher_type="BANK",
+            reference_number="  ",
+        )
+
+        self.assertEqual(warnings, [])
+        mocked_filter.assert_not_called()

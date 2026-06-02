@@ -10,3 +10,5 @@ Use these documents for:
 Available documents:
 - [Report Roadmap](./report_roadmap.md)
 - [Compliance And Controls Phases](./compliance_controls_phases.md)
+- [Common Reporting Scope Rules](./common_reporting_scope_rules.md)
+- [Report Scope Alignment Audit](./report_scope_alignment_audit.md)

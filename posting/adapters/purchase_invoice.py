@@ -46,6 +46,43 @@ def q4(x) -> Decimal:
         return ZERO4
 
 
+def _aggregate_rcm_summary_taxes(header) -> tuple[dict, dict, dict]:
+    from purchase.models.purchase_core import PurchaseTaxSummary
+
+    summaries = list(getattr(header, "tax_summaries", []).all() if hasattr(getattr(header, "tax_summaries", None), "all") else [])
+    if not summaries and getattr(header, "_state", None) is not None and getattr(header, "id", None):
+        summaries = list(PurchaseTaxSummary.objects.filter(header_id=header.id))
+
+    rcm_tax = {"cgst": ZERO2, "sgst": ZERO2, "igst": ZERO2, "cess": ZERO2}
+    eligible_tax = {"cgst": ZERO2, "sgst": ZERO2, "igst": ZERO2, "cess": ZERO2}
+    blocked_tax = {"cgst": ZERO2, "sgst": ZERO2, "igst": ZERO2, "cess": ZERO2}
+
+    for row in summaries:
+        tax_parts = {
+            "cgst": q2(getattr(row, "cgst_amount", ZERO2) or ZERO2),
+            "sgst": q2(getattr(row, "sgst_amount", ZERO2) or ZERO2),
+            "igst": q2(getattr(row, "igst_amount", ZERO2) or ZERO2),
+            "cess": q2(getattr(row, "cess_amount", ZERO2) or ZERO2),
+        }
+        total_tax = q2(sum(tax_parts.values(), ZERO2))
+        eligible_total = q2(getattr(row, "itc_eligible_tax", ZERO2) or ZERO2)
+        blocked_total = q2(getattr(row, "itc_ineligible_tax", ZERO2) or ZERO2)
+
+        for key, amount in tax_parts.items():
+            rcm_tax[key] = q2(rcm_tax[key] + amount)
+
+        if total_tax <= ZERO2:
+            continue
+
+        eligible_ratio = eligible_total / total_tax if eligible_total > ZERO2 else Decimal("0")
+        blocked_ratio = blocked_total / total_tax if blocked_total > ZERO2 else Decimal("0")
+        for key, amount in tax_parts.items():
+            eligible_tax[key] = q2(eligible_tax[key] + q2(amount * eligible_ratio))
+            blocked_tax[key] = q2(blocked_tax[key] + q2(amount * blocked_ratio))
+
+    return rcm_tax, eligible_tax, blocked_tax
+
+
 # =========================
 # Adapter config (policy switches)
 # =========================
@@ -416,6 +453,13 @@ class PurchaseInvoicePostingAdapter:
 
         # 1C) Tax postings
         if is_rcm:
+            summary_rcm_tax, summary_eligible_tax, summary_blocked_tax = _aggregate_rcm_summary_taxes(header)
+            if any(amount > ZERO2 for amount in summary_rcm_tax.values()):
+                rcm_tax = summary_rcm_tax
+                eligible_tax = summary_eligible_tax
+                blocked_tax = summary_blocked_tax
+
+        if is_rcm:
             def _add_input(acct_id: Optional[int], ledger_id: Optional[int], amt: Decimal, label: str):
                 if amt <= ZERO2:
                     return
@@ -523,16 +567,8 @@ class PurchaseInvoicePostingAdapter:
                 resolver=resolver,
             )
 
-            # Dr Vendor Payable (reduce vendor liability)
-            jl.append(JLInput(
-                account_id=int(header.vendor_id),
-                ledger_id=supplier_ledger_id,
-                drcr=True,  # DR
-                amount=tds,
-                description=f"{narration} (TDS deducted)",
-            ))
-
-            # Cr TDS Payable
+            # Post only the payable leg here; the vendor balancing line below
+            # will naturally settle to the net vendor payable after deductions.
             jl.append(JLInput(
                 account_id=int(tds_payable_ac),
                 ledger_id=int(tds_payable_ledger) if tds_payable_ledger else None,
@@ -546,16 +582,8 @@ class PurchaseInvoicePostingAdapter:
             gst_tds_payable_ac = resolver.get_account_id(StaticAccountCodes.GST_TDS_PAYABLE, required=True)
             gst_tds_payable_ledger = resolver.get_ledger_id(StaticAccountCodes.GST_TDS_PAYABLE, required=True)
 
-            # Dr Vendor Payable (reduce vendor liability)
-            jl.append(JLInput(
-                account_id=int(header.vendor_id),
-                ledger_id=supplier_ledger_id,
-                drcr=True,  # DR
-                amount=gst_tds,
-                description=f"{narration} (GST-TDS deducted)",
-            ))
-
-            # Cr GST-TDS Payable
+            # Post only the payable leg here; the vendor balancing line below
+            # will naturally settle to the net vendor payable after deductions.
             jl.append(JLInput(
                 account_id=int(gst_tds_payable_ac),
                 ledger_id=int(gst_tds_payable_ledger),
@@ -588,11 +616,11 @@ class PurchaseInvoicePostingAdapter:
 
         # optional RCM special-case (if your header stores base-only separately)
         if is_rcm and not cfg.rcm_supplier_includes_tax:
-            total_gst = q2(
-                getattr(header, "total_gst", None)
-                or (rcm_tax["cgst"] + rcm_tax["sgst"] + rcm_tax["igst"] + rcm_tax["cess"])
-            )
-            expected_vendor_amt = q2(header_grand_total - total_gst)
+            header_total_gst = q2(getattr(header, "total_gst", None) or ZERO2)
+            if header_total_gst > ZERO2:
+                expected_vendor_amt = q2(header_grand_total - header_total_gst)
+
+        expected_vendor_amt = q2(expected_vendor_amt - tds - (gst_tds if cfg.post_gst_tds_on_invoice else ZERO2))
 
         if expected_vendor_amt > ZERO2:
             if (vendor_amt - expected_vendor_amt).copy_abs() > cfg.totals_tolerance:

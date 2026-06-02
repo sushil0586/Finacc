@@ -14,8 +14,11 @@ from receipts.views.receipt_exports import ReceiptVoucherPDFAPIView
 from receipts.views.receipt_voucher import (
     ReceiptVoucherApprovalAPIView,
     ReceiptVoucherListCreateAPIView,
+    ReceiptVoucherPostAPIView,
+    _duplicate_reference_warnings,
 )
 from posting.adapters.receipt_voucher import ReceiptVoucherPostingAdapter
+from withholding.models import WithholdingBaseRule
 
 
 class FakeRelated(list):
@@ -66,8 +69,188 @@ class PaymentPostingAdapterTests(SimpleTestCase):
         self.assertIn("Into Cash In Hand", jl[0].description)
 
 
+class ReceiptVoucherReferenceWarningTests(SimpleTestCase):
+    def _header(self):
+        return SimpleNamespace(
+            id=1,
+            voucher_code="RV-1",
+            cash_received_amount=Decimal("100.00"),
+            received_in_id=10,
+            received_from_id=20,
+            received_in=SimpleNamespace(accountname="Cash In Hand", ledger_id=10),
+            received_from=SimpleNamespace(accountname="Customer-A", ledger_id=20),
+        )
+
+    @patch("receipts.views.receipt_voucher.ReceiptVoucherHeader.objects")
+    def test_duplicate_reference_warning_includes_existing_voucher_code(self, mocked_objects):
+        mocked_objects.filter.return_value.exclude.return_value.order_by.return_value.filter.return_value.only.return_value.first.return_value = SimpleNamespace(
+            voucher_code="RV-2002",
+            doc_code="RV",
+            doc_no=2002,
+        )
+        voucher = SimpleNamespace(
+            id=99,
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=5,
+            received_from_id=77,
+            reference_number="UTR-001",
+        )
+
+        warnings = _duplicate_reference_warnings(voucher)
+
+        self.assertEqual(warnings, [
+            "Reference already appears on voucher RV-2002. Please double-check before proceeding."
+        ])
+
+    def test_receipt_posting_error_explains_bank_charges_double_counting(self):
+        header = self._header()
+        adjustments = [
+            SimpleNamespace(
+                id=1,
+                amount=Decimal("200.00"),
+                ledger_account_id=101,
+                settlement_effect="MINUS",
+                adj_type="BANK_CHARGES",
+            )
+        ]
+        with self.assertRaisesMessage(
+            ValueError,
+            "enter that amount only in Cash Received and remove the BANK_CHARGES adjustment row",
+        ):
+            ReceiptVoucherPostingAdapter._build_journal_lines(
+                header=SimpleNamespace(**{**header.__dict__, "cash_received_amount": Decimal("200.00")}),
+                adjustments=adjustments,
+                reverse=False,
+            )
+
+
 class ReceiptVoucherServiceTests(SimpleTestCase):
     databases = {"default"}
+
+    def test_validate_positive_receipt_support_raises_guidance_for_bank_charges_duplicate(self):
+        with self.assertRaisesMessage(
+            ValueError,
+            "enter that amount only in Cash Received and remove the BANK_CHARGES adjustment row",
+        ):
+            ReceiptVoucherService._validate_positive_receipt_support(
+                cash_received_amount=Decimal("200.00"),
+                adjustments=[
+                    {
+                        "adj_type": "BANK_CHARGES",
+                        "amount": Decimal("200.00"),
+                        "settlement_effect": "MINUS",
+                    }
+                ],
+                effective_amount=Decimal("0.00"),
+            )
+
+    @patch("receipts.services.receipt_voucher_service.FinancialAccount.objects.filter")
+    @patch("receipts.services.receipt_voucher_service.SalesAdvanceAdjustment.objects")
+    def test_sync_gstr1_table11_rows_creates_advance_receipt_row_from_receipt_gst_fields(
+        self,
+        mock_manager,
+        mock_account_exists,
+    ):
+        mock_manager.filter.side_effect = [[], []]
+        mock_account_exists.return_value.exists.return_value = True
+
+        header = SimpleNamespace(
+            entity_id=10,
+            entityfinid_id=20,
+            subentity_id=None,
+            voucher_date="2026-04-20",
+            voucher_code="RV-ADV-001",
+            doc_code="RV",
+            doc_no=1,
+            receipt_type=ReceiptVoucherHeader.ReceiptType.ADVANCE,
+            received_from_id=171,
+            received_from=SimpleNamespace(accountname="Customer-A", legalname=""),
+            customer_gstin="27ABCDE1234F1Z5",
+            place_of_supply_state=SimpleNamespace(gst_state_code="27"),
+            advance_taxable_value=Decimal("500.00"),
+            advance_cgst=Decimal("45.00"),
+            advance_sgst=Decimal("45.00"),
+            advance_igst=Decimal("0.00"),
+            advance_cess=Decimal("0.00"),
+        )
+
+        ReceiptVoucherService._sync_gstr1_table11_rows(header=header, live_advance_rows=[], track_amendments=True)
+
+        mock_manager.create.assert_called_once()
+        payload = mock_manager.create.call_args.kwargs
+        self.assertEqual(payload["voucher_number"], "RV-ADV-001")
+        self.assertEqual(payload["entry_type"], "ADVANCE_RECEIPT")
+        self.assertEqual(payload["customer_id"], 171)
+        self.assertEqual(payload["taxable_value"], Decimal("500.00"))
+        self.assertEqual(payload["cgst_amount"], Decimal("45.00"))
+        self.assertEqual(payload["sgst_amount"], Decimal("45.00"))
+        self.assertEqual(payload["igst_amount"], Decimal("0.00"))
+
+    @patch("receipts.services.receipt_voucher_service.CustomerBillOpenItem.objects.filter")
+    @patch("receipts.services.receipt_voucher_service.FinancialAccount.objects.filter")
+    @patch("receipts.services.receipt_voucher_service.SalesAdvanceAdjustment.objects")
+    def test_sync_gstr1_table11_rows_creates_advance_adjustment_row_linked_to_invoice(
+        self,
+        mock_manager,
+        mock_account_exists,
+        mock_open_item_filter,
+    ):
+        mock_manager.filter.side_effect = [[], []]
+        mock_account_exists.return_value.exists.return_value = True
+        mock_open_item_filter.return_value.only.return_value.first.return_value = SimpleNamespace(header_id=77)
+
+        source_receipt = SimpleNamespace(
+            advance_taxable_value=Decimal("100.00"),
+            advance_cgst=Decimal("9.00"),
+            advance_sgst=Decimal("9.00"),
+            advance_igst=Decimal("0.00"),
+            advance_cess=Decimal("0.00"),
+        )
+        advance_balance = SimpleNamespace(
+            receipt_voucher=source_receipt,
+            original_amount=Decimal("118.00"),
+        )
+        live_advance_row = SimpleNamespace(
+            adjusted_amount=Decimal("59.00"),
+            open_item_id=55,
+            advance_balance=advance_balance,
+        )
+        header = SimpleNamespace(
+            entity_id=10,
+            entityfinid_id=20,
+            subentity_id=None,
+            voucher_date="2026-04-25",
+            voucher_code="RV-ADJ-001",
+            doc_code="RV",
+            doc_no=2,
+            receipt_type=ReceiptVoucherHeader.ReceiptType.AGAINST_INVOICE,
+            received_from_id=171,
+            received_from=SimpleNamespace(accountname="Customer-A", legalname=""),
+            customer_gstin="27ABCDE1234F1Z5",
+            place_of_supply_state=SimpleNamespace(gst_state_code="27"),
+            advance_taxable_value=Decimal("0.00"),
+            advance_cgst=Decimal("0.00"),
+            advance_sgst=Decimal("0.00"),
+            advance_igst=Decimal("0.00"),
+            advance_cess=Decimal("0.00"),
+        )
+
+        ReceiptVoucherService._sync_gstr1_table11_rows(
+            header=header,
+            live_advance_rows=[live_advance_row],
+            track_amendments=True,
+        )
+
+        mock_manager.create.assert_called_once()
+        payload = mock_manager.create.call_args.kwargs
+        self.assertEqual(payload["entry_type"], "ADVANCE_ADJUSTMENT")
+        self.assertEqual(payload["linked_invoice_id"], 77)
+        self.assertEqual(payload["voucher_number"], "RV-ADJ-001-ADJ-1")
+        self.assertEqual(payload["taxable_value"], Decimal("50.00"))
+        self.assertEqual(payload["cgst_amount"], Decimal("4.50"))
+        self.assertEqual(payload["sgst_amount"], Decimal("4.50"))
+        self.assertEqual(payload["igst_amount"], Decimal("0.00"))
 
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._sync_runtime_tcs_computation")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._fresh_allocation_rows")
@@ -135,7 +318,9 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
             ap_settlement_id=99,
             created_by_id=5,
             voucher_code="RV-12",
-            workflow_payload={},
+            workflow_payload={"_approval_state": {"status": "APPROVED", "approved_by": 8, "approved_at": "2026-05-28T10:00:00+0530"}},
+            approved_at="2026-05-28T10:00:00+0530",
+            approved_by_id=8,
             adjustments=SimpleNamespace(all=lambda: []),
             advance_adjustments=SimpleNamespace(all=lambda: []),
             save=MagicMock(),
@@ -144,9 +329,12 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
         mock_get_policy.return_value = SimpleNamespace(controls={"unpost_target_status": "confirmed"})
 
         res = ReceiptVoucherService.unpost_voucher.__wrapped__(voucher_id=12, unposted_by_id=9)
-        self.assertEqual(res.message, "Unposted with reversal entry.")
+        self.assertEqual(res.message, "Unposted with reversal entry. Voucher reopened for correction and reposting.")
         self.assertEqual(header.status, ReceiptVoucherHeader.Status.CONFIRMED)
         self.assertIsNone(header.ap_settlement_id)
+        self.assertEqual(header.workflow_payload["_approval_state"]["status"], "DRAFT")
+        self.assertIsNone(header.approved_at)
+        self.assertIsNone(header.approved_by_id)
         mock_cancel_settlement.assert_called_once_with(settlement_id=99, cancelled_by_id=9)
         mock_unpost_adapter.assert_called_once()
 
@@ -429,7 +617,9 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
             ap_settlement_id=201,
             created_by_id=5,
             voucher_code="RV-41",
-            workflow_payload={},
+            workflow_payload={"_approval_state": {"status": "SUBMITTED", "submitted_by": 7}},
+            approved_at="2026-05-28T10:00:00+0530",
+            approved_by_id=8,
             adjustments=SimpleNamespace(all=lambda: []),
             advance_adjustments=SimpleNamespace(all=lambda: [advance_row]),
             customer_advance_balance=advance_balance,
@@ -440,10 +630,13 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
 
         res = ReceiptVoucherService.unpost_voucher.__wrapped__(voucher_id=41, unposted_by_id=9)
 
-        self.assertEqual(res.message, "Unposted with reversal entry.")
+        self.assertEqual(res.message, "Unposted with reversal entry. Voucher reopened for correction and reposting.")
         self.assertEqual(header.status, ReceiptVoucherHeader.Status.DRAFT)
         self.assertIsNone(header.ap_settlement_id)
         self.assertIsNone(advance_row.ap_settlement_id)
+        self.assertEqual(header.workflow_payload["_approval_state"]["status"], "DRAFT")
+        self.assertIsNone(header.approved_at)
+        self.assertIsNone(header.approved_by_id)
         self.assertEqual(mock_cancel_settlement.call_count, 2)
         advance_balance.save.assert_called_once()
         mock_unpost_adapter.assert_called_once()
@@ -891,6 +1084,34 @@ class ReceiptVoucherViewValidationTests(SimpleTestCase):
         self.assertEqual(str(response.data["action"]), "Use submit, approve, or reject.")
         mocked_error_log.assert_called_once()
 
+    @patch("receipts.views.receipt_voucher._require_receipt_permission")
+    @patch("receipts.views.receipt_voucher.ReceiptVoucherService.post_voucher")
+    @patch("receipts.views.receipt_voucher.ReceiptVoucherHeaderSerializer")
+    @patch("receipts.views.receipt_voucher.ReceiptVoucherHeader.objects")
+    def test_post_view_returns_structured_warning_feedback(
+        self,
+        mocked_header_objects,
+        mocked_serializer,
+        mocked_post_voucher,
+        _mocked_require_permission,
+    ):
+        mocked_header_objects.only.return_value.get.return_value = SimpleNamespace(id=9, entity_id=1)
+        mocked_serializer.return_value.data = {"id": 9}
+        mocked_post_voucher.return_value = SimpleNamespace(
+            message="Posted with warnings: Round-off line inserted | Static fallback used",
+            header=SimpleNamespace(id=9),
+        )
+        request = self._request("/api/receipts/receipt-vouchers/9/post/", {})
+
+        response = ReceiptVoucherPostAPIView.as_view()(request, pk=9)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["notice"], "Posting completed with policy warnings.")
+        self.assertEqual(response.data["warnings"], [
+            "Round-off line inserted",
+            "Static fallback used",
+        ])
+
 
 
 class ReceiptRuntimeWithholdingTests(SimpleTestCase):
@@ -916,7 +1137,7 @@ class ReceiptRuntimeWithholdingTests(SimpleTestCase):
 
         self.assertEqual(len(adjustments), 1)
         self.assertEqual(adjustments[0]["adj_type"], "TCS")
-        self.assertEqual(adjustments[0]["settlement_effect"], "PLUS")
+        self.assertEqual(adjustments[0]["settlement_effect"], "MINUS")
         self.assertEqual(adjustments[0]["amount"], Decimal("10.00"))
         self.assertEqual(adjustments[0]["remarks"], ReceiptVoucherService.AUTO_WITHHOLDING_TCS_REMARK)
         self.assertIn("withholding_runtime_result", payload)
@@ -943,6 +1164,170 @@ class ReceiptRuntimeWithholdingTests(SimpleTestCase):
         self.assertEqual(payload.get("withholding_runtime_result", {}).get("collection_status"), "NOT_COLLECTED")
         self.assertTrue(payload.get("withholding_runtime_result", {}).get("zero_collection"))
         self.assertFalse(payload.get("withholding_runtime_result", {}).get("user_selected_add_tcs"))
+
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._resolve_entity_runtime_tcs_mapping")
+    @patch("receipts.services.receipt_voucher_service.StaticAccountService.get_ledger_id")
+    @patch("receipts.services.receipt_voucher_service.StaticAccountService.get_account_id")
+    @patch("receipts.services.receipt_voucher_service.compute_withholding_preview")
+    def test_runtime_withholding_reverse_calculates_base_for_gross_advance_receipt(
+        self,
+        mock_preview,
+        mock_get_account_id,
+        mock_get_ledger_id,
+        mock_resolve_entity,
+    ):
+        mock_resolve_entity.return_value = (None, None)
+        mock_get_account_id.return_value = 9001
+        mock_get_ledger_id.return_value = 3001
+        mock_preview.return_value = SimpleNamespace(
+            rate=Decimal("1.0000"),
+            amount=Decimal("10.00"),
+            reason="advance receipt tcs computed",
+            reason_code="OK",
+            section=SimpleNamespace(id=5, section_code="206C1H"),
+        )
+
+        adjustments, payload = ReceiptVoucherService._apply_runtime_withholding_to_adjustments(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            received_from_id=55,
+            voucher_date=None,
+            cash_received_amount=Decimal("1010.00"),
+            allocations=[],
+            adjustments=[],
+            workflow_payload={"withholding": {"enabled": True, "section_id": 5, "mode": "AUTO", "allow_static_fallback": True}},
+        )
+
+        runtime = payload.get("withholding_runtime_result", {})
+        self.assertEqual(len(adjustments), 1)
+        self.assertEqual(adjustments[0]["adj_type"], "TCS")
+        self.assertEqual(adjustments[0]["amount"], Decimal("10.00"))
+        self.assertEqual(runtime.get("base_amount"), "1000.00")
+        self.assertEqual(runtime.get("collection_status"), "COLLECTED")
+
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._resolve_entity_runtime_tcs_mapping")
+    @patch("receipts.services.receipt_voucher_service.StaticAccountService.get_ledger_id")
+    @patch("receipts.services.receipt_voucher_service.StaticAccountService.get_account_id")
+    @patch("receipts.services.receipt_voucher_service.WithholdingSection.objects.filter")
+    def test_runtime_withholding_manual_mode_reverse_calculates_gross_advance_receipt(
+        self,
+        mock_filter,
+        mock_get_account_id,
+        mock_get_ledger_id,
+        mock_resolve_entity,
+    ):
+        mock_filter.return_value.only.return_value.first.return_value = SimpleNamespace(
+            id=5,
+            base_rule=WithholdingBaseRule.RECEIPT_VALUE,
+            section_code="206C(1)",
+        )
+        mock_resolve_entity.return_value = (None, None)
+        mock_get_account_id.return_value = 9001
+        mock_get_ledger_id.return_value = 3001
+
+        adjustments, payload = ReceiptVoucherService._apply_runtime_withholding_to_adjustments(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            received_from_id=55,
+            voucher_date=None,
+            cash_received_amount=Decimal("50500.00"),
+            allocations=[],
+            adjustments=[],
+            workflow_payload={"withholding": {"enabled": True, "section_id": 5, "mode": "MANUAL", "manual_rate": "1.0000", "allow_static_fallback": True}},
+        )
+
+        runtime = payload.get("withholding_runtime_result", {})
+        self.assertEqual(len(adjustments), 1)
+        self.assertEqual(adjustments[0]["adj_type"], "TCS")
+        self.assertEqual(adjustments[0]["amount"], Decimal("500.00"))
+        self.assertEqual(runtime.get("base_amount"), "50000.00")
+        self.assertEqual(runtime.get("amount"), "500.00")
+        self.assertEqual(runtime.get("collection_status"), "COLLECTED")
+
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._resolve_entity_runtime_tcs_mapping")
+    @patch("receipts.services.receipt_voucher_service.StaticAccountService.get_ledger_id")
+    @patch("receipts.services.receipt_voucher_service.StaticAccountService.get_account_id")
+    @patch("receipts.services.receipt_voucher_service.compute_withholding_preview")
+    def test_runtime_withholding_uses_partial_receipt_allocation_base(
+        self,
+        mock_preview,
+        mock_get_account_id,
+        mock_get_ledger_id,
+        mock_resolve_entity,
+    ):
+        mock_resolve_entity.return_value = (None, None)
+        mock_get_account_id.return_value = 9001
+        mock_get_ledger_id.return_value = 3001
+        mock_preview.return_value = SimpleNamespace(
+            rate=Decimal("1.0000"),
+            amount=Decimal("4.00"),
+            reason="partial receipt tcs computed",
+            reason_code="OK",
+            section=SimpleNamespace(id=5, section_code="206C1H"),
+        )
+
+        adjustments, payload = ReceiptVoucherService._apply_runtime_withholding_to_adjustments(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            received_from_id=55,
+            voucher_date=None,
+            cash_received_amount=Decimal("40.00"),
+            allocations=[{"open_item": 1, "settled_amount": Decimal("40.00")}],
+            adjustments=[],
+            workflow_payload={"withholding": {"enabled": True, "section_id": 5, "mode": "AUTO", "allow_static_fallback": True}},
+        )
+
+        runtime = payload.get("withholding_runtime_result", {})
+        self.assertEqual(len(adjustments), 1)
+        self.assertEqual(adjustments[0]["amount"], Decimal("4.00"))
+        self.assertEqual(runtime.get("base_amount"), "40.00")
+        self.assertEqual(runtime.get("collection_status"), "COLLECTED")
+
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._resolve_entity_runtime_tcs_mapping")
+    @patch("receipts.services.receipt_voucher_service.StaticAccountService.get_ledger_id")
+    @patch("receipts.services.receipt_voucher_service.StaticAccountService.get_account_id")
+    @patch("receipts.services.receipt_voucher_service.compute_withholding_preview")
+    def test_runtime_withholding_uses_multi_invoice_receipt_allocation_total(
+        self,
+        mock_preview,
+        mock_get_account_id,
+        mock_get_ledger_id,
+        mock_resolve_entity,
+    ):
+        mock_resolve_entity.return_value = (None, None)
+        mock_get_account_id.return_value = 9001
+        mock_get_ledger_id.return_value = 3001
+        mock_preview.return_value = SimpleNamespace(
+            rate=Decimal("1.0000"),
+            amount=Decimal("10.00"),
+            reason="multi invoice receipt tcs computed",
+            reason_code="OK",
+            section=SimpleNamespace(id=5, section_code="206C1H"),
+        )
+
+        adjustments, payload = ReceiptVoucherService._apply_runtime_withholding_to_adjustments(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            received_from_id=55,
+            voucher_date=None,
+            cash_received_amount=Decimal("100.00"),
+            allocations=[
+                {"open_item": 1, "settled_amount": Decimal("60.00")},
+                {"open_item": 2, "settled_amount": Decimal("40.00")},
+            ],
+            adjustments=[],
+            workflow_payload={"withholding": {"enabled": True, "section_id": 5, "mode": "AUTO", "allow_static_fallback": True}},
+        )
+
+        runtime = payload.get("withholding_runtime_result", {})
+        self.assertEqual(len(adjustments), 1)
+        self.assertEqual(adjustments[0]["amount"], Decimal("10.00"))
+        self.assertEqual(runtime.get("base_amount"), "100.00")
+        self.assertEqual(runtime.get("collection_status"), "COLLECTED")
 
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._resolve_entity_runtime_tcs_mapping")
     @patch("receipts.services.receipt_voucher_service.StaticAccountService.get_ledger_id")

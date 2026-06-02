@@ -14,6 +14,8 @@ from payments.views.payment_exports import PaymentVoucherPDFAPIView
 from payments.views.payment_voucher import (
     PaymentVoucherApprovalAPIView,
     PaymentVoucherListCreateAPIView,
+    PaymentVoucherPostAPIView,
+    _duplicate_reference_warnings,
 )
 from posting.adapters.payment_voucher import PaymentVoucherPostingAdapter
 from withholding.models import WithholdingBaseRule
@@ -65,6 +67,30 @@ class PaymentPostingAdapterTests(SimpleTestCase):
         self.assertEqual(jl[3].amount, Decimal("5.00"))
         self.assertIn("Vendor Vendor-A", jl[0].description)
         self.assertIn("From HDFC Bank", jl[0].description)
+
+
+class PaymentVoucherReferenceWarningTests(SimpleTestCase):
+    @patch("payments.views.payment_voucher.PaymentVoucherHeader.objects")
+    def test_duplicate_reference_warning_includes_existing_voucher_code(self, mocked_objects):
+        mocked_objects.filter.return_value.exclude.return_value.order_by.return_value.filter.return_value.only.return_value.first.return_value = SimpleNamespace(
+            voucher_code="PPV-1002",
+            doc_code="PPV",
+            doc_no=1002,
+        )
+        voucher = SimpleNamespace(
+            id=99,
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=5,
+            paid_to_id=77,
+            reference_number="UTR-001",
+        )
+
+        warnings = _duplicate_reference_warnings(voucher)
+
+        self.assertEqual(warnings, [
+            "Reference already appears on voucher PPV-1002. Please double-check before proceeding."
+        ])
 
 
 class PaymentVoucherServiceTests(SimpleTestCase):
@@ -131,7 +157,9 @@ class PaymentVoucherServiceTests(SimpleTestCase):
             ap_settlement_id=99,
             created_by_id=5,
             voucher_code="PPV-12",
-            workflow_payload={},
+            workflow_payload={"_approval_state": {"status": "APPROVED", "approved_by": 8, "approved_at": "2026-05-28T10:00:00+0530"}},
+            approved_at="2026-05-28T10:00:00+0530",
+            approved_by_id=8,
             adjustments=SimpleNamespace(all=lambda: []),
             advance_adjustments=SimpleNamespace(all=lambda: []),
             save=MagicMock(),
@@ -140,9 +168,12 @@ class PaymentVoucherServiceTests(SimpleTestCase):
         mock_get_policy.return_value = SimpleNamespace(controls={"unpost_target_status": "confirmed"})
 
         res = PaymentVoucherService.unpost_voucher.__wrapped__(voucher_id=12, unposted_by_id=9)
-        self.assertEqual(res.message, "Unposted with reversal entry.")
+        self.assertEqual(res.message, "Unposted with reversal entry. Voucher reopened for correction and reposting.")
         self.assertEqual(header.status, PaymentVoucherHeader.Status.CONFIRMED)
         self.assertIsNone(header.ap_settlement_id)
+        self.assertEqual(header.workflow_payload["_approval_state"]["status"], "DRAFT")
+        self.assertIsNone(header.approved_at)
+        self.assertIsNone(header.approved_by_id)
         mock_cancel_settlement.assert_called_once_with(settlement_id=99, cancelled_by_id=9)
         mock_unpost_adapter.assert_called_once()
 
@@ -414,7 +445,9 @@ class PaymentVoucherServiceTests(SimpleTestCase):
             ap_settlement_id=201,
             created_by_id=5,
             voucher_code="PPV-41",
-            workflow_payload={},
+            workflow_payload={"_approval_state": {"status": "SUBMITTED", "submitted_by": 7}},
+            approved_at="2026-05-28T10:00:00+0530",
+            approved_by_id=8,
             adjustments=SimpleNamespace(all=lambda: []),
             advance_adjustments=SimpleNamespace(all=lambda: [advance_row]),
             vendor_advance_balance=advance_balance,
@@ -425,10 +458,13 @@ class PaymentVoucherServiceTests(SimpleTestCase):
 
         res = PaymentVoucherService.unpost_voucher.__wrapped__(voucher_id=41, unposted_by_id=9)
 
-        self.assertEqual(res.message, "Unposted with reversal entry.")
+        self.assertEqual(res.message, "Unposted with reversal entry. Voucher reopened for correction and reposting.")
         self.assertEqual(header.status, PaymentVoucherHeader.Status.DRAFT)
         self.assertIsNone(header.ap_settlement_id)
         self.assertIsNone(advance_row.ap_settlement_id)
+        self.assertEqual(header.workflow_payload["_approval_state"]["status"], "DRAFT")
+        self.assertIsNone(header.approved_at)
+        self.assertIsNone(header.approved_by_id)
         self.assertEqual(mock_cancel_settlement.call_count, 2)
         advance_balance.save.assert_called_once()
         mock_unpost_adapter.assert_called_once()
@@ -873,6 +909,34 @@ class PaymentVoucherViewValidationTests(SimpleTestCase):
         self.assertEqual(str(response.data["action"]), "Use submit, approve, or reject.")
         mocked_error_log.assert_called_once()
 
+    @patch("payments.views.payment_voucher._require_payment_permission")
+    @patch("payments.views.payment_voucher.PaymentVoucherService.post_voucher")
+    @patch("payments.views.payment_voucher.PaymentVoucherHeaderSerializer")
+    @patch("payments.views.payment_voucher.PaymentVoucherHeader.objects")
+    def test_post_view_returns_structured_warning_feedback(
+        self,
+        mocked_header_objects,
+        mocked_serializer,
+        mocked_post_voucher,
+        _mocked_require_permission,
+    ):
+        mocked_header_objects.only.return_value.get.return_value = SimpleNamespace(id=9, entity_id=1)
+        mocked_serializer.return_value.data = {"id": 9}
+        mocked_post_voucher.return_value = SimpleNamespace(
+            message="Posted with warnings: Advance settlement synced later | Static fallback used",
+            header=SimpleNamespace(id=9),
+        )
+        request = self._request("/api/payments/payment-vouchers/9/post/", {})
+
+        response = PaymentVoucherPostAPIView.as_view()(request, pk=9)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["notice"], "Posting completed with policy warnings.")
+        self.assertEqual(response.data["warnings"], [
+            "Advance settlement synced later",
+            "Static fallback used",
+        ])
+
 
 class PaymentVoucherCashGuardTests(SimpleTestCase):
     def test_against_bill_allows_zero_cash_with_advance(self):
@@ -901,6 +965,52 @@ class PaymentVoucherCashGuardTests(SimpleTestCase):
 
 
 class PaymentRuntimeWithholdingTests(SimpleTestCase):
+    @patch("payments.services.payment_voucher_service.PaymentVoucherService._resolve_entity_runtime_tds_mapping")
+    @patch("payments.services.payment_voucher_service.StaticAccountService.get_ledger_id")
+    @patch("payments.services.payment_voucher_service.StaticAccountService.get_account_id")
+    @patch("payments.services.payment_voucher_service.WithholdingSection.objects.filter")
+    def test_runtime_withholding_manual_mode_reverse_calculates_base_from_net_payment_cash(
+        self,
+        mock_filter,
+        mock_get_account_id,
+        mock_get_ledger_id,
+        mock_resolve_entity,
+    ):
+        mock_filter.return_value.only.return_value.first.return_value = SimpleNamespace(
+            id=5,
+            base_rule=WithholdingBaseRule.PAYMENT_VALUE,
+            section_code="194A",
+        )
+        mock_resolve_entity.return_value = (None, None)
+        mock_get_account_id.return_value = 9001
+        mock_get_ledger_id.return_value = 3001
+
+        adjustments, payload = PaymentVoucherService._apply_runtime_withholding_to_adjustments(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            paid_to_id=55,
+            voucher_date=None,
+            cash_paid_amount=Decimal("49500.00"),
+            allocations=[],
+            adjustments=[],
+            workflow_payload={
+                "withholding": {
+                    "enabled": True,
+                    "section_id": 5,
+                    "mode": "MANUAL",
+                    "manual_rate": "1.00",
+                    "manual_amount": "0.00",
+                    "allow_static_fallback": True,
+                }
+            },
+        )
+
+        self.assertEqual(adjustments[0]["settlement_effect"], "PLUS")
+        self.assertEqual(adjustments[0]["amount"], Decimal("500.00"))
+        self.assertEqual(payload["withholding_runtime_result"]["base_amount"], "50000.00")
+        self.assertEqual(payload["withholding_runtime_result"]["amount"], "500.00")
+
     @patch("payments.services.payment_voucher_service.WithholdingSection.objects.filter")
     @patch("payments.services.payment_voucher_service.StaticAccountService.get_ledger_id")
     @patch("payments.services.payment_voucher_service.StaticAccountService.get_account_id")
@@ -932,6 +1042,39 @@ class PaymentRuntimeWithholdingTests(SimpleTestCase):
         self.assertEqual(adjustments[0]["amount"], Decimal("10.00"))
         self.assertEqual(adjustments[0]["remarks"], PaymentVoucherService.AUTO_WITHHOLDING_TDS_REMARK)
         self.assertIn("withholding_runtime_result", payload)
+
+    @patch("payments.services.payment_voucher_service.WithholdingSection.objects.filter")
+    @patch("payments.services.payment_voucher_service.StaticAccountService.get_ledger_id")
+    @patch("payments.services.payment_voucher_service.StaticAccountService.get_account_id")
+    @patch("payments.services.payment_voucher_service.compute_withholding_preview")
+    def test_runtime_withholding_auto_mode_uses_reverse_calculated_payment_base_without_allocations(self, mock_preview, mock_get_account_id, mock_get_ledger_id, mock_filter):
+        mock_filter.return_value.only.return_value.first.return_value = SimpleNamespace(
+            id=5,
+            base_rule=WithholdingBaseRule.PAYMENT_VALUE,
+            section_code="194A",
+            rate_default=Decimal("1.0000"),
+        )
+        mock_get_account_id.return_value = 9001
+        mock_get_ledger_id.return_value = 3001
+        mock_preview.return_value = SimpleNamespace(rate=Decimal("1.0000"), amount=Decimal("500.00"), reason="auto", reason_code="OK")
+
+        adjustments, payload = PaymentVoucherService._apply_runtime_withholding_to_adjustments(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            paid_to_id=55,
+            voucher_date=None,
+            cash_paid_amount=Decimal("49500.00"),
+            allocations=[],
+            adjustments=[],
+            workflow_payload={"withholding": {"enabled": True, "section_id": 5, "mode": "AUTO", "allow_static_fallback": True}},
+        )
+
+        self.assertEqual(mock_preview.call_count, 1)
+        preview_call = mock_preview.call_args.kwargs
+        self.assertEqual(preview_call["taxable_total"], Decimal("50000.00"))
+        self.assertEqual(adjustments[0]["amount"], Decimal("500.00"))
+        self.assertEqual(payload["withholding_runtime_result"]["base_amount"], "50000.00")
 
     def test_runtime_withholding_disabled_removes_auto_row(self):
         adjustments, payload = PaymentVoucherService._apply_runtime_withholding_to_adjustments(

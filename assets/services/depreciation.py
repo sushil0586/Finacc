@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from calendar import monthrange
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from math import pow
 
@@ -47,6 +48,41 @@ def _asset_days_in_period(asset: FixedAsset, period_from: date, period_to: date)
     return (end - start).days + 1
 
 
+def _asset_effective_bounds(asset: FixedAsset, period_from: date, period_to: date) -> tuple[date, date] | None:
+    start = max(period_from, asset.depreciation_start_date or asset.put_to_use_date or asset.capitalization_date or asset.acquisition_date)
+    end = period_to
+    if asset.disposal_date:
+        end = min(end, asset.disposal_date)
+    if start > end:
+        return None
+    return start, end
+
+
+def _count_touched_months(start: date, end: date) -> int:
+    return ((end.year - start.year) * 12) + (end.month - start.month) + 1
+
+
+def _monthly_day_prorated_slm_amount(asset: FixedAsset, period_from: date, period_to: date, monthly_amount: Decimal) -> Decimal:
+    bounds = _asset_effective_bounds(asset, period_from, period_to)
+    if bounds is None or monthly_amount <= ZERO:
+        return ZERO
+
+    start, end = bounds
+    cursor = start
+    amount = ZERO
+
+    while cursor <= end:
+        month_last_day = monthrange(cursor.year, cursor.month)[1]
+        month_end = date(cursor.year, cursor.month, month_last_day)
+        segment_end = min(month_end, end)
+        days_in_segment = Decimal((segment_end - cursor).days + 1)
+        days_in_month = Decimal(month_last_day)
+        amount += (monthly_amount * days_in_segment / days_in_month)
+        cursor = segment_end + timedelta(days=1)
+
+    return q2(amount)
+
+
 def _period_factor(asset: FixedAsset, period_from: date, period_to: date, proration_mode: str) -> Decimal:
     days = _asset_days_in_period(asset, period_from, period_to)
     if days <= 0:
@@ -74,13 +110,21 @@ def _wdv_annual_rate(asset: FixedAsset) -> Decimal:
 
 def _depreciation_amount(asset: FixedAsset, *, period_from: date, period_to: date, proration_mode: str) -> tuple[Decimal, Decimal]:
     if asset.depreciation_method == FixedAsset.DepreciationMethod.SLM:
-        base_amount = monthly_slm_amount(asset)
+        monthly_amount = monthly_slm_amount(asset)
+        bounds = _asset_effective_bounds(asset, period_from, period_to)
+        if bounds is None or monthly_amount <= ZERO:
+            return ZERO, ZERO
+
+        start, end = bounds
+        touched_months = _count_touched_months(start, end)
         if proration_mode == "daily":
-            days = _asset_days_in_period(asset, period_from, period_to)
-            amount = q2((base_amount * Decimal(days)) / Decimal("30")) if days > 0 else ZERO
+            amount = _monthly_day_prorated_slm_amount(asset, period_from, period_to, monthly_amount)
         else:
-            amount = base_amount if _asset_days_in_period(asset, period_from, period_to) > 0 else ZERO
-        return amount, ZERO
+            amount = q2(monthly_amount * Decimal(touched_months))
+
+        opening_nbv = max(q2(asset.gross_block) - q2(asset.accumulated_depreciation) - q2(asset.impairment_amount), ZERO)
+        cap = max(opening_nbv - q2(asset.residual_value), ZERO)
+        return q2(min(amount, cap)), ZERO
 
     annual_rate = _wdv_annual_rate(asset)
     opening_nbv = max(q2(asset.gross_block) - q2(asset.accumulated_depreciation) - q2(asset.impairment_amount), ZERO)

@@ -5,6 +5,7 @@ from decimal import Decimal
 from rest_framework import serializers
 
 from sales.models.sales_ar import CustomerBillOpenItem, CustomerAdvanceBalance, CustomerSettlement, CustomerSettlementLine
+from sales.models.sales_core import SalesInvoiceLine
 
 
 class CustomerBillOpenItemSerializer(serializers.ModelSerializer):
@@ -13,12 +14,20 @@ class CustomerBillOpenItemSerializer(serializers.ModelSerializer):
     customer_ledger_id = serializers.IntegerField(read_only=True)
     customer_partytype = serializers.CharField(source="customer.commercial_profile.partytype", read_only=True)
     doc_type_name = serializers.SerializerMethodField()
+    source_route = serializers.SerializerMethodField()
 
     def get_doc_type_name(self, obj):
         try:
             return obj.header.get_doc_type_display()
         except Exception:
             return None
+
+    def get_source_route(self, obj):
+        header_id = getattr(obj, "header_id", None)
+        if not header_id:
+            return "/saleinvoice"
+        has_service_lines = SalesInvoiceLine.objects.filter(header_id=header_id, is_service=True).exists()
+        return "/saleserviceinvoice" if has_service_lines else "/saleinvoice"
 
     class Meta:
         model = CustomerBillOpenItem
@@ -39,6 +48,7 @@ class CustomerBillOpenItemSerializer(serializers.ModelSerializer):
             "due_date",
             "invoice_number",
             "customer_reference_number",
+            "source_route",
             "original_amount",
             "gross_amount",
             "tds_collected",

@@ -25,7 +25,13 @@ from financial.serializers import (
     ShippingDetailsListSerializer,
     ShippingDetailsSerializer,
 )
-from financial.services import build_ledger_balance_rows, create_account_with_synced_ledger
+from financial.governance import resolve_financial_master_rule
+from financial.services import (
+    allocate_next_ledger_code,
+    build_ledger_balance_rows,
+    ensure_account_profile_for_ledger,
+    ledger_should_be_party,
+)
 
 
 def _include_inactive(request):
@@ -58,6 +64,87 @@ def _linked_account_id(ledger):
     if not hasattr(ledger, "account_profile"):
         return None
     return ledger.account_profile.id
+
+
+def _ledger_save_kwargs(*, validated_data, request_user, instance=None, include_createdby=False):
+    entity = validated_data.get("entity") or getattr(instance, "entity", None)
+    accounttype_obj = validated_data.get("accounttype") or getattr(instance, "accounttype", None)
+    accounthead_obj = validated_data.get("accounthead") or getattr(instance, "accounthead", None)
+    creditaccounthead_obj = validated_data.get("creditaccounthead") or getattr(instance, "creditaccounthead", None)
+    is_system = validated_data.get("is_system", getattr(instance, "is_system", False))
+    is_party = validated_data.get("is_party", getattr(instance, "is_party", False))
+    ledger_code = validated_data.get("ledger_code", getattr(instance, "ledger_code", None))
+
+    save_kwargs = {}
+    if include_createdby:
+        save_kwargs["createdby"] = request_user
+    if ledger_code is None and entity is not None:
+        save_kwargs["ledger_code"] = allocate_next_ledger_code(
+            entity_id=entity.id,
+            account_type_id=getattr(accounttype_obj, "id", None),
+            debit_head_id=getattr(accounthead_obj, "id", None),
+            credit_head_id=getattr(creditaccounthead_obj, "id", None),
+            allocated_by=request_user,
+        )
+
+    resolved_is_party = ledger_should_be_party(
+        entity=entity,
+        is_party=is_party,
+        is_system=is_system,
+        accounttype_obj=accounttype_obj,
+        accounthead_obj=accounthead_obj,
+        creditaccounthead_obj=creditaccounthead_obj,
+    )
+    if resolved_is_party != is_party:
+        save_kwargs["is_party"] = resolved_is_party
+    return save_kwargs
+
+
+def _sync_party_management(*, ledger, request_user):
+    if ledger_should_be_party(
+        entity=ledger.entity,
+        is_party=ledger.is_party,
+        is_system=ledger.is_system,
+        accounttype_obj=ledger.accounttype,
+        accounthead_obj=ledger.accounthead,
+        creditaccounthead_obj=ledger.creditaccounthead,
+    ):
+        ensure_account_profile_for_ledger(ledger=ledger, createdby=request_user)
+    return ledger
+
+
+def _resolve_ledger_partytype(ledger):
+    account_profile = getattr(ledger, "account_profile", None)
+    commercial_profile = getattr(account_profile, "commercial_profile", None) if account_profile else None
+    return getattr(commercial_profile, "partytype", "") or ""
+
+
+def _ledger_direct_edit_blocked(*, ledger, request_user=None):
+    partytype = _resolve_ledger_partytype(ledger)
+    rule = resolve_financial_master_rule(
+        entity=ledger.entity,
+        partytype=partytype,
+        account_type_id=getattr(ledger, "accounttype_id", None),
+        debit_head_id=getattr(ledger, "accounthead_id", None),
+        credit_head_id=getattr(ledger, "creditaccounthead_id", None),
+    )
+    if rule and rule.allow_direct_ledger_edit:
+        return False, _linked_account_id(ledger)
+
+    should_be_party = ledger_should_be_party(
+        entity=ledger.entity,
+        is_party=ledger.is_party,
+        is_system=ledger.is_system,
+        accounttype_obj=getattr(ledger, "accounttype", None),
+        accounthead_obj=getattr(ledger, "accounthead", None),
+        creditaccounthead_obj=getattr(ledger, "creditaccounthead", None),
+    )
+    if hasattr(ledger, "account_profile") or should_be_party:
+        if should_be_party and not hasattr(ledger, "account_profile") and request_user is not None:
+            ensure_account_profile_for_ledger(ledger=ledger, createdby=request_user)
+            ledger.refresh_from_db()
+        return True, _linked_account_id(ledger)
+    return False, _linked_account_id(ledger)
 
 
 _LEGACY_ENDPOINT_ALIASES = {
@@ -326,21 +413,13 @@ class LedgerListCreateAPIView(ListCreateAPIView):
         return LedgerSerializer
 
     def perform_create(self, serializer):
-        ledger = serializer.save(createdby=self.request.user)
-        # Only party ledgers should get an account profile. Pure accounting
-        # ledgers must remain ledger-only.
-        if ledger.is_party and not ledger.is_system and not getattr(ledger, "account_profile_id", None):
-            create_account_with_synced_ledger(
-                account_data={
-                    "ledger": ledger,
-                    "entity": ledger.entity,
-                    "accountname": ledger.name,
-                    "legalname": ledger.legal_name,
-                    "canbedeleted": ledger.canbedeleted,
-                    "isactive": ledger.isactive,
-                    "createdby": self.request.user,
-                }
-            )
+        save_kwargs = _ledger_save_kwargs(
+            validated_data=getattr(serializer, "validated_data", {}) or {},
+            request_user=self.request.user,
+            include_createdby=True,
+        )
+        ledger = serializer.save(**save_kwargs)
+        _sync_party_management(ledger=ledger, request_user=self.request.user)
 
 
 class LedgerRetrieveUpdateDestroyAPIView(SoftDeleteRetrieveUpdateDestroyAPIView):
@@ -376,15 +455,24 @@ class LedgerRetrieveUpdateDestroyAPIView(SoftDeleteRetrieveUpdateDestroyAPIView)
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
-        account_id = _linked_account_id(instance)
-        if account_id:
+        blocked, account_id = _ledger_direct_edit_blocked(ledger=instance, request_user=request.user)
+        if blocked:
             return self._auto_managed_response(account_id, "edit_linked_account")
         return super().update(request, *args, **kwargs)
 
+    def perform_update(self, serializer):
+        save_kwargs = _ledger_save_kwargs(
+            validated_data=getattr(serializer, "validated_data", {}) or {},
+            request_user=self.request.user,
+            instance=serializer.instance,
+        )
+        ledger = serializer.save(**save_kwargs)
+        _sync_party_management(ledger=ledger, request_user=self.request.user)
+
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
-        account_id = _linked_account_id(instance)
-        if account_id:
+        blocked, account_id = _ledger_direct_edit_blocked(ledger=instance, request_user=request.user)
+        if blocked:
             return self._auto_managed_response(account_id, "deactivate_linked_account")
         return super().destroy(request, *args, **kwargs)
 

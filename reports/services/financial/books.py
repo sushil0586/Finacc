@@ -10,13 +10,15 @@ from django.db.models.functions import Coalesce
 
 from financial.models import account
 from financial.profile_access import account_partytype
+from financial.services_opening_balance import ACCOUNT_OPENING_TXN_ID_BASE
 from assets.models import DepreciationRun, FixedAsset
 from payments.models.payment_core import PaymentVoucherHeader
 from posting.models import Entry, EntryStatus, EntityStaticAccountMap, JournalLine, StaticAccount, TxnType
-from purchase.models.purchase_core import PurchaseInvoiceHeader
+from purchase.models.purchase_core import PurchaseInvoiceHeader, PurchaseInvoiceLine
 from receipts.models.receipt_core import ReceiptVoucherHeader
+from reports.services.financial.opening_balance_source import effective_opening_map_for_ledgers
 from reports.selectors.financial import normalize_scope_ids, resolve_date_window, resolve_scope_names
-from sales.models.sales_core import SalesInvoiceHeader
+from sales.models.sales_core import SalesInvoiceHeader, SalesInvoiceLine
 from vouchers.models.voucher_core import VoucherHeader
 
 ZERO = Decimal("0.00")
@@ -112,14 +114,43 @@ def _drilldown_target_for_txn(txn_type: str) -> str:
         TxnType.PURCHASE_CREDIT_NOTE: "purchase_invoice_detail",
         TxnType.PURCHASE_DEBIT_NOTE: "purchase_invoice_detail",
         TxnType.PURCHASE_RETURN: "purchase_invoice_detail",
+        TxnType.FIXED_ASSET_CAPITALIZATION: "asset_history_detail",
+        TxnType.FIXED_ASSET_IMPAIRMENT: "asset_history_detail",
+        TxnType.FIXED_ASSET_DISPOSAL: "asset_history_detail",
+        TxnType.FIXED_ASSET_DEPRECIATION: "posting_entry_detail",
+        TxnType.OPENING_BALANCE: "posting_entry_detail",
         TxnType.JOURNAL: "voucher_detail",
-        TxnType.YEAR_END_CLOSE: "journal_entry_detail",
+        TxnType.YEAR_END_CLOSE: "posting_entry_detail",
         TxnType.JOURNAL_CASH: "voucher_detail",
         TxnType.JOURNAL_BANK: "voucher_detail",
         TxnType.RECEIPT: "receipt_voucher_detail",
         TxnType.PAYMENT: "payment_voucher_detail",
     }
     return mapping.get(txn_type, "journal_entry_detail")
+
+
+def _invoice_drilldown_route(txn_type: str | None, txn_id: int | None) -> str | None:
+    if not txn_id:
+        return None
+    if txn_type in {
+        TxnType.PURCHASE,
+        TxnType.PURCHASE_CREDIT_NOTE,
+        TxnType.PURCHASE_DEBIT_NOTE,
+        TxnType.PURCHASE_RETURN,
+    }:
+        if PurchaseInvoiceLine.objects.filter(header_id=txn_id, is_service=True).exists():
+            return "/purchaseserviceinvoice"
+        return "/purchaseinvoice"
+    if txn_type in {
+        TxnType.SALES,
+        TxnType.SALES_CREDIT_NOTE,
+        TxnType.SALES_DEBIT_NOTE,
+        TxnType.SALES_RETURN,
+    }:
+        if SalesInvoiceLine.objects.filter(header_id=txn_id, is_service=True).exists():
+            return "/saleserviceinvoice"
+        return "/saleinvoice"
+    return None
 
 
 def _document_lookup_binding(document_type: str, source_module: str | None):
@@ -357,20 +388,36 @@ def _paginate_queryset(qs, *, page: int, page_size: int):
 def _drilldown_payload(entry: Entry, *, entity_id, entityfin_id, subentity_id):
     """Stable drill-down identifiers used by the frontend to open source documents/details."""
     source_module, _ = _txn_source(entry.txn_type)
+    drilldown_target = _drilldown_target_for_txn(entry.txn_type)
+    account_opening_account_id = None
+    if entry.txn_type == TxnType.OPENING_BALANCE and int(entry.txn_id or 0) >= ACCOUNT_OPENING_TXN_ID_BASE:
+        account_opening_account_id = int(entry.txn_id) - ACCOUNT_OPENING_TXN_ID_BASE
+        drilldown_target = "account_opening_detail"
+    asset_txn_types = {
+        TxnType.FIXED_ASSET_CAPITALIZATION,
+        TxnType.FIXED_ASSET_IMPAIRMENT,
+        TxnType.FIXED_ASSET_DISPOSAL,
+    }
+    drilldown_params = {
+        "id": entry.txn_id,
+        "entry_id": entry.id,
+        "entity": entity_id,
+        "entityfinid": entityfin_id,
+        "subentity": subentity_id,
+    }
+    if drilldown_target == "asset_history_detail" or entry.txn_type in asset_txn_types:
+        drilldown_params["asset_id"] = entry.txn_id
+    if account_opening_account_id:
+        drilldown_params["account_id"] = account_opening_account_id
     return {
         "entry_id": entry.id,
         "txn_type": entry.txn_type,
         "txn_type_name": entry.get_txn_type_display() if hasattr(entry, "get_txn_type_display") else entry.txn_type,
         "txn_id": entry.txn_id,
         "source_module": source_module,
-        "drilldown_target": _drilldown_target_for_txn(entry.txn_type),
-        "drilldown_params": {
-            "id": entry.txn_id,
-            "entry_id": entry.id,
-            "entity": entity_id,
-            "entityfinid": entityfin_id,
-            "subentity": subentity_id,
-        },
+        "drilldown_target": drilldown_target,
+        "drilldown_route": _invoice_drilldown_route(entry.txn_type, entry.txn_id),
+        "drilldown_params": drilldown_params,
     }
 
 
@@ -631,7 +678,7 @@ def _infer_account_kind(row, *, static_kind_by_account):
     return "cash"
 
 
-def _cashbook_target_accounts(entity_id, *, mode, cash_account_ids, bank_account_ids):
+def _cashbook_target_accounts(entity_id, *, mode, cash_account_ids, bank_account_ids, entityfin_id=None, subentity_id=None):
     """Resolve Cashbook target accounts for the requested mode and explicit filters."""
     explicit_rows = {}
     if cash_account_ids:
@@ -676,6 +723,13 @@ def _cashbook_target_accounts(entity_id, *, mode, cash_account_ids, bank_account
         }
 
     refs = []
+    opening_map = effective_opening_map_for_ledgers(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        ledgers=[row.ledger for row in rows.values() if getattr(row, "ledger", None)],
+        posted_only=True,
+    )
     for row in rows.values():
         kind = (
             "cash"
@@ -688,9 +742,7 @@ def _cashbook_target_accounts(entity_id, *, mode, cash_account_ids, bank_account
             continue
         opening = ZERO
         if getattr(row, "ledger", None):
-            opening = Decimal(getattr(row.ledger, "openingbdr", ZERO) or ZERO) - Decimal(
-                getattr(row.ledger, "openingbcr", ZERO) or ZERO
-            )
+            opening = opening_map.get(int(row.ledger_id), ZERO)
         else:
             opening = ZERO
         refs.append(
@@ -769,6 +821,8 @@ def build_cashbook(
         mode=mode,
         cash_account_ids=cash_account_ids or [],
         bank_account_ids=bank_account_ids or [],
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
     )
     ref_by_key = {ref.key: ref for ref in refs}
     account_ids = [ref.account_id for ref in refs]

@@ -56,7 +56,7 @@ class AssetHistoryScopeSerializer(serializers.Serializer):
     asset = serializers.IntegerField()
 
 
-class AssetDashboardSummaryScopeSerializer(serializers.Serializer):
+class AssetDashboardScopeSerializer(serializers.Serializer):
     entity = serializers.IntegerField()
     entityfinid = serializers.IntegerField(required=False, allow_null=True)
     subentity = serializers.IntegerField(required=False, allow_null=True)

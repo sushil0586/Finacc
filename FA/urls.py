@@ -53,6 +53,7 @@ urlpatterns = [
     path("api/rbac/", include("rbac.urls", namespace="rbac_api")),
     path("api/subscriptions/", include("subscriptions.urls", namespace="subscriptions_api")),
     path("api/bank-reconciliation/", include("bank_reconciliation.urls", namespace="bank_reconciliation_api")),
+    path("api/bank-reco/", include("bank_reco.urls", namespace="bank_reco_api")),
     path("api/vouchers/", include("vouchers.urls")),
     path("api/sales/", include("sales.urls.api")),
     path("api/posting/", include("posting.urls")),
@@ -62,6 +63,7 @@ urlpatterns = [
     path("api/retail/", include(("retail.urls", "retail"), namespace="retail")),
     path("api/", include("withholding.urls")),
     path("api/gst-tds/", include("gst_tds.urls")),
+    path("api/gst-reconciliation/", include("gst_reconciliation.urls", namespace="gst_reconciliation_api")),
 
     re_path(r'^swagger(?P<format>\.json|\.yaml)$',  # use re_path + raw string
             schema_view.without_ui(cache_timeout=0),

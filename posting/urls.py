@@ -25,4 +25,9 @@ urlpatterns = [
         views.StaticAccountSettingDetailView.as_view(),
         name="static-account-settings-detail",
     ),
+    path(
+        "entities/<int:entity_id>/static-account-settings/bank-account-mappings/<int:bank_account_id>/",
+        views.BankAccountMappingDetailView.as_view(),
+        name="bank-account-mapping-detail",
+    ),
 ]

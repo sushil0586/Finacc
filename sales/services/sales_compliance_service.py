@@ -821,6 +821,11 @@ class SalesComplianceService:
             request_json={"irn": irn_to_fetch, "supplier_gstin": supplier_gstin},
             response_json=result.raw,
         )
+        ComplianceAuditService.resolve_exception(
+            invoice=inv,
+            exception_type="IRN_GENERATION_FAILED",
+            user=self.user,
+        )
         return {
             "status": "SUCCESS",
             "irn": einv.irn,
@@ -903,6 +908,11 @@ class SalesComplianceService:
             user=self.user,
             request_json={"irn": irn_to_fetch, "supplier_gstin": supplier_gstin},
             response_json=result.raw,
+        )
+        ComplianceAuditService.resolve_exception(
+            invoice=inv,
+            exception_type="EWB_GENERATION_FAILED",
+            user=self.user,
         )
         return {
             "status": "SUCCESS",

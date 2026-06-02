@@ -12,7 +12,7 @@ from django.db.models import Sum, Q
 from django.utils import timezone
 from financial.profile_access import account_compliance_profile, account_gstno, account_pan, account_primary_address
 
-from purchase.models.purchase_core import PurchaseInvoiceHeader
+from purchase.models.purchase_core import PurchaseInvoiceHeader, PurchaseInvoiceLine
 from purchase.services.purchase_settings_service import PurchaseSettingsService
 from purchase.models.purchase_statutory import (
     PurchaseStatutoryChallan,
@@ -544,10 +544,17 @@ class PurchaseStatutoryService:
         return {
             "source_kind": "purchase_invoice",
             "source_id": source_id or None,
-            "source_route": "/purchaseinvoice",
+            "source_route": PurchaseStatutoryService._purchase_source_route(header_id=source_id or None),
             "source_search": token or source_id or "",
             "source_label": f"Voucher {token}" if token else (f"Voucher #{source_id}" if source_id else ""),
         }
+
+    @staticmethod
+    def _purchase_source_route(*, header_id: Optional[int]) -> str:
+        source_id = int(header_id or 0)
+        if source_id and PurchaseInvoiceLine.objects.filter(header_id=source_id, is_service=True).exists():
+            return "/purchaseserviceinvoice"
+        return "/purchaseinvoice"
 
     @staticmethod
     def _challan_source_meta(*, challan_id: Optional[int], challan_no: Optional[str]) -> Dict[str, object]:
@@ -963,6 +970,23 @@ class PurchaseStatutoryService:
             raise ValueError("A revision already exists for this original_return_id and revision_no.")
 
     @staticmethod
+    def _assert_no_active_revision_draft(
+        *,
+        original_return_id: Optional[int],
+        exclude_filing_id: Optional[int] = None,
+    ) -> None:
+        if not original_return_id:
+            return
+        qs = PurchaseStatutoryReturn.objects.filter(
+            original_return_id=original_return_id,
+            status=PurchaseStatutoryReturn.Status.DRAFT,
+        )
+        if exclude_filing_id:
+            qs = qs.exclude(pk=exclude_filing_id)
+        if qs.exists():
+            raise ValueError("An active revision draft already exists for this original return. Finish or cancel that revision first.")
+
+    @staticmethod
     def _validate_header_amount_for_tax_type(*, header: PurchaseInvoiceHeader, tax_type: str, amount: Decimal) -> None:
         amt = q2(amount)
         if amt <= ZERO2:
@@ -1367,6 +1391,8 @@ class PurchaseStatutoryService:
         line_rows = lines or []
         if not line_rows:
             raise ValueError("At least one line is required.")
+        if int(revision_no or 0) > 0 and not original_return_id:
+            raise ValueError("original_return_id is required when revision_no > 0.")
         PurchaseStatutoryService._validate_period_bounds(
             period_from=period_from,
             period_to=period_to,
@@ -1411,6 +1437,9 @@ class PurchaseStatutoryService:
         PurchaseStatutoryService._assert_unique_revision_number(
             original_return_id=original_return_id,
             revision_no=revision_no,
+        )
+        PurchaseStatutoryService._assert_no_active_revision_draft(
+            original_return_id=original_return_id,
         )
 
         filing = PurchaseStatutoryReturn.objects.create(
@@ -1536,6 +1565,8 @@ class PurchaseStatutoryService:
         line_rows = lines or []
         if not line_rows:
             raise ValueError("At least one line is required.")
+        if int(revision_no or 0) > 0 and not original_return_id:
+            raise ValueError("original_return_id is required when revision_no > 0.")
         PurchaseStatutoryService._validate_period_bounds(
             period_from=period_from,
             period_to=period_to,
@@ -1591,6 +1622,10 @@ class PurchaseStatutoryService:
         PurchaseStatutoryService._assert_unique_revision_number(
             original_return_id=original_return_id,
             revision_no=revision_no,
+            exclude_filing_id=filing_id,
+        )
+        PurchaseStatutoryService._assert_no_active_revision_draft(
+            original_return_id=original_return_id,
             exclude_filing_id=filing_id,
         )
 
@@ -1959,6 +1994,9 @@ class PurchaseStatutoryService:
         draft_challan = challan_qs.filter(status=PurchaseStatutoryChallan.Status.DRAFT).aggregate(t=Sum("amount"))["t"] or ZERO2
         draft_return = return_qs.filter(status=PurchaseStatutoryReturn.Status.DRAFT).aggregate(t=Sum("amount"))["t"] or ZERO2
 
+        pending_deposit = max(q2(q2(deducted) - q2(deposited)), ZERO2)
+        pending_filing = max(q2(q2(deposited) - q2(filed)), ZERO2)
+
         return {
             "deducted": str(q2(deducted)),
             "deposited": str(q2(deposited)),
@@ -1969,8 +2007,8 @@ class PurchaseStatutoryService:
             "filed_interest": str(q2(filed_interest)),
             "filed_late_fee": str(q2(filed_late_fee)),
             "filed_penalty": str(q2(filed_penalty)),
-            "pending_deposit": str(q2(q2(deducted) - q2(deposited))),
-            "pending_filing": str(q2(q2(deposited) - q2(filed))),
+            "pending_deposit": str(pending_deposit),
+            "pending_filing": str(pending_filing),
             "draft_challan": str(q2(draft_challan)),
             "draft_return": str(q2(draft_return)),
         }
@@ -1995,7 +2033,7 @@ class PurchaseStatutoryService:
         qs = PurchaseInvoiceHeader.objects.filter(
             entity_id=entity_id,
             entityfinid_id=entityfinid_id,
-        ).select_related("vendor").prefetch_related("tax_summaries")
+        ).select_related("vendor").prefetch_related("tax_summaries", "lines")
 
         if subentity_id is not None:
             qs = qs.filter(subentity_id=subentity_id)
@@ -2061,6 +2099,25 @@ class PurchaseStatutoryService:
 
         for h in headers:
             action = latest_action_by_header.get(int(h.id)) or {}
+            behavior_counts = {
+                "inventory": 0,
+                "expense": 0,
+                "asset": 0,
+                "other": 0,
+            }
+            for line in h.lines.all():
+                behavior_key = str(getattr(line, "purchase_behavior", "") or "").strip().lower()
+                if behavior_key in behavior_counts:
+                    behavior_counts[behavior_key] += 1
+                else:
+                    behavior_counts["other"] += 1
+            non_zero_behaviors = [key for key, count in behavior_counts.items() if count > 0 and key != "other"]
+            if len(non_zero_behaviors) == 1 and behavior_counts["other"] == 0:
+                purchase_behavior_summary = non_zero_behaviors[0]
+            elif any(count > 0 for count in behavior_counts.values()):
+                purchase_behavior_summary = "mixed"
+            else:
+                purchase_behavior_summary = None
             eligible_tax = q2(
                 sum((q2(getattr(bucket, "itc_eligible_tax", ZERO2)) for bucket in h.tax_summaries.all()), ZERO2)
             )
@@ -2127,6 +2184,8 @@ class PurchaseStatutoryService:
                     "total_gst": str(q2(getattr(h, "total_gst", ZERO2))),
                     "itc_eligible_tax": str(eligible_tax),
                     "itc_ineligible_tax": str(ineligible_tax),
+                    "purchase_behavior_summary": purchase_behavior_summary,
+                    "asset_line_count": int(behavior_counts["asset"]),
                     "last_itc_action": action.get("action_type"),
                     "last_itc_action_at": action.get("acted_at"),
                     "last_itc_action_by": action.get("acted_by"),
@@ -2588,6 +2647,7 @@ class PurchaseStatutoryService:
                 total_amount = q2(total_amount + amount)
                 quality_summary["line_count"] += 1
 
+                filing_return_code = (filing.return_code or "").strip().upper()
                 section_code = (ln.section_snapshot_code or "").strip().upper() or "UNSPECIFIED"
                 vendor_name = (
                     getattr(getattr(ln, "header", None), "vendor_name", None)
@@ -2598,9 +2658,17 @@ class PurchaseStatutoryService:
                 tax_id_token = (ln.deductee_tax_id_snapshot or "").strip()
                 residency = (ln.deductee_residency_snapshot or "").strip().upper()
 
-                has_missing_pan = not pan_token
+                requires_pan = (
+                    residency == PurchaseStatutoryReturnLine.DeducteeResidency.RESIDENT
+                    or (not residency and filing_return_code == "26Q")
+                )
+                requires_tax_id = (
+                    residency == PurchaseStatutoryReturnLine.DeducteeResidency.NON_RESIDENT
+                    or (not residency and filing_return_code == "27Q")
+                )
+                has_missing_pan = requires_pan and not pan_token
                 has_invalid_pan = bool(pan_token) and not PurchaseStatutoryService._is_valid_pan(pan_token)
-                has_missing_tax_id = not tax_id_token
+                has_missing_tax_id = requires_tax_id and not tax_id_token
                 if residency == PurchaseStatutoryReturnLine.DeducteeResidency.RESIDENT:
                     quality_summary["resident_count"] += 1
                 elif residency == PurchaseStatutoryReturnLine.DeducteeResidency.NON_RESIDENT:
@@ -2758,7 +2826,10 @@ class PurchaseStatutoryService:
             entity_id=entity_id,
             entityfinid_id=entityfinid_id,
             tax_type=tax_type,
-            status=PurchaseStatutoryReturn.Status.FILED,
+            status__in=[
+                PurchaseStatutoryReturn.Status.FILED,
+                PurchaseStatutoryReturn.Status.REVISED,
+            ],
         )
         if subentity_id is not None:
             filed_returns = filed_returns.filter(subentity_id=subentity_id)
@@ -2772,11 +2843,10 @@ class PurchaseStatutoryService:
         pending_challan_rows = [
             {
                 **dict(row),
-                "source_kind": "purchase_invoice",
-                "source_id": int(row.get("header_id") or 0),
-                "source_route": "/purchaseinvoice",
-                "source_search": row.get("purchase_number") or row.get("header_id") or "",
-                "source_label": f"Voucher {row.get('purchase_number')}" if row.get("purchase_number") else "",
+                **PurchaseStatutoryService._purchase_source_meta(
+                    header_id=row.get("header_id"),
+                    purchase_number=row.get("purchase_number"),
+                ),
             }
             for row in challan_data.get("lines", [])
         ]
@@ -2829,9 +2899,16 @@ class PurchaseStatutoryService:
             .prefetch_related("lines__header", "lines__challan")
             .get(pk=filing_id)
         )
+        code = (filing.return_code or "").strip().upper()
+        if filing.tax_type != PurchaseStatutoryReturn.TaxType.IT_TDS or code not in {"26Q", "27Q"}:
+            raise ValueError("NSDL export is available only for IT_TDS returns 26Q/27Q.")
+        if int(filing.status) not in (
+            int(PurchaseStatutoryReturn.Status.FILED),
+            int(PurchaseStatutoryReturn.Status.REVISED),
+        ):
+            raise ValueError("NSDL export is available only for filed or revised IT_TDS returns.")
         lines = list(filing.lines.all())
         total_amt = q2(sum((q2(ln.amount) for ln in lines), ZERO2))
-        code = (filing.return_code or "").strip().upper()
         residency_mode = "MIXED"
         if code == "26Q":
             residency_mode = "RESIDENT_ONLY"
@@ -2860,12 +2937,21 @@ class PurchaseStatutoryService:
                 quality_summary["resident_count"] += 1
             elif residency == PurchaseStatutoryReturnLine.DeducteeResidency.NON_RESIDENT:
                 quality_summary["non_resident_count"] += 1
-            if not pan_token:
-                quality_summary["missing_pan"] += 1
-            elif not PurchaseStatutoryService._is_valid_pan(pan_token):
-                quality_summary["invalid_pan_format"] += 1
-            if not tax_id_token:
-                quality_summary["missing_tax_id"] += 1
+            if code == "26Q":
+                if not pan_token:
+                    quality_summary["missing_pan"] += 1
+                elif not PurchaseStatutoryService._is_valid_pan(pan_token):
+                    quality_summary["invalid_pan_format"] += 1
+            elif code == "27Q":
+                if not tax_id_token:
+                    quality_summary["missing_tax_id"] += 1
+            else:
+                if not pan_token:
+                    quality_summary["missing_pan"] += 1
+                elif not PurchaseStatutoryService._is_valid_pan(pan_token):
+                    quality_summary["invalid_pan_format"] += 1
+                if not tax_id_token:
+                    quality_summary["missing_tax_id"] += 1
             txt_rows.append(
                 "|".join(
                     [
@@ -3284,11 +3370,10 @@ class PurchaseStatutoryService:
             {
                 **dict(row),
                 "vendor_name": row.get("vendor_name") or "",
-                "source_kind": "purchase_invoice",
-                "source_id": int(row.get("id") or 0),
-                "source_route": "/purchaseinvoice",
-                "source_search": row.get("purchase_number") or row.get("id") or "",
-                "source_label": f"Voucher {row.get('purchase_number')}" if row.get("purchase_number") else "",
+                **PurchaseStatutoryService._purchase_source_meta(
+                    header_id=row.get("id"),
+                    purchase_number=row.get("purchase_number"),
+                ),
             }
             for row in invoice_qs.exclude(id__in=entry_ids).values("id", "purchase_number", "bill_date", "grand_total", "vendor_name")
         ]

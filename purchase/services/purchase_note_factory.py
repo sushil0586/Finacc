@@ -69,6 +69,44 @@ class PurchaseNoteFactory:
         return 1  # DN increases purchase
 
     @staticmethod
+    def _assert_duplicate_note_guard(
+        *,
+        source_invoice: PurchaseInvoiceHeader,
+        note_type: int,
+        allow_duplicate: bool = False,
+    ) -> None:
+        if allow_duplicate:
+            return
+
+        existing = (
+            PurchaseInvoiceHeader.objects
+            .filter(
+                ref_document_id=source_invoice.id,
+                doc_type=note_type,
+            )
+            .exclude(status=Status.CANCELLED)
+            .order_by("-created_at", "-id")
+            .first()
+        )
+        if not existing:
+            return
+
+        note_label = "credit note" if int(note_type) == int(DocType.CREDIT_NOTE) else "debit note"
+        raise ValueError(
+            {
+                "detail": f"An active {note_label} already exists for this purchase invoice. Open or cancel the existing note, or confirm if you want to create one more.",
+                "duplicate_note_guard": {
+                    "code": "purchase_duplicate_note_exists",
+                    "note_type": int(note_type),
+                    "existing_note_id": existing.id,
+                    "existing_doc_no": getattr(existing, "doc_no", None),
+                    "existing_purchase_number": getattr(existing, "purchase_number", None),
+                    "existing_status": int(getattr(existing, "status", 0) or 0),
+                },
+            }
+        )
+
+    @staticmethod
     @transaction.atomic
     def create_note_from_invoice(
         *,
@@ -76,6 +114,8 @@ class PurchaseNoteFactory:
         note_type: int,
         note_reason: str = "qty_return",
         created_by_id: int | None = None,
+        correction_reason: str | None = None,
+        allow_duplicate: bool = False,
     ) -> NoteCreateResult:
         src = (
             PurchaseInvoiceHeader.objects
@@ -97,8 +137,19 @@ class PurchaseNoteFactory:
         if int(note_type) not in (int(DocType.CREDIT_NOTE), int(DocType.DEBIT_NOTE)):
             raise ValueError("note_type must be CREDIT_NOTE or DEBIT_NOTE.")
 
-        sign = PurchaseNoteFactory._sign_for_note(note_type)
+        PurchaseNoteFactory._assert_duplicate_note_guard(
+            source_invoice=src,
+            note_type=note_type,
+            allow_duplicate=allow_duplicate,
+        )
+
         is_qty_return = (note_reason == PurchaseInvoiceHeader.NoteReason.QUANTITY_RETURN)
+        amendment_window = PurchaseInvoiceService.amendment_window_for_header(src)
+        correction_date = amendment_window.correction_date or timezone.localdate()
+        PurchaseInvoiceService.assert_note_correction_date_open(
+            ref_document=src,
+            correction_date=correction_date,
+        )
 
         # Pick a doc_code series for the note (usually separate series PCN / PDN)
         settings = PurchaseSettingsService.get_settings(src.entity_id, src.subentity_id)
@@ -119,14 +170,16 @@ class PurchaseNoteFactory:
             subentity_id=src.subentity_id,
             doc_type_id=dt_id,
             doc_code=note_doc_code,
-            on_date=timezone.localdate(),
+            on_date=correction_date,
         )
 
         # Create note header (DRAFT by default)
         note = PurchaseInvoiceHeader.objects.create(
             # identity
             doc_type=note_type,
-            bill_date=timezone.localdate(),
+            bill_date=correction_date,
+            posting_date=correction_date,
+            due_date=correction_date,
             doc_code=note_doc_code,
             doc_no=allocated.doc_no,
             purchase_number=allocated.display_no,
@@ -177,15 +230,74 @@ class PurchaseNoteFactory:
 
             # scope
             subentity=src.subentity,
+            location=src.location,
             entity=src.entity,
             entityfinid=src.entityfinid,
 
             created_by_id=created_by_id or src.created_by_id,
         )
 
-        # Copy lines with sign handling:
-        # - Keep qty positive (your UI can change qty if needed)
-        # - Make values/taxes signed for CN
+        line_payloads = []
+        for ln in src.lines.all().order_by("line_no", "id"):
+            line_payloads.append(
+                {
+                    "line_no": ln.line_no,
+                    "product": ln.product,
+                    "purchase_account": getattr(ln, "purchase_account_id", None),
+                    "product_desc": ln.product_desc,
+                    "is_service": ln.is_service,
+                    "purchase_behavior": getattr(ln, "purchase_behavior", None),
+                    "hsn_sac": ln.hsn_sac,
+                    "batch_number": getattr(ln, "batch_number", "") or "",
+                    "manufacture_date": getattr(ln, "manufacture_date", None),
+                    "expiry_date": getattr(ln, "expiry_date", None),
+                    "uom": ln.uom,
+                    "qty": ln.qty,
+                    "free_qty": getattr(ln, "free_qty", 0),
+                    "rate": ln.rate,
+                    "taxability": ln.taxability,
+                    "taxable_value": ln.taxable_value or 0,
+                    "gst_rate": ln.gst_rate,
+                    "cgst_percent": ln.cgst_percent,
+                    "sgst_percent": ln.sgst_percent,
+                    "igst_percent": ln.igst_percent,
+                    "cgst_amount": ln.cgst_amount or 0,
+                    "sgst_amount": ln.sgst_amount or 0,
+                    "igst_amount": ln.igst_amount or 0,
+                    "cess_amount": ln.cess_amount or 0,
+                    "line_total": ln.line_total or 0,
+                    "is_itc_eligible": ln.is_itc_eligible,
+                    "itc_block_reason": ln.itc_block_reason,
+                }
+            )
+        derived = PurchaseInvoiceService.derive_tax_regime(
+            {
+                "tax_regime": note.tax_regime,
+                "is_igst": note.is_igst,
+                "vendor_state": note.vendor_state,
+                "supplier_state": note.supplier_state,
+                "place_of_supply_state": note.place_of_supply_state,
+            }
+        )
+        PurchaseInvoiceService.validate_lines_structural(
+            {
+                "doc_type": note.doc_type,
+                "ref_document": src,
+                "note_reason": note_reason,
+                "vendor": note.vendor,
+                "vendor_gstin": note.vendor_gstin,
+                "default_taxability": note.default_taxability,
+                "is_reverse_charge": note.is_reverse_charge,
+                "is_itc_eligible": note.is_itc_eligible,
+                "itc_claim_status": note.itc_claim_status,
+                "supply_category": note.supply_category,
+            },
+            line_payloads,
+            derived,
+        )
+
+        # Copy lines with document-native values.
+        # Downstream posting and reports apply note polarity from doc_type.
         new_lines = []
         for ln in src.lines.all().order_by("line_no", "id"):
             new_lines.append(
@@ -206,18 +318,18 @@ class PurchaseNoteFactory:
                     rate=ln.rate,
 
                     taxability=ln.taxability,
-                    taxable_value=(ln.taxable_value or 0) * sign,
+                    taxable_value=(ln.taxable_value or 0),
 
                     gst_rate=ln.gst_rate,
                     cgst_percent=ln.cgst_percent,
                     sgst_percent=ln.sgst_percent,
                     igst_percent=ln.igst_percent,
 
-                    cgst_amount=(ln.cgst_amount or 0) * sign,
-                    sgst_amount=(ln.sgst_amount or 0) * sign,
-                    igst_amount=(ln.igst_amount or 0) * sign,
-                    cess_amount=(ln.cess_amount or 0) * sign,
-                    line_total=(ln.line_total or 0) * sign,
+                    cgst_amount=(ln.cgst_amount or 0),
+                    sgst_amount=(ln.sgst_amount or 0),
+                    igst_amount=(ln.igst_amount or 0),
+                    cess_amount=(ln.cess_amount or 0),
+                    line_total=(ln.line_total or 0),
 
                     is_itc_eligible=ln.is_itc_eligible,
                     itc_block_reason=ln.itc_block_reason,
@@ -243,9 +355,19 @@ class PurchaseNoteFactory:
         note.total_gst = totals["total_gst"]
         note.grand_total = totals["grand_total_base"] + (note.round_off or 0)
         note.save(update_fields=[
+            "posting_date", "due_date",
             "total_taxable", "total_cgst", "total_sgst", "total_igst",
             "total_cess", "total_gst", "grand_total"
         ])
+
+        PurchaseInvoiceService.append_correction_audit_event(
+            original=src,
+            correction=note,
+            correction_type="purchase_credit_note" if int(note_type) == int(DocType.CREDIT_NOTE) else "purchase_debit_note",
+            reason=correction_reason or note_reason,
+            user_id=created_by_id,
+            gst_period_impact=amendment_window.gst_period or correction_date.strftime("%Y-%m"),
+        )
 
         note_label = "Credit Note" if int(note_type) == int(DocType.CREDIT_NOTE) else "Debit Note"
         return NoteCreateResult(header=note, message=f"{note_label} created successfully.")

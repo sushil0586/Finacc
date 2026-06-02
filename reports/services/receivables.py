@@ -18,7 +18,7 @@ from financial.profile_access import (
 from financial.models import AccountAddress, account
 from sales.models.sales_ar import CustomerAdvanceBalance, CustomerBillOpenItem, CustomerSettlement, CustomerSettlementLine
 from receipts.models import ReceiptVoucherHeader
-from sales.models.sales_core import SalesInvoiceHeader
+from sales.models.sales_core import SalesInvoiceHeader, SalesInvoiceLine
 from sales.services.sales_ar_service import SalesArService
 from reports.selectors.financial import normalize_scope_ids, resolve_date_window
 
@@ -106,6 +106,13 @@ def _scope_filter(qs, *, entity_id, entityfin_id, subentity_id):
 
 def _exclude_cancelled_open_items(qs):
     return qs.exclude(header__status=SalesInvoiceHeader.Status.CANCELLED)
+
+
+def _sales_invoice_route(*, invoice_id: int | None) -> str:
+    if not invoice_id:
+        return "/saleinvoice"
+    has_service_lines = SalesInvoiceLine.objects.filter(header_id=invoice_id, is_service=True).exists()
+    return "/saleserviceinvoice" if has_service_lines else "/saleinvoice"
 
 
 def _settlement_line_sums(*, entity_id, entityfin_id, subentity_id, upto_date):
@@ -939,6 +946,7 @@ def build_receivable_aging_report(
                 },
                 "invoice": {
                     "target": "sales_invoice",
+                    "route": _sales_invoice_route(invoice_id=item.header_id),
                     "params": {"id": item.header_id, "entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id},
                 },
                 "payment_allocation": {
@@ -1116,6 +1124,7 @@ def build_open_items_report(
     entity_id,
     entityfin_id=None,
     subentity_id=None,
+    as_of_date=None,
     customer_id=None,
     search=None,
     sort_by=None,
@@ -1126,15 +1135,38 @@ def build_open_items_report(
     entity_id, entityfin_id, subentity_id = normalize_scope_ids(entity_id, entityfin_id, subentity_id)
     if not entityfin_id:
         raise ValueError("entityfin_id is required.")
+    _from_date, resolved_as_of = _resolve_scope_dates(entityfin_id, None, None, as_of_date)
+    if not resolved_as_of:
+        raise ValueError("as_of_date is required.")
+
+    line_map = _settlement_line_sums(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        upto_date=resolved_as_of,
+    )
+    last_settlement_rows = CustomerSettlementLine.objects.filter(
+        settlement__status=CustomerSettlement.Status.POSTED,
+        settlement__settlement_date__lte=resolved_as_of,
+        settlement__entity_id=entity_id,
+    )
+    if entityfin_id:
+        last_settlement_rows = last_settlement_rows.filter(settlement__entityfinid_id=entityfin_id)
+    if subentity_id is not None:
+        last_settlement_rows = last_settlement_rows.filter(settlement__subentity_id=subentity_id)
+    last_settlement_map = {
+        row["open_item_id"]: row["last_settled_at"]
+        for row in last_settlement_rows.values("open_item_id").annotate(last_settled_at=Max("settlement__settlement_date"))
+    }
 
     qs = SalesArService.list_open_items(
         entity_id=entity_id,
         entityfinid_id=entityfin_id,
         subentity_id=subentity_id,
         customer_id=customer_id,
-        is_open=True,
+        is_open=None,
     ).select_related("customer", "customer__ledger", "customer__commercial_profile", "customer__compliance_profile", "subentity", "header")
-    qs = _exclude_cancelled_open_items(qs)
+    qs = _exclude_cancelled_open_items(qs).filter(bill_date__lte=resolved_as_of)
 
     if search:
         token = str(search).strip()
@@ -1151,7 +1183,8 @@ def build_open_items_report(
     totals = defaultdict(lambda: ZERO)
 
     for item in qs:
-        outstanding = q2(item.outstanding_amount or (item.original_amount - item.settled_amount))
+        settled = q2(line_map.get(item.id, ZERO))
+        outstanding = q2(item.original_amount - settled)
         if outstanding <= ZERO:
             continue
 
@@ -1168,22 +1201,23 @@ def build_open_items_report(
                 "customer_reference_number": item.customer_reference_number,
                 "doc_type_name": item.header.get_doc_type_display() if getattr(item, "header", None) else None,
                 "original_amount": q2(item.original_amount),
-                "settled_amount": q2(item.settled_amount),
+                "settled_amount": settled,
                 "outstanding_amount": outstanding,
                 "currency": account_currency(item.customer) or "INR",
                 "gstin": account_gstno(item.customer),
                 "credit_days": account_creditdays(item.customer),
-                "status": "Open" if item.is_open else "Closed",
-                "last_settled_at": item.last_settled_at,
+                "status": "Open",
+                "last_settled_at": last_settlement_map.get(item.id),
             },
             drilldown={
                 "invoice": {
                     "target": "sales_invoice",
+                    "route": _sales_invoice_route(invoice_id=item.header_id),
                     "params": {"id": item.header_id, "entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id},
                 },
                 "customer_statement": {
                     "target": "sales_ar_customer_statement",
-                    "params": {"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "customer": item.customer_id},
+                    "params": {"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "customer": item.customer_id, "as_of_date": resolved_as_of},
                 },
                 "payment_allocation": {
                     "target": "sales_ar_payment_allocation",
@@ -1222,6 +1256,7 @@ def build_open_items_report(
         "entity_id": entity_id,
         "entityfin_id": entityfin_id,
         "subentity_id": subentity_id,
+        "as_of_date": resolved_as_of,
         "rows": paged_rows,
         "totals": {k: f"{q2(v):.2f}" for k, v in totals.items()},
         "pagination": {"page": page, "page_size": page_size, "total_rows": total_rows},

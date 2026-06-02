@@ -34,6 +34,23 @@ class PurchaseGstr2bService:
             return Decimal("0.00")
 
     @staticmethod
+    def _sync_invoice_match_status(invoice: PurchaseInvoiceHeader | None) -> None:
+        if not invoice:
+            return
+        linked_statuses = list(
+            Gstr2bImportRow.objects.filter(matched_purchase_id=invoice.id).values_list("match_status", flat=True)
+        )
+        normalized = {str(status or "").strip().upper() for status in linked_statuses}
+        next_status = PurchaseInvoiceHeader.Gstr2bMatchStatus.NOT_CHECKED
+        if "MATCHED" in normalized:
+            next_status = PurchaseInvoiceHeader.Gstr2bMatchStatus.MATCHED
+        elif "PARTIAL" in normalized:
+            next_status = PurchaseInvoiceHeader.Gstr2bMatchStatus.PARTIAL
+        if invoice.gstr2b_match_status != next_status:
+            invoice.gstr2b_match_status = next_status
+            invoice.save(update_fields=["gstr2b_match_status", "updated_at"])
+
+    @staticmethod
     @transaction.atomic
     def create_batch(
         *,
@@ -95,6 +112,7 @@ class PurchaseGstr2bService:
 
         matched = partial = multiple = not_matched = 0
         for row in rows:
+            previous_invoice = getattr(row, "matched_purchase", None)
             gstin = PurchaseGstr2bService._norm(row.supplier_gstin)
             inv_no = PurchaseGstr2bService._norm(row.supplier_invoice_number)
             qs = invoices
@@ -118,6 +136,7 @@ class PurchaseGstr2bService:
                 row.matched_purchase_id = None
                 row.match_status = "NOT_MATCHED"
                 row.save(update_fields=["matched_purchase", "match_status", "updated_at"])
+                PurchaseGstr2bService._sync_invoice_match_status(previous_invoice)
                 not_matched += 1
                 continue
 
@@ -125,6 +144,7 @@ class PurchaseGstr2bService:
                 row.matched_purchase_id = None
                 row.match_status = "MULTIPLE"
                 row.save(update_fields=["matched_purchase", "match_status", "updated_at"])
+                PurchaseGstr2bService._sync_invoice_match_status(previous_invoice)
                 multiple += 1
                 continue
 
@@ -148,17 +168,18 @@ class PurchaseGstr2bService:
 
             if date_ok and amount_ok:
                 row.match_status = "MATCHED"
-                invoice.gstr2b_match_status = PurchaseInvoiceHeader.Gstr2bMatchStatus.MATCHED
-                invoice.save(update_fields=["gstr2b_match_status", "updated_at"])
                 matched += 1
             else:
                 row.match_status = "PARTIAL"
-                invoice.gstr2b_match_status = PurchaseInvoiceHeader.Gstr2bMatchStatus.PARTIAL
-                invoice.save(update_fields=["gstr2b_match_status", "updated_at"])
                 partial += 1
 
             row.matched_purchase_id = invoice.id
             row.save(update_fields=["matched_purchase", "match_status", "updated_at"])
+            PurchaseGstr2bService._sync_invoice_match_status(previous_invoice)
+            if not previous_invoice or getattr(previous_invoice, "id", None) != getattr(invoice, "id", None):
+                PurchaseGstr2bService._sync_invoice_match_status(invoice)
+            else:
+                PurchaseGstr2bService._sync_invoice_match_status(previous_invoice)
 
         return Gstr2bMatchResult(
             batch=batch,
@@ -180,10 +201,13 @@ class PurchaseGstr2bService:
         reviewed_by_id: Optional[int],
     ) -> Gstr2bImportRow:
         row = Gstr2bImportRow.objects.select_for_update().get(pk=row_id)
+        previous_invoice = getattr(row, "matched_purchase", None)
         normalized_status = str(match_status or "").strip().upper()
         allowed = {"NOT_CHECKED", "NOT_MATCHED", "PARTIAL", "MATCHED", "MULTIPLE", "REVIEWED"}
         if normalized_status not in allowed:
             raise ValueError("Invalid GSTR-2B review status.")
+        if normalized_status in {"MATCHED", "PARTIAL"} and not matched_purchase_id:
+            raise ValueError("A linked purchase invoice is required when marking a GSTR-2B row as matched or partial.")
 
         matched_purchase = None
         if matched_purchase_id:
@@ -206,14 +230,8 @@ class PurchaseGstr2bService:
         row.match_reviewed_at = timezone.now()
         row.matched_purchase = matched_purchase
         row.save(update_fields=["match_status", "match_review_comment", "match_reviewed_by", "match_reviewed_at", "matched_purchase", "updated_at"])
-
-        invoice = matched_purchase
-        if invoice:
-            if normalized_status == "MATCHED":
-                invoice.gstr2b_match_status = PurchaseInvoiceHeader.Gstr2bMatchStatus.MATCHED
-                invoice.save(update_fields=["gstr2b_match_status", "updated_at"])
-            elif normalized_status == "PARTIAL":
-                invoice.gstr2b_match_status = PurchaseInvoiceHeader.Gstr2bMatchStatus.PARTIAL
-                invoice.save(update_fields=["gstr2b_match_status", "updated_at"])
+        PurchaseGstr2bService._sync_invoice_match_status(previous_invoice)
+        if not previous_invoice or getattr(previous_invoice, "id", None) != getattr(matched_purchase, "id", None):
+            PurchaseGstr2bService._sync_invoice_match_status(matched_purchase)
 
         return row

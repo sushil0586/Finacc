@@ -1,6 +1,6 @@
 # Asset Documentation Hub
 
-Date: 2026-05-08
+Date: 2026-06-02
 
 ## Purpose
 
@@ -137,6 +137,74 @@ Use it when:
 - preparing signoff conversations
 - packaging the final test/handover reference set
 
+### 9. Asset Module Hardening Blueprint
+
+File:
+- `asset_module_hardening_blueprint.md`
+
+Best for:
+- product teams
+- finance controllers
+- backend developers
+- frontend developers
+- QA teams
+
+Use it when:
+- understanding the current hardening baseline
+- reviewing the implemented policy, validation, precheck, and reversal model
+- checking frontend and backend contract alignment for asset governance
+- planning the next hardening or beautification tranche without drifting from the live behavior
+
+### 10. Asset UI Production Readiness Plan
+
+File:
+- `asset_ui_production_readiness_plan.md`
+
+Best for:
+- frontend developers
+- product/design reviewers
+- implementation leads
+- QA teams
+
+Use it when:
+- planning the production-ready UI pass for the Asset module
+- reviewing screen responsibilities and layout discipline
+- deciding which fields and actions belong in grids versus workspaces or dialogs
+- executing the screen-by-screen beautify pass without losing operational clarity
+
+### 11. Asset Master UI Finalization Checklist
+
+File:
+- `asset_master_ui_finalization_checklist.md`
+
+Best for:
+- frontend developers
+- product/design reviewers
+- QA teams
+
+Use it when:
+- implementing the first finalized Asset screen
+- deciding which columns stay in the Asset Master grid
+- relocating lifecycle and reversal actions into the right workspace areas
+- validating whether Asset Master is truly production-ready before moving to the next screen
+
+### 12. Asset UI Design Rollout Plan
+
+File:
+- `asset_ui_design_rollout_plan.md`
+
+Best for:
+- frontend developers
+- product/design reviewers
+- implementation leads
+- QA teams
+
+Use it when:
+- extending the finalized master-screen design language to the rest of the Asset module
+- keeping every remaining asset screen aligned to the same layout grammar
+- deciding what should be primary, secondary, dialog-based, or lower-priority on each screen
+- planning the sequence and definition of done for the remaining UI rollout
+
 ## Recommended Reading Order
 
 For business users:
@@ -151,12 +219,16 @@ For business users:
 For finance and implementation teams:
 1. `purchase_to_asset_flow_guide.md`
 2. `purchase_classification_and_asset_flow_phases.md`
-3. `purchase_asset_flow_uat_handover.md`
-4. `purchase_asset_flow_change_summary.md`
-5. `purchase_asset_flow_qa_scenarios.md`
-6. `asset_ledger_mapping_guide.md`
-7. `asset_module_end_to_end_guide.md`
-8. `asset_uat_checklist.md`
+3. `asset_module_hardening_blueprint.md`
+4. `asset_ui_production_readiness_plan.md`
+5. `asset_master_ui_finalization_checklist.md`
+6. `asset_ui_design_rollout_plan.md`
+7. `purchase_asset_flow_uat_handover.md`
+8. `purchase_asset_flow_change_summary.md`
+9. `purchase_asset_flow_qa_scenarios.md`
+10. `asset_ledger_mapping_guide.md`
+11. `asset_module_end_to_end_guide.md`
+12. `asset_uat_checklist.md`
 
 ## Suggested Handover Pack
 
@@ -167,6 +239,7 @@ If you are sharing the Asset module with a customer or internal finance team, se
 - Purchase Asset Flow UAT Handover
 - Purchase Asset Flow Change Summary
 - Purchase Asset Flow QA Scenarios
+- Asset Module Hardening Blueprint
 - Ledger Mapping Guide
 - UAT Checklist
 
@@ -174,4 +247,8 @@ If you are sharing the Asset module with a customer or internal finance team, se
 
 - The Asset module should be used as an operational and accounting control workspace.
 - Asset accounting should remain aligned with ledger mapping and posting behavior.
+- The hardening blueprint is now the primary reference for policy-driven validation, lifecycle prechecks, and governed reversal behavior.
+- The UI production readiness plan is the primary reference for screen-by-screen beautification and layout discipline.
+- The Asset Master finalization checklist is the execution guide for the first screen-level UI pass.
+- The Asset UI design rollout plan is the module-wide guide for making every remaining asset screen follow the finalized master-screen design system.
 - If results look wrong, first verify asset master data, category setup, ledger mapping, and workflow status.

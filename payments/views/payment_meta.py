@@ -249,13 +249,16 @@ class PaymentVoucherDetailFormMetaAPIView(PaymentMetaBaseAPIView):
         voucher_id = self._parse_int(request.query_params.get("voucher"), "voucher", required=True)
         header = self._voucher_queryset(entity_id, entityfinid_id, subentity_id).get(pk=voucher_id)
         payload = self._voucher_form_meta(entity_id, entityfinid_id, subentity_id)
+        voucher_data = PaymentVoucherHeaderSerializer(
+            header,
+            context={"request": request, "skip_preview_numbers": True},
+        ).data
         payload.update(
             {
                 "voucher_id": voucher_id,
-                "voucher": PaymentVoucherHeaderSerializer(
-                    header,
-                    context={"request": request, "skip_preview_numbers": True},
-                ).data,
+                "voucher": voucher_data,
+                "navigation": voucher_data.get("navigation"),
+                "number_navigation": voucher_data.get("number_navigation"),
                 "action_flags": self._action_flags(header),
                 "paid_from": self._account_block(header, "paid_from"),
                 "paid_to": self._account_block(header, "paid_to"),

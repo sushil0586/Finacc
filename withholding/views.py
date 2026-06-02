@@ -58,8 +58,8 @@ from withholding.serializers import (
 from withholding.services import compute_withholding_preview, q2, upsert_tcs_computation
 from financial.profile_access import account_pan
 from payments.models.payment_core import PaymentVoucherHeader
-from purchase.models import PurchaseInvoiceHeader
-from sales.models import SalesInvoiceHeader
+from purchase.models import PurchaseInvoiceHeader, PurchaseInvoiceLine
+from sales.models import SalesInvoiceHeader, SalesInvoiceLine
 
 
 TCS_FEATURE_CODE = SubscriptionLimitCodes.FEATURE_FINANCIAL
@@ -120,6 +120,19 @@ def _safe_bool(raw) -> bool:
     return str(raw or "").strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _invoice_posting_state(status_value, *, posted_value) -> tuple[bool, str, str]:
+    if status_value in (None, ""):
+        return False, "unknown", "Posting status unavailable"
+    normalized = str(status_value).strip().lower()
+    posted_tokens = {
+        "posted",
+        str(posted_value).strip().lower(),
+        str(getattr(posted_value, "value", posted_value)).strip().lower(),
+    }
+    is_posted = normalized in posted_tokens
+    return is_posted, ("posted" if is_posted else "not_posted"), ("Posted" if is_posted else "Invoice not posted")
+
+
 def _expand_fy_values(raw: str) -> list[str]:
     value = (raw or "").strip()
     if not value:
@@ -164,6 +177,11 @@ def _safe_decimal(raw) -> Decimal:
         return q2(raw or Decimal("0.00"))
     except Exception:
         return Decimal("0.00")
+
+
+def _non_negative_q2(raw) -> Decimal:
+    value = _safe_decimal(raw)
+    return value if value > Decimal("0.00") else Decimal("0.00")
 
 
 def _request_data(request):
@@ -263,6 +281,11 @@ def _tcs_return_status_requires_clean_snapshot(status_value: str | None) -> bool
     return status_token in {TcsQuarterlyReturn.Status.VALIDATED, TcsQuarterlyReturn.Status.FILED}
 
 
+def _is_filed_tcs_return_metadata_update(validated_data) -> bool:
+    allowed_fields = {"ack_no", "file_path", "notes", "filed_on", "original_return"}
+    return set(validated_data.keys()).issubset(allowed_fields)
+
+
 def _is_valid_pan(pan: str) -> bool:
     token = (pan or "").strip().upper()
     if not token:
@@ -330,9 +353,9 @@ def _filing_readiness_errors(snapshot: dict) -> list[str]:
 
     pending_collection = _safe_decimal(totals.get("pending_collection"))
     pending_deposit = _safe_decimal(totals.get("pending_deposit"))
-    if pending_collection != Decimal("0.00"):
+    if pending_collection > Decimal("0.00"):
         errors.append("Pending collection must be zero before marking FILED.")
-    if pending_deposit != Decimal("0.00"):
+    if pending_deposit > Decimal("0.00"):
         errors.append("Pending deposit must be zero before marking FILED.")
     return errors
 
@@ -410,6 +433,42 @@ def _tcs_runtime_quality_flags(*, section, reason_code: str, pan: str) -> dict[s
     }
 
 
+def _tcs_threshold_state(*, section, reason_code: str, computed_tcs: Decimal) -> str:
+    section_code = str(getattr(section, "section_code", "") or "").strip().upper()
+    if section_code not in {"206C(1H)", "206C1H"}:
+        return "not_applicable"
+
+    code = (reason_code or "").strip().upper()
+    if code == "BELOW_THRESHOLD_CUMULATIVE":
+        return "not_crossed"
+    if code == "THRESHOLD_CROSSED_CUMULATIVE":
+        return "crossed_in_current_txn"
+    if code == "THRESHOLD_ALREADY_CROSSED":
+        return "already_crossed"
+    if q2(computed_tcs) > Decimal("0.00"):
+        return "applicable"
+    return "unknown"
+
+
+def _titleize_token(value: str | None) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    return raw.replace("_", " ").lower().title()
+
+
+def _tcs_doc_impact_type(*, document_type: str | None, trigger_basis: str | None) -> str:
+    trigger = str(trigger_basis or "").strip().upper()
+    if trigger == "RECEIPT":
+        return "Advance Receipt"
+    dtype = str(document_type or "").strip().lower()
+    if dtype == "credit_note":
+        return "Credit Note"
+    if dtype == "debit_note":
+        return "Debit Note"
+    return "Invoice"
+
+
 def _tcs_filing_pack_exception_flags(
     *,
     comp_tcs: Decimal,
@@ -469,11 +528,21 @@ def _row_readiness_status(*, amount: Decimal, flags: dict[str, bool]) -> str:
 
 
 def _tcs_source_route(module_name: str | None, document_type: str | None) -> str | None:
+    return _tcs_source_route_for_document(module_name=module_name, document_type=document_type, document_id=None)
+
+
+def _tcs_source_route_for_document(module_name: str | None, document_type: str | None, document_id: int | None) -> str | None:
     module = str(module_name or "").strip().lower()
     dtype = str(document_type or "").strip().lower()
     if module == "sales" and dtype in {"invoice", "credit_note", "debit_note"}:
+        doc_id = _safe_int(document_id)
+        if doc_id and SalesInvoiceLine.objects.filter(header_id=doc_id, is_service=True).exists():
+            return "/saleserviceinvoice"
         return "/saleinvoice"
     if module == "purchase" and dtype in {"invoice", "credit_note", "debit_note"}:
+        doc_id = _safe_int(document_id)
+        if doc_id and PurchaseInvoiceLine.objects.filter(header_id=doc_id, is_service=True).exists():
+            return "/purchaseserviceinvoice"
         return "/purchaseinvoice"
     return None
 
@@ -496,6 +565,25 @@ def _tcs_posting_lookup_document_type(module_name: str | None, document_type: st
         if dtype == "debit_note":
             return "purchase_debit_note"
     return None
+
+
+def _party_master_drilldown(*, party_account_id: int | None, entity_id: int | None, subentity_id: int | None, source: str) -> dict | None:
+    party_id = _safe_int(party_account_id)
+    if not party_id:
+        return None
+    params = {"source": source}
+    if entity_id:
+        params["entity"] = int(entity_id)
+    if subentity_id:
+        params["subentity_id"] = int(subentity_id)
+    return {
+        "target": "party_master",
+        "label": "Open account master",
+        "kind": "master_edit",
+        "route": f"/financialmaster/accounts/{int(party_id)}/edit",
+        "route_name": "financial-master-accounts",
+        "params": params,
+    }
 
 
 class TcsSectionListCreateAPIView(generics.ListCreateAPIView):
@@ -1374,13 +1462,20 @@ class TcsReturn27EqRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAP
         return obj
 
     def perform_update(self, serializer):
-        if serializer.instance.status == TcsQuarterlyReturn.Status.FILED:
+        is_filed_metadata_update = (
+            serializer.instance.status == TcsQuarterlyReturn.Status.FILED
+            and _is_filed_tcs_return_metadata_update(serializer.validated_data)
+        )
+        if serializer.instance.status == TcsQuarterlyReturn.Status.FILED and not is_filed_metadata_update:
             raise ValidationError({"status": ["Filed returns cannot be edited. Create a correction return instead."]})
         entity = serializer.validated_data.get("entity") or serializer.instance.entity
         fy = (serializer.validated_data.get("fy") or serializer.instance.fy or "").strip()
         quarter = (serializer.validated_data.get("quarter") or serializer.instance.quarter or "").strip().upper()
         status_value = serializer.validated_data.get("status") or serializer.instance.status
         snapshot = serializer.validated_data.get("json_snapshot")
+        if is_filed_metadata_update:
+            serializer.save(form_name="27EQ")
+            return
         if (_tcs_return_status_requires_clean_snapshot(status_value) and entity and fy and quarter) or (not snapshot and entity and fy and quarter):
             snapshot = _build_tcs_27eq_snapshot(entity_id=int(entity.id), fy=fy, quarter=quarter)
         if _tcs_return_status_requires_clean_snapshot(status_value):
@@ -1447,6 +1542,9 @@ class TcsReportLedgerAPIView(APIView):
         fy = (request.query_params.get("fy") or "").strip()
         if fy:
             qs = qs.filter(fiscal_year__in=_expand_fy_values(fy))
+        quarter = (request.query_params.get("quarter") or "").strip().upper()
+        if quarter:
+            qs = qs.filter(quarter=quarter)
         include_reversed = _safe_bool(request.query_params.get("include_reversed"))
         if not include_reversed:
             qs = qs.exclude(status=TcsComputation.Status.REVERSED)
@@ -1484,6 +1582,7 @@ class TcsReportLedgerDetailAPIView(APIView):
 
         section_code = (request.query_params.get("section") or "").strip().upper()
         fy = (request.query_params.get("fy") or "").strip()
+        quarter = (request.query_params.get("quarter") or "").strip().upper()
         include_reversed = _safe_bool(request.query_params.get("include_reversed"))
         include_draft = _safe_bool(request.query_params.get("include_draft"))
         include_cancelled = _safe_bool(request.query_params.get("include_cancelled"))
@@ -1496,6 +1595,10 @@ class TcsReportLedgerDetailAPIView(APIView):
         )
         if fy:
             qs = qs.filter(fiscal_year__in=_expand_fy_values(fy))
+        if quarter:
+            if quarter not in {"Q1", "Q2", "Q3", "Q4"}:
+                raise ValidationError({"quarter": ["quarter must be one of Q1/Q2/Q3/Q4."]})
+            qs = qs.filter(quarter=quarter)
         if not include_reversed:
             qs = qs.exclude(status=TcsComputation.Status.REVERSED)
         if not include_draft:
@@ -1542,8 +1645,8 @@ class TcsReportLedgerDetailAPIView(APIView):
                             }
                         challan_map[key]["allocated_amount"] = q2(challan_map[key]["allocated_amount"] + counted_alloc_amt)
 
-            pending_collection = q2(comp_tcs - comp_collected)
-            pending_deposit = q2(comp_collected - comp_deposited)
+            pending_collection = _non_negative_q2(comp_tcs - comp_collected)
+            pending_deposit = _non_negative_q2(comp_collected - comp_deposited)
             challans = [
                 {
                     "id": item["id"],
@@ -1592,8 +1695,8 @@ class TcsReportLedgerDetailAPIView(APIView):
                     "total_tcs": q2(total_tcs),
                     "total_collected": q2(total_collected),
                     "total_deposited": q2(total_deposited),
-                    "pending_collection": q2(total_tcs - total_collected),
-                    "pending_deposit": q2(total_collected - total_deposited),
+                    "pending_collection": _non_negative_q2(total_tcs - total_collected),
+                    "pending_deposit": _non_negative_q2(total_collected - total_deposited),
                 },
             }
         )
@@ -1680,11 +1783,11 @@ class TcsWorkspaceTransactionsAPIView(APIView):
             and _safe_int(comp.document_id)
         }
         sales_status_map = {
-            int(row.id): str(row.status or "").strip().lower()
+            int(row.id): row.status
             for row in SalesInvoiceHeader.objects.filter(id__in=sales_doc_ids).only("id", "status")
         }
         purchase_status_map = {
-            int(row.id): str(row.status or "").strip().lower()
+            int(row.id): row.status
             for row in PurchaseInvoiceHeader.objects.filter(id__in=purchase_doc_ids).only("id", "status")
         }
 
@@ -1714,6 +1817,24 @@ class TcsWorkspaceTransactionsAPIView(APIView):
             "collected_pending_deposit": 0,
             "deposited": 0,
             "no_computed_tcs": 0,
+        }
+        pending_row_counts = {
+            "pending_collection": 0,
+            "pending_deposit": 0,
+        }
+        threshold_counts = {
+            "not_applicable": 0,
+            "not_crossed": 0,
+            "crossed_in_current_txn": 0,
+            "already_crossed": 0,
+            "applicable": 0,
+            "unknown": 0,
+        }
+        impact_counts = {
+            "invoice": 0,
+            "advance_receipt": 0,
+            "credit_note": 0,
+            "debit_note": 0,
         }
         section_summary = {}
 
@@ -1762,8 +1883,8 @@ class TcsWorkspaceTransactionsAPIView(APIView):
                     }
                 )
 
-            pending_collection = q2(comp_tcs - comp_collected)
-            pending_deposit = q2(comp_collected - comp_deposited)
+            pending_collection = _non_negative_q2(comp_tcs - comp_collected)
+            pending_deposit = _non_negative_q2(comp_collected - comp_deposited)
             pan_token = (account_pan(comp.party_account) or getattr(comp.party_account, "pan", None) or "").strip().upper()
             has_missing_pan = not bool(pan_token)
             has_invalid_pan_format = bool(pan_token) and not _is_valid_pan(pan_token)
@@ -1784,6 +1905,16 @@ class TcsWorkspaceTransactionsAPIView(APIView):
                 reason_code=reason_code,
                 pan=pan_token,
             )
+            threshold_state = _tcs_threshold_state(
+                section=comp.section,
+                reason_code=reason_code,
+                computed_tcs=comp_tcs,
+            )
+            doc_impact_type = _tcs_doc_impact_type(
+                document_type=comp.document_type,
+                trigger_basis=getattr(comp, "trigger_basis", ""),
+            )
+            impact_key = str(doc_impact_type or "").strip().lower().replace(" ", "_")
             has_missing_tax_id = bool(runtime_flags["missing_tax_id"])
             has_residency_mismatch = bool(runtime_flags["residency_mismatch"])
             has_invalid_base_rule = bool(runtime_flags["invalid_base_rule"])
@@ -1812,6 +1943,13 @@ class TcsWorkspaceTransactionsAPIView(APIView):
             else:
                 lifecycle_status = "COMPUTED_PENDING_COLLECTION"
                 status_counts["computed_pending_collection"] += 1
+
+            if pending_collection > Decimal("0.00"):
+                pending_row_counts["pending_collection"] += 1
+            if pending_deposit > Decimal("0.00"):
+                pending_row_counts["pending_deposit"] += 1
+            threshold_counts[threshold_state] = int(threshold_counts.get(threshold_state) or 0) + 1
+            impact_counts[impact_key] = int(impact_counts.get(impact_key) or 0) + 1
 
             bucket = section_summary.setdefault(
                 sec_code,
@@ -1856,7 +1994,7 @@ class TcsWorkspaceTransactionsAPIView(APIView):
             total_collected += q2(comp_collected)
             total_deposited += q2(comp_deposited)
 
-            source_route = _tcs_source_route(comp.module_name, comp.document_type)
+            source_route = _tcs_source_route_for_document(comp.module_name, comp.document_type, comp.document_id)
             posting_lookup_document_type = _tcs_posting_lookup_document_type(comp.module_name, comp.document_type)
             module_name = str(comp.module_name or "").strip().lower()
             document_type = str(comp.document_type or "").strip().lower()
@@ -1866,19 +2004,26 @@ class TcsWorkspaceTransactionsAPIView(APIView):
                 doc_status = sales_status_map.get(int(doc_id), "")
             elif module_name == "purchase" and document_type in {"invoice", "credit_note", "debit_note"} and doc_id:
                 doc_status = purchase_status_map.get(int(doc_id), "")
-            is_posted = doc_status == "posted"
-            if doc_status:
-                posting_state = "posted" if is_posted else "not_posted"
-                posting_state_label = "Posted" if is_posted else "Invoice not posted"
+            if module_name == "sales":
+                is_posted, posting_state, posting_state_label = _invoice_posting_state(
+                    doc_status,
+                    posted_value=SalesInvoiceHeader.Status.POSTED,
+                )
+            elif module_name == "purchase":
+                is_posted, posting_state, posting_state_label = _invoice_posting_state(
+                    doc_status,
+                    posted_value=PurchaseInvoiceHeader.Status.POSTED,
+                )
             else:
-                posting_state = "unknown"
-                posting_state_label = "Posting status unavailable"
+                is_posted, posting_state, posting_state_label = False, "unknown", "Posting status unavailable"
 
             rows.append(
                 {
                     "id": comp.id,
                     "module_name": comp.module_name,
                     "voucher_type": f"{(comp.module_name or '').upper()}_{(comp.document_type or '').upper()}",
+                    "doc_impact_type": doc_impact_type,
+                    "trigger_basis": _titleize_token(getattr(comp, "trigger_basis", "")),
                     "voucher_date": comp.doc_date,
                     "voucher_no": comp.document_no,
                     "document_type": comp.document_type,
@@ -1895,6 +2040,10 @@ class TcsWorkspaceTransactionsAPIView(APIView):
                     "deposited_tcs": q2(comp_deposited),
                     "pending_collection": pending_collection,
                     "pending_deposit": pending_deposit,
+                    "primary_reason_code": reason_code or None,
+                    "threshold_default": q2(getattr(comp.section, "threshold_default", Decimal("0.00")) or Decimal("0.00")) if comp.section else None,
+                    "threshold_mode": ((getattr(comp.section, "applicability_json", None) or {}).get("threshold_mode") if comp.section else None),
+                    "threshold_state": threshold_state,
                     "flags": {
                         "computed": bool(comp_tcs > Decimal("0.00")),
                         "collected": bool(comp_collected > Decimal("0.00")),
@@ -1936,6 +2085,12 @@ class TcsWorkspaceTransactionsAPIView(APIView):
                             }
                             if posting_lookup_document_type and doc_id and is_posted
                             else None
+                        ),
+                        "party_master": _party_master_drilldown(
+                            party_account_id=comp.party_account_id,
+                            entity_id=entity_id,
+                            subentity_id=getattr(comp, "subentity_id", None),
+                            source="tcs_workspace",
                         ),
                     },
                 }
@@ -1989,9 +2144,12 @@ class TcsWorkspaceTransactionsAPIView(APIView):
                     "total_computed_tcs": q2(total_computed),
                     "total_collected_tcs": q2(total_collected),
                     "total_deposited_tcs": q2(total_deposited),
-                    "pending_collection": q2(total_computed - total_collected),
-                    "pending_deposit": q2(total_collected - total_deposited),
+                    "pending_collection": _non_negative_q2(total_computed - total_collected),
+                    "pending_deposit": _non_negative_q2(total_collected - total_deposited),
                     "status_counts": status_counts,
+                    "impact_counts": impact_counts,
+                    "pending_row_counts": pending_row_counts,
+                    "threshold_counts": threshold_counts,
                     "quality_counts": quality_counts,
                     "unallocated_deposit_count": len(unallocated_deposits),
                     "unallocated_deposit_amount": q2(sum((r["unallocated_amount"] for r in unallocated_deposits), Decimal("0.00"))),
@@ -2150,6 +2308,11 @@ class TcsReportFilingPackAPIView(APIView):
                         "document_id": comp.document_id,
                         "document_no": comp.document_no,
                         "doc_date": comp.doc_date,
+                        "doc_impact_type": _tcs_doc_impact_type(
+                            document_type=comp.document_type,
+                            trigger_basis=getattr(comp, "trigger_basis", ""),
+                        ),
+                        "trigger_basis": _titleize_token(getattr(comp, "trigger_basis", "")),
                         "party_account": comp.party_account_id,
                         "party_name": party_name,
                         "pan": pan,
@@ -2188,8 +2351,10 @@ class TcsReportFilingPackAPIView(APIView):
                         "return_status": return_row.status if return_row else "NOT_CREATED",
                         "ack_no": return_row.ack_no if return_row else "",
                         "filed_on": return_row.filed_on if return_row else None,
+                        "original_return": return_row.original_return_id if return_row else None,
+                        "return_notes": return_row.notes if return_row else "",
                     }
-                    source_route = _tcs_source_route(comp.module_name, comp.document_type)
+                    source_route = _tcs_source_route_for_document(comp.module_name, comp.document_type, comp.document_id)
                     posting_lookup_document_type = _tcs_posting_lookup_document_type(comp.module_name, comp.document_type)
                     doc_id = int(comp.document_id or 0)
                     posting_state = "unknown"
@@ -2211,6 +2376,12 @@ class TcsReportFilingPackAPIView(APIView):
                     row["posting_state_label"] = posting_state_label
                     row["is_posted"] = is_posted
                     row["drilldowns"] = {}
+                    row["drilldowns"]["party_master"] = _party_master_drilldown(
+                        party_account_id=comp.party_account_id,
+                        entity_id=entity_id,
+                        subentity_id=getattr(comp, "subentity_id", None),
+                        source="tcs_filing_pack",
+                    )
                     if source_route and doc_id:
                         row["drilldowns"]["source_document"] = {
                             "target": "document_source",
@@ -2251,8 +2422,8 @@ class TcsReportFilingPackAPIView(APIView):
                     rows.append(row)
 
         total_deposited = q2(sum((_tcs_computation_total_deposited(comp, deposited_only=True) for comp in computations), Decimal("0.00")))
-        pending_collection = q2(total_tcs - total_collected)
-        pending_deposit = q2(total_collected - total_deposited)
+        pending_collection = _non_negative_q2(total_tcs - total_collected)
+        pending_deposit = _non_negative_q2(total_collected - total_deposited)
         exception_row_count = sum(1 for r in rows if any(bool(v) for v in (r.get("exceptions") or {}).values()))
 
         return Response(
@@ -2265,8 +2436,8 @@ class TcsReportFilingPackAPIView(APIView):
                     "total_tcs": q2(total_tcs),
                     "total_collected": q2(total_collected),
                     "total_deposited": q2(total_deposited),
-                    "pending_collection": q2(pending_collection),
-                    "pending_deposit": q2(pending_deposit),
+                    "pending_collection": _non_negative_q2(pending_collection),
+                    "pending_deposit": _non_negative_q2(pending_deposit),
                     "return_status": return_row.status if return_row else "NOT_CREATED",
                     "row_count": len(rows),
                     "exception_row_count": exception_row_count,
@@ -2296,6 +2467,8 @@ class TcsWorkspaceTransactionsExportAPIView(APIView):
                 "customer_name": row.get("customer_name"),
                 "pan": row.get("pan"),
                 "section_code": row.get("section_code"),
+                "doc_impact_type": row.get("doc_impact_type"),
+                "trigger_basis": row.get("trigger_basis"),
                 "base_amount": row.get("base_amount"),
                 "rate": row.get("rate"),
                 "computed_tcs": row.get("computed_tcs"),
@@ -2304,6 +2477,10 @@ class TcsWorkspaceTransactionsExportAPIView(APIView):
                 "pending_collection": row.get("pending_collection"),
                 "pending_deposit": row.get("pending_deposit"),
                 "lifecycle_status": row.get("lifecycle_status"),
+                "threshold_state": row.get("threshold_state"),
+                "threshold_default": row.get("threshold_default"),
+                "threshold_mode": row.get("threshold_mode"),
+                "primary_reason_code": row.get("primary_reason_code"),
                 "incomplete_compliance": (row.get("flags") or {}).get("incomplete_compliance"),
             }
             for row in rows
@@ -2354,6 +2531,8 @@ class TcsReportFilingPackExportAPIView(APIView):
             filing_rows.append(
                 {
                     "doc_date": row.get("doc_date"),
+                    "doc_impact_type": row.get("doc_impact_type"),
+                    "trigger_basis": row.get("trigger_basis"),
                     "document_type": row.get("document_type"),
                     "document_no": row.get("document_no"),
                     "party_name": row.get("party_name"),
@@ -2409,8 +2588,10 @@ class TcsReportFilingPackExportAPIView(APIView):
                     "return_quarter": row.get("return_quarter"),
                     "return_type": row.get("return_type"),
                     "return_status": row.get("return_status"),
+                    "original_return": row.get("original_return"),
                     "ack_no": row.get("ack_no"),
                     "filed_on": row.get("filed_on"),
+                    "return_notes": row.get("return_notes"),
                 }
             )
         zip_bytes = _zip_csv_payload(
@@ -2751,8 +2932,8 @@ def _build_tcs_27eq_snapshot(*, entity_id: int, fy: str, quarter: str) -> dict:
             "total_tcs": total_tcs,
             "total_collected": total_collected,
             "total_deposited": total_deposited,
-            "pending_collection": q2(total_tcs - total_collected),
-            "pending_deposit": q2(total_collected - total_deposited),
+            "pending_collection": _non_negative_q2(total_tcs - total_collected),
+            "pending_deposit": _non_negative_q2(total_collected - total_deposited),
         },
         "counts": {
             "computations": computations.count(),

@@ -7,10 +7,16 @@ from decimal import Decimal, ROUND_HALF_UP
 from django.db.models import Q, Sum
 
 from assets.models import DepreciationRunLine, FixedAsset
-from posting.models import Entry, JournalLine
+from entity.models import EntityFinancialYear
+from posting.models import Entry, EntryStatus, JournalLine, TxnType
 
 Q2 = Decimal("0.01")
 ZERO = Decimal("0.00")
+FIXED_ASSET_TXN_EVENT_TYPES = {
+    TxnType.FIXED_ASSET_CAPITALIZATION: "capitalization",
+    TxnType.FIXED_ASSET_IMPAIRMENT: "impairment",
+    TxnType.FIXED_ASSET_DISPOSAL: "disposal",
+}
 
 
 def q2(value) -> Decimal:
@@ -56,6 +62,34 @@ def _page_window(page, page_size):
     start = (safe_page - 1) * safe_page_size
     end = start + safe_page_size
     return safe_page, safe_page_size, start, end
+
+
+def _dashboard_date_range(*, entity_id, entityfin_id=None, as_of_date=None, from_date=None):
+    end_date = _coerce_date(as_of_date) or date.today()
+    start_date = _coerce_date(from_date)
+    if start_date:
+        return start_date, end_date
+
+    if entityfin_id:
+        financial_year = EntityFinancialYear.objects.filter(id=entityfin_id, entity_id=entity_id).only("finstartyear", "finendyear").first()
+        if financial_year and financial_year.finstartyear:
+            return financial_year.finstartyear.date(), end_date
+
+    return date(end_date.year, 1, 1), end_date
+
+
+def _entry_status_label(status) -> str:
+    if status == EntryStatus.REVERSED:
+        return "REVERSED"
+    if status == EntryStatus.POSTED:
+        return "POSTED"
+    return "DRAFT"
+
+
+def _entry_amount(entry: Entry) -> Decimal:
+    return q2(
+        JournalLine.objects.filter(entry=entry, drcr=True).aggregate(total=Sum("amount")).get("total") or ZERO
+    )
 
 
 def build_fixed_asset_register(
@@ -324,7 +358,9 @@ def build_asset_event_report(
 
     assets = list(qs.order_by("asset_name", "id"))
     asset_ids = [asset.id for asset in assets]
+    asset_map = {asset.id: asset for asset in assets}
     depreciation_lines_by_asset = defaultdict(list)
+    asset_entries_by_asset = defaultdict(list)
     if asset_ids and (not event_type or event_type == "depreciation"):
         depreciation_lines = DepreciationRunLine.objects.select_related("run").filter(
             asset_id__in=asset_ids,
@@ -333,21 +369,39 @@ def build_asset_event_report(
         ).order_by("asset_id", "period_to", "id")
         for line in depreciation_lines:
             depreciation_lines_by_asset[line.asset_id].append(line)
+    if asset_ids:
+        entry_qs = Entry.objects.select_related("posting_batch").filter(
+            entity_id=entity_id,
+            txn_type__in=list(FIXED_ASSET_TXN_EVENT_TYPES.keys()),
+            txn_id__in=asset_ids,
+        ).order_by("posting_date", "id")
+        if entityfin_id:
+            entry_qs = entry_qs.filter(entityfin_id=entityfin_id)
+        if subentity_id is not None:
+            entry_qs = entry_qs.filter(subentity_id=subentity_id)
+        for entry in entry_qs:
+            asset_entries_by_asset[entry.txn_id].append(entry)
 
     rows = []
     totals = defaultdict(lambda: ZERO)
     for asset in assets:
         events = []
-        if asset.capitalization_date and asset.capitalization_posting_batch_id:
-            events.append(("capitalization", asset.capitalization_date, q2(asset.gross_block), asset.capitalization_posting_batch_id))
+        for entry in asset_entries_by_asset.get(asset.id, []):
+            evt_type = FIXED_ASSET_TXN_EVENT_TYPES.get(entry.txn_type)
+            if not evt_type:
+                continue
+            events.append(
+                (
+                    evt_type,
+                    entry.posting_date,
+                    _entry_amount(entry),
+                    entry.posting_batch_id,
+                    _entry_status_label(entry.status),
+                )
+            )
         for line in depreciation_lines_by_asset.get(asset.id, []):
-            events.append(("depreciation", line.run.posting_date, q2(line.depreciation_amount), line.run.posting_batch_id))
-        if q2(asset.impairment_amount) > ZERO and asset.impairment_posting_batch_id:
-            batch_created = getattr(asset.impairment_posting_batch, "created_at", None)
-            events.append(("impairment", (batch_created.date() if batch_created else None), q2(asset.impairment_amount), asset.impairment_posting_batch_id))
-        if asset.disposal_date and asset.disposal_posting_batch_id:
-            events.append(("disposal", asset.disposal_date, q2(asset.disposal_proceeds), asset.disposal_posting_batch_id))
-        for evt_type, evt_date, amount, posting_batch_id in events:
+            events.append(("depreciation", line.run.posting_date, q2(line.depreciation_amount), line.run.posting_batch_id, "POSTED"))
+        for evt_type, evt_date, amount, posting_batch_id, event_status in events:
             if event_type and evt_type != event_type:
                 continue
             if frm and evt_date and evt_date < frm:
@@ -363,6 +417,8 @@ def build_asset_event_report(
                 "event_date": evt_date,
                 "amount": f"{q2(amount):.2f}",
                 "posting_batch_id": posting_batch_id,
+                "event_status": event_status,
+                "is_reversed": event_status == "REVERSED",
                 "subentity_name": getattr(asset.subentity, "subentityname", None),
                 "can_drilldown": True,
                 "drilldown_target": "fixed_asset",
@@ -395,33 +451,37 @@ def build_asset_history(
     subentity_id=None,
 ):
     asset = FixedAsset.objects.select_related("category", "subentity", "capitalization_posting_batch", "impairment_posting_batch", "disposal_posting_batch").get(id=asset_id, entity_id=entity_id)
+    lifecycle_entries = list(
+        Entry.objects.select_related("posting_batch").filter(
+            entity_id=entity_id,
+            txn_type__in=list(FIXED_ASSET_TXN_EVENT_TYPES.keys()),
+            txn_id=asset.id,
+        ).order_by("posting_date", "id")
+    )
     history = [
         {
             "event_type": "created",
             "event_date": asset.created_at.date() if asset.created_at else None,
             "description": f"Asset created as {asset.status}",
             "amount": f"{q2(asset.gross_block):.2f}",
+            "event_status": "POSTED",
+            "is_reversed": False,
         }
     ]
-    if asset.capitalization_date:
+    for entry in lifecycle_entries:
+        event_type = FIXED_ASSET_TXN_EVENT_TYPES.get(entry.txn_type)
+        if not event_type:
+            continue
+        status_label = _entry_status_label(entry.status)
         history.append(
             {
-                "event_type": "capitalization",
-                "event_date": asset.capitalization_date,
-                "description": "Asset capitalized",
-                "amount": f"{q2(asset.gross_block):.2f}",
-                "posting_batch_id": asset.capitalization_posting_batch_id,
-            }
-        )
-    if q2(asset.impairment_amount) > ZERO:
-        dt = asset.impairment_posting_batch.created_at.date() if asset.impairment_posting_batch and asset.impairment_posting_batch.created_at else None
-        history.append(
-            {
-                "event_type": "impairment",
-                "event_date": dt,
-                "description": "Impairment recognized",
-                "amount": f"{q2(asset.impairment_amount):.2f}",
-                "posting_batch_id": asset.impairment_posting_batch_id,
+                "event_type": event_type,
+                "event_date": entry.posting_date,
+                "description": entry.narration or f"Asset {event_type}",
+                "amount": f"{_entry_amount(entry):.2f}",
+                "posting_batch_id": entry.posting_batch_id,
+                "event_status": status_label,
+                "is_reversed": status_label == "REVERSED",
             }
         )
     for line in DepreciationRunLine.objects.select_related("run").filter(asset_id=asset.id).order_by("period_to", "id"):
@@ -433,25 +493,16 @@ def build_asset_history(
                 "description": f"Depreciation run {line.run.run_code}" + (" (cancelled)" if run_status == "CANCELLED" else ""),
                 "amount": f"{q2(line.depreciation_amount):.2f}",
                 "posting_batch_id": line.run.posting_batch_id,
+                "event_status": "REVERSED" if run_status == "CANCELLED" else "POSTED",
+                "is_reversed": run_status == "CANCELLED",
                 "meta": {
                     **(line.calculation_meta or {}),
                     "run_status": run_status,
                 },
             }
         )
-    if asset.disposal_date:
-        history.append(
-            {
-                "event_type": "disposal",
-                "event_date": asset.disposal_date,
-                "description": "Asset disposed",
-                "amount": f"{q2(asset.disposal_proceeds):.2f}",
-                "gain_loss": f"{q2(asset.disposal_gain_loss):.2f}",
-                "posting_batch_id": asset.disposal_posting_batch_id,
-            }
-        )
 
-    posting_batch_ids = [x for x in {asset.capitalization_posting_batch_id, asset.impairment_posting_batch_id, asset.disposal_posting_batch_id} if x]
+    posting_batch_ids = [x for x in {entry.posting_batch_id for entry in lifecycle_entries} if x]
     run_batch_ids = list(DepreciationRunLine.objects.filter(asset_id=asset.id, run__posting_batch_id__isnull=False).values_list("run__posting_batch_id", flat=True))
     batch_ids = posting_batch_ids + run_batch_ids
     journal_lines = []
@@ -466,6 +517,7 @@ def build_asset_history(
                     "ledger_name": getattr(jl.ledger, "name", None),
                     "drcr": "Dr" if jl.drcr else "Cr",
                     "amount": f"{q2(jl.amount):.2f}",
+                    "entry_status": _entry_status_label(getattr(jl.entry, "status", None)),
                 }
             )
 
@@ -487,4 +539,82 @@ def build_asset_history(
         },
         "history": history,
         "journal_lines": journal_lines,
+    }
+
+
+def build_asset_dashboard_summary(
+    *,
+    entity_id,
+    entityfin_id=None,
+    subentity_id=None,
+    as_of_date=None,
+    from_date=None,
+):
+    start_date, end_date = _dashboard_date_range(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        as_of_date=as_of_date,
+        from_date=from_date,
+    )
+    register = build_fixed_asset_register(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        as_of_date=end_date,
+        page=1,
+        page_size=1000,
+    )
+    location = build_asset_location_custodian_report(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        as_of_date=end_date,
+        page=1,
+        page_size=1000,
+    )
+    depreciation = build_depreciation_schedule(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        from_date=start_date,
+        to_date=end_date,
+        page=1,
+        page_size=1000,
+    )
+    events = build_asset_event_report(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        from_date=start_date,
+        to_date=end_date,
+        page=1,
+        page_size=1000,
+    )
+
+    register_rows = register.get("rows") or []
+    location_rows = location.get("rows") or []
+    event_rows = events.get("rows") or []
+
+    return {
+        "report_code": "asset_dashboard_summary",
+        "report_name": "Asset Dashboard Summary",
+        "entity_id": entity_id,
+        "entityfin_id": entityfin_id,
+        "subentity_id": subentity_id,
+        "as_of_date": end_date.isoformat() if hasattr(end_date, "isoformat") else end_date,
+        "from_date": start_date.isoformat() if hasattr(start_date, "isoformat") else start_date,
+        "register": register,
+        "location": location,
+        "depreciation": depreciation,
+        "events": events,
+        "summary": {
+            "asset_count": len(register_rows),
+            "active_asset_count": sum(1 for row in register_rows if row.get("status") == "ACTIVE"),
+            "location_count": len({row.get("location_name") or "Unassigned" for row in location_rows}),
+            "custodian_count": len({row.get("custodian_name") for row in location_rows if row.get("custodian_name")}),
+            "event_count": len(event_rows),
+            "depreciation_amount": depreciation.get("totals", {}).get("depreciation_amount"),
+            "gross_block": register.get("totals", {}).get("gross_block"),
+            "net_book_value": register.get("totals", {}).get("net_book_value"),
+        },
     }

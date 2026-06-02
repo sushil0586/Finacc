@@ -40,13 +40,11 @@ class PaymentVoucherNavService:
         entity_id: int,
         entityfinid_id: int,
         subentity_id: Optional[int],
-        doc_code: str,
         allowed_statuses: Sequence[int],
     ):
         filters: Dict[str, Any] = {
             "entity_id": entity_id,
             "entityfinid_id": entityfinid_id,
-            "doc_code": doc_code,
             "status__in": list(allowed_statuses),
         }
         if subentity_id is None:
@@ -88,7 +86,6 @@ class PaymentVoucherNavService:
             entity_id=instance.entity_id,
             entityfinid_id=instance.entityfinid_id,
             subentity_id=instance.subentity_id,
-            doc_code=str(instance.doc_code),
             allowed_statuses=allowed_statuses,
         )
         prev_obj = qs.filter(id__lt=instance.id).order_by("-id").first()

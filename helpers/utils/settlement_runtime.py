@@ -108,6 +108,20 @@ class SettlementVoucherRuntimeMixin:
         return data
 
     @staticmethod
+    def _reset_workflow_state(payload: Optional[Dict[str, Any]], *, status: str = "DRAFT") -> Dict[str, Any]:
+        reopened_state = {
+            "status": str(status or "DRAFT").upper().strip() or "DRAFT",
+            "submitted_by": None,
+            "submitted_at": None,
+            "approved_by": None,
+            "approved_at": None,
+            "rejected_by": None,
+            "rejected_at": None,
+            "remarks": None,
+        }
+        return SettlementVoucherRuntimeMixin._set_workflow_state(payload, reopened_state)
+
+    @staticmethod
     def _append_audit(payload: Optional[Dict[str, Any]], event: Dict[str, Any]) -> Dict[str, Any]:
         data = dict(payload or {})
         logs = data.get("_audit_log")

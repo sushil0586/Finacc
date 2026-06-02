@@ -27,6 +27,7 @@ from purchase.models import PurchaseInvoiceHeader, PurchaseInvoiceLine, Purchase
 from purchase.models.purchase_ap import VendorBillOpenItem
 from purchase.services.purchase_ap_service import q2 as ap_q2
 from purchase.services.purchase_invoice_service import PurchaseInvoiceService
+from purchase.services.purchase_settings_service import PurchaseSettingsService
 from sales.models import SalesInvoiceHeader, SalesInvoiceLine, SalesTaxSummary
 from sales.models.sales_ar import CustomerBillOpenItem
 from sales.services.sales_ar_service import q2 as ar_q2
@@ -72,7 +73,10 @@ def _to_int(value: Any) -> int | None:
     text = _normalize_text(value)
     if not text:
         return None
-    return int(float(text))
+    try:
+        return int(float(text))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid integer value: {value}") from exc
 
 
 def _to_bool(value: Any, default: bool = False) -> bool:
@@ -269,8 +273,9 @@ def _template_row(*, module: str, mode: str, detail_level: str) -> dict[str, Any
         common.update(
             {
                 "party_account_code": 5001,
-                "party_name": "Alpha Retail",
-                "party_gstin": "27AAAAA9999A1Z5",
+        "party_name": "Alpha Retail",
+        "total_discount": "0.00",
+        "party_gstin": "27AAAAA9999A1Z5",
                 "party_state_code": "27",
                 "seller_gstin": "27BBBBB1111B1Z5",
                 "seller_state_code": "27",
@@ -320,6 +325,7 @@ def _template_row(*, module: str, mode: str, detail_level: str) -> dict[str, Any
             {
                 "party_account_code": 6001,
                 "party_name": "Vendor One",
+                "total_discount": "0.00",
                 "party_gstin": "27CCCCC2222C1Z5",
                 "supplier_invoice_number": "SUP-2025-0001",
                 "supplier_invoice_date": "2025-04-01",
@@ -508,6 +514,7 @@ def _validate_row(*, job: ImportJob, row: dict[str, Any], row_no: int) -> RowVal
 
     try:
         total_taxable = q2(_to_decimal(row.get("total_taxable")))
+        total_discount = q2(_to_decimal(row.get("total_discount")))
         total_cgst = q2(_to_decimal(row.get("total_cgst")))
         total_sgst = q2(_to_decimal(row.get("total_sgst")))
         total_igst = q2(_to_decimal(row.get("total_igst")))
@@ -518,10 +525,10 @@ def _validate_row(*, job: ImportJob, row: dict[str, Any], row_no: int) -> RowVal
         outstanding_amount = q2(_to_decimal(row.get("outstanding_amount")))
     except Exception as exc:
         errors.append({"field": "totals", "message": str(exc)})
-        total_taxable = total_cgst = total_sgst = total_igst = total_cess = round_off = grand_total = settled_amount = outstanding_amount = ZERO2
+        total_taxable = total_discount = total_cgst = total_sgst = total_igst = total_cess = round_off = grand_total = settled_amount = outstanding_amount = ZERO2
 
-    if outstanding_amount < ZERO2 or settled_amount < ZERO2 or grand_total < ZERO2:
-        errors.append({"field": "amounts", "message": "grand_total, settled_amount, and outstanding_amount must be non-negative."})
+    if total_discount < ZERO2 or outstanding_amount < ZERO2 or settled_amount < ZERO2 or grand_total < ZERO2:
+        errors.append({"field": "amounts", "message": "total_discount, grand_total, settled_amount, and outstanding_amount must be non-negative."})
 
     if job.mode == ImportJob.Mode.FULL_HISTORY and job.detail_level != ImportJob.DetailLevel.HEADER_PLUS_LINES:
         errors.append({"field": "detail_level", "message": "full_history requires header_plus_lines."})
@@ -554,6 +561,85 @@ def _validate_row(*, job: ImportJob, row: dict[str, Any], row_no: int) -> RowVal
             if not _normalize_text(row.get("party_gstin")):
                 errors.append({"field": "party_gstin", "message": "party_gstin is required for live B2B compliance."})
 
+    purchase_reverse_charge = _to_bool(row.get("is_reverse_charge"), default=False)
+    if job.module == ImportJob.Module.PURCHASE:
+        supplier_invoice_date_raw = _normalize_text(row.get("supplier_invoice_date"))
+        if not supplier_invoice_date_raw:
+            errors.append({"field": "supplier_invoice_date", "message": "supplier_invoice_date is required."})
+
+        supply_category_raw = _to_int(row.get("supply_category"))
+        if supply_category_raw is not None and supply_category_raw not in {
+            int(PurchaseInvoiceHeader.SupplyCategory.DOMESTIC),
+            int(PurchaseInvoiceHeader.SupplyCategory.IMPORT_GOODS),
+            int(PurchaseInvoiceHeader.SupplyCategory.IMPORT_SERVICES),
+            int(PurchaseInvoiceHeader.SupplyCategory.SEZ),
+        }:
+            errors.append({"field": "supply_category", "message": "Invalid supply_category for purchase import."})
+
+        taxability_raw = _to_int(row.get("taxability"))
+        if taxability_raw is not None and taxability_raw not in {
+            int(PurchaseInvoiceHeader.Taxability.TAXABLE),
+            int(PurchaseInvoiceHeader.Taxability.EXEMPT),
+            int(PurchaseInvoiceHeader.Taxability.NIL_RATED),
+            int(PurchaseInvoiceHeader.Taxability.NON_GST),
+        }:
+            errors.append({"field": "taxability", "message": "Invalid taxability for purchase import."})
+
+        compliance = getattr(party, "compliance_profile", None) if party is not None else None
+        gstregtype = str(getattr(compliance, "gstregtype", "") or "").strip()
+        party_gstin = _normalize_text(row.get("party_gstin"))
+        registered_types = {"Regular", "Composition", "SEZ", "UIN"}
+        if gstregtype in registered_types and not party_gstin:
+            errors.append({"field": "party_gstin", "message": f"party_gstin is required for {gstregtype.lower()} vendors."})
+
+        supplier_invoice_number = _normalize_text(row.get("supplier_invoice_number"))
+        supplier_invoice_date = _to_date(row.get("supplier_invoice_date")) if supplier_invoice_date_raw else None
+        if getattr(party, "id", None) and supplier_invoice_number and supplier_invoice_date:
+            duplicate_exists = PurchaseInvoiceHeader.objects.filter(
+                entity=job.entity,
+                vendor_id=party.id,
+                supplier_invoice_number__iexact=supplier_invoice_number,
+                supplier_invoice_date=supplier_invoice_date,
+                grand_total=grand_total,
+            ).exclude(status=PurchaseInvoiceHeader.Status.CANCELLED).exists()
+            if duplicate_exists:
+                errors.append(
+                    {
+                        "field": "supplier_invoice_number",
+                        "message": "Duplicate supplier invoice detected for this vendor, invoice number, invoice date, and amount.",
+                    }
+                )
+
+        gst_total_import = total_cgst + total_sgst + total_igst + total_cess
+        if not party_gstin and not purchase_reverse_charge and gst_total_import > ZERO2:
+            errors.append({"field": "totals", "message": "URD purchase rows cannot include supplier GST unless reverse charge applies."})
+
+        if gstregtype.lower() == "composition":
+            if gst_total_import > ZERO2:
+                errors.append({"field": "totals", "message": "Composition vendor purchase rows cannot include supplier GST."})
+
+        supply_category_value = supply_category_raw or int(PurchaseInvoiceHeader.SupplyCategory.DOMESTIC)
+        tax_regime_value = _to_int(row.get("tax_regime")) or int(PurchaseInvoiceHeader.TaxRegime.INTRA)
+        if supply_category_value in {
+            int(PurchaseInvoiceHeader.SupplyCategory.IMPORT_GOODS),
+            int(PurchaseInvoiceHeader.SupplyCategory.IMPORT_SERVICES),
+            int(PurchaseInvoiceHeader.SupplyCategory.SEZ),
+        } and tax_regime_value != int(PurchaseInvoiceHeader.TaxRegime.INTER):
+            errors.append({"field": "tax_regime", "message": "Import and SEZ purchase rows must use INTER tax regime."})
+
+        if supply_category_value == int(PurchaseInvoiceHeader.SupplyCategory.IMPORT_GOODS) and gst_total_import > ZERO2:
+            errors.append({"field": "totals", "message": "Import goods purchase rows should not include supplier GST amounts in this flow."})
+
+        if supply_category_value == int(PurchaseInvoiceHeader.SupplyCategory.IMPORT_SERVICES) and not purchase_reverse_charge:
+            errors.append({"field": "is_reverse_charge", "message": "Import service purchase rows must be marked reverse charge."})
+
+        if purchase_reverse_charge:
+            gst_rate_value = _to_decimal(row.get("gst_rate"), default=ZERO2)
+            if gst_rate_value <= ZERO2 and gst_total_import <= ZERO2:
+                errors.append({"field": "gst_rate", "message": "gst_rate is required for reverse charge purchase rows."})
+            if not (_normalize_text(row.get("place_of_supply_state")) or _normalize_text(row.get("place_of_supply_state_code"))):
+                errors.append({"field": "place_of_supply_state", "message": "place_of_supply_state is required for reverse charge purchase rows."})
+
     normalized = {
         "entityfinid_id": getattr(entityfin, "id", None),
         "subentity_id": getattr(subentity, "id", None),
@@ -575,10 +661,12 @@ def _validate_row(*, job: ImportJob, row: dict[str, Any], row_no: int) -> RowVal
         "taxability": _to_int(row.get("taxability")),
         "supply_category": _to_int(row.get("supply_category")),
         "tax_regime": _to_int(row.get("tax_regime")),
+        "is_reverse_charge": purchase_reverse_charge,
         "reference": _normalize_text(row.get("reference")),
         "remarks": _normalize_text(row.get("remarks")),
         "original_source_key": original_source_key,
         "total_taxable": str(total_taxable),
+        "total_discount": str(total_discount),
         "total_cgst": str(total_cgst),
         "total_sgst": str(total_sgst),
         "total_igst": str(total_igst),
@@ -628,6 +716,347 @@ def _job_summary(job: ImportJob) -> dict[str, Any]:
     }
 
 
+def _resolve_purchase_review_required(*, entity: Entity, rows: list[dict[str, Any]]) -> bool:
+    subentity_ids: set[int] = set()
+    for row in rows:
+        raw = row.get("subentity_id")
+        try:
+            subentity_id = _to_int(raw)
+        except ValueError:
+            continue
+        if subentity_id:
+            subentity_ids.add(subentity_id)
+    subentity_id = next(iter(subentity_ids)) if len(subentity_ids) == 1 else None
+    policy = PurchaseSettingsService.get_policy(entity.id, subentity_id)
+    return str(policy.controls.get("legacy_import_review_required", "off")).lower().strip() == "on"
+
+
+def _purchase_policy_control_for_rows(rows: list[ImportRow], key: str, default: str) -> str:
+    if not rows:
+        return default
+    subentity_ids: set[int] = set()
+    for row in rows:
+        raw = (row.normalized_payload or {}).get("subentity_id")
+        try:
+            subentity_id = _to_int(raw)
+        except ValueError:
+            continue
+        if subentity_id:
+            subentity_ids.add(subentity_id)
+    subentity_id = next(iter(subentity_ids)) if len(subentity_ids) == 1 else None
+    policy = PurchaseSettingsService.get_policy(rows[0].job.entity_id, subentity_id)
+    return str(policy.controls.get(key, default)).lower().strip()
+
+
+def _purchase_policy_decimal_for_rows(rows: list[ImportRow], key: str, default: str) -> Decimal:
+    raw = _purchase_policy_control_for_rows(rows, key, default)
+    try:
+        return q2(_to_decimal(raw))
+    except ValueError:
+        return q2(_to_decimal(default))
+
+
+def _append_group_error(rows: list[ImportRow], *, field: str, message: str) -> None:
+    for row in rows:
+        if any(err.get("field") == field and err.get("message") == message for err in (row.errors or [])):
+            continue
+        row.status = ImportRow.Status.ERROR
+        row.errors = list(row.errors or []) + [{"field": field, "message": message}]
+        row.save(update_fields=["status", "errors", "updated_at"])
+
+
+def _append_group_warning(rows: list[ImportRow], message: str) -> None:
+    for row in rows:
+        if message in (row.warnings or []):
+            continue
+        row.warnings = list(row.warnings or []) + [message]
+        row.save(update_fields=["warnings", "updated_at"])
+
+
+def _format_note_review_preview(*, field: str, message: str, is_warning: bool) -> str:
+    if not message:
+        return ""
+    normalized_field = _normalize_text(field).lower()
+    normalized_message = message.lower()
+    if "bill_date" in normalized_message or "earlier than original invoice" in normalized_message:
+        return f"Date warning: {message}" if is_warning else f"Date issue: {message}"
+    if "outstanding" in normalized_message and "original invoice" in normalized_message:
+        return f"Outstanding warning: {message}" if is_warning else f"Outstanding issue: {message}"
+    if normalized_field in {"original_source_key", "party_account_code", "grand_total", "total_taxable"}:
+        return f"Original mismatch: {message}"
+    if "referenced original invoice" in normalized_message or "original invoice" in normalized_message:
+        return f"Original mismatch: {message}"
+    return f"Review note: {message}" if is_warning else message
+
+
+def _group_review_preview(rows: list[ImportRow]) -> str:
+    first = rows[0].normalized_payload or {}
+    is_purchase_note = int(first.get("doc_type") or 1) in {
+        PurchaseInvoiceHeader.DocType.CREDIT_NOTE,
+        PurchaseInvoiceHeader.DocType.DEBIT_NOTE,
+    }
+    for row in rows:
+        first_error = next(iter(row.errors or []), None)
+        if isinstance(first_error, dict):
+            field = _normalize_text(first_error.get("field"))
+            message = _normalize_text(first_error.get("message"))
+            if message:
+                if is_purchase_note:
+                    return _format_note_review_preview(field=field, message=message, is_warning=False)
+                return message
+    for row in rows:
+        first_warning = next(iter(row.warnings or []), None)
+        message = _normalize_text(first_warning)
+        if message:
+            if is_purchase_note:
+                return _format_note_review_preview(field="", message=message, is_warning=True)
+            return message
+    return ""
+
+
+def _compare_purchase_note_against_original(*, rows: list[ImportRow], note: dict[str, Any], original: dict[str, Any], source_label: str) -> None:
+    amount_tolerance = _purchase_policy_decimal_for_rows(rows, "legacy_import_note_amount_tolerance", "0.00")
+    note_party_id = int(note.get("party_id") or 0)
+    original_party_id = int(original.get("party_id") or 0)
+    if note_party_id and original_party_id and note_party_id != original_party_id:
+        _append_group_error(rows, field="party_account_code", message=f"Credit/debit note vendor must match the referenced original invoice vendor from {source_label}.")
+
+    note_grand_total = q2(abs(_to_decimal(note.get("grand_total"))))
+    original_grand_total = q2(abs(_to_decimal(original.get("grand_total"))))
+    if original_grand_total > ZERO2 and note_grand_total > (original_grand_total + amount_tolerance):
+        _append_group_error(rows, field="grand_total", message=f"Credit/debit note grand_total {note_grand_total} cannot exceed original invoice grand_total {original_grand_total} from {source_label}.")
+
+    note_taxable = q2(abs(_to_decimal(note.get("total_taxable"))))
+    original_taxable = q2(abs(_to_decimal(original.get("total_taxable"))))
+    if original_taxable > ZERO2 and note_taxable > (original_taxable + amount_tolerance):
+        _append_group_error(rows, field="total_taxable", message=f"Credit/debit note taxable total {note_taxable} cannot exceed original invoice taxable total {original_taxable} from {source_label}.")
+
+    note_bill_date = _to_date(note.get("bill_date"))
+    original_bill_date = _to_date(original.get("bill_date"))
+    if note_bill_date and original_bill_date and note_bill_date < original_bill_date:
+        message = f"Credit/debit note bill_date {note_bill_date.isoformat()} is earlier than original invoice bill_date {original_bill_date.isoformat()} from {source_label}."
+        date_rule = _purchase_policy_control_for_rows(rows, "legacy_import_note_date_rule", "warn")
+        if date_rule == "hard":
+            _append_group_error(rows, field="bill_date", message=message)
+        elif date_rule == "warn":
+            _append_group_warning(rows, message)
+
+    note_outstanding = q2(abs(_to_decimal(note.get("outstanding_amount"))))
+    original_outstanding = q2(abs(_to_decimal(original.get("outstanding_amount"))))
+    if original_outstanding > ZERO2 and note_outstanding > original_outstanding:
+        message = f"Credit/debit note outstanding {note_outstanding} exceeds original invoice outstanding {original_outstanding} from {source_label}."
+        outstanding_rule = _purchase_policy_control_for_rows(rows, "legacy_import_note_outstanding_rule", "warn")
+        if outstanding_rule == "hard":
+            _append_group_error(rows, field="outstanding_amount", message=message)
+        elif outstanding_rule == "warn":
+            _append_group_warning(rows, message)
+
+
+def _group_document_summary(group_key: str, rows: list[ImportRow]) -> dict[str, Any]:
+    first = rows[0].normalized_payload or {}
+    totals = {
+        "line_discount": ZERO2,
+        "line_taxable": ZERO2,
+        "line_cgst": ZERO2,
+        "line_sgst": ZERO2,
+        "line_igst": ZERO2,
+        "line_cess": ZERO2,
+        "line_total": ZERO2,
+    }
+    for row in rows:
+        data = row.normalized_payload or {}
+        totals["line_discount"] += q2(_to_decimal(data.get("discount_amount")))
+        totals["line_taxable"] += q2(_to_decimal(data.get("taxable_value")))
+        totals["line_cgst"] += q2(_to_decimal(data.get("cgst_amount")))
+        totals["line_sgst"] += q2(_to_decimal(data.get("sgst_amount")))
+        totals["line_igst"] += q2(_to_decimal(data.get("igst_amount")))
+        totals["line_cess"] += q2(_to_decimal(data.get("cess_amount")))
+        totals["line_total"] += q2(_to_decimal(data.get("line_total")))
+    original_source_key = _normalize_text(first.get("original_source_key"))
+    original_summary: dict[str, Any] | None = None
+    if original_source_key:
+        original_header = PurchaseInvoiceHeader.objects.filter(
+            entity_id=rows[0].job.entity_id,
+            legacy_source_key=original_source_key,
+        ).only(
+            "purchase_number",
+            "supplier_invoice_number",
+            "bill_date",
+            "grand_total",
+            "total_taxable",
+            "vendor_name",
+        ).first() if rows and rows[0].job.module == ImportJob.Module.PURCHASE else None
+        if original_header is not None:
+            original_summary = {
+                "legacy_source_key": original_source_key,
+                "document_number": getattr(original_header, "purchase_number", "") or "",
+                "supplier_invoice_number": getattr(original_header, "supplier_invoice_number", "") or "",
+                "bill_date": getattr(original_header, "bill_date", None).isoformat() if getattr(original_header, "bill_date", None) else None,
+                "party_name": getattr(original_header, "vendor_name", "") or "",
+                "grand_total": str(q2(getattr(original_header, "grand_total", ZERO2) or ZERO2)),
+                "total_taxable": str(q2(getattr(original_header, "total_taxable", ZERO2) or ZERO2)),
+            }
+        elif rows and rows[0].job.module == ImportJob.Module.PURCHASE:
+            grouped = _all_rows_grouped(rows[0].job)
+            original_rows = grouped.get(original_source_key) or []
+            if original_rows:
+                original_first = original_rows[0].normalized_payload or {}
+                original_summary = {
+                    "legacy_source_key": original_source_key,
+                    "document_number": original_first.get("source_invoice_number") or "",
+                    "supplier_invoice_number": original_first.get("supplier_invoice_number") or "",
+                    "bill_date": original_first.get("bill_date"),
+                    "party_name": original_first.get("party_name") or "",
+                    "grand_total": original_first.get("grand_total") or "0.00",
+                    "total_taxable": original_first.get("total_taxable") or "0.00",
+                }
+
+    return {
+        "legacy_source_key": group_key,
+        "document_number": first.get("source_invoice_number") or "",
+        "doc_type": int(first.get("doc_type") or 1),
+        "original_source_key": original_source_key,
+        "original_document_summary": original_summary,
+        "party_name": first.get("party_name") or "",
+        "party_id": first.get("party_id"),
+        "party_gstin": first.get("party_gstin") or "",
+        "supplier_invoice_number": first.get("supplier_invoice_number") or "",
+        "bill_date": first.get("bill_date"),
+        "status": rows[0].status,
+        "row_count": len(rows),
+        "header_totals": {
+            "total_taxable": first.get("total_taxable") or "0.00",
+            "total_discount": first.get("total_discount") or "0.00",
+            "total_cgst": first.get("total_cgst") or "0.00",
+            "total_sgst": first.get("total_sgst") or "0.00",
+            "total_igst": first.get("total_igst") or "0.00",
+            "total_cess": first.get("total_cess") or "0.00",
+            "tds_amount": first.get("tds_amount") or "0.00",
+            "gst_tds_amount": first.get("gst_tds_amount") or "0.00",
+            "round_off": first.get("round_off") or "0.00",
+            "grand_total": first.get("grand_total") or "0.00",
+            "settled_amount": first.get("settled_amount") or "0.00",
+            "outstanding_amount": first.get("outstanding_amount") or "0.00",
+        },
+        "line_totals": {key: str(q2(value)) for key, value in totals.items()},
+        "error_count": sum(len(row.errors or []) for row in rows),
+        "warning_count": sum(len(row.warnings or []) for row in rows),
+        "review_state": "needs_review" if any(row.errors or row.warnings for row in rows) else "ready",
+        "review_preview": _group_review_preview(rows),
+    }
+
+
+def _apply_group_validation_rules(job: ImportJob) -> None:
+    grouped = _rows_grouped(job)
+    grouped_payloads = {group_key: (rows[0].normalized_payload or {}) for group_key, rows in grouped.items()}
+    for group_key, rows in grouped.items():
+        first = rows[0].normalized_payload or {}
+        if any((row.normalized_payload or {}).get("doc_type") != first.get("doc_type") for row in rows):
+            _append_group_error(rows, field="doc_type", message="All rows in a legacy document must use the same doc_type.")
+        if any((row.normalized_payload or {}).get("source_invoice_number") != first.get("source_invoice_number") for row in rows):
+            _append_group_error(rows, field="source_invoice_number", message="All rows in a legacy document must use the same source_invoice_number.")
+        if any((row.normalized_payload or {}).get("party_id") != first.get("party_id") for row in rows):
+            _append_group_error(rows, field="party_account_code", message="All rows in a legacy document must resolve to the same party.")
+
+        if job.module != ImportJob.Module.PURCHASE:
+            continue
+
+        header_taxable = q2(_to_decimal(first.get("total_taxable")))
+        header_discount = q2(_to_decimal(first.get("total_discount")))
+        header_cgst = q2(_to_decimal(first.get("total_cgst")))
+        header_sgst = q2(_to_decimal(first.get("total_sgst")))
+        header_igst = q2(_to_decimal(first.get("total_igst")))
+        header_cess = q2(_to_decimal(first.get("total_cess")))
+        round_off = q2(_to_decimal(first.get("round_off")))
+        grand_total = q2(_to_decimal(first.get("grand_total")))
+        settled_amount = q2(_to_decimal(first.get("settled_amount")))
+        outstanding_amount = q2(_to_decimal(first.get("outstanding_amount")))
+        tds_amount = q2(_to_decimal(first.get("tds_amount")))
+        gst_tds_amount = q2(_to_decimal(first.get("gst_tds_amount")))
+
+        if settled_amount + outstanding_amount > grand_total:
+            _append_group_error(rows, field="outstanding_amount", message="settled_amount + outstanding_amount cannot exceed grand_total.")
+        if tds_amount < ZERO2 or gst_tds_amount < ZERO2:
+            _append_group_error(rows, field="withholding_amounts", message="tds_amount and gst_tds_amount must be non-negative.")
+
+        if int(first.get("doc_type") or 1) in {2, 3}:
+            original_source_key = _normalize_text(first.get("original_source_key"))
+            if not original_source_key:
+                _append_group_error(rows, field="original_source_key", message="original_source_key is required for credit/debit notes.")
+            else:
+                original_in_job = grouped_payloads.get(original_source_key)
+                if original_in_job:
+                    _compare_purchase_note_against_original(
+                        rows=rows,
+                        note=first,
+                        original=original_in_job,
+                        source_label="this import job",
+                    )
+                else:
+                    original_header = PurchaseInvoiceHeader.objects.filter(
+                        entity=job.entity,
+                        legacy_source_key=original_source_key,
+                    ).only(
+                        "vendor_id",
+                        "bill_date",
+                        "grand_total",
+                        "total_taxable",
+                    ).first()
+                    if original_header:
+                        _compare_purchase_note_against_original(
+                            rows=rows,
+                            note=first,
+                            original={
+                                "party_id": getattr(original_header, "vendor_id", None),
+                                "bill_date": getattr(original_header, "bill_date", None),
+                                "grand_total": getattr(original_header, "grand_total", ZERO2),
+                                "total_taxable": getattr(original_header, "total_taxable", ZERO2),
+                                "outstanding_amount": (getattr(original_header, "match_notes", {}) or {}).get("legacy_settlement", {}).get("outstanding_amount", "0.00"),
+                            },
+                            source_label="existing imported purchase invoice",
+                        )
+                    else:
+                        _append_group_warning(rows, "Referenced original invoice will be validated again during commit.")
+
+        if job.detail_level != ImportJob.DetailLevel.HEADER_PLUS_LINES:
+            continue
+
+        sum_discount = ZERO2
+        sum_taxable = ZERO2
+        sum_cgst = ZERO2
+        sum_sgst = ZERO2
+        sum_igst = ZERO2
+        sum_cess = ZERO2
+        sum_line_total = ZERO2
+        for row in rows:
+            data = row.normalized_payload or {}
+            sum_discount += q2(_to_decimal(data.get("discount_amount")))
+            sum_taxable += q2(_to_decimal(data.get("taxable_value")))
+            sum_cgst += q2(_to_decimal(data.get("cgst_amount")))
+            sum_sgst += q2(_to_decimal(data.get("sgst_amount")))
+            sum_igst += q2(_to_decimal(data.get("igst_amount")))
+            sum_cess += q2(_to_decimal(data.get("cess_amount")))
+            sum_line_total += q2(_to_decimal(data.get("line_total")))
+
+        if sum_taxable != header_taxable:
+            _append_group_error(rows, field="total_taxable", message=f"Header total_taxable {header_taxable} does not match line taxable total {sum_taxable}.")
+        if sum_cgst != header_cgst:
+            _append_group_error(rows, field="total_cgst", message=f"Header total_cgst {header_cgst} does not match line CGST total {sum_cgst}.")
+        if sum_sgst != header_sgst:
+            _append_group_error(rows, field="total_sgst", message=f"Header total_sgst {header_sgst} does not match line SGST total {sum_sgst}.")
+        if sum_igst != header_igst:
+            _append_group_error(rows, field="total_igst", message=f"Header total_igst {header_igst} does not match line IGST total {sum_igst}.")
+        if sum_cess != header_cess:
+            _append_group_error(rows, field="total_cess", message=f"Header total_cess {header_cess} does not match line cess total {sum_cess}.")
+        if header_discount and sum_discount != header_discount:
+            _append_group_error(rows, field="total_discount", message=f"Header total_discount {header_discount} does not match line discount total {sum_discount}.")
+
+        expected_grand_total = q2(sum_taxable + sum_cgst + sum_sgst + sum_igst + sum_cess + round_off)
+        if expected_grand_total != grand_total:
+            _append_group_error(rows, field="grand_total", message=f"grand_total {grand_total} does not match computed line total {expected_grand_total}.")
+        if sum_line_total != grand_total:
+            _append_group_warning(rows, f"Line total sum {sum_line_total} differs from header grand_total {grand_total}.")
+
 @transaction.atomic
 def create_validated_job(
     *,
@@ -647,6 +1076,8 @@ def create_validated_job(
     profile: ImportProfile | None = None,
 ) -> ImportJob:
     effective_source_system = source_system or getattr(profile, "source_system", "")
+    rows = _apply_import_profile(_parse_rows(file_bytes, fmt), profile, source_system=effective_source_system)
+    review_required = module == ImportJob.Module.PURCHASE and _resolve_purchase_review_required(entity=entity, rows=rows)
     job = ImportJob.objects.create(
         entity=entity,
         created_by=user,
@@ -661,6 +1092,7 @@ def create_validated_job(
         input_filename=filename,
         file_format=fmt,
         profile_snapshot=_profile_snapshot(profile),
+        review_required=review_required,
         options={
             "stock_replay": stock_replay,
             "compliance_mode": compliance_mode,
@@ -668,7 +1100,6 @@ def create_validated_job(
             "document_number_strategy": document_number_strategy,
         },
     )
-    rows = _apply_import_profile(_parse_rows(file_bytes, fmt), profile, source_system=effective_source_system)
     group_counts: dict[str, int] = defaultdict(int)
     for idx, row in enumerate(rows, start=2):
         result = _validate_row(job=job, row=row, row_no=idx)
@@ -701,7 +1132,12 @@ def create_validated_job(
                 row.save(update_fields=["status", "errors", "updated_at"])
 
     _apply_existing_collision_rules(job)
+    _apply_group_validation_rules(job)
     summary = _job_summary(job)
+    summary["document_summaries"] = [
+        _group_document_summary(group_key, rows)
+        for group_key, rows in sorted(_all_rows_grouped(job).items(), key=lambda item: item[0])
+    ]
     job.summary = summary
     job.status = ImportJob.Status.VALIDATED if summary["rows_error"] == 0 else ImportJob.Status.FAILED
     job.save(update_fields=["summary", "status", "updated_at"])
@@ -749,6 +1185,13 @@ def _apply_existing_collision_rules(job: ImportJob) -> None:
 def _rows_grouped(job: ImportJob) -> dict[str, list[ImportRow]]:
     grouped: dict[str, list[ImportRow]] = defaultdict(list)
     for row in job.rows.exclude(status=ImportRow.Status.IMPORTED).order_by("group_key", "row_no"):
+        grouped[row.group_key].append(row)
+    return grouped
+
+
+def _all_rows_grouped(job: ImportJob) -> dict[str, list[ImportRow]]:
+    grouped: dict[str, list[ImportRow]] = defaultdict(list)
+    for row in job.rows.order_by("group_key", "row_no"):
         grouped[row.group_key].append(row)
     return grouped
 
@@ -901,6 +1344,7 @@ def _create_purchase_header(job: ImportJob, normalized: dict[str, Any], *, origi
         default_taxability=int(normalized.get("taxability") or PurchaseInvoiceHeader.Taxability.TAXABLE),
         tax_regime=int(normalized.get("tax_regime") or PurchaseInvoiceHeader.TaxRegime.INTRA),
         is_igst=int(normalized.get("tax_regime") or PurchaseInvoiceHeader.TaxRegime.INTRA) == int(PurchaseInvoiceHeader.TaxRegime.INTER),
+        is_reverse_charge=bool(normalized.get("is_reverse_charge")),
         total_taxable=Decimal(normalized["total_taxable"]),
         total_cgst=Decimal(normalized["total_cgst"]),
         total_sgst=Decimal(normalized["total_sgst"]),
@@ -1184,9 +1628,22 @@ def _maybe_replay_purchase_side_effects(job: ImportJob, header: PurchaseInvoiceH
 
 
 @transaction.atomic
+def mark_job_reviewed(*, job: ImportJob, user, note: str = "") -> ImportJob:
+    if job.status != ImportJob.Status.VALIDATED:
+        raise ValueError("Only validated jobs can be marked as reviewed.")
+    job.reviewed_by = user
+    job.reviewed_at = timezone.now()
+    job.review_note = (note or "").strip()[:255]
+    job.save(update_fields=["reviewed_by", "reviewed_at", "review_note", "updated_at"])
+    return job
+
+
+@transaction.atomic
 def commit_job(*, job: ImportJob, user) -> ImportJob:
     if job.status not in {ImportJob.Status.VALIDATED, ImportJob.Status.PARTIAL, ImportJob.Status.COMMITTED}:
         raise ValueError("Only validated jobs can be committed.")
+    if job.review_required and not job.reviewed_at:
+        raise ValueError("This import job must be reviewed before commit.")
     groups = _rows_grouped(job)
     created = skipped = 0
     warnings: list[str] = []
@@ -1218,6 +1675,30 @@ def commit_job(*, job: ImportJob, user) -> ImportJob:
                     row.errors = list(row.errors or []) + [{"field": "original_source_key", "message": "Referenced original invoice was not found."}]
                     row.save(update_fields=["status", "errors", "updated_at"])
                 continue
+            if job.module == ImportJob.Module.PURCHASE and int(first.get("party_id") or 0) != int(getattr(original, "vendor_id", 0) or 0):
+                for row in rows:
+                    row.status = ImportRow.Status.ERROR
+                    row.errors = list(row.errors or []) + [{"field": "party_account_code", "message": "Credit/debit note vendor must match the referenced original invoice vendor."}]
+                    row.save(update_fields=["status", "errors", "updated_at"])
+                continue
+            if job.module == ImportJob.Module.PURCHASE:
+                original_grand_total = q2(abs(getattr(original, "grand_total", ZERO2) or ZERO2))
+                note_grand_total = q2(abs(_to_decimal(first.get("grand_total"))))
+                if original_grand_total > ZERO2 and note_grand_total > original_grand_total:
+                    for row in rows:
+                        row.status = ImportRow.Status.ERROR
+                        row.errors = list(row.errors or []) + [{"field": "grand_total", "message": "Credit/debit note grand_total cannot exceed the referenced original invoice grand_total."}]
+                        row.save(update_fields=["status", "errors", "updated_at"])
+                    continue
+
+                original_taxable = q2(abs(getattr(original, "total_taxable", ZERO2) or ZERO2))
+                note_taxable = q2(abs(_to_decimal(first.get("total_taxable"))))
+                if original_taxable > ZERO2 and note_taxable > original_taxable:
+                    for row in rows:
+                        row.status = ImportRow.Status.ERROR
+                        row.errors = list(row.errors or []) + [{"field": "total_taxable", "message": "Credit/debit note taxable total cannot exceed the referenced original invoice taxable total."}]
+                        row.save(update_fields=["status", "errors", "updated_at"])
+                    continue
             original_id = original.id
 
         if job.module == ImportJob.Module.SALES:
@@ -1258,6 +1739,10 @@ def commit_job(*, job: ImportJob, user) -> ImportJob:
         **(job.summary or {}),
         "groups_imported": created,
         "groups_skipped": skipped,
+        "document_summaries": [
+            _group_document_summary(group_key, rows)
+            for group_key, rows in sorted(_all_rows_grouped(job).items(), key=lambda item: item[0])
+        ],
     }
     job.reconciliation_summary = {
         "imported_documents": reconciliation_rows,

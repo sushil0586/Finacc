@@ -340,6 +340,10 @@ class PurchaseSettingsAPIView(APIView):
                 "vendor_gstin_format_rule": policy.controls.get("vendor_gstin_format_rule", "hard"),
                 "withholding_pan_required_rule": policy.controls.get("withholding_pan_required_rule", "hard"),
                 "withholding_pan_format_rule": policy.controls.get("withholding_pan_format_rule", "hard"),
+                "legacy_import_review_required": policy.controls.get("legacy_import_review_required", "off"),
+                "legacy_import_note_outstanding_rule": policy.controls.get("legacy_import_note_outstanding_rule", "warn"),
+                "legacy_import_note_date_rule": policy.controls.get("legacy_import_note_date_rule", "warn"),
+                "legacy_import_note_amount_tolerance": policy.controls.get("legacy_import_note_amount_tolerance", "0.00"),
                 "allow_mixed_taxability_in_one_bill": settings_obj.allow_mixed_taxability_in_one_bill,
                 "round_grand_total_to": settings_obj.round_grand_total_to,
                 "enable_round_off": settings_obj.enable_round_off,
@@ -396,6 +400,10 @@ class PurchaseSettingsAPIView(APIView):
             or "vendor_gstin_format_rule" in settings_updates
             or "withholding_pan_required_rule" in settings_updates
             or "withholding_pan_format_rule" in settings_updates
+            or "legacy_import_review_required" in settings_updates
+            or "legacy_import_note_outstanding_rule" in settings_updates
+            or "legacy_import_note_date_rule" in settings_updates
+            or "legacy_import_note_amount_tolerance" in settings_updates
         ):
             policy_controls = dict(settings_updates.get("policy_controls") or {})
             if "itc_claim_requires_2b" in settings_updates:
@@ -424,6 +432,10 @@ class PurchaseSettingsAPIView(APIView):
                 "vendor_gstin_format_rule",
                 "withholding_pan_required_rule",
                 "withholding_pan_format_rule",
+                "legacy_import_review_required",
+                "legacy_import_note_outstanding_rule",
+                "legacy_import_note_date_rule",
+                "legacy_import_note_amount_tolerance",
             ):
                 if key in settings_updates:
                     policy_controls[key] = settings_updates.get(key)
@@ -448,6 +460,10 @@ class PurchaseSettingsAPIView(APIView):
         settings_updates.pop("vendor_gstin_format_rule", None)
         settings_updates.pop("withholding_pan_required_rule", None)
         settings_updates.pop("withholding_pan_format_rule", None)
+        settings_updates.pop("legacy_import_review_required", None)
+        settings_updates.pop("legacy_import_note_outstanding_rule", None)
+        settings_updates.pop("legacy_import_note_date_rule", None)
+        settings_updates.pop("legacy_import_note_amount_tolerance", None)
 
         self._validate_settings_updates(settings_updates)
 

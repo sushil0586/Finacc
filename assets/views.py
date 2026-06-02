@@ -27,6 +27,7 @@ from assets.serializers import (
     AssetCategorySerializer,
     AssetDisposalSerializer,
     AssetImpairSerializer,
+    AssetReverseLifecycleSerializer,
     AssetSettingsSerializer,
     AssetTransferSerializer,
     DepreciationRunCalculateSerializer,
@@ -246,7 +247,10 @@ class FixedAssetRetrieveUpdateAPIView(AssetScopedAPIView, generics.RetrieveUpdat
             entityfinid_id=instance.entityfinid_id,
             subentity_id=instance.subentity_id,
         )
-        asset = AssetService.update_asset(instance=instance, data=serializer.validated_data, user_id=request.user.id)
+        try:
+            asset = AssetService.update_asset(instance=instance, data=serializer.validated_data, user_id=request.user.id)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(FixedAssetListSerializer(asset).data)
 
     def destroy(self, request, *args, **kwargs):
@@ -295,7 +299,10 @@ class FixedAssetCapitalizePrecheckAPIView(AssetScopedAPIView):
         asset = self._scoped_asset(request, pk)
         serializer = AssetCapitalizeSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        payload = AssetService.capitalize_asset_precheck(asset=asset, **serializer.validated_data)
+        try:
+            payload = AssetService.capitalize_asset_precheck(asset=asset, **serializer.validated_data)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(payload)
 
 
@@ -318,7 +325,10 @@ class FixedAssetImpairPrecheckAPIView(AssetScopedAPIView):
         asset = self._scoped_asset(request, pk)
         serializer = AssetImpairSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        payload = AssetService.impair_asset_precheck(asset=asset, **serializer.validated_data)
+        try:
+            payload = AssetService.impair_asset_precheck(asset=asset, **serializer.validated_data)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(payload)
 
 
@@ -353,6 +363,70 @@ class FixedAssetDisposeAPIView(AssetScopedAPIView):
         serializer.is_valid(raise_exception=True)
         try:
             asset = AssetService.dispose_asset(asset=asset, user_id=request.user.id, **serializer.validated_data)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(FixedAssetListSerializer(asset).data)
+
+
+class FixedAssetDisposePrecheckAPIView(AssetScopedAPIView):
+
+    def post(self, request, pk: int):
+        asset = self._scoped_asset(request, pk)
+        serializer = AssetDisposalSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            payload = AssetService.dispose_asset_precheck(asset=asset, **serializer.validated_data)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(payload)
+
+
+class FixedAssetReverseCapitalizationAPIView(AssetScopedAPIView):
+
+    def get(self, request, pk: int):
+        asset = self._scoped_asset(request, pk)
+        return Response(AssetService.reverse_capitalization_precheck(asset=asset))
+
+    def post(self, request, pk: int):
+        asset = self._scoped_asset(request, pk)
+        serializer = AssetReverseLifecycleSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            asset = AssetService.reverse_capitalization(asset=asset, user_id=request.user.id, **serializer.validated_data)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(FixedAssetListSerializer(asset).data)
+
+
+class FixedAssetReverseImpairmentAPIView(AssetScopedAPIView):
+
+    def get(self, request, pk: int):
+        asset = self._scoped_asset(request, pk)
+        return Response(AssetService.reverse_impairment_precheck(asset=asset))
+
+    def post(self, request, pk: int):
+        asset = self._scoped_asset(request, pk)
+        serializer = AssetReverseLifecycleSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            asset = AssetService.reverse_impairment(asset=asset, user_id=request.user.id, **serializer.validated_data)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(FixedAssetListSerializer(asset).data)
+
+
+class FixedAssetReverseDisposalAPIView(AssetScopedAPIView):
+
+    def get(self, request, pk: int):
+        asset = self._scoped_asset(request, pk)
+        return Response(AssetService.reverse_disposal_precheck(asset=asset))
+
+    def post(self, request, pk: int):
+        asset = self._scoped_asset(request, pk)
+        serializer = AssetReverseLifecycleSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            asset = AssetService.reverse_disposal(asset=asset, user_id=request.user.id, **serializer.validated_data)
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(FixedAssetListSerializer(asset).data)

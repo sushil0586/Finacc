@@ -19,6 +19,37 @@ from helpers.utils.api_validation import (
 from helpers.utils.document_actions import build_document_action_flags
 
 
+def _response_feedback(message: str) -> dict:
+    raw_message = str(message or "").strip()
+    return {
+        "message": raw_message,
+        "notice": raw_message,
+        "warnings": [],
+    }
+
+
+def _duplicate_reference_warnings(*, instance_id: int | None, entity_id: int, entityfinid_id: int, subentity_id: int | None, voucher_type: str, reference_number: str | None) -> list[str]:
+    reference = str(reference_number or "").strip()
+    if not reference:
+        return []
+    qs = VoucherHeader.objects.filter(
+        entity_id=entity_id,
+        entityfinid_id=entityfinid_id,
+        voucher_type=voucher_type,
+        reference_number__iexact=reference,
+    )
+    if subentity_id is None:
+        qs = qs.filter(subentity__isnull=True)
+    else:
+        qs = qs.filter(subentity_id=subentity_id)
+    if instance_id:
+        qs = qs.exclude(pk=instance_id)
+    duplicate = qs.order_by("-id").values("id", "voucher_code", "doc_no").first()
+    if not duplicate:
+        return []
+    label = duplicate.get("voucher_code") or duplicate.get("doc_no") or duplicate.get("id")
+    return [f"Reference number already exists on voucher {label}."]
+
 
 def _perm_code(voucher_type: str, action: str) -> str:
     vt = (voucher_type or "").upper()
@@ -101,11 +132,24 @@ class VoucherListCreateAPIView(_VoucherScopeMixin, generics.ListCreateAPIView):
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        entity_id, _, _ = self._scope_ids(required=True)
+        entity_id, entityfinid_id, subentity_id = self._scope_ids(required=True)
         voucher_type = serializer.validated_data.get("voucher_type") or VoucherHeader.VoucherType.JOURNAL
         _assert_permission(request.user, entity_id=entity_id, voucher_type=voucher_type, action="create")
         instance = serializer.save()
-        return Response(VoucherDetailSerializer(instance, context={"request": request}).data, status=status.HTTP_201_CREATED)
+        data = VoucherDetailSerializer(instance, context={"request": request}).data
+        warnings = _duplicate_reference_warnings(
+            instance_id=instance.id,
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            voucher_type=instance.voucher_type,
+            reference_number=instance.reference_number,
+        )
+        return Response({
+            **data,
+            "notice": "Voucher saved.",
+            "warnings": warnings,
+        }, status=status.HTTP_201_CREATED)
 
 
 class VoucherRetrieveUpdateDestroyAPIView(_VoucherScopeMixin, generics.RetrieveUpdateDestroyAPIView):
@@ -124,7 +168,20 @@ class VoucherRetrieveUpdateDestroyAPIView(_VoucherScopeMixin, generics.RetrieveU
         serializer = self.get_serializer(instance, data=request.data, partial=partial)
         serializer.is_valid(raise_exception=True)
         instance = serializer.save()
-        return Response(VoucherDetailSerializer(instance, context={"request": request}).data)
+        data = VoucherDetailSerializer(instance, context={"request": request}).data
+        warnings = _duplicate_reference_warnings(
+            instance_id=instance.id,
+            entity_id=instance.entity_id,
+            entityfinid_id=instance.entityfinid_id,
+            subentity_id=instance.subentity_id,
+            voucher_type=instance.voucher_type,
+            reference_number=instance.reference_number,
+        )
+        return Response({
+            **data,
+            "notice": "Voucher updated.",
+            "warnings": warnings,
+        })
 
     def perform_destroy(self, instance):
         if int(instance.status) != int(VoucherHeader.Status.DRAFT):
@@ -143,7 +200,9 @@ class VoucherConfirmAPIView(_VoucherScopedActionMixin, APIView):
             result = VoucherService.confirm_voucher(header.id, confirmed_by_id=request.user.id)
         except ValueError as e:
             _raise_validation_error(e)
-        return Response({"message": result.message, "data": VoucherDetailSerializer(result.header, context={"request": request}).data})
+        response = _response_feedback(result.message)
+        response["data"] = VoucherDetailSerializer(result.header, context={"request": request}).data
+        return Response(response)
 
 
 class VoucherPostAPIView(_VoucherScopedActionMixin, APIView):
@@ -156,7 +215,9 @@ class VoucherPostAPIView(_VoucherScopedActionMixin, APIView):
             result = VoucherService.post_voucher(header.id, posted_by_id=request.user.id)
         except ValueError as e:
             _raise_validation_error(e)
-        return Response({"message": result.message, "data": VoucherDetailSerializer(result.header, context={"request": request}).data})
+        response = _response_feedback(result.message)
+        response["data"] = VoucherDetailSerializer(result.header, context={"request": request}).data
+        return Response(response)
 
 
 class VoucherApprovalAPIView(_VoucherScopedActionMixin, APIView):
@@ -181,7 +242,13 @@ class VoucherApprovalAPIView(_VoucherScopedActionMixin, APIView):
         except ValueError as e:
             _raise_validation_error(e)
         out = VoucherDetailSerializer(result.header, context={"request": request}).data
-        return Response({"message": result.message, "approval_status": out.get("approval_status", "DRAFT"), "approval_status_name": out.get("approval_status_name", "Draft"), "data": out})
+        response = _response_feedback(result.message)
+        response.update({
+            "approval_status": out.get("approval_status", "DRAFT"),
+            "approval_status_name": out.get("approval_status_name", "Draft"),
+            "data": out,
+        })
+        return Response(response)
 
 
 class VoucherUnpostAPIView(_VoucherScopedActionMixin, APIView):
@@ -194,7 +261,9 @@ class VoucherUnpostAPIView(_VoucherScopedActionMixin, APIView):
             result = VoucherService.unpost_voucher(header.id, unposted_by_id=request.user.id)
         except ValueError as e:
             _raise_validation_error(e)
-        return Response({"message": result.message, "data": VoucherDetailSerializer(result.header, context={"request": request}).data})
+        response = _response_feedback(result.message)
+        response["data"] = VoucherDetailSerializer(result.header, context={"request": request}).data
+        return Response(response)
 
 
 class VoucherCancelAPIView(_VoucherScopedActionMixin, APIView):
@@ -208,7 +277,9 @@ class VoucherCancelAPIView(_VoucherScopedActionMixin, APIView):
             result = VoucherService.cancel_voucher(header.id, cancelled_by_id=request.user.id, reason=reason)
         except ValueError as e:
             _raise_validation_error(e)
-        return Response({"message": result.message, "data": VoucherDetailSerializer(result.header, context={"request": request}).data}, status=status.HTTP_200_OK)
+        response = _response_feedback(result.message)
+        response["data"] = VoucherDetailSerializer(result.header, context={"request": request}).data
+        return Response(response, status=status.HTTP_200_OK)
 
 
 class VoucherSummaryAPIView(_VoucherScopeMixin, APIView):
@@ -266,4 +337,3 @@ class VoucherSummaryAPIView(_VoucherScopeMixin, APIView):
                 "action_flags": self._action_flags(voucher),
             }
         )
-

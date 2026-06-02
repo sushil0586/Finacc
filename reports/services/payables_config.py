@@ -22,6 +22,8 @@ To add a new payables report:
 from collections import OrderedDict
 from copy import deepcopy
 
+from purchase.models.purchase_core import PurchaseInvoiceLine
+
 
 PAYABLE_REPORT_DEFAULTS = {
     "default_page_size": 100,
@@ -709,6 +711,64 @@ PAYABLE_REPORTS.update(
             "related_reports": ["vendor_outstanding", "ap_aging_invoice", "vendor_ledger_statement", "purchase_register"],
             "print_sections": ["rows", "totals", "window_summary"],
         },
+        "msme_overdue": {
+            "code": "msme_overdue",
+            "name": "MSME Overdue Report",
+            "path": "/api/reports/payables/msme-overdue/",
+            "menu_code": "reports.payables.msme_overdue",
+            "route_name": "reports-payables-msme-overdue",
+            "required_permission": "reports.payables.view",
+            "supports_traceability": True,
+            "default_filters": {"sort_by": "msme_days_overdue", "sort_order": "desc", "overdue_only": True},
+            "feature_flags": OrderedDict(
+                {
+                    "include_trace": {"label": "Traceability", "type": "boolean", "default": True},
+                    "overdue_only": {"label": "Overdue Only", "type": "boolean", "default": True},
+                }
+            ),
+            "columns": _ordered_columns(
+                {"key": "vendor_name", "label": "Vendor", "default": True},
+                {"key": "vendor_code", "label": "Vendor Code", "default": True},
+                {"key": "msme_status", "label": "MSME Status", "default": True},
+                {"key": "udyam_no", "label": "Udyam No", "default": True},
+                {"key": "bill_number", "label": "Bill Number", "default": True},
+                {"key": "bill_date", "label": "Bill Date", "default": True},
+                {"key": "msme_due_date", "label": "MSME Due Date", "default": True},
+                {"key": "balance", "label": "Outstanding Amount", "default": True},
+                {"key": "msme_days_overdue", "label": "Days Overdue", "default": True},
+                {"key": "overdue_bucket", "label": "Overdue Bucket", "default": True},
+                {"key": "has_written_payment_terms", "label": "Written Terms", "default": True},
+                {"key": "msme_allowed_credit_days", "label": "Allowed Credit Days", "default": True},
+                {"key": "branch", "label": "Branch", "default": True},
+            ),
+            "summary_blocks": OrderedDict(
+                {
+                    "overdue_amount": {"code": "overdue_amount", "label": "Overdue Amount", "default": True},
+                    "overdue_bill_count": {"code": "overdue_bill_count", "label": "Overdue Bills", "default": True},
+                    "overdue_vendor_count": {"code": "overdue_vendor_count", "label": "Overdue Vendors", "default": True},
+                    "oldest_overdue_days": {"code": "oldest_overdue_days", "label": "Oldest Delay", "default": True},
+                    "reporting_note": {"code": "reporting_note", "label": "Reporting Note", "default": True},
+                }
+            ),
+            "drilldown_targets": ["purchase_document_detail", "vendor_outstanding", "ap_aging", "vendor_ledger_statement"],
+            "export_columns": [
+                "vendor_name",
+                "vendor_code",
+                "msme_status",
+                "udyam_no",
+                "bill_number",
+                "bill_date",
+                "msme_due_date",
+                "balance",
+                "msme_days_overdue",
+                "overdue_bucket",
+                "has_written_payment_terms",
+                "msme_allowed_credit_days",
+                "branch",
+            ],
+            "related_reports": ["vendor_outstanding", "ap_aging_invoice", "vendor_ledger_statement", "upcoming_payments_calendar", "purchase_register"],
+            "print_sections": ["rows", "overdue_amount", "overdue_bill_count", "overdue_vendor_count", "oldest_overdue_days", "reporting_note"],
+        },
         "vendor_settlement_history": {
             "code": "vendor_settlement_history",
             "name": "Vendor Settlement History",
@@ -1161,6 +1221,16 @@ def get_payables_drilldown_target(target_code):
     return deepcopy(PAYABLE_DRILLDOWN_TARGETS.get(target_code))
 
 
+def _purchase_document_route(document_id):
+    try:
+        source_id = int(document_id or 0)
+    except (TypeError, ValueError):
+        source_id = 0
+    if source_id and PurchaseInvoiceLine.objects.filter(header_id=source_id, is_service=True).exists():
+        return "/purchaseserviceinvoice"
+    return "/purchaseinvoice"
+
+
 def build_payables_drilldown(target_code, *, params, label=None, kind=None, path=None, report_code=None):
     target = get_payables_drilldown_target(target_code) or {
         "code": target_code,
@@ -1176,6 +1246,8 @@ def build_payables_drilldown(target_code, *, params, label=None, kind=None, path
     }
     resolved_path = path or target.get("path")
     resolved_report_code = report_code or target.get("report_code")
+    if target_code in {"purchase_document_detail", "purchase_invoice_detail"}:
+        payload["route"] = _purchase_document_route((params or {}).get("id"))
     if resolved_path:
         payload["path"] = resolved_path
     if resolved_report_code:
@@ -1220,6 +1292,8 @@ def _related_report_defaults(report_code, *, entity_id, entityfin_id, subentity_
         params.update({"as_of_date": as_of_date or to_date, "view": "invoice"})
     elif report_code == "payables_dashboard_summary":
         params.update({"as_of_date": as_of_date or to_date})
+    elif report_code == "msme_overdue":
+        params.update({"from_date": from_date, "to_date": to_date or as_of_date, "as_of_date": as_of_date or to_date, "overdue_only": True})
     elif report_code == "purchase_register":
         params.update({"from_date": from_date, "to_date": to_date or as_of_date, "include_outstanding": True})
     elif report_code == "vendor_ledger_statement":
@@ -1232,7 +1306,7 @@ def _related_report_defaults(report_code, *, entity_id, entityfin_id, subentity_
             params["vendor"] = vendor_id
     elif report_code in {"payables_close_pack", "payables_close_readiness_summary", "ap_gl_reconciliation", "vendor_balance_exceptions"}:
         params.update({"as_of_date": as_of_date or to_date})
-    if vendor_id is not None and report_code in {"vendor_outstanding", "ap_aging_summary", "ap_aging_invoice"}:
+    if vendor_id is not None and report_code in {"vendor_outstanding", "ap_aging_summary", "ap_aging_invoice", "msme_overdue"}:
         params["vendor"] = vendor_id
     return params
 
@@ -1313,6 +1387,7 @@ def _report_filter_codes(report_code, *, view=None):
             "page_size",
         ],
         "ap_aging": ["entity", "entityfinid", "subentity", "as_of_date", "vendor", "vendor_group", "region", "currency", "overdue_only", "credit_limit_exceeded", "include_trace", "search", "sort_by", "sort_order", "page", "page_size", "view"],
+        "msme_overdue": ["entity", "entityfinid", "subentity", "from_date", "to_date", "as_of_date", "vendor", "vendor_group", "region", "currency", "overdue_only", "include_trace", "search", "sort_by", "sort_order", "page", "page_size"],
         "payables_dashboard_summary": ["entity", "entityfinid", "subentity", "as_of_date", "vendor", "vendor_group", "region", "currency", "search"],
         "ap_gl_reconciliation": ["entity", "entityfinid", "subentity", "as_of_date", "vendor", "vendor_group", "region", "currency", "include_trace", "search", "sort_by", "sort_order", "page", "page_size"],
         "vendor_balance_exceptions": ["entity", "entityfinid", "subentity", "as_of_date", "vendor", "vendor_group", "region", "currency", "search", "min_amount", "overdue_days_gt", "stale_days_gt", "include_negative_balances", "include_old_advances", "include_stale_vendors", "sort_by", "sort_order", "page", "page_size"],

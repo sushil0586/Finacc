@@ -34,6 +34,14 @@ def _format_amount(value: Decimal) -> str:
     return f"{value:.2f}"
 
 
+def _positive_total(values: list[Decimal]) -> Decimal:
+    return sum((value for value in values if value > 0), Decimal("0.00"))
+
+
+def _negative_total(values: list[Decimal]) -> Decimal:
+    return sum((abs(value) for value in values if value < 0), Decimal("0.00"))
+
+
 def _map_ledger_row(row: dict) -> dict:
     opening_value = row.get("opening_value") or Decimal("0.00")
     closing_value = row.get("closing_value") or Decimal("0.00")
@@ -91,6 +99,7 @@ def build_ledger_summary(
     as_of_date=None,
     group_by=None,
     include_zero_balance=False,
+    include_opening=True,
     posted_only=True,
     search=None,
     sort_by=None,
@@ -110,6 +119,7 @@ def build_ledger_summary(
         ledger_ids=None,
         posted_only=posted_only,
         include_zero_balances=include_zero_balance,
+        include_opening=include_opening,
         search=search,
     )
 
@@ -146,10 +156,16 @@ def build_ledger_summary(
     end = start + safe_page_size
     paged_rows = prepared_rows[start:end]
 
-    total_opening = sum((row.get("opening_value") or Decimal("0.00") for row in raw_rows), Decimal("0.00"))
+    opening_values = [row.get("opening_value") or Decimal("0.00") for row in raw_rows]
+    balance_values = [row.get("closing_value") or Decimal("0.00") for row in raw_rows]
+    total_opening_debit = _positive_total(opening_values)
+    total_opening_credit = _negative_total(opening_values)
+    total_balance_debit = _positive_total(balance_values)
+    total_balance_credit = _negative_total(balance_values)
+    total_opening = max(total_opening_debit, total_opening_credit)
     total_debit = sum((row.get("debit_value") or Decimal("0.00") for row in raw_rows), Decimal("0.00"))
     total_credit = sum((row.get("credit_value") or Decimal("0.00") for row in raw_rows), Decimal("0.00"))
-    total_closing = sum((row.get("closing_value") or Decimal("0.00") for row in raw_rows), Decimal("0.00"))
+    total_closing = max(total_balance_debit, total_balance_credit)
 
     return {
         "entity_id": entity_id,
@@ -166,6 +182,10 @@ def build_ledger_summary(
             "debit": _format_amount(total_debit),
             "credit": _format_amount(total_credit),
             "balance": _format_amount(total_closing),
+            "opening_debit": _format_amount(total_opening_debit),
+            "opening_credit": _format_amount(total_opening_credit),
+            "balance_debit": _format_amount(total_balance_debit),
+            "balance_credit": _format_amount(total_balance_credit),
         },
         "pagination": {
             "page": safe_page,
@@ -180,6 +200,7 @@ def build_ledger_summary(
             "sort_by": sort_by or "account_name",
             "sort_order": resolved_sort_order,
             "include_zero_balances": include_zero_balance,
+            "include_opening": include_opening,
             "posted_only": posted_only,
             "search": search,
         },

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from django.utils.dateparse import parse_date
 from rest_framework import generics, permissions, status
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
@@ -239,6 +240,10 @@ class CustomerStatementAPIView(APIView):
         except (TypeError, ValueError):
             raise ValidationError({"customer": "customer must be an integer."})
         include_closed = str(request.query_params.get("include_closed") or "").lower() in ("1", "true", "yes", "y")
+        as_of_date_raw = (request.query_params.get("as_of_date") or "").strip()
+        as_of_date = parse_date(as_of_date_raw) if as_of_date_raw else None
+        if as_of_date_raw and not as_of_date:
+            raise ValidationError({"as_of_date": "Use YYYY-MM-DD format."})
 
         data = SalesArService.customer_statement(
             entity_id=entity_id,
@@ -246,6 +251,7 @@ class CustomerStatementAPIView(APIView):
             subentity_id=subentity_id,
             customer_id=customer_id,
             include_closed=include_closed,
+            as_of_date=as_of_date,
         )
 
         customer_obj = (
@@ -268,6 +274,7 @@ class CustomerStatementAPIView(APIView):
 
         payload = {
             "customer": customer_block,
+            "as_of_date": as_of_date,
             "totals": data["totals"],
             "open_items": CustomerBillOpenItemSerializer(data["open_items"], many=True).data,
             "advances": CustomerAdvanceBalanceSerializer(data["advances"], many=True).data,

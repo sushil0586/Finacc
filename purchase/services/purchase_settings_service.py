@@ -73,6 +73,10 @@ DEFAULT_POLICY_CONTROLS: Dict[str, Any] = {
     "vendor_gstin_format_rule": "hard",
     "withholding_pan_required_rule": "hard",
     "withholding_pan_format_rule": "hard",
+    "legacy_import_review_required": "off",
+    "legacy_import_note_outstanding_rule": "warn",
+    "legacy_import_note_date_rule": "warn",
+    "legacy_import_note_amount_tolerance": "0.00",
 }
 
 
@@ -191,6 +195,7 @@ class PurchaseSettingsService:
             "it_tds_return_q3_due_day",
             "it_tds_return_q4_due_month",
             "it_tds_return_q4_due_day",
+            "legacy_import_note_amount_tolerance",
         }
         for key, value in raw.items():
             if key not in DEFAULT_POLICY_CONTROLS:
@@ -237,7 +242,7 @@ class PurchaseSettingsService:
                     raise ValueError("policy_controls.auto_adjust_credit_notes must be one of: off, on.")
                 normalized[key] = v
                 continue
-            if key in {"allow_revised_challan_remap", "statutory_auto_compute_interest_late_fee", "allow_edit_confirmed", "allow_unpost_posted"}:
+            if key in {"allow_revised_challan_remap", "statutory_auto_compute_interest_late_fee", "allow_edit_confirmed", "allow_unpost_posted", "legacy_import_review_required"}:
                 v = str(value).lower().strip()
                 if v not in ON_OFF:
                     raise ValueError(f"policy_controls.{key} must be one of: off, on.")

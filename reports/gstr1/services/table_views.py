@@ -2,15 +2,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
+import re
 
-from django.db.models import Count, Max, Min, Q, Sum
+from django.db.models import Case, Count, DecimalField, F, Max, Min, Q, Sum, Value, When
+from django.db.models.functions import Coalesce
 
 from entity.models import Entity, EntityFinancialYear
-from sales.models import SalesAdvanceAdjustment, SalesEcommerceSupply
-from sales.models import SalesInvoiceHeader
+from sales.models import SalesAdvanceAdjustment, SalesEcommerceSupply, SalesInvoiceHeader, SalesInvoiceLine, SalesTaxSummary
 
 from reports.gstr1.conf import b2cl_threshold, rcm_tax_amount_source
-from reports.gstr1.services.classification import Gstr1ClassificationService, SECTION_B2CL, SECTION_B2CS, SECTION_CDNUR
+from reports.gstr1.services.classification import (
+    Gstr1ClassificationService,
+    GSTIN_PATTERN,
+    SECTION_B2CL,
+    SECTION_B2CS,
+    SECTION_CDNUR,
+)
+
+ZERO = Decimal("0.00")
 
 
 @dataclass(frozen=True)
@@ -91,6 +100,7 @@ class Gstr1TableViewService:
         include_tax_components: tuple[str, ...],
     ) -> list[dict]:
         tax_buckets = self._invoice_tax_buckets(invoice)
+        sign = self._note_sign(invoice)
         if not tax_buckets:
             payload = dict(base_payload)
             payload["gst_rate"] = self._effective_gst_rate(
@@ -108,18 +118,18 @@ class Gstr1TableViewService:
             payload["hsn_sac_code"] = bucket.hsn_sac_code or ""
             payload["is_service"] = bucket.is_service
             if "taxable_amount" in payload:
-                payload["taxable_amount"] = bucket.taxable_value
+                payload["taxable_amount"] = (bucket.taxable_value or Decimal("0.00")) * sign
             if "taxable_value" in payload:
-                payload["taxable_value"] = bucket.taxable_value
+                payload["taxable_value"] = (bucket.taxable_value or Decimal("0.00")) * sign
             payload["gst_rate"] = bucket.gst_rate or Decimal("0.00")
             if "cgst_amount" in include_tax_components:
-                payload["cgst_amount"] = bucket.cgst_amount
+                payload["cgst_amount"] = (bucket.cgst_amount or Decimal("0.00")) * sign
             if "sgst_amount" in include_tax_components:
-                payload["sgst_amount"] = bucket.sgst_amount
+                payload["sgst_amount"] = (bucket.sgst_amount or Decimal("0.00")) * sign
             if "igst_amount" in include_tax_components:
-                payload["igst_amount"] = bucket.igst_amount
+                payload["igst_amount"] = (bucket.igst_amount or Decimal("0.00")) * sign
             if "cess_amount" in include_tax_components:
-                payload["cess_amount"] = bucket.cess_amount
+                payload["cess_amount"] = (bucket.cess_amount or Decimal("0.00")) * sign
             rows.append(self._attach_invoice_rcm_contract(payload, invoice, table_code=table_code))
         return rows
 
@@ -408,6 +418,7 @@ class Gstr1TableViewService:
         for note in notes:
             original = note.original_invoice
             target_section = self._classify_original_for_amendment(original)
+            sign = self._note_sign(note)
             payload = {
                 "note_id": note.id,
                 "note_number": note.invoice_number or f"{note.doc_code}-{note.doc_no}",
@@ -416,12 +427,12 @@ class Gstr1TableViewService:
                 "original_invoice_id": original.id if original else None,
                 "original_invoice_number": original.invoice_number if original else "",
                 "amendment_target_section": target_section,
-                "taxable_amount": note.total_taxable_value,
-                "cgst_amount": note.total_cgst,
-                "sgst_amount": note.total_sgst,
-                "igst_amount": note.total_igst,
-                "cess_amount": note.total_cess,
-                "grand_total": note.grand_total,
+                "taxable_amount": (note.total_taxable_value or Decimal("0.00")) * sign,
+                "cgst_amount": (note.total_cgst or Decimal("0.00")) * sign,
+                "sgst_amount": (note.total_sgst or Decimal("0.00")) * sign,
+                "igst_amount": (note.total_igst or Decimal("0.00")) * sign,
+                "cess_amount": (note.total_cess or Decimal("0.00")) * sign,
+                "grand_total": (note.grand_total or Decimal("0.00")) * sign,
             }
             rows.extend(
                 self._bucketed_invoice_rows(
@@ -439,16 +450,17 @@ class Gstr1TableViewService:
         ).order_by("bill_date", "doc_code", "doc_no", "id")
         rows = []
         for note in notes:
+            sign = self._note_sign(note)
             payload = {
                 "note_id": note.id,
                 "note_number": note.invoice_number or f"{note.doc_code}-{note.doc_no}",
                 "note_date": note.bill_date,
                 "note_type": note.get_doc_type_display(),
                 "place_of_supply_state_code": note.place_of_supply_state_code,
-                "taxable_amount": note.total_taxable_value,
-                "igst_amount": note.total_igst,
-                "cess_amount": note.total_cess,
-                "grand_total": note.grand_total,
+                "taxable_amount": (note.total_taxable_value or Decimal("0.00")) * sign,
+                "igst_amount": (note.total_igst or Decimal("0.00")) * sign,
+                "cess_amount": (note.total_cess or Decimal("0.00")) * sign,
+                "grand_total": (note.grand_total or Decimal("0.00")) * sign,
             }
             rows.extend(
                 self._bucketed_invoice_rows(
@@ -501,42 +513,50 @@ class Gstr1TableViewService:
 
     def _table_12(self):
         rows = []
+        sign = Case(
+            When(header__status=SalesInvoiceHeader.Status.CANCELLED, then=Value(Decimal("0"))),
+            When(header__doc_type=SalesInvoiceHeader.DocType.CREDIT_NOTE, then=Value(Decimal("-1"))),
+            default=Value(Decimal("1")),
+            output_field=DecimalField(max_digits=4, decimal_places=0),
+        )
 
         # Amount/tax from tax summary so charges are included.
         tax_rows = list(
-            self.base_queryset.values(
-                "tax_summaries__hsn_sac_code",
-                "tax_summaries__is_service",
-                "tax_summaries__gst_rate",
-            )
+            SalesTaxSummary.objects.filter(header__in=self.base_queryset)
             .annotate(
-                taxable_value=Sum("tax_summaries__taxable_value"),
-                cgst_amount=Sum("tax_summaries__cgst_amount"),
-                sgst_amount=Sum("tax_summaries__sgst_amount"),
-                igst_amount=Sum("tax_summaries__igst_amount"),
-                cess_amount=Sum("tax_summaries__cess_amount"),
+                signed_taxable=F("taxable_value") * sign,
+                signed_cgst=F("cgst_amount") * sign,
+                signed_sgst=F("sgst_amount") * sign,
+                signed_igst=F("igst_amount") * sign,
+                signed_cess=F("cess_amount") * sign,
             )
-            .order_by("tax_summaries__hsn_sac_code", "tax_summaries__gst_rate", "tax_summaries__is_service")
+            .values("hsn_sac_code", "is_service", "gst_rate")
+            .annotate(
+                taxable_value=Coalesce(Sum("signed_taxable"), ZERO),
+                cgst_amount=Coalesce(Sum("signed_cgst"), ZERO),
+                sgst_amount=Coalesce(Sum("signed_sgst"), ZERO),
+                igst_amount=Coalesce(Sum("signed_igst"), ZERO),
+                cess_amount=Coalesce(Sum("signed_cess"), ZERO),
+            )
+            .order_by("hsn_sac_code", "gst_rate", "is_service")
         )
 
         # Quantity from invoice lines only.
         qty_rows = (
-            self.base_queryset.values(
-                "lines__hsn_sac_code",
-                "lines__is_service",
-                "lines__gst_rate",
-            )
-            .annotate(total_qty=Sum("lines__qty"))
+            SalesInvoiceLine.objects.filter(header__in=self.base_queryset)
+            .annotate(signed_qty=F("qty") * sign)
+            .values("hsn_sac_code", "is_service", "gst_rate")
+            .annotate(total_qty=Coalesce(Sum("signed_qty"), ZERO))
         )
         qty_map = {}
         for row in qty_rows:
-            key = (row.get("lines__hsn_sac_code") or "", bool(row.get("lines__is_service")), row.get("lines__gst_rate"))
-            qty_map[key] = row.get("total_qty") or Decimal("0.00")
+            key = (row.get("hsn_sac_code") or "", bool(row.get("is_service")), row.get("gst_rate"))
+            qty_map[key] = row.get("total_qty") or ZERO
 
         for row in tax_rows:
-            hsn = row.get("tax_summaries__hsn_sac_code") or ""
-            is_service = bool(row.get("tax_summaries__is_service"))
-            gst_rate = row.get("tax_summaries__gst_rate") or Decimal("0.00")
+            hsn = row.get("hsn_sac_code") or ""
+            is_service = bool(row.get("is_service"))
+            gst_rate = row.get("gst_rate") or Decimal("0.00")
             key = (hsn, is_service, gst_rate)
             rows.append(
                 {
@@ -702,7 +722,8 @@ class Gstr1TableViewService:
         }:
             return "TABLE_6"
 
-        has_gstin = bool((original.customer_gstin or "").strip())
+        gstin = str(original.customer_gstin or "").strip().upper()
+        has_gstin = bool(gstin) and bool(re.fullmatch(GSTIN_PATTERN, gstin))
         if has_gstin or supply == SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B:
             return "B2B"
 
@@ -714,6 +735,12 @@ class Gstr1TableViewService:
         if interstate and (original.grand_total or Decimal("0")) >= b2cl_threshold():
             return "B2CL"
         return "B2CS"
+
+    @staticmethod
+    def _note_sign(note: SalesInvoiceHeader) -> Decimal:
+        if getattr(note, "doc_type", None) == SalesInvoiceHeader.DocType.CREDIT_NOTE:
+            return Decimal("-1")
+        return Decimal("1")
 
     def _ok(self, definition: Gstr1TableDefinition, rows):
         return {

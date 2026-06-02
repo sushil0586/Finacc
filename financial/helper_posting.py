@@ -2,9 +2,10 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError
 
 from posting.models import JournalLine
+from posting.models import TxnType
 from financial.models import FinancialSettings
 
-OPENING_TXN_TYPE = "OA"          # keep consistent everywhere
+OPENING_TXN_TYPE = TxnType.OPENING_BALANCE
 
 OPENING_EDIT_ALWAYS = "always"
 OPENING_EDIT_BEFORE_POSTING = "before_posting"
@@ -55,12 +56,21 @@ def validate_opening_balance_edit(acc, old_opening_dr, old_opening_cr, new_openi
 
 
 def delete_opening_journal_lines(acc):
-    return None
+    from financial.services_opening_balance import clear_account_opening_posting
+
+    return clear_account_opening_posting(acc)
 
 
 def post_opening_balance_journal_lines(acc, entry_obj, entry_date):
-    return None
+    from financial.services_opening_balance import sync_account_opening_posting
+
+    actor = None
+    if entry_obj is not None:
+        actor = getattr(entry_obj, "posted_by", None) or getattr(entry_obj, "created_by", None)
+    return sync_account_opening_posting(acc, opening_date=entry_date, actor=actor)
 
 
 def repost_opening_balance(acc, fin_start_date):
-    return None
+    from financial.services_opening_balance import sync_account_opening_posting
+
+    return sync_account_opening_posting(acc, opening_date=fin_start_date)

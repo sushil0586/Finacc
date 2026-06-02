@@ -358,6 +358,8 @@ def _build_payload(entity: Entity, row: dict[str, Any]) -> dict[str, Any]:
     set_if_value(payload, "contactno", _normalize_text(row.get("contactno")))
     set_if_value(payload, "contactperson", _normalize_text(row.get("contactperson")))
     set_if_value(payload, "website", _normalize_text(row.get("website")))
+    set_if_value(payload, "bankname", _normalize_text(row.get("bankname")))
+    set_if_value(payload, "banKAcno", _normalize_text(row.get("banKAcno")))
     payload["isactive"] = _to_bool(row.get("isactive"), default=True)
 
     set_if_value(payload, "ledger_code", _to_int(row.get("ledger_code")))

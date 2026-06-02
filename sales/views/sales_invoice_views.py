@@ -232,7 +232,7 @@ class SalesInvoiceListCreateAPIView(_SalesScopeMixin, generics.ListCreateAPIView
             return Response(self._error_payload(e), status=status.HTTP_400_BAD_REQUEST)
 
 
-class SalesInvoiceRetrieveUpdateAPIView(_SalesScopeMixin, generics.RetrieveUpdateAPIView):
+class SalesInvoiceRetrieveUpdateAPIView(_SalesScopeMixin, generics.RetrieveUpdateDestroyAPIView):
     serializer_class = SalesInvoiceHeaderSerializer
 
     def get_queryset(self):
@@ -269,6 +269,20 @@ class SalesInvoiceRetrieveUpdateAPIView(_SalesScopeMixin, generics.RetrieveUpdat
         )
         serializer = self.get_serializer(instance)
         return Response(serializer.data)
+
+    def perform_destroy(self, instance):
+        policy = SalesSettingsService.get_policy(
+            instance.entity_id,
+            instance.subentity_id,
+            entityfinid_id=getattr(instance, "entityfinid_id", None),
+        )
+        if policy.delete_policy == "never":
+            raise DRFValidationError({"detail": "Delete is disabled by sales policy."})
+        if policy.delete_policy == "draft_only" and int(instance.status) != int(SalesInvoiceHeader.Status.DRAFT):
+            raise DRFValidationError({"detail": "Only draft sale invoices can be deleted. Use cancel/credit-note flow."})
+        if policy.delete_policy == "non_posted" and int(instance.status) == int(SalesInvoiceHeader.Status.POSTED):
+            raise DRFValidationError({"detail": "Posted sale invoices cannot be deleted."})
+        instance.delete()
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -356,6 +370,19 @@ class SalesInvoiceCancelAPIView(_SalesScopeMixin, APIView):
             doc_type=header.doc_type,
             action="cancel",
         )
+        if SalesInvoiceService.requires_current_period_correction(header=header):
+            require_sales_request_permission(
+                user=request.user,
+                entity_id=header.entity_id,
+                doc_type=SalesInvoiceHeader.DocType.CREDIT_NOTE,
+                action="create",
+            )
+            require_sales_request_permission(
+                user=request.user,
+                entity_id=header.entity_id,
+                doc_type=SalesInvoiceHeader.DocType.CREDIT_NOTE,
+                action="post",
+            )
         reason = (request.data or {}).get("reason", "")
         try:
             header = SalesInvoiceService.cancel(header=header, user=request.user, reason=reason)

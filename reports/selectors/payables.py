@@ -101,9 +101,14 @@ def vendor_queryset(*, entity_id, vendor_id=None, vendor_ids=None, vendor_group=
     elif gst_registered is False:
         qs = qs.filter(Q(compliance_profile__gstno__isnull=True) | Q(compliance_profile__gstno=""))
     if msme is True:
-        qs = qs.filter(compliance_profile__msme__isnull=False).exclude(compliance_profile__msme="")
+        qs = qs.filter(
+            Q(compliance_profile__msme__isnull=False) & ~Q(compliance_profile__msme="")
+            | Q(compliance_profile__msme_status__in=["micro", "small"])
+        )
     elif msme is False:
-        qs = qs.filter(Q(compliance_profile__msme__isnull=True) | Q(compliance_profile__msme=""))
+        qs = qs.filter(
+            Q(compliance_profile__msme__isnull=True) | Q(compliance_profile__msme="")
+        ).exclude(compliance_profile__msme_status__in=["micro", "small"])
     if search:
         token = str(search).strip()
         qs = qs.filter(
@@ -132,6 +137,10 @@ def vendor_queryset(*, entity_id, vendor_id=None, vendor_ids=None, vendor_group=
             "commercial_profile__creditlimit",
             "compliance_profile__gstno",
             "compliance_profile__msme",
+            "compliance_profile__msme_status",
+            "compliance_profile__udyam_no",
+            "compliance_profile__has_written_payment_terms",
+            "compliance_profile__msme_credit_days",
         )
         .prefetch_related(
             Prefetch(
@@ -225,6 +234,11 @@ def _open_item_balance_queryset(*, entity_id, entityfin_id, subentity_id, upto_d
         "vendor__commercial_profile__creditdays",
         "vendor__commercial_profile__currency",
         "vendor__compliance_profile__gstno",
+        "vendor__compliance_profile__msme",
+        "vendor__compliance_profile__msme_status",
+        "vendor__compliance_profile__udyam_no",
+        "vendor__compliance_profile__has_written_payment_terms",
+        "vendor__compliance_profile__msme_credit_days",
         "vendor__commercial_profile__agent",
         "subentity_id",
         "subentity__subentityname",

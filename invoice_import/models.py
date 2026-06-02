@@ -85,6 +85,10 @@ class ImportJob(TrackingModel):
     reconciliation_summary = models.JSONField(default=dict, blank=True)
     profile_snapshot = models.JSONField(default=dict, blank=True)
     options = models.JSONField(default=dict, blank=True)
+    review_required = models.BooleanField(default=False)
+    reviewed_by = models.ForeignKey("Authentication.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_note = models.CharField(max_length=255, blank=True, default="")
 
     class Meta:
         indexes = [

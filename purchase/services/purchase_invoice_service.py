@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import date, timedelta
 import re
 from gst_tds.services.gst_tds_service import GstTdsService, normalize_contract_ref
 from purchase.models.purchase_addons import PurchaseChargeLine, PurchaseChargeType
@@ -11,18 +11,24 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional, Tuple
 
 from django.db import transaction
-from django.db.models import Max, Q
+from django.db.models import Max, Q, Sum
+from django.db.models.functions import Coalesce
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils import timezone
 from catalog.models import Product, ProductPurchaseBehavior
+from catalog.uom_helpers import resolve_product_uom
+from entity.models import EntityFinancialYear
 from financial.gstin import validate_financial_gstin
-from financial.profile_access import account_gstno, account_pan, account_partytype
+from financial.profile_access import account_compliance_profile, account_gstno, account_pan, account_partytype
+from posting.common.location_resolver import resolve_posting_location_id
+from posting.models import InventoryMove
 from withholding.models import WithholdingBaseRule
 from withholding.services import WithholdingResolver
 
 
 from purchase.services.purchase_settings_service import PurchaseSettingsService
 from purchase.services.purchase_withholding_service import PurchaseWithholdingService
+from purchase.models.purchase_config import PurchaseLockPeriod
 from purchase.models.purchase_core import (
     PurchaseInvoiceHeader,
     PurchaseInvoiceLine,
@@ -81,6 +87,15 @@ class ChargeComputed:
     total_value: Decimal
 
 
+@dataclass(frozen=True)
+class AmendmentWindow:
+    amendment_required: bool
+    reasons: tuple[str, ...]
+    lock_until: Optional[date]
+    correction_date: Optional[date]
+    gst_period: Optional[str]
+
+
 class PurchaseInvoiceService:
     """
     Purchase invoice business rules:
@@ -93,10 +108,243 @@ class PurchaseInvoiceService:
     # Period lock
     # ---------------------------
     @staticmethod
-    def assert_not_locked(entity_id, subentity_id, bill_date):
+    def _resolve_financial_year(entity_id, entityfinid_id, bill_date) -> Optional[EntityFinancialYear]:
+        if entityfinid_id:
+            return (
+                EntityFinancialYear.objects
+                .filter(pk=entityfinid_id, entity_id=entity_id)
+                .only(
+                    "id",
+                    "desc",
+                    "year_code",
+                    "finstartyear",
+                    "finendyear",
+                    "period_status",
+                    "is_year_closed",
+                    "books_locked_until",
+                    "gst_locked_until",
+                    "inventory_locked_until",
+                    "ap_ar_locked_until",
+                )
+                .first()
+            )
+        if not entity_id or not bill_date:
+            return None
+        return (
+            EntityFinancialYear.objects
+            .filter(
+                entity_id=entity_id,
+                finstartyear__date__lte=bill_date,
+                finendyear__date__gte=bill_date,
+            )
+            .only(
+                "id",
+                "desc",
+                "year_code",
+                "finstartyear",
+                "finendyear",
+                "period_status",
+                "is_year_closed",
+                "books_locked_until",
+                "gst_locked_until",
+                "inventory_locked_until",
+                "ap_ar_locked_until",
+            )
+            .first()
+        )
+
+    @staticmethod
+    def _build_amendment_window(
+        *,
+        entity_id: int,
+        subentity_id: Optional[int],
+        entityfinid_id: Optional[int],
+        original_bill_date: date,
+    ) -> AmendmentWindow:
+        reasons: list[str] = []
+        lock_dates: list[date] = []
+
+        purchase_locks = list(
+            PurchaseLockPeriod.objects.filter(
+                entity_id=entity_id,
+                lock_date__gte=original_bill_date,
+            ).filter(
+                Q(subentity_id=subentity_id) | Q(subentity__isnull=True)
+            ).order_by("-lock_date")
+        )
+        if purchase_locks:
+            effective_lock = purchase_locks[0]
+            reasons.append(
+                f"Purchase period locked up to {effective_lock.lock_date.isoformat()}: "
+                f"{(effective_lock.reason or 'Purchase lock active').strip()}"
+            )
+            lock_dates.append(effective_lock.lock_date)
+
+        fy = PurchaseInvoiceService._resolve_financial_year(entity_id, entityfinid_id, original_bill_date)
+        if fy is not None:
+            fy_label = (getattr(fy, "desc", None) or getattr(fy, "year_code", None) or str(fy.id))
+            if bool(getattr(fy, "is_year_closed", False)) or getattr(fy, "period_status", None) == EntityFinancialYear.PeriodStatus.CLOSED:
+                reasons.append(f"Financial year {fy_label} is closed.")
+                fy_end = getattr(getattr(fy, "finendyear", None), "date", lambda: None)()
+                if fy_end:
+                    lock_dates.append(fy_end)
+
+            for attr, label in (
+                ("books_locked_until", "Books"),
+                ("gst_locked_until", "GST"),
+                ("inventory_locked_until", "Inventory"),
+                ("ap_ar_locked_until", "AP/AR"),
+            ):
+                cutoff = getattr(fy, attr, None)
+                if cutoff and original_bill_date <= cutoff:
+                    reasons.append(f"{label} locked up to {cutoff.isoformat()} in financial year {fy_label}.")
+                    lock_dates.append(cutoff)
+
+        if not reasons:
+            return AmendmentWindow(
+                amendment_required=False,
+                reasons=(),
+                lock_until=None,
+                correction_date=None,
+                gst_period=None,
+            )
+
+        today = timezone.localdate()
+        correction_date = today
+        lock_until = max(lock_dates) if lock_dates else original_bill_date
+        if correction_date <= lock_until:
+            correction_date = lock_until + timedelta(days=1)
+
+        if fy is not None:
+            fy_start = getattr(getattr(fy, "finstartyear", None), "date", lambda: None)()
+            fy_end = getattr(getattr(fy, "finendyear", None), "date", lambda: None)()
+            if fy_start and correction_date < fy_start:
+                correction_date = fy_start
+            if fy_end and correction_date > fy_end:
+                correction_date = None
+
+        return AmendmentWindow(
+            amendment_required=True,
+            reasons=tuple(reasons),
+            lock_until=lock_until,
+            correction_date=correction_date,
+            gst_period=correction_date.strftime("%Y-%m") if correction_date else None,
+        )
+
+    @staticmethod
+    def amendment_window_for_header(header: PurchaseInvoiceHeader) -> AmendmentWindow:
+        return PurchaseInvoiceService._build_amendment_window(
+            entity_id=header.entity_id,
+            subentity_id=header.subentity_id,
+            entityfinid_id=header.entityfinid_id,
+            original_bill_date=header.bill_date,
+        )
+
+    @staticmethod
+    def assert_note_correction_date_open(
+        *,
+        ref_document: PurchaseInvoiceHeader,
+        correction_date: date,
+    ) -> AmendmentWindow:
+        window = PurchaseInvoiceService.amendment_window_for_header(ref_document)
+        if not correction_date:
+            raise ValueError("Correction document date is required.")
+        if window.lock_until and correction_date <= window.lock_until:
+            raise ValueError(
+                "Correction document date must be in a current open period after "
+                f"{window.lock_until.isoformat()}."
+            )
+        fy = PurchaseInvoiceService._resolve_financial_year(
+            ref_document.entity_id,
+            ref_document.entityfinid_id,
+            ref_document.bill_date,
+        )
+        if fy is not None:
+            fy_start = getattr(getattr(fy, "finstartyear", None), "date", lambda: None)()
+            fy_end = getattr(getattr(fy, "finendyear", None), "date", lambda: None)()
+            if fy_start and correction_date < fy_start:
+                raise ValueError(
+                    f"Correction document date must be on or after {fy_start.isoformat()} for the selected financial year."
+                )
+            if fy_end and correction_date > fy_end:
+                raise ValueError(
+                    f"Correction document date must be on or before {fy_end.isoformat()} for the selected financial year."
+                )
+        return window
+
+    @staticmethod
+    def blocked_edit_message(header: PurchaseInvoiceHeader) -> str:
+        window = PurchaseInvoiceService.amendment_window_for_header(header)
+        if window.amendment_required:
+            return (
+                "Purchase invoice belongs to a locked/filed period. Direct edits are blocked. "
+                "Create a current-period purchase return, credit note, debit note, or reversal document instead."
+            )
+        return (
+            "Posted purchase invoice cannot be edited. "
+            "Create a purchase return, credit note, debit note, or reversal document instead."
+        )
+
+    @staticmethod
+    def assert_not_locked(entity_id, subentity_id, bill_date, entityfinid_id=None):
         locked, reason = PurchaseSettingsService.is_locked(entity_id, subentity_id, bill_date)
         if locked:
             raise ValueError(f"Purchase period locked. {reason}")
+        window = PurchaseInvoiceService._build_amendment_window(
+            entity_id=entity_id,
+            subentity_id=subentity_id,
+            entityfinid_id=entityfinid_id,
+            original_bill_date=bill_date,
+        )
+        if window.amendment_required:
+            joined = " ".join(window.reasons)
+            raise ValueError(f"Purchase period locked. {joined}")
+
+    @staticmethod
+    def append_correction_audit_event(
+        *,
+        original: PurchaseInvoiceHeader,
+        correction: PurchaseInvoiceHeader,
+        correction_type: str,
+        reason: Optional[str],
+        user_id: Optional[int],
+        gst_period_impact: Optional[str],
+    ) -> None:
+        event = {
+            "original_invoice_id": original.id,
+            "correction_document_id": correction.id,
+            "user_id": user_id,
+            "timestamp": timezone.now().isoformat(),
+            "reason": (reason or "").strip() or None,
+            "correction_type": correction_type,
+            "gst_period_impact": gst_period_impact,
+            "old_value": {
+                "bill_date": original.bill_date.isoformat() if original.bill_date else None,
+                "posting_date": original.posting_date.isoformat() if getattr(original, "posting_date", None) else None,
+                "grand_total": str(q2(getattr(original, "grand_total", ZERO2) or ZERO2)),
+                "itc_claim_status": int(getattr(original, "itc_claim_status", ItcClaimStatus.PENDING)),
+                "is_reverse_charge": bool(getattr(original, "is_reverse_charge", False)),
+            },
+            "new_value": {
+                "bill_date": correction.bill_date.isoformat() if correction.bill_date else None,
+                "posting_date": correction.posting_date.isoformat() if getattr(correction, "posting_date", None) else None,
+                "grand_total": str(q2(getattr(correction, "grand_total", ZERO2) or ZERO2)),
+                "itc_claim_status": int(getattr(correction, "itc_claim_status", ItcClaimStatus.PENDING)),
+                "is_reverse_charge": bool(getattr(correction, "is_reverse_charge", False)),
+            },
+        }
+
+        original_notes = dict(getattr(original, "match_notes", {}) or {})
+        original_history = list(original_notes.get("correction_history") or [])
+        original_history.append(event)
+        original_notes["correction_history"] = original_history
+        original.match_notes = original_notes
+        original.save(update_fields=["match_notes"])
+
+        correction_notes = dict(getattr(correction, "match_notes", {}) or {})
+        correction_notes["correction_origin"] = event
+        correction.match_notes = correction_notes
+        correction.save(update_fields=["match_notes"])
 
     @staticmethod
     def _set_tds_runtime_snapshot(
@@ -447,6 +695,10 @@ class PurchaseInvoiceService:
         if not getattr(vendor, "ledger_id", None):
             raise ValueError("Selected vendor account does not have a linked ledger.")
 
+        compliance = account_compliance_profile(vendor)
+        gstregtype = str(getattr(compliance, "gstregtype", "") or "").strip()
+        registered_types = {"Regular", "Composition", "SEZ", "UIN"}
+
         gstin_level = _level("vendor_gstin_format_rule", "hard")
         raw_gstin = (
             attrs.get("vendor_gstin")
@@ -455,11 +707,16 @@ class PurchaseInvoiceService:
             or ""
         )
         gstin = str(raw_gstin or "").strip().upper()
+        if gstregtype in registered_types and not gstin:
+            raise ValueError(f"Vendor GSTIN is required for {gstregtype.lower()} vendors.")
         if gstin:
             try:
                 attrs["vendor_gstin"] = validate_financial_gstin(gstin)
             except DjangoValidationError:
                 _handle(gstin_level, "vendor_gstin", "Vendor GSTIN format is invalid.")
+
+        if compliance is not None and hasattr(compliance, "isactive") and compliance.isactive is False:
+            _handle(_level("vendor_gstin_active_rule", "warn"), "vendor_gstin", "Vendor GSTIN is marked inactive.")
 
         withholding_enabled = bool(attrs.get("withholding_enabled", getattr(instance, "withholding_enabled", False)))
         if withholding_enabled:
@@ -504,6 +761,179 @@ class PurchaseInvoiceService:
             if st:
                 attrs["vendor_state"] = st
 
+    @staticmethod
+    def is_unregistered_vendor(attrs: Dict[str, Any], instance: Optional[PurchaseInvoiceHeader] = None) -> bool:
+        gstin = attrs.get("vendor_gstin", (instance.vendor_gstin if instance else None))
+        return not bool(str(gstin or "").strip())
+
+    @staticmethod
+    def vendor_gst_registration_type(
+        attrs: Dict[str, Any],
+        instance: Optional[PurchaseInvoiceHeader] = None,
+    ) -> str:
+        vendor = attrs.get("vendor") or (instance.vendor if instance else None)
+        if not vendor:
+            return ""
+        compliance = account_compliance_profile(vendor)
+        return str(getattr(compliance, "gstregtype", "") or "").strip()
+
+    @staticmethod
+    def supply_category_value(
+        attrs: Dict[str, Any],
+        instance: Optional[PurchaseInvoiceHeader] = None,
+    ) -> int:
+        return int(
+            attrs.get(
+                "supply_category",
+                (instance.supply_category if instance else PurchaseInvoiceHeader.SupplyCategory.DOMESTIC),
+            )
+        )
+
+    @staticmethod
+    def is_composition_vendor(
+        attrs: Dict[str, Any],
+        instance: Optional[PurchaseInvoiceHeader] = None,
+    ) -> bool:
+        return PurchaseInvoiceService.vendor_gst_registration_type(attrs, instance=instance).lower() == "composition"
+
+    @staticmethod
+    def is_import_goods_supply(
+        attrs: Dict[str, Any],
+        instance: Optional[PurchaseInvoiceHeader] = None,
+    ) -> bool:
+        return PurchaseInvoiceService.supply_category_value(attrs, instance=instance) == int(
+            PurchaseInvoiceHeader.SupplyCategory.IMPORT_GOODS
+        )
+
+    @staticmethod
+    def is_import_services_supply(
+        attrs: Dict[str, Any],
+        instance: Optional[PurchaseInvoiceHeader] = None,
+    ) -> bool:
+        return PurchaseInvoiceService.supply_category_value(attrs, instance=instance) == int(
+            PurchaseInvoiceHeader.SupplyCategory.IMPORT_SERVICES
+        )
+
+    @staticmethod
+    def is_sez_supply(
+        attrs: Dict[str, Any],
+        instance: Optional[PurchaseInvoiceHeader] = None,
+    ) -> bool:
+        return PurchaseInvoiceService.supply_category_value(attrs, instance=instance) == int(
+            PurchaseInvoiceHeader.SupplyCategory.SEZ
+        )
+
+    @staticmethod
+    def should_suppress_supplier_gst(
+        *,
+        attrs: Dict[str, Any],
+        instance: Optional[PurchaseInvoiceHeader] = None,
+    ) -> bool:
+        is_rcm = bool(attrs.get("is_reverse_charge", (instance.is_reverse_charge if instance else False)))
+        if is_rcm:
+            return True
+        if PurchaseInvoiceService.is_unregistered_vendor(attrs, instance=instance):
+            return True
+        if PurchaseInvoiceService.is_composition_vendor(attrs, instance=instance):
+            return True
+        if PurchaseInvoiceService.is_import_goods_supply(attrs, instance=instance):
+            return True
+        if PurchaseInvoiceService.is_import_services_supply(attrs, instance=instance):
+            return True
+        return False
+
+    @staticmethod
+    def supplier_gst_suppression_reason(
+        *,
+        attrs: Dict[str, Any],
+        instance: Optional[PurchaseInvoiceHeader] = None,
+    ) -> str:
+        if bool(attrs.get("is_reverse_charge", (instance.is_reverse_charge if instance else False))):
+            return (
+                "This purchase is marked as reverse charge, so supplier-billed GST amounts must be 0 on the invoice line. "
+                "Keep the GST rate for tax basis if needed, but do not enter CGST/SGST/IGST amounts from the supplier invoice."
+            )
+        if PurchaseInvoiceService.is_unregistered_vendor(attrs, instance=instance):
+            return (
+                "This vendor is treated as unregistered, so supplier-billed GST amounts are not allowed on the invoice line. "
+                "Set CGST/SGST/IGST amounts to 0, or use a registered vendor / reverse-charge purchase if that is the intended case."
+            )
+        if PurchaseInvoiceService.is_composition_vendor(attrs, instance=instance):
+            return (
+                "This vendor is treated as a composition vendor, so supplier-billed GST amounts are not allowed on the invoice line. "
+                "Set CGST/SGST/IGST amounts to 0 for this bill."
+            )
+        if PurchaseInvoiceService.is_import_goods_supply(attrs, instance=instance):
+            return (
+                "This purchase is classified as import of goods, so supplier-billed GST amounts are not allowed on the invoice line. "
+                "Enter the import bill without supplier GST amounts and use the import / bill-of-entry flow for credit handling."
+            )
+        if PurchaseInvoiceService.is_import_services_supply(attrs, instance=instance):
+            return (
+                "This purchase is classified as import of services, so supplier-billed GST amounts are not allowed on the invoice line. "
+                "Use the reverse-charge flow instead of entering supplier CGST/SGST/IGST amounts."
+            )
+        return (
+            "Supplier-billed GST amounts are not allowed for this purchase tax treatment. "
+            "Set CGST/SGST/IGST amounts to 0 and use the correct registered / reverse-charge / import flow for this bill."
+        )
+
+    @staticmethod
+    def apply_unregistered_vendor_defaults(
+        attrs: Dict[str, Any],
+        instance: Optional[PurchaseInvoiceHeader] = None,
+    ) -> None:
+        if not PurchaseInvoiceService.is_unregistered_vendor(attrs, instance=instance):
+            return
+
+        is_rcm = bool(attrs.get("is_reverse_charge", (instance.is_reverse_charge if instance else False)))
+        if is_rcm:
+            return
+
+        attrs["is_itc_eligible"] = False
+        if not str(attrs.get("itc_block_reason", (instance.itc_block_reason if instance else "")) or "").strip():
+            attrs["itc_block_reason"] = "ITC not eligible for unregistered vendor purchase."
+
+        claimed_status = int(
+            attrs.get(
+                "itc_claim_status",
+                (instance.itc_claim_status if instance else ItcClaimStatus.PENDING),
+            )
+        )
+        if claimed_status == int(ItcClaimStatus.CLAIMED):
+            raise ValueError("Cannot claim ITC on an unregistered vendor purchase unless reverse charge applies.")
+
+    @staticmethod
+    def apply_special_tax_treatment_defaults(
+        attrs: Dict[str, Any],
+        instance: Optional[PurchaseInvoiceHeader] = None,
+    ) -> None:
+        PurchaseInvoiceService.apply_unregistered_vendor_defaults(attrs, instance=instance)
+
+        is_rcm = bool(attrs.get("is_reverse_charge", (instance.is_reverse_charge if instance else False)))
+        claimed_status = int(
+            attrs.get(
+                "itc_claim_status",
+                (instance.itc_claim_status if instance else ItcClaimStatus.PENDING),
+            )
+        )
+
+        if PurchaseInvoiceService.is_composition_vendor(attrs, instance=instance) and not is_rcm:
+            attrs["is_itc_eligible"] = False
+            if not str(attrs.get("itc_block_reason", (instance.itc_block_reason if instance else "")) or "").strip():
+                attrs["itc_block_reason"] = "ITC not eligible for composition vendor purchase."
+            if claimed_status == int(ItcClaimStatus.CLAIMED):
+                raise ValueError("Cannot claim ITC on a composition vendor purchase.")
+
+        if PurchaseInvoiceService.is_import_goods_supply(attrs, instance=instance):
+            attrs["is_itc_eligible"] = False
+            attrs["itc_block_reason"] = "Import goods ITC should be claimed through customs or bill-of-entry flow."
+            if claimed_status == int(ItcClaimStatus.CLAIMED):
+                raise ValueError("Cannot claim ITC from import goods supplier invoice directly.")
+
+        if PurchaseInvoiceService.is_import_services_supply(attrs, instance=instance) and not is_rcm:
+            raise ValueError("Import of services purchases must be marked as reverse charge.")
+
     # ---------------------------
     # Tax regime derivation
     # ---------------------------
@@ -532,6 +962,33 @@ class PurchaseInvoiceService:
         PurchaseInvoiceService.validate_vendor_account(attrs, instance=instance)
         PurchaseInvoiceService.apply_vendor_ledger(attrs, instance=instance)
 
+        supplier_invoice_number = str(
+            attrs.get("supplier_invoice_number", (instance.supplier_invoice_number if instance else "")) or ""
+        ).strip()
+        supplier_invoice_date = attrs.get(
+            "supplier_invoice_date",
+            (instance.supplier_invoice_date if instance else None),
+        )
+        if not supplier_invoice_number:
+            raise ValueError("supplier_invoice_number is required.")
+        if not supplier_invoice_date:
+            raise ValueError("supplier_invoice_date is required.")
+
+        supply_category = PurchaseInvoiceService.supply_category_value(attrs, instance=instance)
+        tax_regime = int(attrs.get("tax_regime", (instance.tax_regime if instance else TaxRegime.INTRA)))
+        place_of_supply_state = attrs.get("place_of_supply_state") or (instance.place_of_supply_state if instance else None)
+        is_rcm = bool(attrs.get("is_reverse_charge", (instance.is_reverse_charge if instance else False)))
+
+        if supply_category in {
+            int(PurchaseInvoiceHeader.SupplyCategory.IMPORT_GOODS),
+            int(PurchaseInvoiceHeader.SupplyCategory.IMPORT_SERVICES),
+            int(PurchaseInvoiceHeader.SupplyCategory.SEZ),
+        } and tax_regime != int(TaxRegime.INTER):
+            raise ValueError("Import and SEZ purchases must use INTER tax regime.")
+
+        if is_rcm and not place_of_supply_state:
+            raise ValueError("place_of_supply_state is required for reverse charge purchases.")
+
         doc_type = attrs.get("doc_type", DocType.TAX_INVOICE)
         ref_document = attrs.get("ref_document") or (instance.ref_document if instance else None)
 
@@ -539,6 +996,12 @@ class PurchaseInvoiceService:
             raise ValueError("ref_document is required for Credit/Debit Note.")
         if doc_type == DocType.TAX_INVOICE and attrs.get("ref_document"):
             raise ValueError("Tax Invoice should not have ref_document.")
+        if doc_type in (DocType.CREDIT_NOTE, DocType.DEBIT_NOTE) and ref_document:
+            correction_bill_date = attrs.get("bill_date") or (instance.bill_date if instance else None)
+            PurchaseInvoiceService.assert_note_correction_date_open(
+                ref_document=ref_document,
+                correction_date=correction_bill_date,
+            )
 
         if instance:
             if int(instance.status) == int(Status.CANCELLED):
@@ -561,6 +1024,42 @@ class PurchaseInvoiceService:
         attrs["currency_code"] = currency_code
         attrs["base_currency_code"] = base_currency_code
         attrs["exchange_rate"] = exchange_rate
+
+    @staticmethod
+    def assert_no_duplicate_supplier_invoice(
+        *,
+        instance: Optional[PurchaseInvoiceHeader],
+        attrs: Dict[str, Any],
+        grand_total: Decimal,
+    ) -> None:
+        entity = attrs.get("entity") or (instance.entity if instance else None)
+        vendor = attrs.get("vendor") or (instance.vendor if instance else None)
+        supplier_invoice_number = str(
+            attrs.get("supplier_invoice_number", (instance.supplier_invoice_number if instance else "")) or ""
+        ).strip()
+        supplier_invoice_date = attrs.get(
+            "supplier_invoice_date",
+            (instance.supplier_invoice_date if instance else None),
+        )
+
+        if not entity or not vendor or not supplier_invoice_number or not supplier_invoice_date:
+            return
+
+        entity_id = getattr(entity, "id", entity)
+        vendor_id = getattr(vendor, "id", vendor)
+        qs = PurchaseInvoiceHeader.objects.filter(
+            entity_id=entity_id,
+            vendor_id=vendor_id,
+            supplier_invoice_number__iexact=supplier_invoice_number,
+            supplier_invoice_date=supplier_invoice_date,
+            grand_total=q2(grand_total),
+        ).exclude(status=Status.CANCELLED)
+        if instance is not None and getattr(instance, "id", None):
+            qs = qs.exclude(pk=instance.id)
+        if qs.exists():
+            raise ValueError(
+                "Duplicate supplier invoice detected for this vendor, invoice number, invoice date, and amount."
+            )
 
     @staticmethod
     def validate_lines_structural(
@@ -592,9 +1091,57 @@ class PurchaseInvoiceService:
         if is_rcm and itc_claim_status == int(ItcClaimStatus.CLAIMED):
             raise ValueError("RCM ITC should be claimed only after RCM tax payment (track separately).")
 
+        if PurchaseInvoiceService.is_composition_vendor(attrs, instance=instance):
+            if header_itc:
+                raise ValueError("ITC cannot be eligible for composition vendor purchase.")
+            if itc_claim_status == int(ItcClaimStatus.CLAIMED):
+                raise ValueError("Cannot claim ITC for composition vendor purchase.")
+
+        if PurchaseInvoiceService.is_import_goods_supply(attrs, instance=instance) and header_itc:
+            raise ValueError("Import goods supplier invoice cannot create normal ITC in this flow.")
+
+        doc_type = int(attrs.get("doc_type", (instance.doc_type if instance else DocType.TAX_INVOICE)))
+        ref_document = attrs.get("ref_document") or (instance.ref_document if instance else None)
+        note_reason = str(attrs.get("note_reason", (instance.note_reason if instance else "")) or "").strip()
+        current_location = (
+            attrs.get("location")
+            or (instance.location if instance else None)
+            or (ref_document.location if ref_document else None)
+        )
+        original_line_qty_by_line_no: Dict[int, Decimal] = {}
+        consumed_qty_by_line_no: Dict[int, Decimal] = {}
+        inventory_safe_return_base_by_key: Dict[tuple[int, str, int], Decimal] = {}
+        inventory_return_requested_by_key: Dict[tuple[int, str, int], Decimal] = {}
+        if (
+            doc_type in (int(DocType.CREDIT_NOTE), int(DocType.DEBIT_NOTE))
+            and ref_document is not None
+            and note_reason == PurchaseInvoiceHeader.NoteReason.QUANTITY_RETURN
+        ):
+            original_line_qty_by_line_no = {
+                int(line.line_no): q4(line.qty)
+                for line in ref_document.lines.all().order_by("line_no", "id")
+            }
+            note_qs = PurchaseInvoiceHeader.objects.filter(
+                ref_document_id=ref_document.id,
+                note_reason=PurchaseInvoiceHeader.NoteReason.QUANTITY_RETURN,
+            ).exclude(status=Status.CANCELLED)
+            if instance is not None and getattr(instance, "id", None):
+                note_qs = note_qs.exclude(pk=instance.id)
+            for qty_row in (
+                PurchaseInvoiceLine.objects.filter(header_id__in=note_qs.values("id"))
+                .values("line_no")
+                .annotate(total_qty=Coalesce(Sum("qty"), ZERO4))
+            ):
+                consumed_qty_by_line_no[int(qty_row["line_no"])] = q4(qty_row["total_qty"])
+            inventory_safe_return_base_by_key = PurchaseInvoiceService._inventory_safe_return_base_by_key(
+                ref_document=ref_document,
+                location=current_location,
+            )
+
         # NOTE: we will validate amounts AFTER we compute authoritative values
         # Here we only check regime consistency if amounts were provided and obviously wrong.
         for i, ln in enumerate(lines, start=1):
+            line_no = int(ln.get("line_no") or i)
             product_ref = ln.get("product")
             product_id = getattr(product_ref, "pk", product_ref)
             purchase_account_id = ln.get("purchase_account")
@@ -614,6 +1161,16 @@ class PurchaseInvoiceService:
             qty = q4(ln.get("qty"))
             if qty <= 0:
                 raise ValueError(f"Line {i}: qty must be > 0")
+            if original_line_qty_by_line_no:
+                original_qty = q4(original_line_qty_by_line_no.get(line_no, ZERO4))
+                already_consumed = q4(consumed_qty_by_line_no.get(line_no, ZERO4))
+                available_qty = q4(original_qty - already_consumed)
+                if available_qty < ZERO4:
+                    available_qty = ZERO4
+                if qty > available_qty:
+                    raise ValueError(
+                        f"Line {i}: return quantity {qty} exceeds available returnable quantity {available_qty}."
+                    )
 
             free_qty = q4(ln.get("free_qty", ZERO4))
             if free_qty < 0:
@@ -642,6 +1199,38 @@ class PurchaseInvoiceService:
                         raise ValueError(f"Line {i}: expiry_date is required for expiry-tracked products.")
                     if manufacture_date and expiry_date and str(manufacture_date) > str(expiry_date):
                         raise ValueError(f"Line {i}: expiry_date must be on or after manufacture_date.")
+                    if inventory_safe_return_base_by_key and not bool(getattr(product, "is_service", False)):
+                        raw_behavior = (
+                            ln.get("purchase_behavior")
+                            or getattr(product, "purchase_behavior", ProductPurchaseBehavior.INVENTORY)
+                            or ProductPurchaseBehavior.INVENTORY
+                        )
+                        if raw_behavior == ProductPurchaseBehavior.INVENTORY:
+                            _, factor_to_base = resolve_product_uom(
+                                product=product,
+                                raw_uom_id=getattr(ln.get("uom"), "id", ln.get("uom")),
+                            )
+                            base_qty = q4(qty * q4(factor_to_base))
+                            key = (
+                                int(product.id),
+                                str(ln.get("batch_number") or "").strip(),
+                                PurchaseInvoiceService._return_validation_location_id(
+                                    ref_document=ref_document,
+                                    location=current_location,
+                                ),
+                            )
+                            available_base_qty = q4(inventory_safe_return_base_by_key.get(key, ZERO4))
+                            already_requested_base_qty = q4(inventory_return_requested_by_key.get(key, ZERO4))
+                            remaining_safe_base_qty = q4(available_base_qty - already_requested_base_qty)
+                            if remaining_safe_base_qty < ZERO4:
+                                remaining_safe_base_qty = ZERO4
+                            if base_qty > remaining_safe_base_qty:
+                                raise ValueError(
+                                    f"Line {i}: return quantity {qty} is no longer safely returnable because stock from "
+                                    "the original purchase has already been consumed or moved out. Use a value-only note "
+                                    "or inventory adjustment flow."
+                                )
+                            inventory_return_requested_by_key[key] = q4(already_requested_base_qty + base_qty)
 
             if bool(ln.get("is_service", False)) and ln.get("purchase_behavior") != ProductPurchaseBehavior.EXPENSE:
                 ln["purchase_behavior"] = ProductPurchaseBehavior.EXPENSE
@@ -681,8 +1270,105 @@ class PurchaseInvoiceService:
             if int(derived.tax_regime) == int(TaxRegime.INTER) and (cgst > 0 or sgst > 0):
                 raise ValueError(f"Line {i}: CGST/SGST not allowed for INTER regime.")
 
-            if is_rcm and (cgst > 0 or sgst > 0 or igst > 0):
-                raise ValueError(f"Line {i}: GST amounts must be 0 for Reverse Charge invoice.")
+            if PurchaseInvoiceService.should_suppress_supplier_gst(attrs=attrs, instance=instance) and (cgst > 0 or sgst > 0 or igst > 0):
+                raise ValueError(
+                    f"Line {i}: "
+                    f"{PurchaseInvoiceService.supplier_gst_suppression_reason(attrs=attrs, instance=instance)}"
+                )
+
+            if is_rcm and q2(ln.get("gst_rate", ZERO2)) <= ZERO2:
+                raise ValueError(f"Line {i}: gst_rate is required for reverse charge purchases.")
+
+    @staticmethod
+    def _return_validation_location_id(
+        *,
+        ref_document: PurchaseInvoiceHeader,
+        location,
+    ) -> int | None:
+        location_id = getattr(location, "id", location)
+        return resolve_posting_location_id(
+            entity_id=int(ref_document.entity_id),
+            subentity_id=getattr(ref_document, "subentity_id", None),
+            location_id=int(location_id) if location_id else None,
+        )
+
+    @staticmethod
+    def _inventory_safe_return_base_by_key(
+        *,
+        ref_document: PurchaseInvoiceHeader,
+        location,
+    ) -> Dict[tuple[int, str, int], Decimal]:
+        if int(getattr(ref_document, "status", 0) or 0) != int(Status.POSTED):
+            return {}
+
+        location_id = PurchaseInvoiceService._return_validation_location_id(
+            ref_document=ref_document,
+            location=location,
+        )
+        if not location_id:
+            return {}
+
+        posting_day = getattr(ref_document, "posting_date", None) or getattr(ref_document, "bill_date", None)
+        if not posting_day:
+            return {}
+
+        source_base_qty_by_key: Dict[tuple[int, str, int], Decimal] = {}
+        product_ids: set[int] = set()
+        for src_line in ref_document.lines.select_related("product", "uom").order_by("line_no", "id"):
+            product = getattr(src_line, "product", None)
+            if not product or bool(getattr(src_line, "is_service", False)):
+                continue
+            purchase_behavior = (
+                getattr(src_line, "purchase_behavior", None)
+                or getattr(product, "purchase_behavior", ProductPurchaseBehavior.INVENTORY)
+                or ProductPurchaseBehavior.INVENTORY
+            )
+            if purchase_behavior != ProductPurchaseBehavior.INVENTORY:
+                continue
+            _, factor_to_base = resolve_product_uom(
+                product=product,
+                raw_uom_id=getattr(src_line, "uom_id", None),
+            )
+            key = (
+                int(src_line.product_id),
+                str(getattr(src_line, "batch_number", "") or "").strip(),
+                int(location_id),
+            )
+            source_base_qty_by_key[key] = q4(
+                source_base_qty_by_key.get(key, ZERO4) + q4(q4(getattr(src_line, "qty", ZERO4)) * q4(factor_to_base))
+            )
+            product_ids.add(int(src_line.product_id))
+
+        if not source_base_qty_by_key:
+            return {}
+
+        out_totals_by_key: Dict[tuple[int, str, int], Decimal] = {}
+        out_rows = (
+            InventoryMove.objects.filter(
+                entity_id=int(ref_document.entity_id),
+                location_id=int(location_id),
+                product_id__in=product_ids,
+                move_type=InventoryMove.MoveType.OUT,
+                posting_date__gte=posting_day,
+            )
+            .values("product_id", "batch_number")
+            .annotate(total_base_qty=Coalesce(Sum("base_qty"), ZERO4))
+        )
+        for row in out_rows:
+            key = (
+                int(row["product_id"]),
+                str(row.get("batch_number") or "").strip(),
+                int(location_id),
+            )
+            out_totals_by_key[key] = q4(row.get("total_base_qty") or ZERO4)
+
+        safe_base_qty_by_key: Dict[tuple[int, str, int], Decimal] = {}
+        for key, source_base_qty in source_base_qty_by_key.items():
+            remaining_base_qty = q4(source_base_qty - q4(out_totals_by_key.get(key, ZERO4)))
+            if remaining_base_qty < ZERO4:
+                remaining_base_qty = ZERO4
+            safe_base_qty_by_key[key] = remaining_base_qty
+        return safe_base_qty_by_key
 
     # ---------------------------
     # Authoritative line compute (server)
@@ -779,7 +1465,7 @@ class PurchaseInvoiceService:
         else:
             # Reverse charge invoice: GST amounts must be 0 on invoice,
             # taxable_value remains (for reporting), but tax components 0.
-            if is_rcm:
+            if PurchaseInvoiceService.should_suppress_supplier_gst(attrs=header_attrs):
                 if is_inclusive and gst_rate > 0:
                     # If inclusive+RCM, after_disc includes tax in price but invoice shouldn't show GST.
                     # We still back-calc taxable (recommended), so that taxable_value is correct.
@@ -931,6 +1617,11 @@ class PurchaseInvoiceService:
         PurchaseTaxSummary.objects.filter(header=header).delete()
 
         buckets: Dict[Tuple[int, Optional[str], bool, Decimal, bool], Dict[str, Decimal]] = {}
+        is_rcm = bool(getattr(header, "is_reverse_charge", False))
+        derived = DerivedRegime(
+            tax_regime=int(getattr(header, "tax_regime", int(TaxRegime.INTRA)) or int(TaxRegime.INTRA)),
+            is_igst=bool(getattr(header, "is_igst", False)),
+        )
 
         # --- LINES ---
         for ln in header.lines.all():
@@ -954,14 +1645,30 @@ class PurchaseInvoiceService:
                     "itc_ineligible_tax": ZERO2,
                 }
 
-            buckets[key]["taxable_value"] += q2(ln.taxable_value)
-            buckets[key]["cgst_amount"] += q2(ln.cgst_amount)
-            buckets[key]["sgst_amount"] += q2(ln.sgst_amount)
-            buckets[key]["igst_amount"] += q2(ln.igst_amount)
-            buckets[key]["cess_amount"] += q2(ln.cess_amount)
-            buckets[key]["total_value"] += q2(ln.line_total)
+            taxable_value = q2(ln.taxable_value)
+            if is_rcm and int(ln.taxability) == int(Taxability.TAXABLE):
+                cgst_amount, sgst_amount, igst_amount = PurchaseInvoiceService._split_gst(
+                    taxable_value,
+                    q2(ln.gst_rate),
+                    derived,
+                )
+                cess_amount = q2(taxable_value * q2(getattr(ln, "cess_percent", ZERO2) or ZERO2) / Decimal("100"))
+            else:
+                cgst_amount = q2(ln.cgst_amount)
+                sgst_amount = q2(ln.sgst_amount)
+                igst_amount = q2(ln.igst_amount)
+                cess_amount = q2(ln.cess_amount)
 
-            line_tax = q2(ln.cgst_amount + ln.sgst_amount + ln.igst_amount + ln.cess_amount)
+            line_tax = q2(cgst_amount + sgst_amount + igst_amount + cess_amount)
+            total_value = q2(taxable_value + line_tax) if is_rcm else q2(ln.line_total)
+
+            buckets[key]["taxable_value"] += taxable_value
+            buckets[key]["cgst_amount"] += cgst_amount
+            buckets[key]["sgst_amount"] += sgst_amount
+            buckets[key]["igst_amount"] += igst_amount
+            buckets[key]["cess_amount"] += cess_amount
+            buckets[key]["total_value"] += total_value
+
             if ln.is_itc_eligible:
                 buckets[key]["itc_eligible_tax"] += line_tax
             else:
@@ -995,13 +1702,28 @@ class PurchaseInvoiceService:
                     "itc_ineligible_tax": ZERO2,
                 }
 
-            buckets[key]["taxable_value"] += q2(ch.taxable_value)
-            buckets[key]["cgst_amount"] += q2(ch.cgst_amount)
-            buckets[key]["sgst_amount"] += q2(ch.sgst_amount)
-            buckets[key]["igst_amount"] += q2(ch.igst_amount)
-            buckets[key]["total_value"] += q2(ch.total_value)
+            taxable_value = q2(ch.taxable_value)
+            if is_rcm and int(charge_taxability_map.get(ch.taxability, int(Taxability.TAXABLE))) == int(Taxability.TAXABLE):
+                cgst_amount, sgst_amount, igst_amount = PurchaseInvoiceService._split_gst(
+                    taxable_value,
+                    q2(ch.gst_rate),
+                    derived,
+                )
+                ch_tax = q2(cgst_amount + sgst_amount + igst_amount)
+                total_value = q2(taxable_value + ch_tax)
+            else:
+                cgst_amount = q2(ch.cgst_amount)
+                sgst_amount = q2(ch.sgst_amount)
+                igst_amount = q2(ch.igst_amount)
+                ch_tax = q2(cgst_amount + sgst_amount + igst_amount)
+                total_value = q2(ch.total_value)
 
-            ch_tax = q2(ch.cgst_amount + ch.sgst_amount + ch.igst_amount)
+            buckets[key]["taxable_value"] += taxable_value
+            buckets[key]["cgst_amount"] += cgst_amount
+            buckets[key]["sgst_amount"] += sgst_amount
+            buckets[key]["igst_amount"] += igst_amount
+            buckets[key]["total_value"] += total_value
+
             if getattr(ch, "itc_eligible", True):
                 buckets[key]["itc_eligible_tax"] += ch_tax
             else:
@@ -1194,7 +1916,14 @@ class PurchaseInvoiceService:
         inclusive = bool(row.get("is_rate_inclusive_of_tax") or False)
 
         # RCM normalization: purchase invoice charges should also carry zero GST amounts.
-        if bool(getattr(header, "is_reverse_charge", False)):
+        if PurchaseInvoiceService.should_suppress_supplier_gst(
+            attrs={
+                "is_reverse_charge": getattr(header, "is_reverse_charge", False),
+                "vendor_gstin": getattr(header, "vendor_gstin", ""),
+                "supply_category": getattr(header, "supply_category", PurchaseInvoiceHeader.SupplyCategory.DOMESTIC),
+                "vendor": getattr(header, "vendor", None),
+            }
+        ):
             taxable2 = q2r(taxable)
             return ChargeComputed(
                 taxable_value=taxable2,
@@ -1535,9 +2264,11 @@ class PurchaseInvoiceService:
             entity_id=(validated_data["entity"].id if hasattr(validated_data.get("entity"), "id") else validated_data.get("entity")),
             subentity_id=(validated_data.get("subentity").id if hasattr(validated_data.get("subentity"), "id") else validated_data.get("subentity")),
             bill_date=validated_data.get("bill_date"),
+            entityfinid_id=(validated_data.get("entityfinid").id if hasattr(validated_data.get("entityfinid"), "id") else validated_data.get("entityfinid")),
         )
 
         PurchaseInvoiceService.apply_vendor_snapshot(validated_data)
+        PurchaseInvoiceService.apply_special_tax_treatment_defaults(validated_data)
         PurchaseInvoiceService.apply_dates(validated_data)
 
         derived = PurchaseInvoiceService.derive_tax_regime(validated_data)
@@ -1587,6 +2318,12 @@ class PurchaseInvoiceService:
         db_lines = list(header.lines.values("taxable_value", "cgst_amount", "sgst_amount", "igst_amount", "cess_amount"))
         db_charges = list(header.charges.values("taxable_value", "cgst_amount", "sgst_amount", "igst_amount"))
         totals = PurchaseInvoiceService.compute_totals_with_charges(db_lines, db_charges)
+        preview_grand_total = grand_total_hint if grand_total_hint is not None else totals["grand_total_base"]
+        PurchaseInvoiceService.assert_no_duplicate_supplier_invoice(
+            instance=None,
+            attrs=validated_data,
+            grand_total=preview_grand_total,
+        )
         PurchaseInvoiceService.apply_totals_to_header(
             header,
             totals,
@@ -1638,8 +2375,10 @@ class PurchaseInvoiceService:
         # IMPORTANT: None means "not provided" so DO NOT delete existing charges
         charges_client = validated_data.pop("charges", None)
 
-        if int(instance.status) in (int(Status.CANCELLED), int(Status.POSTED)):
-            raise ValueError("Posted/Cancelled purchase invoices cannot be edited.")
+        if int(instance.status) == int(Status.CANCELLED):
+            raise ValueError("Cancelled purchase invoices cannot be edited.")
+        if int(instance.status) == int(Status.POSTED):
+            raise ValueError(PurchaseInvoiceService.blocked_edit_message(instance))
         if int(instance.status) == int(Status.CONFIRMED):
             policy = PurchaseSettingsService.get_policy(instance.entity_id, instance.subentity_id)
             allow_edit_confirmed = str(policy.controls.get("allow_edit_confirmed", "on")).lower().strip()
@@ -1650,9 +2389,11 @@ class PurchaseInvoiceService:
             entity_id=instance.entity_id,
             subentity_id=instance.subentity_id,
             bill_date=(validated_data.get("bill_date") or instance.bill_date),
+            entityfinid_id=instance.entityfinid_id,
         )
 
         PurchaseInvoiceService.apply_vendor_snapshot(validated_data, instance=instance)
+        PurchaseInvoiceService.apply_special_tax_treatment_defaults(validated_data, instance=instance)
         PurchaseInvoiceService.apply_dates(validated_data, instance=instance)
 
         derived = PurchaseInvoiceService.derive_tax_regime(validated_data, instance=instance)
@@ -1670,6 +2411,7 @@ class PurchaseInvoiceService:
         header_ctx = {
             "default_taxability": instance.default_taxability,
             "is_reverse_charge": instance.is_reverse_charge,
+            "vendor_gstin": instance.vendor_gstin,
             "is_rate_inclusive_of_tax_default": getattr(instance, "is_rate_inclusive_of_tax_default", False),
         }
 
@@ -1695,6 +2437,12 @@ class PurchaseInvoiceService:
         db_lines = list(instance.lines.values("taxable_value", "cgst_amount", "sgst_amount", "igst_amount", "cess_amount"))
         db_charges = list(instance.charges.values("taxable_value", "cgst_amount", "sgst_amount", "igst_amount"))
         totals = PurchaseInvoiceService.compute_totals_with_charges(db_lines, db_charges)
+        preview_grand_total = grand_total_hint if grand_total_hint is not None else totals["grand_total_base"]
+        PurchaseInvoiceService.assert_no_duplicate_supplier_invoice(
+            instance=instance,
+            attrs=validated_data,
+            grand_total=preview_grand_total,
+        )
         PurchaseInvoiceService.apply_totals_to_header(
             instance,
             totals,

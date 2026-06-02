@@ -8,7 +8,11 @@ from rest_framework.views import APIView
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from core.entitlements import ScopedEntitlementMixin
+from posting.bank_account_mapping_service import EntityBankAccountMappingService
 from posting.serializers import (
+    BankAccountMappingRowSerializer,
+    BankAccountMappingUpsertSerializer,
+    EligibleBankLedgerSerializer,
     StaticAccountRowSerializer,
     StaticAccountUpsertSerializer,
     StaticAccountBulkUpsertSerializer,
@@ -68,6 +72,14 @@ class StaticAccountSettingsView(_BaseStaticAccountSettingsAPIView):
         data = {
             "summary": resolved["summary"],
             "groups": groups,
+            "eligible_bank_ledgers": [
+                EligibleBankLedgerSerializer.from_row(row)
+                for row in EntityBankAccountMappingService.eligible_ledgers(entity_id=entity_id)
+            ],
+            "bank_account_mappings": [
+                BankAccountMappingRowSerializer.from_row(row)
+                for row in EntityBankAccountMappingService.list_rows(entity_id=entity_id)
+            ],
         }
         return Response(data)
 
@@ -148,3 +160,18 @@ class StaticAccountSettingsValidateView(_BaseStaticAccountSettingsAPIView):
         serializer = StaticAccountValidationResponseSerializer(data=result)
         serializer.is_valid(raise_exception=True)
         return Response(serializer.data)
+
+
+class BankAccountMappingDetailView(_BaseStaticAccountSettingsAPIView):
+    permission_classes = [IsAuthenticated]
+
+    def put(self, request, entity_id: int, bank_account_id: int):
+        self._enforce_access(request, entity_id=entity_id, permission_code="posting.static_account_settings.update")
+        serializer = BankAccountMappingUpsertSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        row = EntityBankAccountMappingService.update_mapping(
+            entity_id=entity_id,
+            bank_account_id=bank_account_id,
+            ledger_id=serializer.validated_data.get("ledger_id"),
+        )
+        return Response(BankAccountMappingRowSerializer.from_row(row), status=status.HTTP_200_OK)

@@ -10,8 +10,10 @@ from financial.models import Ledger
 from entity.models import EntityFinancialYear
 from purchase.models.purchase_core import PurchaseInvoiceHeader
 from sales.models.sales_core import SalesInvoiceHeader
+from posting.models import TxnType
 from reports.services.balance_sheet import _inventory_value_asof
 from reports.services.financial.classification import classify_financial_head
+from reports.services.financial.opening_balance_source import effective_opening_map_for_ledgers
 from reports.services.financial.reporting_policy import FINANCIAL_REPORTING_POLICY_DEFAULTS
 from reports.selectors.financial import (
     journal_lines_for_scope,
@@ -197,22 +199,38 @@ def _closing_map(
     if selected_ledger_ids:
         lines = lines.filter(resolved_ledger_id__in=selected_ledger_ids)
     movement_rows = (
-        lines.values("resolved_ledger_id")
+        lines.exclude(txn_type=TxnType.OPENING_BALANCE).values("resolved_ledger_id")
         .annotate(
             debit=Sum("amount", filter=Q(drcr=True), default=Decimal("0.00")),
             credit=Sum("amount", filter=Q(drcr=False), default=Decimal("0.00")),
         )
     )
     movement_map = {row["resolved_ledger_id"]: row for row in movement_rows}
-    ledgers = (
-        Ledger.objects.filter(id__in=movement_map.keys())
+    ledger_qs = (
+        Ledger.objects.filter(id__in=selected_ledger_ids) if selected_ledger_ids
+        else Ledger.objects.filter(entity_id=entity_id)
+    )
+    ledgers = list(
+        ledger_qs
         .select_related("accounthead", "accounthead__accounttype", "creditaccounthead", "creditaccounthead__accounttype", "accounttype")
         .order_by("accounthead__code", "ledger_code", "name")
     )
+    opening_map = effective_opening_map_for_ledgers(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        ledgers=ledgers,
+        from_date=from_date,
+        posted_only=posted_only,
+    )
+    ledgers = [
+        ledger for ledger in ledgers
+        if ledger.id in movement_map or opening_map.get(ledger.id, Decimal("0.00")) != Decimal("0.00")
+    ]
     closing = {}
     for ledger in ledgers:
         move = movement_map.get(ledger.id, {})
-        opening = (ledger.openingbdr or Decimal("0.00")) - (ledger.openingbcr or Decimal("0.00"))
+        opening = opening_map.get(ledger.id, Decimal("0.00"))
         closing[ledger.id] = {
             "ledger": ledger,
             "amount": opening + (move.get("debit") or Decimal("0.00")) - (move.get("credit") or Decimal("0.00")),
@@ -313,7 +331,7 @@ def _raw_profit_loss_rows(
     if selected_ledger_ids:
         lines = lines.filter(resolved_ledger_id__in=selected_ledger_ids)
     movement_rows = (
-        lines.values("resolved_ledger_id")
+        lines.exclude(txn_type=TxnType.OPENING_BALANCE).values("resolved_ledger_id")
         .annotate(
             debit=Sum("amount", filter=Q(drcr=True), default=Decimal("0.00")),
             credit=Sum("amount", filter=Q(drcr=False), default=Decimal("0.00")),

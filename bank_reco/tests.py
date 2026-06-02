@@ -1,0 +1,2 @@
+from .import_api_tests import BankRecoImportAPITests
+from .matching_api_tests import BankRecoMatchingAPITests

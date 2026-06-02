@@ -21,6 +21,7 @@ from invoice_import.services import (
     create_validated_job,
     export_job_errors,
     commit_job,
+    mark_job_reviewed,
 )
 from purchase.views.rbac import require_purchase_request_permission
 from sales.views.sales_invoice_views import require_sales_request_permission
@@ -31,29 +32,32 @@ class InvoiceImportBaseAPIView(APIView):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
     module: str = ""
 
-    def _get_entity(self, request) -> Entity:
+    def _get_entity(self, request, *, action: str = "view") -> Entity:
         raw = request.query_params.get("entity") or request.data.get("entity")
         if not raw:
             raise ValidationError({"entity": "entity is required."})
         entity = get_object_or_404(Entity, pk=int(raw))
-        if self.module == ImportJob.Module.SALES:
-            require_sales_request_permission(user=request.user, entity_id=entity.id, doc_type=1, action="create")
-        else:
-            require_purchase_request_permission(user=request.user, entity_id=entity.id, doc_type=1, action="create")
+        self._require_permission(request, entity=entity, action=action)
         return entity
 
-    def _get_job(self, request, job_id: int) -> ImportJob:
-        entity = self._get_entity(request)
+    def _require_permission(self, request, *, entity: Entity, action: str) -> None:
+        if self.module == ImportJob.Module.SALES:
+            require_sales_request_permission(user=request.user, entity_id=entity.id, doc_type=1, action=action)
+        else:
+            require_purchase_request_permission(user=request.user, entity_id=entity.id, doc_type=1, action=action)
+
+    def _get_job(self, request, job_id: int, *, action: str = "view") -> ImportJob:
+        entity = self._get_entity(request, action=action)
         return get_object_or_404(ImportJob.objects.prefetch_related("rows"), pk=job_id, entity=entity, module=self.module)
 
-    def _get_profile(self, request, profile_id: int) -> ImportProfile:
-        entity = self._get_entity(request)
+    def _get_profile(self, request, profile_id: int, *, action: str = "view") -> ImportProfile:
+        entity = self._get_entity(request, action=action)
         return get_object_or_404(ImportProfile, pk=profile_id, entity=entity, module=self.module)
 
 
 class InvoiceImportTemplateAPIView(InvoiceImportBaseAPIView):
     def get(self, request):
-        entity = self._get_entity(request)
+        entity = self._get_entity(request, action="view")
         mode = request.query_params.get("mode") or ImportJob.Mode.OUTSTANDING_ONLY
         detail_level = request.query_params.get("detail_level") or ImportJob.DetailLevel.HEADER_ONLY
         content = build_template_content(module=self.module, mode=mode, detail_level=detail_level, fmt="xlsx")
@@ -70,7 +74,7 @@ class InvoiceImportJobCreateAPIView(InvoiceImportBaseAPIView):
     def post(self, request):
         serializer = ImportJobCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        entity = self._get_entity(request)
+        entity = self._get_entity(request, action="create")
         data = serializer.validated_data
         profile = None
         if data.get("profile"):
@@ -96,7 +100,7 @@ class InvoiceImportJobCreateAPIView(InvoiceImportBaseAPIView):
         return Response(
             {
                 "job": ImportJobSerializer(job).data,
-                "can_commit": job.status == ImportJob.Status.VALIDATED,
+                "can_commit": job.status == ImportJob.Status.VALIDATED and (not job.review_required or bool(job.reviewed_at)),
             },
             status=status.HTTP_201_CREATED,
         )
@@ -104,7 +108,7 @@ class InvoiceImportJobCreateAPIView(InvoiceImportBaseAPIView):
 
 class InvoiceImportJobDetailAPIView(InvoiceImportBaseAPIView):
     def get(self, request, job_id: int):
-        job = self._get_job(request, job_id)
+        job = self._get_job(request, job_id, action="view")
         data = ImportJobSerializer(job).data
         data["rows"] = [
             {
@@ -122,7 +126,7 @@ class InvoiceImportJobDetailAPIView(InvoiceImportBaseAPIView):
 
 class InvoiceImportJobCommitAPIView(InvoiceImportBaseAPIView):
     def post(self, request, job_id: int):
-        job = self._get_job(request, job_id)
+        job = self._get_job(request, job_id, action="post")
         job = commit_job(job=job, user=request.user)
         payload = ImportJobSerializer(job).data
         if job.status == ImportJob.Status.COMMITTED:
@@ -149,9 +153,19 @@ class InvoiceImportJobCommitAPIView(InvoiceImportBaseAPIView):
         )
 
 
+class InvoiceImportJobReviewAPIView(InvoiceImportBaseAPIView):
+    def post(self, request, job_id: int):
+        job = self._get_job(request, job_id, action="update")
+        note = ""
+        if isinstance(request.data, dict):
+            note = str(request.data.get("review_note") or "")
+        job = mark_job_reviewed(job=job, user=request.user, note=note)
+        return Response(ImportJobSerializer(job).data)
+
+
 class InvoiceImportJobErrorsExportAPIView(InvoiceImportBaseAPIView):
     def get(self, request, job_id: int):
-        job = self._get_job(request, job_id)
+        job = self._get_job(request, job_id, action="view")
         fmt = (request.query_params.get("format") or "xlsx").lower()
         content, content_type, filename = export_job_errors(job=job, fmt=fmt)
         response = HttpResponse(content, content_type=content_type)
@@ -161,7 +175,7 @@ class InvoiceImportJobErrorsExportAPIView(InvoiceImportBaseAPIView):
 
 class InvoiceImportJobReconciliationAPIView(InvoiceImportBaseAPIView):
     def get(self, request, job_id: int):
-        job = self._get_job(request, job_id)
+        job = self._get_job(request, job_id, action="view")
         return Response(job.reconciliation_summary or {})
 
 
@@ -169,12 +183,12 @@ class InvoiceImportProfileListCreateAPIView(InvoiceImportBaseAPIView):
     parser_classes = [JSONParser]
 
     def get(self, request):
-        entity = self._get_entity(request)
+        entity = self._get_entity(request, action="view")
         rows = ImportProfile.objects.filter(entity=entity, module=self.module).order_by("name", "id")
         return Response(ImportProfileSerializer(rows, many=True).data)
 
     def post(self, request):
-        entity = self._get_entity(request)
+        entity = self._get_entity(request, action="create")
         payload = request.data.copy()
         payload["entity"] = entity.id
         payload["module"] = self.module
@@ -188,11 +202,11 @@ class InvoiceImportProfileDetailAPIView(InvoiceImportBaseAPIView):
     parser_classes = [JSONParser]
 
     def get(self, request, profile_id: int):
-        profile = self._get_profile(request, profile_id)
+        profile = self._get_profile(request, profile_id, action="view")
         return Response(ImportProfileSerializer(profile).data)
 
     def patch(self, request, profile_id: int):
-        profile = self._get_profile(request, profile_id)
+        profile = self._get_profile(request, profile_id, action="update")
         payload = request.data.copy()
         payload["entity"] = profile.entity_id
         payload["module"] = self.module
@@ -234,6 +248,10 @@ class SalesInvoiceImportJobReconciliationAPIView(InvoiceImportJobReconciliationA
     module = ImportJob.Module.SALES
 
 
+class SalesInvoiceImportJobReviewAPIView(InvoiceImportJobReviewAPIView):
+    module = ImportJob.Module.SALES
+
+
 class PurchaseInvoiceImportTemplateAPIView(InvoiceImportTemplateAPIView):
     module = ImportJob.Module.PURCHASE
 
@@ -263,4 +281,8 @@ class PurchaseInvoiceImportJobErrorsExportAPIView(InvoiceImportJobErrorsExportAP
 
 
 class PurchaseInvoiceImportJobReconciliationAPIView(InvoiceImportJobReconciliationAPIView):
+    module = ImportJob.Module.PURCHASE
+
+
+class PurchaseInvoiceImportJobReviewAPIView(InvoiceImportJobReviewAPIView):
     module = ImportJob.Module.PURCHASE

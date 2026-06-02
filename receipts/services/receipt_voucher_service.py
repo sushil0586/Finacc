@@ -54,6 +54,42 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
     AUTO_PAISE_ROUND_OFF_REMARK = "__AUTO_PAISE_ROUND_OFF__"
 
     @staticmethod
+    def _gross_inclusive_receipt_base(cash_received_amount: Decimal, rate: Decimal) -> Decimal:
+        cash = q2(cash_received_amount)
+        rate = q2(rate)
+        if cash <= ZERO2 or rate <= ZERO2:
+            return cash
+        divisor = Decimal("1.00") + (rate / Decimal("100.00"))
+        if divisor <= ZERO2:
+            return cash
+        return q2(cash / divisor)
+
+    @staticmethod
+    def _validate_positive_receipt_support(
+        *,
+        cash_received_amount: Decimal,
+        adjustments: Iterable[Dict[str, Any]],
+        effective_amount: Decimal,
+    ) -> None:
+        if q2(effective_amount) > ZERO2:
+            return
+        has_bank_charges = any(
+            str((row or {}).get("adj_type") or "").upper().strip() == ReceiptVoucherAdjustment.AdjType.BANK_CHARGES
+            and q2((row or {}).get("amount") or ZERO2) > ZERO2
+            for row in (adjustments or [])
+        )
+        if has_bank_charges:
+            raise ValueError(
+                "This receipt cannot be saved because the settlement amount becomes zero or negative. "
+                "You entered BANK_CHARGES as a deduction. If the received amount itself is charges, "
+                "enter that amount only in Cash Received and remove the BANK_CHARGES adjustment row."
+            )
+        raise ValueError(
+            "This receipt cannot be saved because the settlement amount becomes zero or negative. "
+            "Increase Cash Received or reduce the deduction adjustments."
+        )
+
+    @staticmethod
     def _runtime_tcs_document_no(header: ReceiptVoucherHeader) -> str:
         if (header.voucher_code or "").strip():
             return str(header.voucher_code).strip()
@@ -782,6 +818,8 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
         section_obj: Optional[WithholdingSection] = None
         if mode == "MANUAL":
             rate = q2(config.get("manual_rate") or ZERO2)
+            if cls._sum_allocations(allocations) <= ZERO2:
+                base_amount = cls._gross_inclusive_receipt_base(q2(cash_received_amount), rate)
             amount = q2(config.get("manual_amount") or ZERO2)
             if amount <= ZERO2:
                 amount = q2((base_amount * rate) / Decimal("100.00"))
@@ -809,7 +847,11 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
                 document_id=voucher_id,
             )
             rate = q2(preview.rate or ZERO2)
+            if cls._sum_allocations(allocations) <= ZERO2:
+                base_amount = cls._gross_inclusive_receipt_base(q2(cash_received_amount), rate)
             amount = q2(preview.amount or ZERO2)
+            if cls._sum_allocations(allocations) <= ZERO2 and rate > ZERO2:
+                amount = q2(q2(cash_received_amount) - base_amount)
             reason = preview.reason
             reason_code = preview.reason_code
             section_obj = getattr(preview, "section", None)
@@ -849,7 +891,7 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
                 "ledger_account": int(account_id),
                 "ledger": int(ledger_id) if ledger_id else None,
                 "amount": q2(amount),
-                "settlement_effect": ReceiptVoucherAdjustment.Effect.PLUS,
+                "settlement_effect": ReceiptVoucherAdjustment.Effect.MINUS,
                 "remarks": cls.AUTO_WITHHOLDING_TCS_REMARK,
             }
         )
@@ -1136,6 +1178,11 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
         validated_data["total_adjustment_amount"] = adjustment_total
         validated_data["settlement_effective_amount"] = effective
         validated_data["settlement_effective_amount_base_currency"] = q2(effective * exchange_rate)
+        ReceiptVoucherService._validate_positive_receipt_support(
+            cash_received_amount=q2(validated_data.get("cash_received_amount", ZERO2)),
+            adjustments=adjustments,
+            effective_amount=effective,
+        )
 
         amount_match_level = str(policy.controls.get("allocation_amount_match_rule", "hard")).lower().strip()
         if allocations:
@@ -1461,6 +1508,12 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
         instance.settlement_effective_amount = ReceiptVoucherService._effective_settlement_amount(
             q2(instance.cash_received_amount),
             adjustment_total,
+        )
+        live_adjustments = list(instance.adjustments.values("adj_type", "amount", "settlement_effect"))
+        ReceiptVoucherService._validate_positive_receipt_support(
+            cash_received_amount=q2(instance.cash_received_amount),
+            adjustments=live_adjustments,
+            effective_amount=instance.settlement_effective_amount,
         )
         ex_rate = Decimal(getattr(instance, "exchange_rate", Decimal("1.000000")) or Decimal("1.000000"))
         if ex_rate <= 0:
@@ -1981,13 +2034,16 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
             if unpost_target == "draft"
             else ReceiptVoucherHeader.Status.CONFIRMED
         )
+        h.approved_at = None
+        h.approved_by_id = None
+        h.workflow_payload = ReceiptVoucherService._reset_workflow_state(h.workflow_payload, status="DRAFT")
         h.workflow_payload = ReceiptVoucherService._append_audit(
             h.workflow_payload,
             {"action": "UNPOSTED", "at": timezone.now().isoformat(), "by": unposted_by_id or h.created_by_id},
         )
-        h.save(update_fields=["status", "ap_settlement", "workflow_payload", "updated_at"])
+        h.save(update_fields=["status", "approved_at", "approved_by", "ap_settlement", "workflow_payload", "updated_at"])
         ReceiptVoucherService._sync_runtime_tcs_computation(h)
-        return ReceiptVoucherResult(h, "Unposted with reversal entry.")
+        return ReceiptVoucherResult(h, "Unposted with reversal entry. Voucher reopened for correction and reposting.")
 
     @staticmethod
     @transaction.atomic

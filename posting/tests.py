@@ -13,10 +13,12 @@ from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
-from entity.models import Entity, EntityFinancialYear, EntityOwnershipV2, EntityTaxProfile, Godown, GstRegistrationType, SubEntity, UnitType
+from entity.models import Entity, EntityBankAccountV2, EntityFinancialYear, EntityOwnershipV2, EntityTaxProfile, Godown, GstRegistrationType, SubEntity, UnitType
 from financial.models import Ledger, account, accountHead, accounttype
 from posting.models import Entry, EntryStatus, EntityStaticAccountMap, JournalLine, PostingBatch, StaticAccount, StaticAccountGroup
+from posting.adapters.account_opening import AccountOpeningPostingAdapter
 from posting.adapters.year_opening import YearOpeningPostingAdapter
+from posting.common.static_accounts import StaticAccountCodes
 from posting.static_account_service import StaticAccountMappingService
 from posting.services.balances import ledger_balance_map
 from posting.common.location_resolver import resolve_posting_location_id
@@ -185,6 +187,98 @@ class PostingServicePostTests(PostingServiceBaseTest):
                 voucher_no="JV-70", voucher_date=TODAY, posting_date=TODAY,
                 jl_inputs=jl, use_advisory_lock=False,
             )
+
+
+class AccountOpeningPostingAdapterTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user(
+            username="opening-adapter-user",
+            email="opening-adapter-user@example.com",
+            password="pass@12345",
+        )
+        cls.entity = Entity.objects.create(entityname="Opening Adapter Co")
+        cls.fin_year = EntityFinancialYear.objects.create(
+            entity=cls.entity,
+            desc="FY 2026-27",
+            year_code="2026-27",
+            finstartyear=timezone.make_aware(datetime(2026, 4, 1, 0, 0, 0)),
+            finendyear=timezone.make_aware(datetime(2027, 3, 31, 0, 0, 0)),
+            isactive=True,
+        )
+        cls.offset_static = StaticAccount.objects.create(
+            code=StaticAccountCodes.OPENING_BALANCE_OFFSET,
+            name="Opening Balance Offset",
+            group=StaticAccountGroup.EQUITY,
+            is_active=True,
+        )
+        cls.offset_head = accountHead.objects.create(
+            entity=cls.entity,
+            name="Opening Offset Head",
+            code=9801,
+            drcreffect="Credit",
+            createdby=cls.user,
+        )
+        cls.offset_account = account.objects.create(
+            entity=cls.entity,
+            accountname="Opening Offset Account",
+            createdby=cls.user,
+        )
+        cls.offset_ledger = Ledger.objects.create(
+            entity=cls.entity,
+            ledger_code=9801,
+            name="Opening Offset Ledger",
+            accounthead=cls.offset_head,
+            createdby=cls.user,
+        )
+        cls.offset_account.ledger = cls.offset_ledger
+        cls.offset_account.save(update_fields=["ledger"])
+        EntityStaticAccountMap.objects.create(
+            entity=cls.entity,
+            static_account=cls.offset_static,
+            account=cls.offset_account,
+            ledger=cls.offset_ledger,
+            is_active=True,
+            createdby=cls.user,
+        )
+        cls.party_head = accountHead.objects.create(
+            entity=cls.entity,
+            name="Customer Head",
+            code=9802,
+            drcreffect="Debit",
+            createdby=cls.user,
+        )
+        cls.target_account = account.objects.create(
+            entity=cls.entity,
+            accountname="Customer A",
+            createdby=cls.user,
+        )
+        cls.target_ledger = Ledger.objects.create(
+            entity=cls.entity,
+            ledger_code=9802,
+            name="Customer A Ledger",
+            accounthead=cls.party_head,
+            openingbdr=Decimal("125.00"),
+            createdby=cls.user,
+        )
+        cls.target_account.ledger = cls.target_ledger
+        cls.target_account.save(update_fields=["ledger"])
+
+    def test_build_post_payload_creates_balanced_opening_pair(self):
+        adapter = AccountOpeningPostingAdapter(entity_id=self.entity.id)
+
+        payload = adapter.build_post_payload(self.target_account)
+
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload.entityfin_id, self.fin_year.id)
+        self.assertEqual(payload.posting_date, date(2026, 4, 1))
+        self.assertEqual(len(payload.jl_inputs), 2)
+        self.assertTrue(payload.jl_inputs[0].drcr)
+        self.assertFalse(payload.jl_inputs[1].drcr)
+        self.assertEqual(payload.jl_inputs[0].account_id, self.target_account.id)
+        self.assertEqual(payload.jl_inputs[1].account_id, self.offset_account.id)
+        self.assertEqual(payload.jl_inputs[0].amount, Decimal("125.00"))
+        self.assertEqual(payload.jl_inputs[1].amount, Decimal("125.00"))
 
 
 class RePostingTests(PostingServiceBaseTest):
@@ -652,7 +746,6 @@ class PostingLocationResolverTests(TestCase):
         cls.entity = Entity.objects.create(
             entityname="Location Co",
             legalname="Location Co Pvt Ltd",
-            unitType=cls.unit_type,
             GstRegitrationType=cls.gst_type,
             createdby=cls.user,
         )
@@ -660,7 +753,6 @@ class PostingLocationResolverTests(TestCase):
         cls.other_entity = Entity.objects.create(
             entityname="Other Location Co",
             legalname="Other Location Co Pvt Ltd",
-            unitType=cls.unit_type,
             GstRegitrationType=cls.gst_type,
             createdby=cls.user,
         )
@@ -752,6 +844,34 @@ class StaticAccountSettingsPermissionTests(APITestCase):
                 "is_active": True,
             },
         )
+        self.bank_head = accountHead.objects.create(
+            entity=self.entity,
+            name="Bank Head",
+            code=1100,
+            drcreffect="Debit",
+        )
+        self.bank_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=5100,
+            name="HDFC Bank Ledger",
+            accounthead=self.bank_head,
+            is_party=True,
+            createdby=self.user,
+        )
+        self.bank_account_profile = account.objects.create(
+            entity=self.entity,
+            accountname="HDFC Bank Account",
+            ledger=self.bank_ledger,
+            createdby=self.user,
+        )
+        self.entity_bank_account = EntityBankAccountV2.objects.create(
+            entity=self.entity,
+            bank_name="HDFC",
+            branch="Main",
+            account_number="123456789012",
+            ifsc_code="HDFC0001234",
+            createdby=self.user,
+        )
 
     def _grant(self, code: str):
         action = code.rsplit(".", 1)[-1]
@@ -787,3 +907,21 @@ class StaticAccountSettingsPermissionTests(APITestCase):
         allowed = self.client.get(url)
         self.assertEqual(allowed.status_code, 200)
         self.assertIn("summary", allowed.json())
+        self.assertIn("eligible_bank_ledgers", allowed.json())
+        self.assertIn("bank_account_mappings", allowed.json())
+
+    def test_bank_account_mapping_update_persists_explicit_ledger(self):
+        self._grant("posting.static_account_settings.update")
+        url = reverse(
+            "posting:bank-account-mapping-detail",
+            kwargs={"entity_id": self.entity.id, "bank_account_id": self.entity_bank_account.id},
+        )
+
+        response = self.client.put(url, {"ledger_id": self.bank_ledger.id}, format="json")
+
+        self.assertEqual(response.status_code, 200, response.json())
+        self.entity_bank_account.refresh_from_db()
+        self.assertEqual(self.entity_bank_account.book_ledger_id, self.bank_ledger.id)
+        self.assertEqual(response.json()["ledger_id"], self.bank_ledger.id)
+        self.assertEqual(response.json()["account_id"], self.bank_account_profile.id)
+        self.assertEqual(response.json()["mapping_source"], "explicit")

@@ -242,13 +242,16 @@ class ReceiptVoucherDetailFormMetaAPIView(ReceiptMetaBaseAPIView):
         if not header:
             raise serializers.ValidationError({"voucher": "Receipt voucher not found in selected scope."})
         payload = self._voucher_form_meta(entity_id, entityfinid_id, subentity_id)
+        voucher_data = ReceiptVoucherHeaderSerializer(
+            header,
+            context={"request": request, "skip_preview_numbers": True},
+        ).data
         payload.update(
             {
                 "voucher_id": voucher_id,
-                "voucher": ReceiptVoucherHeaderSerializer(
-                    header,
-                    context={"request": request, "skip_preview_numbers": True},
-                ).data,
+                "voucher": voucher_data,
+                "navigation": voucher_data.get("navigation"),
+                "number_navigation": voucher_data.get("number_navigation"),
                 "action_flags": self._action_flags(header),
                 "received_in": self._account_block(header, "received_in"),
                 "received_from": self._account_block(header, "received_from"),
@@ -379,4 +382,3 @@ class ReceiptSettingsMetaAPIView(ReceiptMetaBaseAPIView):
                 },
             }
         )
-

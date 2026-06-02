@@ -251,10 +251,29 @@ def _parse_collapsed_sections(request):
     return {item.strip().lower() for item in raw_value.split(",") if item.strip()}
 
 
+def _scope_includes_separate_opening(scope) -> bool:
+    scope_mode = str(scope.get("scope_mode") or "").strip().lower()
+    if scope_mode == "custom":
+        return bool(scope.get("include_opening", True))
+    if scope_mode in {"financial_year", "month", "quarter", "year", "as_of"}:
+        return False
+    return bool(scope.get("from_date") and scope.get("to_date") and not scope.get("as_of_date") and scope.get("include_opening", True))
+
+
+def _trial_balance_scope_includes_opening(scope) -> bool:
+    scope_mode = str(scope.get("scope_mode") or "").strip().lower()
+    if scope_mode == "custom":
+        return True
+    if scope_mode in {"financial_year", "month", "quarter", "year", "as_of"}:
+        return False
+    return bool(scope.get("from_date") and scope.get("to_date") and not scope.get("as_of_date"))
+
+
 def _trial_balance_export_table(report):
     rows = report.get("rows") or []
     periods = report.get("periods") or []
     flattened = _trial_balance_flatten_rows(rows)
+    include_opening = bool(((report.get("reporting") or {}).get("include_opening")))
 
     headers = [
         "Level",
@@ -263,20 +282,28 @@ def _trial_balance_export_table(report):
         "Name",
         "Account Head",
         "Account Type",
-        "Opening",
         "Debit",
         "Credit",
         "Closing",
         "Abnormal",
     ]
+    if include_opening:
+        headers.insert(6, "Opening")
     for period in periods:
         label = period.get("period_label") or period.get("label") or period.get("name") or period.get("title") or period.get("key")
-        headers.extend([
-            f"{label} Opening",
-            f"{label} Debit",
-            f"{label} Credit",
-            f"{label} Closing",
-        ])
+        if include_opening:
+            headers.extend([
+                f"{label} Opening",
+                f"{label} Debit",
+                f"{label} Credit",
+                f"{label} Closing",
+            ])
+        else:
+            headers.extend([
+                f"{label} Debit",
+                f"{label} Credit",
+                f"{label} Closing",
+            ])
 
     table_rows = []
     for row, depth in flattened:
@@ -290,21 +317,29 @@ def _trial_balance_export_table(report):
             prefix,
             row.get("accounthead_name") or "",
             row.get("accounttype_name") or "",
-            _format_balance_amount(row.get("opening", "0.00")),
             row.get("debit", "0.00"),
             row.get("credit", "0.00"),
             _format_balance_amount(row.get("closing", "0.00")),
             "Yes" if row.get("is_abnormal_balance") else "No",
         ]
+        if include_opening:
+            values.insert(6, _format_balance_amount(row.get("opening", "0.00")))
         for period in periods:
             key = str(period.get("period_key") or period.get("key") or period.get("code") or period.get("label") or period.get("name") or "")
             period_row = row_periods.get(key) or {}
-            values.extend([
-                _format_balance_amount(period_row.get("opening", "0.00")),
-                period_row.get("debit", "0.00"),
-                period_row.get("credit", "0.00"),
-                _format_balance_amount(period_row.get("closing", "0.00")),
-            ])
+            if include_opening:
+                values.extend([
+                    _format_balance_amount(period_row.get("opening", "0.00")),
+                    period_row.get("debit", "0.00"),
+                    period_row.get("credit", "0.00"),
+                    _format_balance_amount(period_row.get("closing", "0.00")),
+                ])
+            else:
+                values.extend([
+                    period_row.get("debit", "0.00"),
+                    period_row.get("credit", "0.00"),
+                    _format_balance_amount(period_row.get("closing", "0.00")),
+                ])
         table_rows.append(values)
 
     totals = report.get("totals") or {}
@@ -315,14 +350,15 @@ def _trial_balance_export_table(report):
         "Totals",
         "",
         "",
-        totals.get("opening", "0.00"),
         totals.get("debit", "0.00"),
         totals.get("credit", "0.00"),
         totals.get("closing", "0.00"),
         "",
     ]
+    if include_opening:
+        total_row.insert(6, totals.get("opening", "0.00"))
     for _period in periods:
-        total_row.extend(["", "", "", ""])
+        total_row.extend(["", "", "", ""] if include_opening else ["", "", ""])
     table_rows.append(total_row)
 
     return headers, table_rows
@@ -745,6 +781,9 @@ def _ledger_summary_export_table(report, *, settings=None, expanded_keys=None):
     visible_columns = get_visible_ledger_summary_columns(settings or {})
     if not visible_columns:
         visible_columns = ["account_name", "opening", "debit", "credit", "balance"]
+    include_opening = bool(((report.get("reporting") or {}).get("include_opening")))
+    if not include_opening:
+        visible_columns = [key for key in visible_columns if key not in {"opening", "ob_dc"}]
     labels = {
         "account_head": "Account Head",
         "account_name": "Account Name",
@@ -2254,7 +2293,7 @@ class TrialBalanceAPIView(_BaseFinancialReportAPIView):
             page_size=scope.get("page_size", REPORT_DEFAULTS["default_page_size"]),
             period_by=scope.get("period_by"),
             view_type=scope.get("view_type"),
-            include_opening=scope.get("include_opening", REPORT_DEFAULTS["show_opening_balance_default"]),
+            include_opening=_trial_balance_scope_includes_opening(scope),
             include_movement=scope.get("include_movement", True),
             include_closing=scope.get("include_closing", True),
         )
@@ -2300,7 +2339,7 @@ class _BaseTrialBalanceExportAPIView(_BaseFinancialReportAPIView):
             page_size=100000,
             period_by=scope.get("period_by"),
             view_type=scope.get("view_type"),
-            include_opening=scope.get("include_opening", REPORT_DEFAULTS["show_opening_balance_default"]),
+            include_opening=_trial_balance_scope_includes_opening(scope),
             include_movement=scope.get("include_movement", True),
             include_closing=scope.get("include_closing", True),
         )
@@ -2453,6 +2492,7 @@ class LedgerBookAPIView(_BaseFinancialReportAPIView):
             subentity_id=scope.get("subentity"),
             from_date=scope.get("from_date"),
             to_date=scope.get("to_date"),
+            scope_mode=scope.get("scope_mode"),
             search=scope.get("search"),
             voucher_types=[scope.get("voucher_type")] if scope.get("voucher_type") else None,
             sort_by=scope.get("sort_by"),
@@ -2497,6 +2537,7 @@ class _BaseLedgerBookExportAPIView(_BaseFinancialReportAPIView):
             subentity_id=scope.get("subentity"),
             from_date=scope.get("from_date"),
             to_date=scope.get("to_date"),
+            scope_mode=scope.get("scope_mode"),
             search=scope.get("search"),
             voucher_types=[scope.get("voucher_type")] if scope.get("voucher_type") else None,
             sort_by=scope.get("sort_by"),
@@ -2693,6 +2734,7 @@ class LedgerSummaryAPIView(_BaseFinancialReportAPIView):
             as_of_date=scope.get("as_of_date"),
             group_by=scope.get("account_group") or scope.get("group_by") or report_defaults.get("default_group_by"),
             include_zero_balance=scope.get("include_zero_balances", report_defaults.get("include_zero_balances", False)),
+            include_opening=_scope_includes_separate_opening(scope),
             posted_only=scope.get("posted_only", report_defaults.get("posted_only", True)),
             search=scope.get("search"),
             sort_by=scope.get("sort_by"),
@@ -2734,6 +2776,7 @@ class _BaseLedgerSummaryExportAPIView(_BaseFinancialReportAPIView):
             as_of_date=scope.get("as_of_date"),
             group_by=scope.get("account_group") or scope.get("group_by") or report_defaults.get("default_group_by"),
             include_zero_balance=scope.get("include_zero_balances", report_defaults.get("include_zero_balances", False)),
+            include_opening=_scope_includes_separate_opening(scope),
             posted_only=scope.get("posted_only", report_defaults.get("posted_only", True)),
             search=scope.get("search"),
             sort_by=scope.get("sort_by"),

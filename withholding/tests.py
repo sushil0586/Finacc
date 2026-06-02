@@ -5,10 +5,14 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 import zipfile
 
+from django.db.models import Q
 from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase
 from rest_framework.test import APIRequestFactory, force_authenticate
 
+from entity.models import Entity
+from financial.models import AccountComplianceProfile, account
+from financial.services import create_account_with_synced_ledger
 from payments.models.payment_core import PaymentVoucherHeader
 from withholding.models import (
     EntityPartyTaxProfile,
@@ -22,18 +26,20 @@ from withholding.models import (
 from withholding.seed_withholding_service import WithholdingSeedService
 from withholding.serializers import WithholdingSectionSerializer
 from withholding.serializers import (
+    EntityPartyTaxProfileSerializer,
     EntityWithholdingConfigSerializer,
     EntityWithholdingSectionPostingMapSerializer,
     TcsCollectionSerializer,
     TcsDepositSerializer,
     TcsQuarterlyReturnSerializer,
 )
-from withholding.services import WithholdingResolver, compute_withholding_preview
+from withholding.services import WithholdingResolver, compute_withholding_preview, _cumulative_206c1h_base_before_doc
 from withholding.threshold_service import FyPartyThresholdService
 from withholding.views import (
     TcsReportFilingPackExportAPIView,
     TcsReportFilingPackAPIView,
     TcsReportLedgerAPIView,
+    TcsReportLedgerDetailAPIView,
     TcsReturn27EqListCreateAPIView,
     TcsReturn27EqRetrieveUpdateDestroyAPIView,
     TcsDepositConfirmAPIView,
@@ -52,7 +58,29 @@ from withholding.views import (
     _tcs_deposit_status_counts_as_deposited,
     _tcs_return_status_requires_clean_snapshot,
     _tcs_runtime_quality_flags,
+    _invoice_posting_state,
+    _tcs_source_route_for_document,
 )
+
+
+class _ChainableListQuerySet(list):
+    def select_related(self, *args, **kwargs):
+        return self
+
+    def prefetch_related(self, *args, **kwargs):
+        return self
+
+    def filter(self, *args, **kwargs):
+        return self
+
+    def exclude(self, *args, **kwargs):
+        return self
+
+    def order_by(self, *args, **kwargs):
+        return self
+
+    def only(self, *args, **kwargs):
+        return self
 
 
 class WithholdingResolverRateTests(SimpleTestCase):
@@ -115,6 +143,274 @@ class WithholdingResolverRateTests(SimpleTestCase):
             "quarter_boundary_violation": False,
             "reversal_case": False,
         })
+
+    @patch("withholding.views.SalesInvoiceLine.objects.filter")
+    def test_tcs_source_route_uses_service_invoice_route_when_service_lines_exist(self, mocked_filter):
+        mocked_filter.return_value.exists.return_value = True
+
+        route = _tcs_source_route_for_document("sales", "invoice", 404)
+
+        self.assertEqual(route, "/saleserviceinvoice")
+
+    @patch("withholding.views.PurchaseInvoiceLine.objects.filter")
+    def test_tcs_source_route_uses_service_purchase_route_when_service_lines_exist(self, mocked_filter):
+        mocked_filter.return_value.exists.return_value = True
+
+        route = _tcs_source_route_for_document("purchase", "invoice", 505)
+
+        self.assertEqual(route, "/purchaseserviceinvoice")
+
+    def test_tcs_filing_pack_exception_flags_mark_partial_allocation_and_mismatch(self):
+        flags = _tcs_filing_pack_exception_flags(
+            comp_tcs=Decimal("100.00"),
+            comp_collected_total=Decimal("100.00"),
+            comp_alloc_total=Decimal("60.00"),
+            runtime_flags={
+                "missing_pan": False,
+                "missing_tax_id": False,
+                "residency_mismatch": False,
+                "missing_section": False,
+            },
+            invalid_pan_format=False,
+            quarter_boundary_violation=False,
+            is_reversal=False,
+        )
+
+        self.assertFalse(flags["not_collected"])
+        self.assertFalse(flags["not_deposited"])
+        self.assertTrue(flags["partially_allocated"])
+        self.assertTrue(flags["deposit_mismatch"])
+        self.assertFalse(flags["reversal_case"])
+
+    def test_tcs_filing_pack_exception_flags_mark_not_deposited_when_no_allocation_exists(self):
+        flags = _tcs_filing_pack_exception_flags(
+            comp_tcs=Decimal("100.00"),
+            comp_collected_total=Decimal("100.00"),
+            comp_alloc_total=Decimal("0.00"),
+            runtime_flags={
+                "missing_pan": False,
+                "missing_tax_id": False,
+                "residency_mismatch": False,
+                "missing_section": False,
+            },
+            invalid_pan_format=False,
+            quarter_boundary_violation=False,
+            is_reversal=False,
+        )
+
+        self.assertFalse(flags["not_collected"])
+        self.assertTrue(flags["not_deposited"])
+        self.assertFalse(flags["partially_allocated"])
+        self.assertTrue(flags["deposit_mismatch"])
+
+
+class WithholdingPostingStateTests(SimpleTestCase):
+    def test_invoice_posting_state_accepts_numeric_posted_status(self):
+        is_posted, posting_state, posting_state_label = _invoice_posting_state(3, posted_value=3)
+
+        self.assertTrue(is_posted)
+        self.assertEqual(posting_state, "posted")
+        self.assertEqual(posting_state_label, "Posted")
+
+    def test_invoice_posting_state_accepts_text_posted_status(self):
+        is_posted, posting_state, posting_state_label = _invoice_posting_state("posted", posted_value=3)
+
+        self.assertTrue(is_posted)
+        self.assertEqual(posting_state, "posted")
+        self.assertEqual(posting_state_label, "Posted")
+
+
+class WithholdingTcsWorkspaceThresholdStateTests(SimpleTestCase):
+    @patch("withholding.views._exclude_cancelled_documents", side_effect=lambda qs: qs)
+    @patch("withholding.views._require_tcs_scope_permission")
+    @patch("withholding.views.TcsDeposit.objects.filter")
+    @patch("withholding.views.EntityPartyTaxProfile.objects.filter")
+    @patch("withholding.views.PurchaseInvoiceHeader.objects.filter")
+    @patch("withholding.views.SalesInvoiceHeader.objects.filter")
+    @patch("withholding.views.SalesInvoiceLine.objects.filter")
+    @patch("withholding.views.TcsComputation.objects.select_related")
+    @patch("withholding.views.account_pan")
+    def test_workspace_exposes_threshold_states_and_counts(
+        self,
+        mocked_account_pan,
+        mocked_select_related,
+        mocked_sales_line_filter,
+        mocked_sales_filter,
+        mocked_purchase_filter,
+        mocked_profile_filter,
+        mocked_deposit_filter,
+        mocked_scope_permission,
+        mocked_exclude_cancelled,
+    ):
+        mocked_account_pan.side_effect = lambda party: getattr(party, "pan", "")
+        mocked_sales_line_filter.return_value.exists.return_value = False
+        mocked_sales_filter.return_value = _ChainableListQuerySet()
+        mocked_purchase_filter.return_value = _ChainableListQuerySet()
+        mocked_profile_filter.return_value = _ChainableListQuerySet()
+        mocked_deposit_filter.return_value = _ChainableListQuerySet()
+
+        threshold_section = SimpleNamespace(
+            id=11,
+            section_code="206C(1H)",
+            threshold_default=Decimal("5000000.00"),
+            applicability_json={"threshold_mode": "cumulative"},
+        )
+        regular_section = SimpleNamespace(
+            id=12,
+            section_code="206C(1)",
+            threshold_default=Decimal("0.00"),
+            applicability_json={},
+        )
+        party = SimpleNamespace(accountname="Threshold Buyer", legalname="Threshold Buyer", pan="ABCDE1234F")
+
+        def make_comp(comp_id, *, section, reason_code, amount, document_type="invoice", trigger_basis="INVOICE"):
+            return SimpleNamespace(
+                id=comp_id,
+                module_name="sales",
+                document_type=document_type,
+                document_id=comp_id + 1000,
+                document_no=f"SINV-{comp_id}",
+                party_account_id=77,
+                party_account=party,
+                section_id=getattr(section, "id", None),
+                section=section,
+                tcs_base_amount=Decimal("100000.00"),
+                rate=Decimal("0.1000"),
+                tcs_amount=Decimal(amount),
+                doc_date=date(2026, 4, 5),
+                fiscal_year="2026-27",
+                quarter="Q1",
+                status="COMPUTED",
+                trigger_basis=trigger_basis,
+                computation_json={"reason_code": reason_code} if reason_code else {},
+                rule_snapshot_json={},
+                collections=SimpleNamespace(all=lambda: []),
+            )
+
+        computations = _ChainableListQuerySet(
+            [
+                make_comp(1, section=threshold_section, reason_code="BELOW_THRESHOLD_CUMULATIVE", amount="0.00"),
+                make_comp(2, section=threshold_section, reason_code="THRESHOLD_CROSSED_CUMULATIVE", amount="15.00"),
+                make_comp(3, section=threshold_section, reason_code="THRESHOLD_ALREADY_CROSSED", amount="25.00"),
+                make_comp(4, section=regular_section, reason_code="", amount="10.00", trigger_basis="RECEIPT"),
+                make_comp(5, section=regular_section, reason_code="", amount="5.00", document_type="credit_note"),
+            ]
+        )
+        mocked_select_related.return_value = computations
+
+        request = APIRequestFactory().get("/tcs/workspace/?entity_id=1&fy=2026-27&quarter=Q1")
+        force_authenticate(request, user=SimpleNamespace(is_authenticated=True))
+        response = TcsWorkspaceTransactionsAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        rows = response.data["rows"]
+        summary = response.data["summary"]
+
+        by_voucher = {row["voucher_no"]: row for row in rows}
+        self.assertEqual(by_voucher["SINV-1"]["threshold_state"], "not_crossed")
+        self.assertEqual(by_voucher["SINV-2"]["threshold_state"], "crossed_in_current_txn")
+        self.assertEqual(by_voucher["SINV-3"]["threshold_state"], "already_crossed")
+        self.assertEqual(by_voucher["SINV-4"]["threshold_state"], "not_applicable")
+        self.assertEqual(by_voucher["SINV-2"]["primary_reason_code"], "THRESHOLD_CROSSED_CUMULATIVE")
+        self.assertEqual(by_voucher["SINV-2"]["threshold_mode"], "cumulative")
+        self.assertEqual(by_voucher["SINV-2"]["threshold_default"], Decimal("5000000.00"))
+        self.assertEqual(by_voucher["SINV-4"]["doc_impact_type"], "Advance Receipt")
+        self.assertEqual(by_voucher["SINV-4"]["trigger_basis"], "Receipt")
+        self.assertEqual(by_voucher["SINV-5"]["doc_impact_type"], "Credit Note")
+
+        self.assertEqual(summary["threshold_counts"]["not_crossed"], 1)
+        self.assertEqual(summary["threshold_counts"]["crossed_in_current_txn"], 1)
+        self.assertEqual(summary["threshold_counts"]["already_crossed"], 1)
+        self.assertEqual(summary["threshold_counts"]["not_applicable"], 2)
+        self.assertEqual(summary["impact_counts"]["invoice"], 3)
+        self.assertEqual(summary["impact_counts"]["advance_receipt"], 1)
+        self.assertEqual(summary["impact_counts"]["credit_note"], 1)
+        self.assertEqual(summary["pending_row_counts"]["pending_collection"], 4)
+        self.assertEqual(summary["pending_row_counts"]["pending_deposit"], 0)
+
+
+class WithholdingProfileSerializerTests(TestCase):
+    def setUp(self):
+        user_model = get_user_model()
+        self.user = user_model.objects.create_user(
+            email="withholding-profile@example.com",
+            username="withholding-profile@example.com",
+            password="secret123",
+            email_verified=True,
+        )
+        self.entity = Entity.objects.create(entityname="Withholding Entity", createdby=self.user)
+        self.party_account = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "accountname": "Vendor Serializer",
+                "createdby": self.user,
+            }
+        )
+
+    def _make_section(self, **overrides) -> WithholdingSection:
+        data = {
+            "tax_type": WithholdingTaxType.TDS,
+            "section_code": "194C",
+            "description": "Contractor",
+            "rate_default": Decimal("1.0000"),
+            "requires_pan": True,
+            "higher_rate_no_pan": Decimal("20.0000"),
+            "higher_rate_206ab": Decimal("5.0000"),
+            "effective_from": date(2025, 4, 1),
+            "is_active": True,
+        }
+        data.update(overrides)
+        return WithholdingSection(**data)
+
+    def _make_profile(self, **overrides) -> PartyTaxProfile:
+        data = {
+            "party_account_id": 1,
+            "is_pan_available": True,
+            "is_exempt_withholding": False,
+            "is_specified_person_206ab": False,
+            "lower_deduction_rate": None,
+            "lower_deduction_valid_from": None,
+            "lower_deduction_valid_to": None,
+            "specified_person_valid_from": None,
+            "specified_person_valid_to": None,
+        }
+        data.update(overrides)
+        return PartyTaxProfile(**data)
+
+    def test_entity_party_tax_profile_serializer_reads_pan_from_account_compliance(self):
+        AccountComplianceProfile.objects.update_or_create(
+            account=self.party_account,
+            defaults={"entity": self.entity, "createdby": self.user, "pan": "ABCDE1234F"},
+        )
+        profile = EntityPartyTaxProfile.objects.create(
+            entity=self.entity,
+            party_account=self.party_account,
+            residency_status="non_resident",
+            tax_identifier="TIN-77",
+            is_active=True,
+        )
+
+        data = EntityPartyTaxProfileSerializer(profile).data
+
+        self.assertEqual(data["pan"], "ABCDE1234F")
+        self.assertTrue(data["is_pan_available"])
+
+    def test_entity_party_tax_profile_serializer_syncs_pan_to_account_compliance(self):
+        serializer = EntityPartyTaxProfileSerializer(
+            data={
+                "entity": self.entity.id,
+                "party_account": self.party_account.id,
+                "pan": "abcde1234f",
+                "residency_status": "resident",
+                "is_active": True,
+            }
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        profile = serializer.save()
+
+        compliance = AccountComplianceProfile.objects.get(account=self.party_account)
+        self.assertEqual(compliance.pan, "ABCDE1234F")
+        self.assertEqual(profile.party_account_id, self.party_account.id)
 
     def test_resolve_rate_applies_no_pan_higher_rate(self):
         section = self._make_section()
@@ -190,6 +486,27 @@ class WithholdingResolverRateTests(SimpleTestCase):
         self.assertFalse(result.no_pan_applied)
         self.assertFalse(result.sec_206ab_applied)
         self.assertEqual(result.reason_code, "LOWER_CERT")
+
+    def test_resolve_rate_ignores_expired_lower_cert_and_falls_back_to_default_rate(self):
+        section = self._make_section()
+        profile = self._make_profile(
+            is_pan_available=True,
+            lower_deduction_rate=Decimal("0.1000"),
+            lower_deduction_valid_from=date(2026, 1, 1),
+            lower_deduction_valid_to=date(2026, 3, 31),
+        )
+
+        result = WithholdingResolver.resolve_rate(
+            section=section,
+            party_profile=profile,
+            doc_date=date(2026, 6, 1),
+        )
+
+        self.assertEqual(result.rate, Decimal("1.0000"))
+        self.assertFalse(result.lower_rate_applied)
+        self.assertFalse(result.no_pan_applied)
+        self.assertFalse(result.sec_206ab_applied)
+        self.assertIsNone(result.reason_code)
 
 
 class WithholdingResolverProfileFallbackTests(SimpleTestCase):
@@ -392,6 +709,22 @@ class WithholdingReadinessFlagTests(SimpleTestCase):
         )
         self.assertEqual(errors, [])
 
+    def test_filing_readiness_errors_ignores_negative_pending_totals_from_reversal_adjustments(self):
+        errors = _filing_readiness_errors(
+            {
+                "counts": {
+                    "missing_pan": 0,
+                    "missing_section": 0,
+                    "not_collected": 0,
+                    "not_deposited": 0,
+                    "partially_allocated": 0,
+                    "deposit_mismatch": 0,
+                },
+                "totals": {"pending_collection": Decimal("-5.00"), "pending_deposit": Decimal("0.00")},
+            }
+        )
+        self.assertEqual(errors, [])
+
     @patch("withholding.services.WithholdingResolver.resolve_party_residency", return_value="resident")
     def test_validate_195_blocks_when_not_non_resident(self, _mock_residency):
         section = self._section_195()
@@ -550,12 +883,13 @@ class WithholdingTcsReturnLifecycleTests(SimpleTestCase):
 
     def test_serializer_blocks_editing_filed_return(self):
         instance = SimpleNamespace(
+            pk=1,
             status="FILED",
             fy="2026-27",
             quarter="Q1",
             form_name="27EQ",
             return_type="ORIGINAL",
-            entity=SimpleNamespace(id=1),
+            entity=1,
             ack_no="ACK-1",
             filed_on=date(2026, 5, 1),
         )
@@ -565,6 +899,31 @@ class WithholdingTcsReturnLifecycleTests(SimpleTestCase):
             serializer.validate({"status": "VALIDATED"})
 
         self.assertIn("Filed returns cannot be edited", str(exc.exception))
+
+    def test_serializer_allows_filed_return_evidence_metadata_update(self):
+        instance = SimpleNamespace(
+            pk=1,
+            status="FILED",
+            fy="2026-27",
+            quarter="Q1",
+            form_name="27EQ",
+            return_type="ORIGINAL",
+            entity=1,
+            ack_no="ACK-1",
+            filed_on=date(2026, 5, 1),
+            json_snapshot={"counts": {"missing_pan": 0}},
+            file_path="",
+            notes="",
+            original_return=None,
+        )
+        serializer = TcsQuarterlyReturnSerializer(instance=instance)
+
+        with patch("withholding.serializers.TcsQuarterlyReturn.objects.filter") as mocked_filter:
+            mocked_filter.return_value.exclude.return_value.exists.return_value = False
+            data = serializer.validate({"file_path": "returns/27eq-evidence.json", "notes": "Evidence linked."})
+
+        self.assertEqual(data["file_path"], "returns/27eq-evidence.json")
+        self.assertEqual(data["notes"], "Evidence linked.")
 
 
 class WithholdingTcsAllocationWorkflowTests(SimpleTestCase):
@@ -700,6 +1059,73 @@ class WithholdingTcsAllocationWorkflowTests(SimpleTestCase):
         self.assertIn("Filed returns cannot be deleted", str(exc.exception))
         instance.delete.assert_not_called()
 
+    @patch("withholding.views._require_tcs_scope_permission")
+    @patch("withholding.views._build_tcs_27eq_snapshot")
+    def test_create_correction_return_allows_negative_adjustment_snapshot_when_original_is_filed(
+        self,
+        mocked_snapshot,
+        mocked_scope_permission,
+    ):
+        original = SimpleNamespace(
+            id=91,
+            entity_id=1,
+            fy="2026-27",
+            quarter="Q1",
+            return_type="ORIGINAL",
+            status="FILED",
+        )
+        mocked_snapshot.return_value = {
+            "counts": {
+                "missing_pan": 0,
+                "missing_section": 0,
+                "not_collected": 0,
+                "not_deposited": 0,
+                "partially_allocated": 0,
+                "deposit_mismatch": 0,
+            },
+            "totals": {"pending_collection": Decimal("-5.00"), "pending_deposit": Decimal("0.00")},
+        }
+        serializer = MagicMock()
+        serializer.validated_data = {
+            "entity": SimpleNamespace(id=1),
+            "fy": "2026-27",
+            "quarter": "Q1",
+            "return_type": "CORRECTION",
+            "original_return": original,
+            "status": "FILED",
+            "json_snapshot": None,
+        }
+        view = TcsReturn27EqListCreateAPIView()
+        view.request = APIRequestFactory().post("/tcs/returns/27eq/", {}, format="json")
+        view.request.user = SimpleNamespace(is_authenticated=True)
+
+        view.perform_create(serializer)
+
+        serializer.save.assert_called_once_with(
+            form_name="27EQ",
+            json_snapshot=mocked_snapshot.return_value,
+        )
+        mocked_scope_permission.assert_called_once()
+
+    def test_update_filed_return_allows_metadata_only_patch(self):
+        serializer = MagicMock()
+        serializer.instance = SimpleNamespace(
+            status="FILED",
+            entity=SimpleNamespace(id=1),
+            fy="2026-27",
+            quarter="Q1",
+        )
+        serializer.validated_data = {
+            "ack_no": "",
+            "file_path": "returns/27eq-evidence.json",
+            "notes": "Evidence linked after filing.",
+        }
+        view = TcsReturn27EqRetrieveUpdateDestroyAPIView()
+
+        view.perform_update(serializer)
+
+        serializer.save.assert_called_once_with(form_name="27EQ")
+
 
 class WithholdingTcsWorkflowFieldLockdownTests(SimpleTestCase):
     def test_collection_serializer_rejects_direct_status_write(self):
@@ -718,6 +1144,34 @@ class WithholdingTcsWorkflowFieldLockdownTests(SimpleTestCase):
 
         self.assertFalse(serializer.is_valid())
         self.assertIn("status", serializer.errors)
+
+    def test_collection_serializer_rejects_collected_amount_above_received_amount(self):
+        computation = SimpleNamespace(
+            status="OPEN",
+            tcs_amount=Decimal("50.00"),
+            doc_date=date(2026, 4, 1),
+        )
+        serializer = TcsCollectionSerializer(
+            instance=SimpleNamespace(
+                computation=computation,
+                collection_date=date(2026, 4, 10),
+                amount_received=Decimal("40.00"),
+                tcs_collected_amount=Decimal("10.00"),
+                status="OPEN",
+                pk=11,
+            ),
+            data={
+                "amount_received": "40.00",
+                "tcs_collected_amount": "50.00",
+            },
+            partial=True,
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertEqual(
+            serializer.errors["tcs_collected_amount"][0],
+            "TCS collected amount cannot exceed amount received.",
+        )
 
     def test_deposit_serializer_rejects_direct_status_and_depositor_writes(self):
         instance = SimpleNamespace(
@@ -739,7 +1193,7 @@ class WithholdingTcsWorkflowFieldLockdownTests(SimpleTestCase):
         self.assertIn("status", serializer.errors)
         self.assertIn("deposited_by", serializer.errors)
 
-    def test_return_serializer_rejects_direct_workflow_field_writes(self):
+    def test_return_serializer_accepts_workflow_fields_for_direct_return_save(self):
         instance = SimpleNamespace(
             status="DRAFT",
             fy="2026-27",
@@ -765,12 +1219,85 @@ class WithholdingTcsWorkflowFieldLockdownTests(SimpleTestCase):
             partial=True,
         )
 
-        self.assertFalse(serializer.is_valid())
-        self.assertIn("status", serializer.errors)
-        self.assertIn("ack_no", serializer.errors)
-        self.assertIn("filed_on", serializer.errors)
-        self.assertIn("json_snapshot", serializer.errors)
-        self.assertIn("file_path", serializer.errors)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
+    def test_return_serializer_allows_filed_without_file_path(self):
+        instance = SimpleNamespace(
+            status="DRAFT",
+            fy="2026-27",
+            quarter="Q1",
+            form_name="27EQ",
+            return_type="ORIGINAL",
+            entity=None,
+            ack_no="",
+            filed_on=None,
+            json_snapshot=None,
+            file_path="",
+            original_return=None,
+        )
+        serializer = TcsQuarterlyReturnSerializer(
+            instance=instance,
+            data={
+                "status": "FILED",
+                "ack_no": "ACK-2",
+                "filed_on": "2026-05-01",
+                "json_snapshot": {"counts": {"missing_pan": 0}},
+                "file_path": "",
+            },
+            partial=True,
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
+    def test_return_serializer_create_persists_workflow_fields(self):
+        entity = SimpleNamespace(id=10)
+        serializer = TcsQuarterlyReturnSerializer()
+        validated_data = {
+            "entity": entity,
+            "fy": "2026-27",
+            "quarter": "Q1",
+            "return_type": "ORIGINAL",
+            "status": "VALIDATED",
+            "ack_no": "ACK-22",
+            "filed_on": date(2026, 5, 20),
+            "json_snapshot": {"totals": {"total_tcs": "10.00"}},
+            "file_path": "returns/27eq-ack-22.json",
+            "notes": "ready",
+            "original_return": None,
+        }
+
+        with patch("withholding.serializers.TcsQuarterlyReturn.objects.create") as mocked_create:
+            serializer.create(dict(validated_data))
+
+        mocked_create.assert_called_once()
+        kwargs = mocked_create.call_args.kwargs
+        self.assertEqual(kwargs["status"], "VALIDATED")
+        self.assertEqual(kwargs["ack_no"], "ACK-22")
+        self.assertEqual(kwargs["file_path"], "returns/27eq-ack-22.json")
+        self.assertEqual(kwargs["form_name"], "27EQ")
+
+    def test_return_serializer_create_normalizes_decimal_snapshot(self):
+        entity = SimpleNamespace(id=10)
+        serializer = TcsQuarterlyReturnSerializer()
+        validated_data = {
+            "entity": entity,
+            "fy": "2026-27",
+            "quarter": "Q1",
+            "return_type": "ORIGINAL",
+            "status": "DRAFT",
+            "ack_no": "",
+            "filed_on": None,
+            "json_snapshot": {"totals": {"total_tcs": Decimal("10.25"), "pending_deposit": Decimal("0.00")}},
+            "file_path": "",
+            "notes": "",
+            "original_return": None,
+        }
+
+        with patch("withholding.serializers.TcsQuarterlyReturn.objects.create") as mocked_create:
+            serializer.create(dict(validated_data))
+
+        kwargs = mocked_create.call_args.kwargs
+        self.assertEqual(kwargs["json_snapshot"], {"totals": {"total_tcs": 10.25, "pending_deposit": 0.0}})
 
 
 class WithholdingTcsCorrectionReturnTests(SimpleTestCase):
@@ -830,7 +1357,8 @@ class WithholdingTcsCorrectionReturnTests(SimpleTestCase):
 
         self.assertIn("same quarter", str(exc.exception).lower())
 
-    def test_correction_return_accepts_matching_filed_original(self):
+    @patch("withholding.serializers.TcsQuarterlyReturn.objects.filter")
+    def test_correction_return_accepts_matching_filed_original(self, mock_filter):
         original = SimpleNamespace(
             id=1,
             entity_id=10,
@@ -840,10 +1368,35 @@ class WithholdingTcsCorrectionReturnTests(SimpleTestCase):
             status="FILED",
         )
         serializer = self._serializer_with_instance(original_return=original)
+        mock_filter.return_value.exclude.return_value.exists.return_value = False
 
         data = serializer.validate({"return_type": "CORRECTION"})
 
         self.assertEqual(data["return_type"], "CORRECTION")
+
+    @patch("withholding.serializers.TcsQuarterlyReturn.objects.filter")
+    def test_correction_return_rejects_duplicate_active_correction(self, mock_filter):
+        original = SimpleNamespace(
+            id=1,
+            entity_id=10,
+            fy="2026-27",
+            quarter="Q1",
+            return_type="ORIGINAL",
+            status="FILED",
+        )
+        serializer = self._serializer_with_instance(original_return=original)
+        mock_filter.return_value.exclude.return_value.exists.return_value = True
+
+        with self.assertRaises(Exception) as exc:
+            serializer.validate({
+                "return_type": "CORRECTION",
+                "entity": SimpleNamespace(id=10),
+                "fy": "2026-27",
+                "quarter": "Q1",
+                "original_return": original,
+            })
+
+        self.assertIn("active correction", str(exc.exception).lower())
 
 
 class WithholdingTcsReportingExportTests(TestCase):
@@ -869,6 +1422,177 @@ class WithholdingTcsReportingExportTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("fy", response.data)
+
+    @patch("withholding.views.account_pan")
+    @patch("withholding.views._exclude_cancelled_documents", side_effect=lambda qs: qs)
+    @patch("withholding.views._require_tcs_scope_permission")
+    @patch("withholding.views.TcsComputation.objects.select_related")
+    def test_ledger_report_detail_clamps_negative_pending_for_credit_note_adjustments(
+        self,
+        mocked_select_related,
+        mocked_scope_permission,
+        mocked_exclude_cancelled,
+        mocked_account_pan,
+    ):
+        mocked_account_pan.side_effect = lambda party: getattr(party, "pan", "")
+        party = SimpleNamespace(accountname="Buyer One", legalname="Buyer One", pan="ABCDE1234F")
+        section = SimpleNamespace(section_code="206C(1H)")
+        comp = SimpleNamespace(
+            id=1,
+            section=section,
+            document_type="credit_note",
+            document_no="SCN-1",
+            doc_date=date(2026, 4, 18),
+            party_account_id=7,
+            party_account=party,
+            status="REVERSED",
+            tcs_base_amount=Decimal("-500.00"),
+            tcs_amount=Decimal("-5.00"),
+            collections=SimpleNamespace(all=lambda: _ChainableListQuerySet()),
+        )
+        computations = _ChainableListQuerySet([comp])
+        mocked_select_related.return_value.prefetch_related.return_value.filter.return_value.order_by.return_value = computations
+
+        request = APIRequestFactory().get("/tcs/reports/ledger/detail/?entity_id=1&fy=2026-27&section=206C(1H)")
+        force_authenticate(request, user=self.user)
+        response = TcsReportLedgerDetailAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["rows"][0]["pending_collection"], Decimal("0.00"))
+        self.assertEqual(response.data["summary"]["pending_collection"], Decimal("0.00"))
+        self.assertEqual(response.data["summary"]["pending_deposit"], Decimal("0.00"))
+
+    @patch("withholding.views.SalesInvoiceLine.objects.filter")
+    @patch("withholding.views.account_pan")
+    @patch("withholding.views.TcsQuarterlyReturn.objects.filter")
+    @patch("withholding.views.TcsDeposit.objects.filter")
+    @patch("withholding.views.PurchaseInvoiceHeader.objects.filter")
+    @patch("withholding.views.SalesInvoiceHeader.objects.filter")
+    @patch("withholding.views._exclude_cancelled_documents")
+    @patch("withholding.views._require_tcs_scope_permission")
+    @patch("withholding.views.TcsComputation.objects.select_related")
+    def test_filing_pack_view_preserves_advance_receipt_and_credit_note_context(
+        self,
+        mocked_select_related,
+        mocked_scope_permission,
+        mocked_exclude_cancelled,
+        mocked_sales_filter,
+        mocked_purchase_filter,
+        mocked_deposit_filter,
+        mocked_return_filter,
+        mocked_account_pan,
+        mocked_sales_line_filter,
+    ):
+        mocked_account_pan.side_effect = lambda party: getattr(party, "pan", "")
+        mocked_sales_line_filter.return_value.exists.return_value = False
+        mocked_exclude_cancelled.side_effect = lambda qs: qs
+        mocked_sales_filter.return_value.values.return_value = [{"id": 1001, "status": 3}, {"id": 1002, "status": 3}]
+        mocked_purchase_filter.return_value.values.return_value = []
+        mocked_deposit_filter.return_value.order_by.return_value = []
+        mocked_return_filter.return_value.order_by.return_value.first.return_value = SimpleNamespace(
+            id=8,
+            quarter="Q1",
+            return_type="CORRECTION",
+            status="FILED",
+            ack_no="ACK-2",
+            filed_on=date(2026, 5, 11),
+            original_return_id=5,
+            notes="Sales return adjustment carried into correction filing.",
+        )
+
+        section = SimpleNamespace(id=11, section_code="206C(1H)", description="Sale of goods")
+        party = SimpleNamespace(legalname="Buyer One", accountname="Buyer One", pan="ABCDE1234F")
+        deposit = SimpleNamespace(
+            id=91,
+            challan_no="CH-22",
+            challan_date=date(2026, 4, 20),
+            bsr_code="1234567",
+            cin="CIN001",
+            bank_name="Axis",
+            status="CONFIRMED",
+        )
+        allocation = SimpleNamespace(id=77, allocated_amount=Decimal("10.00"), deposit=deposit)
+        collection = SimpleNamespace(
+            id=55,
+            collection_date=date(2026, 4, 15),
+            receipt_voucher_id=9001,
+            amount_received=Decimal("1000.00"),
+            tcs_collected_amount=Decimal("10.00"),
+            collection_reference="RCPT-1",
+            status="ALLOCATED",
+            deposit_allocations=SimpleNamespace(all=lambda: _ChainableListQuerySet([allocation])),
+        )
+        advance_comp = SimpleNamespace(
+            id=1,
+            module_name="sales",
+            document_type="invoice",
+            document_id=1001,
+            document_no="SINV-1",
+            doc_date=date(2026, 4, 10),
+            party_account_id=7,
+            party_account=party,
+            section_id=11,
+            section=section,
+            tcs_base_amount=Decimal("1000.00"),
+            rate=Decimal("0.1000"),
+            tcs_amount=Decimal("10.00"),
+            applicability_status="APPLICABLE",
+            override_reason="",
+            status="CONFIRMED",
+            fiscal_year="2026-27",
+            quarter="Q1",
+            trigger_basis="RECEIPT",
+            computation_json={"reason_code": "THRESHOLD_CROSSED_CUMULATIVE"},
+            rule_snapshot_json={},
+            collections=SimpleNamespace(all=lambda: _ChainableListQuerySet([collection])),
+        )
+        credit_comp = SimpleNamespace(
+            id=2,
+            module_name="sales",
+            document_type="credit_note",
+            document_id=1002,
+            document_no="SCN-1",
+            doc_date=date(2026, 4, 18),
+            party_account_id=7,
+            party_account=party,
+            section_id=11,
+            section=section,
+            tcs_base_amount=Decimal("-500.00"),
+            rate=Decimal("0.1000"),
+            tcs_amount=Decimal("-5.00"),
+            applicability_status="APPLICABLE",
+            override_reason="Return adjustment",
+            status="REVERSED",
+            fiscal_year="2026-27",
+            quarter="Q1",
+            trigger_basis="INVOICE",
+            computation_json={"reason_code": "THRESHOLD_ALREADY_CROSSED"},
+            rule_snapshot_json={},
+            collections=SimpleNamespace(all=lambda: _ChainableListQuerySet()),
+        )
+
+        computations = _ChainableListQuerySet([advance_comp, credit_comp])
+        mocked_select_related.return_value.prefetch_related.return_value.filter.return_value.order_by.return_value = computations
+
+        request = APIRequestFactory().get("/tcs/reports/filing-pack/?entity_id=1&fy=2026-27&quarter=Q1")
+        force_authenticate(request, user=self.user)
+        response = TcsReportFilingPackAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["header"]["pending_collection"], Decimal("0.00"))
+        rows = response.data["rows"]
+        by_doc = {row["document_no"]: row for row in rows}
+        self.assertEqual(by_doc["SINV-1"]["doc_impact_type"], "Advance Receipt")
+        self.assertEqual(by_doc["SINV-1"]["trigger_basis"], "Receipt")
+        self.assertEqual(by_doc["SINV-1"]["return_id"], 8)
+        self.assertEqual(by_doc["SINV-1"]["original_return"], 5)
+        self.assertEqual(by_doc["SCN-1"]["doc_impact_type"], "Credit Note")
+        self.assertEqual(by_doc["SCN-1"]["trigger_basis"], "Invoice")
+        self.assertEqual(by_doc["SCN-1"]["return_id"], 8)
+        self.assertEqual(by_doc["SCN-1"]["original_return"], 5)
+        self.assertEqual(by_doc["SCN-1"]["return_notes"], "Sales return adjustment carried into correction filing.")
+        self.assertFalse(by_doc["SCN-1"]["exceptions"]["not_collected"])
+        self.assertFalse(by_doc["SCN-1"]["exceptions"]["deposit_mismatch"])
 
     @patch("withholding.views.TcsQuarterlyReturn.objects.filter")
     @patch("withholding.views.TcsDeposit.objects.filter")
@@ -930,6 +1654,8 @@ class WithholdingTcsReportingExportTests(TestCase):
                 "rows": [
                     {
                         "doc_date": "2026-04-10",
+                        "doc_impact_type": "Advance Receipt",
+                        "trigger_basis": "Receipt",
                         "document_type": "invoice",
                         "document_no": "INV-1",
                         "party_name": "Buyer One",
@@ -946,6 +1672,8 @@ class WithholdingTcsReportingExportTests(TestCase):
                         "return_status": "FILED",
                         "ack_no": "ACK-1",
                         "filed_on": "2026-05-05",
+                        "original_return": None,
+                        "return_notes": "",
                         "exceptions": {
                             "missing_pan": False,
                             "invalid_pan_format": False,
@@ -962,6 +1690,8 @@ class WithholdingTcsReportingExportTests(TestCase):
                     },
                     {
                         "doc_date": "2026-04-11",
+                        "doc_impact_type": "Credit Note",
+                        "trigger_basis": "Invoice",
                         "document_type": "invoice",
                         "document_no": "INV-2",
                         "party_name": "Buyer Two",
@@ -972,12 +1702,14 @@ class WithholdingTcsReportingExportTests(TestCase):
                         "tcs_amount": "50.00",
                         "tcs_collected_amount": "50.00",
                         "allocated_amount": "50.00",
-                        "return_id": 5,
+                        "return_id": 8,
                         "return_quarter": "Q1",
-                        "return_type": "ORIGINAL",
+                        "return_type": "CORRECTION",
                         "return_status": "FILED",
-                        "ack_no": "ACK-1",
-                        "filed_on": "2026-05-05",
+                        "ack_no": "ACK-2",
+                        "filed_on": "2026-05-11",
+                        "original_return": 5,
+                        "return_notes": "Sales return adjustment carried into correction filing.",
                         "exceptions": {
                             "missing_pan": False,
                             "invalid_pan_format": False,
@@ -1011,13 +1743,24 @@ class WithholdingTcsReportingExportTests(TestCase):
 
         tracker_csv = archive.read("filing_pack_return_tracker.csv").decode("utf-8")
         self.assertIn("return_id", tracker_csv)
+        self.assertIn("original_return", tracker_csv)
+        self.assertIn("return_notes", tracker_csv)
         tracker_lines = [line for line in tracker_csv.strip().splitlines() if line.strip()]
-        self.assertEqual(len(tracker_lines), 2)
+        self.assertEqual(len(tracker_lines), 3)
         self.assertIn("5", tracker_lines[1])
+        self.assertIn("8", tracker_lines[2])
+        self.assertIn("5", tracker_lines[2])
+        self.assertIn("Sales return adjustment carried into correction filing.", tracker_lines[2])
 
         spotlight_csv = archive.read("filing_pack_exception_spotlight.csv").decode("utf-8")
         self.assertIn("not_deposited", spotlight_csv)
         self.assertIn("deposit_mismatch", spotlight_csv)
+
+        transactions_csv = archive.read("filing_pack_transactions.csv").decode("utf-8")
+        self.assertIn("doc_impact_type", transactions_csv)
+        self.assertIn("trigger_basis", transactions_csv)
+        self.assertIn("Advance Receipt", transactions_csv)
+        self.assertIn("Credit Note", transactions_csv)
 
 
 class WithholdingTcsApiPermissionTests(TestCase):
@@ -1042,6 +1785,121 @@ class WithholdingTcsApiPermissionTests(TestCase):
         mocked_entity.assert_called_once_with(self.user, 1)
         mocked_codes.assert_called_once_with(self.user, 1)
         mocked_subscription.assert_called_once()
+
+
+class WithholdingTcsWorkspaceExportTests(TestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.user = get_user_model().objects.create_user(
+            username="tcs-workspace-export-tests",
+            email="tcs-workspace-export-tests@example.com",
+            password="testpass123",
+        )
+
+    @patch.object(TcsWorkspaceTransactionsAPIView, "get")
+    def test_workspace_export_preserves_threshold_and_impact_metadata(self, mocked_get):
+        mocked_get.return_value = SimpleNamespace(
+            data={
+                "rows": [
+                    {
+                        "voucher_date": "2026-04-20",
+                        "voucher_type": "Sales Invoice",
+                        "voucher_no": "SINV-401",
+                        "customer_name": "Threshold Buyer",
+                        "pan": "ABCDE1234F",
+                        "section_code": "206C(1H)",
+                        "doc_impact_type": "Advance Receipt",
+                        "trigger_basis": "Receipt",
+                        "base_amount": "5500000.00",
+                        "rate": "0.10",
+                        "computed_tcs": "500.00",
+                        "collected_tcs": "500.00",
+                        "deposited_tcs": "300.00",
+                        "pending_collection": "0.00",
+                        "pending_deposit": "200.00",
+                        "lifecycle_status": "COLLECTED_PENDING_DEPOSIT",
+                        "threshold_state": "crossed_in_current_txn",
+                        "threshold_default": "5000000.00",
+                        "threshold_mode": "cumulative",
+                        "primary_reason_code": "THRESHOLD_CROSSED_CUMULATIVE",
+                        "flags": {"incomplete_compliance": True},
+                    }
+                ],
+                "section_summary": [],
+                "unallocated_deposits": [],
+                "summary": {"threshold_counts": {"crossed_in_current_txn": 1}},
+                "filters": {"entity_id": "1", "fy": "2026-27", "quarter": "Q1"},
+            }
+        )
+
+        request = self.factory.get("/tcs/workspace/transactions/export/?entity_id=1&fy=2026-27&quarter=Q1")
+        force_authenticate(request, user=self.user)
+        response = TcsWorkspaceTransactionsExportAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        archive = zipfile.ZipFile(io.BytesIO(response.content))
+        transactions_csv = archive.read("workspace_transactions.csv").decode("utf-8")
+
+        self.assertIn("doc_impact_type", transactions_csv)
+        self.assertIn("trigger_basis", transactions_csv)
+        self.assertIn("threshold_state", transactions_csv)
+        self.assertIn("threshold_default", transactions_csv)
+        self.assertIn("threshold_mode", transactions_csv)
+        self.assertIn("primary_reason_code", transactions_csv)
+        self.assertIn("Advance Receipt", transactions_csv)
+        self.assertIn("Receipt", transactions_csv)
+        self.assertIn("crossed_in_current_txn", transactions_csv)
+        self.assertIn("5000000.00", transactions_csv)
+        self.assertIn("cumulative", transactions_csv)
+
+
+class WithholdingTcsLedgerReportTests(SimpleTestCase):
+    @patch("withholding.views._require_tcs_permission_from_request", return_value=1)
+    @patch("withholding.views._exclude_cancelled_documents", side_effect=lambda qs: qs)
+    @patch("withholding.views.TcsComputation.objects.all")
+    def test_ledger_report_applies_quarter_scope(
+        self,
+        mocked_all,
+        _mocked_exclude_cancelled,
+        _mocked_permission,
+    ):
+        qs = MagicMock()
+        mocked_all.return_value = qs
+        qs.filter.return_value = qs
+        qs.exclude.return_value = qs
+        qs.annotate.return_value = qs
+        qs.values.return_value.annotate.return_value.order_by.return_value = []
+
+        request = APIRequestFactory().get("/tcs/reports/ledger/?entity_id=1&fy=2026-27&quarter=Q2")
+        force_authenticate(request, user=SimpleNamespace(is_authenticated=True))
+        response = TcsReportLedgerAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(any(call.kwargs.get("quarter") == "Q2" for call in qs.filter.call_args_list))
+
+    @patch("withholding.views._require_tcs_scope_permission")
+    @patch("withholding.views._exclude_cancelled_documents", side_effect=lambda qs: qs)
+    @patch("withholding.views.TcsComputation.objects.select_related")
+    def test_ledger_detail_applies_quarter_scope(
+        self,
+        mocked_select_related,
+        _mocked_exclude_cancelled,
+        _mocked_permission,
+    ):
+        qs = MagicMock()
+        mocked_select_related.return_value.prefetch_related.return_value.filter.return_value.order_by.return_value = qs
+        qs.filter.return_value = qs
+        qs.exclude.return_value = qs
+        qs.__iter__.return_value = iter([])
+
+        request = APIRequestFactory().get(
+            "/tcs/reports/ledger/details/?entity_id=1&fy=2026-27&quarter=Q2&section=206C(1H)"
+        )
+        force_authenticate(request, user=SimpleNamespace(is_authenticated=True))
+        response = TcsReportLedgerDetailAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(any(call.kwargs.get("quarter") == "Q2" for call in qs.filter.call_args_list))
 
     def test_tcs_sections_list_requires_entity_scope(self):
         request = self.factory.get("/tcs/sections/")
@@ -1236,10 +2094,14 @@ class WithholdingReadinessDashboardApiTests(TestCase):
         second = payload["rows"][1]
         self.assertEqual(first["posting_state"], "not_posted")
         self.assertEqual(first["posting_state_label"], "Voucher not posted")
+        self.assertEqual(first["drilldowns"]["source_document"]["route"], "/paymentvoucher")
+        self.assertEqual(first["drilldowns"]["source_document"]["params"]["transactionid"], 102)
         self.assertIsNone(first["drilldowns"]["posting_lookup"])
 
         self.assertEqual(second["posting_state"], "posted")
         self.assertEqual(second["posting_state_label"], "Posted")
+        self.assertEqual(second["drilldowns"]["source_document"]["route"], "/paymentvoucher")
+        self.assertEqual(second["drilldowns"]["source_document"]["params"]["transactionid"], 101)
         self.assertEqual(second["drilldowns"]["posting_lookup"]["lookup"]["document_type"], "payment_voucher")
 
     @patch("withholding.views.account_pan", return_value="")
@@ -1360,6 +2222,41 @@ class WithholdingSeedServiceTests(SimpleTestCase):
 
 
 class FyPartyThresholdServiceTests(SimpleTestCase):
+    @patch("withholding.services.EntityTcsThresholdOpening.objects.filter")
+    @patch("withholding.services.TcsComputation.objects.filter")
+    def test_cumulative_206c1h_base_aggregates_entity_transactions_across_subentities(
+        self,
+        mocked_comp_filter,
+        mocked_opening_filter,
+    ):
+        comp_qs = MagicMock()
+        comp_qs.exclude.return_value = comp_qs
+        comp_qs.aggregate.return_value = {"v": Decimal("400.00")}
+        mocked_comp_filter.return_value = comp_qs
+
+        opening_qs = MagicMock()
+        opening_qs.filter.return_value = opening_qs
+        opening_qs.aggregate.return_value = {"v": Decimal("100.00")}
+        mocked_opening_filter.return_value = opening_qs
+
+        total = _cumulative_206c1h_base_before_doc(
+            entity_id=1,
+            entityfin_id=2,
+            subentity_id=100,
+            section_id=11,
+            party_account_id=10,
+            doc_date=date(2026, 4, 1),
+        )
+
+        self.assertEqual(total, Decimal("500.00"))
+        mocked_comp_filter.assert_called_once_with(
+            entity_id=1,
+            party_account_id=10,
+            fiscal_year="2026-27",
+            section__section_code__in=["206C(1H)", "206C1H"],
+        )
+        opening_qs.filter.assert_any_call(Q(subentity_id=100) | Q(subentity__isnull=True))
+
     @patch("withholding.threshold_service.FyPartyThresholdService._sum_previous")
     def test_negative_current_amount_preserves_previous_total_for_reversal_tracking(self, mock_sum_previous):
         mock_sum_previous.return_value = Decimal("60000.00")

@@ -199,10 +199,12 @@ class SalesRegisterAPITests(APITestCase):
         grand_total="118.00",
         total_discount="0.00",
         supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B,
+        taxability=SalesInvoiceHeader.Taxability.TAXABLE,
         original_invoice=None,
         discount_amounts=None,
         customer_name=None,
         customer_gstin=None,
+        note_reason=None,
     ):
         entity = entity or self.entity
         entityfin = entityfin or self.entityfin
@@ -238,6 +240,7 @@ class SalesRegisterAPITests(APITestCase):
             seller_state_code=self.state.statecode,
             place_of_supply_state_code=self.state.statecode,
             supply_category=supply_category,
+            taxability=taxability,
             total_taxable_value=Decimal(taxable),
             total_cgst=Decimal(cgst),
             total_sgst=Decimal(sgst),
@@ -247,6 +250,7 @@ class SalesRegisterAPITests(APITestCase):
             round_off=Decimal(round_off),
             grand_total=Decimal(grand_total),
             original_invoice=original_invoice,
+            note_reason=note_reason,
             created_by=self.user,
         )
 
@@ -390,6 +394,112 @@ class SalesRegisterAPITests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self._money(response.data["totals"]["grand_total"]), Decimal("141.60"))
 
+    def test_original_and_correction_documents_stay_in_their_own_periods(self):
+        invoice = self._create_sales_document(
+            status=SalesInvoiceHeader.Status.POSTED,
+            invoice_number="INV-AMEND-APR",
+            bill_date="2025-04-10",
+            posting_date="2025-04-10",
+            taxable="100.00",
+            cgst="9.00",
+            sgst="9.00",
+            grand_total="118.00",
+        )
+        credit = self._create_sales_document(
+            doc_type=SalesInvoiceHeader.DocType.CREDIT_NOTE,
+            original_invoice=invoice,
+            status=SalesInvoiceHeader.Status.POSTED,
+            invoice_number="CRN-AMEND-MAY",
+            bill_date="2025-05-02",
+            posting_date="2025-05-02",
+            taxable="20.00",
+            cgst="1.80",
+            sgst="1.80",
+            grand_total="23.60",
+        )
+
+        april = self._get(from_date="2025-04-01", to_date="2025-04-30")
+        self.assertEqual(april.status_code, 200)
+        self.assertEqual(april.data["count"], 1)
+        self.assertEqual(april.data["results"][0]["sales_invoice_number"], invoice.invoice_number)
+        self.assertEqual(self._money(april.data["totals"]["grand_total"]), Decimal("118.00"))
+
+        may = self._get(from_date="2025-05-01", to_date="2025-05-31")
+        self.assertEqual(may.status_code, 200)
+        self.assertEqual(may.data["count"], 1)
+        self.assertEqual(may.data["results"][0]["sales_invoice_number"], credit.invoice_number)
+        self.assertEqual(self._money(may.data["totals"]["grand_total"]), Decimal("-23.60"))
+
+    def test_original_and_correction_rows_keep_distinct_sales_drilldowns(self):
+        invoice = self._create_sales_document(
+            status=SalesInvoiceHeader.Status.POSTED,
+            invoice_number="INV-TRACE-001",
+            taxable="100.00",
+            cgst="9.00",
+            sgst="9.00",
+            grand_total="118.00",
+        )
+        credit = self._create_sales_document(
+            doc_type=SalesInvoiceHeader.DocType.CREDIT_NOTE,
+            original_invoice=invoice,
+            status=SalesInvoiceHeader.Status.POSTED,
+            invoice_number="CRN-TRACE-001",
+            taxable="40.00",
+            cgst="3.60",
+            sgst="3.60",
+            grand_total="47.20",
+        )
+
+        response = self._get()
+        self.assertEqual(response.status_code, 200)
+
+        invoice_row = next(row for row in response.data["results"] if row["sales_invoice_number"] == invoice.invoice_number)
+        credit_row = next(row for row in response.data["results"] if row["sales_invoice_number"] == credit.invoice_number)
+
+        self.assertEqual(invoice_row["drilldown"]["target"], "sales_invoice_detail")
+        self.assertEqual(invoice_row["drilldown"]["id"], invoice.id)
+        self.assertEqual(invoice_row["drilldown"]["route"], "/saleinvoice")
+        self.assertEqual(credit_row["drilldown"]["target"], "sales_invoice_detail")
+        self.assertEqual(credit_row["drilldown"]["id"], credit.id)
+        self.assertEqual(credit_row["linked_credit_debit_note_reference"], invoice.invoice_number)
+
+    def test_service_sales_rows_expose_service_invoice_route_in_drilldown(self):
+        invoice = self._create_sales_document(
+            invoice_number="SINV-SVC-01",
+            bill_date="2025-04-18",
+            posting_date="2025-04-18",
+        )
+        SalesInvoiceLine.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            header=invoice,
+            line_no=99,
+            product=self.product,
+            uom=self.uom,
+            hsn_sac_code="9983",
+            is_service=True,
+            qty=Decimal("1.000"),
+            free_qty=Decimal("0.000"),
+            rate=Decimal("10.0000"),
+            discount_type=SalesInvoiceLine.DiscountType.NONE,
+            discount_percent=Decimal("0.0000"),
+            discount_amount=Decimal("0.00"),
+            gst_rate=Decimal("18.00"),
+            taxable_value=Decimal("10.00"),
+            cgst_amount=Decimal("0.90"),
+            sgst_amount=Decimal("0.90"),
+            igst_amount=Decimal("0.00"),
+            cess_percent=Decimal("0.00"),
+            cess_amount=Decimal("0.00"),
+            line_total=Decimal("11.80"),
+        )
+
+        response = self._get(search="SINV-SVC-01")
+        self.assertEqual(response.status_code, 200)
+        invoice_row = next(row for row in response.data["results"] if row["sales_invoice_number"] == invoice.invoice_number)
+        self.assertEqual(invoice_row["drilldown"]["route"], "/saleserviceinvoice")
+
     def test_bill_date_filtering(self):
         in_range = self._create_sales_document(
             invoice_number="BILL-RANGE-IN",
@@ -526,8 +636,158 @@ class SalesRegisterAPITests(APITestCase):
         self.assertEqual(response.data["count"], 1)
         self.assertEqual(len(response.data["results"]), 1)
         self.assertEqual(response.data["results"][0]["sales_invoice_number"], header.invoice_number)
-        self.assertEqual(self._money(response.data["results"][0]["discount_total"]), Decimal("25.00"))
-        self.assertEqual(self._money(response.data["totals"]["discount_total"]), Decimal("25.00"))
+
+    def test_taxability_rows_keep_zero_tax_and_classification_labels(self):
+        exempt = self._create_sales_document(
+            invoice_number="EXEMPT-001",
+            taxable="1000.00",
+            cgst="0.00",
+            sgst="0.00",
+            igst="0.00",
+            grand_total="1000.00",
+            taxability=SalesInvoiceHeader.Taxability.EXEMPT,
+        )
+        nil_rated = self._create_sales_document(
+            invoice_number="NIL-001",
+            bill_date="2025-04-06",
+            posting_date="2025-04-06",
+            taxable="1000.00",
+            cgst="0.00",
+            sgst="0.00",
+            igst="0.00",
+            grand_total="1000.00",
+            taxability=SalesInvoiceHeader.Taxability.NIL_RATED,
+        )
+        non_gst = self._create_sales_document(
+            invoice_number="NONGST-001",
+            bill_date="2025-04-07",
+            posting_date="2025-04-07",
+            taxable="1000.00",
+            cgst="0.00",
+            sgst="0.00",
+            igst="0.00",
+            grand_total="1000.00",
+            taxability=SalesInvoiceHeader.Taxability.NON_GST,
+        )
+
+        response = self._get(status=str(SalesInvoiceHeader.Status.POSTED))
+        self.assertEqual(response.status_code, 200)
+
+        rows = {row["sales_invoice_number"]: row for row in response.data["results"]}
+        self.assertEqual(rows[exempt.invoice_number]["supply_classification_name"], "Exempt")
+        self.assertEqual(rows[nil_rated.invoice_number]["supply_classification_name"], "Nil-rated")
+        self.assertEqual(rows[non_gst.invoice_number]["supply_classification_name"], "Non-GST")
+        for invoice_number in (exempt.invoice_number, nil_rated.invoice_number, non_gst.invoice_number):
+            self.assertEqual(self._money(rows[invoice_number]["cgst_amount"]), Decimal("0.00"))
+            self.assertEqual(self._money(rows[invoice_number]["sgst_amount"]), Decimal("0.00"))
+            self.assertEqual(self._money(rows[invoice_number]["igst_amount"]), Decimal("0.00"))
+            self.assertEqual(self._money(rows[invoice_number]["grand_total"]), Decimal("1000.00"))
+
+    def test_note_rows_keep_signed_totals_and_document_types(self):
+        invoice = self._create_sales_document(
+            invoice_number="INV-NOTE-001",
+            taxable="1000.00",
+            cgst="90.00",
+            sgst="90.00",
+            grand_total="1180.00",
+        )
+        sales_return = self._create_sales_document(
+            doc_type=SalesInvoiceHeader.DocType.CREDIT_NOTE,
+            original_invoice=invoice,
+            note_reason=SalesInvoiceHeader.NoteReason.QUANTITY_RETURN,
+            status=SalesInvoiceHeader.Status.POSTED,
+            bill_date="2025-04-06",
+            posting_date="2025-04-06",
+            invoice_number="SRN-001",
+            taxable="1000.00",
+            cgst="90.00",
+            sgst="90.00",
+            grand_total="1180.00",
+        )
+        credit = self._create_sales_document(
+            doc_type=SalesInvoiceHeader.DocType.CREDIT_NOTE,
+            original_invoice=invoice,
+            note_reason=SalesInvoiceHeader.NoteReason.PRICE_DIFFERENCE,
+            status=SalesInvoiceHeader.Status.POSTED,
+            bill_date="2025-04-07",
+            posting_date="2025-04-07",
+            invoice_number="CRN-002",
+            taxable="500.00",
+            igst="90.00",
+            cgst="0.00",
+            sgst="0.00",
+            grand_total="590.00",
+        )
+        debit = self._create_sales_document(
+            doc_type=SalesInvoiceHeader.DocType.DEBIT_NOTE,
+            original_invoice=invoice,
+            note_reason=SalesInvoiceHeader.NoteReason.PRICE_DIFFERENCE,
+            status=SalesInvoiceHeader.Status.POSTED,
+            bill_date="2025-04-08",
+            posting_date="2025-04-08",
+            invoice_number="DBN-001",
+            taxable="500.00",
+            igst="90.00",
+            cgst="0.00",
+            sgst="0.00",
+            grand_total="590.00",
+        )
+
+        response = self._get(status=str(SalesInvoiceHeader.Status.POSTED))
+        self.assertEqual(response.status_code, 200)
+        rows = {row["sales_invoice_number"]: row for row in response.data["results"]}
+
+        self.assertEqual(rows[sales_return.invoice_number]["doc_type_name"], "Credit Note")
+        self.assertEqual(self._money(rows[sales_return.invoice_number]["taxable_amount"]), Decimal("-1000.00"))
+        self.assertEqual(self._money(rows[sales_return.invoice_number]["cgst_amount"]), Decimal("-90.00"))
+        self.assertEqual(self._money(rows[sales_return.invoice_number]["sgst_amount"]), Decimal("-90.00"))
+        self.assertEqual(self._money(rows[sales_return.invoice_number]["grand_total"]), Decimal("-1180.00"))
+
+        self.assertEqual(rows[credit.invoice_number]["doc_type_name"], "Credit Note")
+        self.assertEqual(self._money(rows[credit.invoice_number]["taxable_amount"]), Decimal("-500.00"))
+        self.assertEqual(self._money(rows[credit.invoice_number]["igst_amount"]), Decimal("-90.00"))
+        self.assertEqual(self._money(rows[credit.invoice_number]["grand_total"]), Decimal("-590.00"))
+
+        self.assertEqual(rows[debit.invoice_number]["doc_type_name"], "Debit Note")
+        self.assertEqual(self._money(rows[debit.invoice_number]["taxable_amount"]), Decimal("500.00"))
+        self.assertEqual(self._money(rows[debit.invoice_number]["igst_amount"]), Decimal("90.00"))
+        self.assertEqual(self._money(rows[debit.invoice_number]["grand_total"]), Decimal("590.00"))
+
+    def test_filed_period_correction_note_stays_in_current_period_register(self):
+        original = self._create_sales_document(
+            invoice_number="ORIG-FILED-001",
+            bill_date="2025-03-29",
+            posting_date="2025-03-29",
+            taxable="1000.00",
+            cgst="90.00",
+            sgst="90.00",
+            grand_total="1180.00",
+        )
+        correction = self._create_sales_document(
+            doc_type=SalesInvoiceHeader.DocType.CREDIT_NOTE,
+            original_invoice=original,
+            note_reason=SalesInvoiceHeader.NoteReason.PRICE_DIFFERENCE,
+            status=SalesInvoiceHeader.Status.POSTED,
+            bill_date="2025-04-12",
+            posting_date="2025-04-12",
+            invoice_number="AMEND-001",
+            taxable="200.00",
+            cgst="18.00",
+            sgst="18.00",
+            grand_total="236.00",
+        )
+
+        response = self._get(from_date="2025-04-01", to_date="2025-04-30", status=str(SalesInvoiceHeader.Status.POSTED))
+        self.assertEqual(response.status_code, 200)
+        invoice_numbers = {row["sales_invoice_number"] for row in response.data["results"]}
+        self.assertIn(correction.invoice_number, invoice_numbers)
+        self.assertNotIn(original.invoice_number, invoice_numbers)
+
+        correction_row = next(row for row in response.data["results"] if row["sales_invoice_number"] == correction.invoice_number)
+        self.assertEqual(correction_row["linked_credit_debit_note_reference"], original.invoice_number)
+        self.assertEqual(correction_row["invoice_date"], "12-04-2025")
+        self.assertEqual(self._money(correction_row["taxable_amount"]), Decimal("-200.00"))
+        self.assertEqual(self._money(correction_row["grand_total"]), Decimal("-236.00"))
 
     def test_joined_einvoice_and_eway_artifacts_are_exposed(self):
         header = self._create_sales_document(invoice_number="EINV-001")

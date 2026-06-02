@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from financial.services_opening_balance import ACCOUNT_OPENING_TXN_ID_BASE
+from purchase.models.purchase_core import PurchaseInvoiceLine
+from sales.models.sales_core import SalesInvoiceLine
 from financial.models import Ledger
 from posting.models import TxnType
 from reports.selectors.financial import (
@@ -10,6 +13,7 @@ from reports.selectors.financial import (
     resolve_date_window,
     resolve_scope_names,
 )
+from reports.services.financial.opening_balance_source import effective_opening_map_for_ledgers
 
 SORTABLE_FIELDS = {
     "posting_date": lambda row: (row.get("posting_date") or "", row.get("journal_line_id") or 0),
@@ -20,6 +24,30 @@ SORTABLE_FIELDS = {
     "credit": lambda row: Decimal(row.get("credit") or "0.00"),
     "running_balance": lambda row: Decimal(row.get("running_balance") or "0.00"),
 }
+
+
+def _invoice_drilldown_route(txn_type: str | None, txn_id: int | None) -> str | None:
+    if not txn_id:
+        return None
+    if txn_type in {
+        TxnType.PURCHASE,
+        TxnType.PURCHASE_CREDIT_NOTE,
+        TxnType.PURCHASE_DEBIT_NOTE,
+        TxnType.PURCHASE_RETURN,
+    }:
+        if PurchaseInvoiceLine.objects.filter(header_id=txn_id, is_service=True).exists():
+            return "/purchaseserviceinvoice"
+        return "/purchaseinvoice"
+    if txn_type in {
+        TxnType.SALES,
+        TxnType.SALES_CREDIT_NOTE,
+        TxnType.SALES_DEBIT_NOTE,
+        TxnType.SALES_RETURN,
+    }:
+        if SalesInvoiceLine.objects.filter(header_id=txn_id, is_service=True).exists():
+            return "/saleserviceinvoice"
+        return "/saleinvoice"
+    return None
 
 
 def _drilldown_meta(line, *, entity_id, entityfin_id, subentity_id):
@@ -35,8 +63,13 @@ def _drilldown_meta(line, *, entity_id, entityfin_id, subentity_id):
         TxnType.PURCHASE_CREDIT_NOTE: ("purchase", "purchase_invoice", "purchase_invoice_detail"),
         TxnType.PURCHASE_DEBIT_NOTE: ("purchase", "purchase_invoice", "purchase_invoice_detail"),
         TxnType.PURCHASE_RETURN: ("purchase", "purchase_invoice", "purchase_invoice_detail"),
+        TxnType.FIXED_ASSET_CAPITALIZATION: ("assets", "fixed_asset", "asset_history_detail"),
+        TxnType.FIXED_ASSET_IMPAIRMENT: ("assets", "fixed_asset", "asset_history_detail"),
+        TxnType.FIXED_ASSET_DISPOSAL: ("assets", "fixed_asset", "asset_history_detail"),
+        TxnType.FIXED_ASSET_DEPRECIATION: ("assets", "depreciation_run", "posting_entry_detail"),
+        TxnType.OPENING_BALANCE: ("posting", "journal_entry", "posting_entry_detail"),
         TxnType.JOURNAL: ("vouchers", "voucher", "voucher_detail"),
-        TxnType.YEAR_END_CLOSE: ("controls", "year_end_close", "journal_entry_detail"),
+        TxnType.YEAR_END_CLOSE: ("controls", "year_end_close", "posting_entry_detail"),
         TxnType.JOURNAL_CASH: ("vouchers", "voucher", "voucher_detail"),
         TxnType.JOURNAL_BANK: ("vouchers", "voucher", "voucher_detail"),
         TxnType.RECEIPT: ("receipts", "receipt_voucher", "receipt_voucher_detail"),
@@ -47,6 +80,22 @@ def _drilldown_meta(line, *, entity_id, entityfin_id, subentity_id):
         ("posting", "journal_entry", "journal_entry_detail"),
     )
     source_id = line.txn_id
+    account_opening_account_id = None
+    if txn_type == TxnType.OPENING_BALANCE and int(source_id or 0) >= ACCOUNT_OPENING_TXN_ID_BASE:
+        account_opening_account_id = int(source_id) - ACCOUNT_OPENING_TXN_ID_BASE
+        source_app, source_model, drilldown_target = ("financial", "account_opening", "account_opening_detail")
+
+    drilldown_params = {
+        "id": source_id,
+        "entry_id": line.entry_id,
+        "entity": entity_id,
+        "entityfinid": entityfin_id,
+        "subentity": subentity_id,
+    }
+    if drilldown_target == "asset_history_detail":
+        drilldown_params["asset_id"] = source_id
+    if account_opening_account_id:
+        drilldown_params["account_id"] = account_opening_account_id
 
     return {
         "txn_type": txn_type,
@@ -57,12 +106,8 @@ def _drilldown_meta(line, *, entity_id, entityfin_id, subentity_id):
         "source_model": source_model,
         "source_id": source_id,
         "drilldown_target": drilldown_target,
-        "drilldown_params": {
-            "id": source_id,
-            "entity": entity_id,
-            "entityfinid": entityfin_id,
-            "subentity": subentity_id,
-        },
+        "drilldown_route": _invoice_drilldown_route(txn_type, source_id),
+        "drilldown_params": drilldown_params,
     }
 
 
@@ -74,6 +119,7 @@ def build_ledger_book(
     from_date=None,
     to_date=None,
     *,
+    scope_mode=None,
     search=None,
     voucher_types=None,
     sort_by=None,
@@ -86,13 +132,24 @@ def build_ledger_book(
     scope_names = resolve_scope_names(entity_id, entityfin_id, subentity_id)
 
     ledger = Ledger.objects.select_related("accounthead").get(id=ledger_id, entity_id=entity_id)
-    opening = (ledger.openingbdr or Decimal("0.00")) - (ledger.openingbcr or Decimal("0.00"))
-
-    lines = (
-        journal_lines_for_scope(entity_id, entityfin_id, subentity_id, from_date, to_date)
-        .filter(resolved_ledger_id=ledger_id)
-        .order_by("posting_date", "entry_id", "id")
+    normalized_scope_mode = str(scope_mode or "").strip().lower()
+    separate_opening = normalized_scope_mode == "custom" or bool(from_date and to_date and not normalized_scope_mode)
+    opening = (
+        effective_opening_map_for_ledgers(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            ledgers=[ledger],
+            from_date=from_date,
+        ).get(ledger.id, Decimal("0.00"))
+        if separate_opening
+        else Decimal("0.00")
     )
+
+    lines = journal_lines_for_scope(entity_id, entityfin_id, subentity_id, from_date, to_date)
+    if separate_opening:
+        lines = lines.exclude(txn_type=TxnType.OPENING_BALANCE)
+    lines = lines.filter(resolved_ledger_id=ledger_id).order_by("posting_date", "entry_id", "id")
 
     running = opening
     row_data = []
@@ -192,6 +249,8 @@ def build_ledger_book(
         },
         "reporting": {
             "basis": "ledger_running_balance",
+            "scope_mode": scope_mode or "financial_year",
+            "separate_opening": separate_opening,
             "sort_by": sort_by or "posting_date",
             "sort_order": "desc" if reverse else "asc",
         },

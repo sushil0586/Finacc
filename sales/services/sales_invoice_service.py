@@ -8,7 +8,7 @@ import re
 
 from typing import Any
 
-from datetime import date
+from datetime import date, timedelta
 from rest_framework.exceptions import ValidationError
 from django.core.exceptions import ValidationError as DjangoValidationError
 from decimal import Decimal, ROUND_HALF_UP
@@ -1393,6 +1393,180 @@ class SalesInvoiceService:
         return q2((header.grand_total or ZERO2) + (header.tcs_amount or ZERO2))
 
     @staticmethod
+    def _correction_audit_reason(correction: SalesInvoiceHeader) -> Optional[str]:
+        remarks = str(getattr(correction, "remarks", "") or "").strip()
+        if remarks:
+            return remarks
+        reference = str(getattr(correction, "reference", "") or "").strip()
+        if reference:
+            return reference
+        try:
+            label = correction.get_note_reason_display()
+        except Exception:
+            label = None
+        return str(label).strip() or None if label else None
+
+    @staticmethod
+    def append_correction_audit_event(
+        *,
+        original: SalesInvoiceHeader,
+        correction: SalesInvoiceHeader,
+        user_id: Optional[int],
+    ) -> None:
+        event = {
+            "original_invoice_id": original.id,
+            "correction_document_id": correction.id,
+            "user_id": user_id,
+            "timestamp": timezone.now().isoformat(),
+            "reason": SalesInvoiceService._correction_audit_reason(correction),
+            "correction_type": (
+                "credit_note"
+                if int(getattr(correction, "doc_type", 0) or 0) == int(SalesInvoiceHeader.DocType.CREDIT_NOTE)
+                else "debit_note"
+            ),
+            "gst_period_impact": correction.bill_date.strftime("%Y-%m") if getattr(correction, "bill_date", None) else None,
+            "old_value": {
+                "bill_date": original.bill_date.isoformat() if getattr(original, "bill_date", None) else None,
+                "posting_date": original.posting_date.isoformat() if getattr(original, "posting_date", None) else None,
+                "grand_total": str(q2(getattr(original, "grand_total", ZERO2) or ZERO2)),
+            },
+            "new_value": {
+                "bill_date": correction.bill_date.isoformat() if getattr(correction, "bill_date", None) else None,
+                "posting_date": correction.posting_date.isoformat() if getattr(correction, "posting_date", None) else None,
+                "grand_total": str(q2(getattr(correction, "grand_total", ZERO2) or ZERO2)),
+            },
+        }
+
+        original_notes = dict(getattr(original, "custom_fields_json", None) or {})
+        correction_history = list(original_notes.get("correction_history") or [])
+        correction_history.append(event)
+        original_notes["correction_history"] = correction_history
+        original.custom_fields_json = original_notes
+        original.save(update_fields=["custom_fields_json", "updated_at"])
+
+        correction_notes = dict(getattr(correction, "custom_fields_json", None) or {})
+        correction_notes["correction_origin"] = event
+        correction.custom_fields_json = correction_notes
+        correction.save(update_fields=["custom_fields_json", "updated_at"])
+
+    @classmethod
+    def requires_current_period_correction(cls, *, header: SalesInvoiceHeader) -> bool:
+        if int(getattr(header, "doc_type", 0) or 0) != int(SalesInvoiceHeader.DocType.TAX_INVOICE):
+            return False
+        if int(getattr(header, "status", 0) or 0) != int(SalesInvoiceHeader.Status.POSTED):
+            return False
+        try:
+            cls.assert_not_locked(
+                entity_id=header.entity_id,
+                subentity_id=header.subentity_id,
+                bill_date=header.bill_date,
+            )
+        except ValueError:
+            return True
+        return False
+
+    @classmethod
+    def next_open_correction_date(cls, *, header: SalesInvoiceHeader) -> date:
+        candidate = max(getattr(header, "bill_date", None) or timezone.localdate(), timezone.localdate())
+        for _ in range(370):
+            locked, _ = SalesSettingsService.is_locked(header.entity_id, header.subentity_id, candidate)
+            if not locked:
+                return candidate
+            candidate = candidate + timedelta(days=1)
+        raise ValueError("Unable to resolve an open correction date for sales amendment.")
+
+    @staticmethod
+    def _note_line_payload_from_original(line: SalesInvoiceLine) -> dict:
+        return {
+            "line_no": int(getattr(line, "line_no", 0) or 0),
+            "product": getattr(line, "product", None),
+            "productDesc": getattr(line, "productDesc", ""),
+            "batch_number": getattr(line, "batch_number", ""),
+            "manufacture_date": getattr(line, "manufacture_date", None),
+            "expiry_date": getattr(line, "expiry_date", None),
+            "uom": getattr(line, "uom", None),
+            "hsn_sac_code": getattr(line, "hsn_sac_code", ""),
+            "is_service": bool(getattr(line, "is_service", False)),
+            "qty": f"{Decimal(getattr(line, 'qty', ZERO4) or ZERO4):.3f}",
+            "free_qty": f"{Decimal(getattr(line, 'free_qty', ZERO4) or ZERO4):.3f}",
+            "rate": str(q4(getattr(line, "rate", ZERO4))),
+            "is_rate_inclusive_of_tax": bool(getattr(line, "is_rate_inclusive_of_tax", False)),
+            "discount_type": int(getattr(line, "discount_type", 0) or 0),
+            "discount_percent": str(q4(getattr(line, "discount_percent", ZERO4))),
+            "discount_amount": str(q2(getattr(line, "discount_amount", ZERO2))),
+            "gst_rate": f"{Decimal(getattr(line, 'gst_rate', ZERO2) or ZERO2):.2f}",
+            "cess_percent": f"{Decimal(getattr(line, 'cess_percent', ZERO2) or ZERO2):.2f}",
+            "cess_amount": str(q2(getattr(line, "cess_amount", ZERO2))),
+            "sales_account": getattr(line, "sales_account", None),
+        }
+
+    @staticmethod
+    def _note_charge_payload_from_original(charge: SalesChargeLine) -> dict:
+        return {
+            "line_no": int(getattr(charge, "line_no", 0) or 0),
+            "charge_type": getattr(charge, "charge_type", SalesChargeLine.ChargeType.OTHER),
+            "description": getattr(charge, "description", ""),
+            "taxability": int(getattr(charge, "taxability", SalesInvoiceHeader.Taxability.TAXABLE) or SalesInvoiceHeader.Taxability.TAXABLE),
+            "is_service": bool(getattr(charge, "is_service", True)),
+            "hsn_sac_code": getattr(charge, "hsn_sac_code", ""),
+            "is_rate_inclusive_of_tax": bool(getattr(charge, "is_rate_inclusive_of_tax", False)),
+            "taxable_value": str(q2(getattr(charge, "taxable_value", ZERO2))),
+            "gst_rate": str(q2(getattr(charge, "gst_rate", ZERO2))),
+            "revenue_account": getattr(charge, "revenue_account", None),
+        }
+
+    @classmethod
+    def create_current_period_reversal_credit_note(
+        cls,
+        *,
+        original: SalesInvoiceHeader,
+        user,
+        reason: str = "",
+    ) -> SalesInvoiceHeader:
+        correction_date = cls.next_open_correction_date(header=original)
+        lines = [
+            cls._note_line_payload_from_original(line)
+            for line in original.lines.all().order_by("line_no", "id")
+        ]
+        charges = [
+            cls._note_charge_payload_from_original(charge)
+            for charge in original.charges.all().order_by("line_no", "id")
+        ]
+        note = cls.create_with_lines(
+            entity_id=original.entity_id,
+            entityfinid_id=original.entityfinid_id,
+            subentity_id=original.subentity_id,
+            header_data={
+                "doc_type": int(SalesInvoiceHeader.DocType.CREDIT_NOTE),
+                "bill_date": correction_date,
+                "posting_date": correction_date,
+                "doc_code": "SCN",
+                "customer_id": original.customer_id,
+                "customer_name": getattr(original, "customer_name", ""),
+                "customer_gstin": getattr(original, "customer_gstin", ""),
+                "customer_state_code": getattr(original, "customer_state_code", ""),
+                "seller_gstin": getattr(original, "seller_gstin", ""),
+                "seller_state_code": getattr(original, "seller_state_code", ""),
+                "place_of_supply_state_code": getattr(original, "place_of_supply_state_code", ""),
+                "supply_category": int(getattr(original, "supply_category", SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B) or SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B),
+                "taxability": int(getattr(original, "taxability", SalesInvoiceHeader.Taxability.TAXABLE) or SalesInvoiceHeader.Taxability.TAXABLE),
+                "reference": getattr(original, "invoice_number", "") or getattr(original, "reference", ""),
+                "remarks": (reason or "").strip() or "Locked-period cancellation reversal",
+                "original_invoice": original,
+                "note_reason": SalesInvoiceHeader.NoteReason.OTHER,
+                "affects_inventory": False,
+                "is_bill_to_ship_to_same": bool(getattr(original, "is_bill_to_ship_to_same", True)),
+                "shipping_detail_id": getattr(original, "shipping_detail_id", None),
+            },
+            lines_data=lines,
+            charges_data=charges,
+            user=user,
+        )
+        note = cls.confirm(header=note, user=user)
+        note = cls.post(header=note, user=user)
+        return note
+
+    @staticmethod
     def recompute_settlement_fields(*, header: SalesInvoiceHeader) -> None:
         gross = SalesInvoiceService._gross_receivable(header)
         settled = q2(getattr(header, "settled_amount", ZERO2) or ZERO2)
@@ -1539,6 +1713,15 @@ class SalesInvoiceService:
             "updated_at",
         ])
 
+        if original_invoice is not None and doc_type in (
+            int(SalesInvoiceHeader.DocType.CREDIT_NOTE),
+            int(SalesInvoiceHeader.DocType.DEBIT_NOTE),
+        ):
+            cls.append_correction_audit_event(
+                original=original_invoice,
+                correction=header,
+                user_id=getattr(user, "id", None),
+            )
 
         return header
 
@@ -2625,6 +2808,17 @@ class SalesInvoiceService:
         allow_unpost = str(controls.get("allow_unpost_posted", "on")).lower().strip()
         if allow_unpost == "off":
             raise ValueError("Unpost after posting is disabled by sales policy.")
+        try:
+            cls.assert_not_locked(
+                entity_id=header.entity_id,
+                subentity_id=header.subentity_id,
+                bill_date=header.bill_date,
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "Posted sales invoice belongs to a locked/filed period and cannot be unposted. "
+                "Create a current-period correction document instead."
+            ) from exc
 
         txn_type = cls._txn_type_for_header(header)
         entry = (
@@ -2765,6 +2959,13 @@ class SalesInvoiceService:
                     error_message=msg,
                 )
                 raise ValueError(msg)
+
+        if cls.requires_current_period_correction(header=header):
+            return cls.create_current_period_reversal_credit_note(
+                original=header,
+                user=user,
+                reason=reason,
+            )
 
         if header.status == SalesInvoiceHeader.Status.POSTED:
             cls.reverse_posting(header=header, user=user, reason=reason or "Cancelled")

@@ -67,7 +67,7 @@ class ReceiptVoucherPostingAdapter:
             )
             if account_id <= 0:
                 raise ValueError(f"Adjustment {getattr(adj, 'id', '')}: ledger_account is required.")
-            effect = str(getattr(adj, "settlement_effect", "PLUS")).upper().strip()
+            effect = str(getattr(adj, "settlement_effect", "PLUS") or "PLUS").upper().strip()
 
             if effect == "PLUS":
                 plus_total = q2(plus_total + amt)
@@ -80,7 +80,21 @@ class ReceiptVoucherPostingAdapter:
 
         customer_settlement = q2(cash_received + plus_total - minus_total)
         if customer_settlement <= ZERO2:
-            raise ValueError("Computed customer settlement amount must be > 0.")
+            has_bank_charges = any(
+                str(getattr(adj, "adj_type", "") or "").upper().strip() == "BANK_CHARGES"
+                and q2(getattr(adj, "amount", ZERO2)) > ZERO2
+                for adj in list(adjustments or [])
+            )
+            if has_bank_charges:
+                raise ValueError(
+                    "This receipt cannot be posted because the settlement amount becomes zero or negative. "
+                    "You entered BANK_CHARGES as a deduction. If the received amount itself is charges, "
+                    "enter that amount only in Cash Received and remove the BANK_CHARGES adjustment row."
+                )
+            raise ValueError(
+                "This receipt cannot be posted because the settlement amount becomes zero or negative. "
+                "Increase Cash Received or reduce the deduction adjustments."
+            )
 
         jl_inputs: list[JLInput] = []
         jl_inputs.append(JLInput(

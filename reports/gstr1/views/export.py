@@ -48,8 +48,9 @@ class Gstr1ExportAPIView(Gstr1ScopedReportMixin, APIView):
 
     def _export_summary(self, service, exporter, scope, smart_filters, export_format):
         if export_format == "gstn_json":
-            base_queryset = service.filtered_queryset(scope, smart_filters=smart_filters)
-            filing_payload = Gstr1GstnJsonExportService().build(scope=scope, base_queryset=base_queryset)
+            scoped_qs = service.scoped_queryset(scope)
+            filtered_qs = apply_smart_filters(scoped_qs, smart_filters)
+            filing_payload = Gstr1GstnJsonExportService().build(scope=scope, base_queryset=filtered_qs)
             return Response(filing_payload)
 
         payload = service.summary(scope, smart_filters=smart_filters)
