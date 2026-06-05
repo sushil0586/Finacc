@@ -1653,6 +1653,93 @@ class BookReportAPITests(APITestCase):
         self.assertIn("Accrued Expenses Control", asset_ledger_names)
         self.assertNotIn("Accrued Expenses Control", liability_ledger_names)
 
+    def test_balance_sheet_diagnostics_identify_excluded_rows_as_primary_reason(self):
+        suspense_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Suspense Mapping",
+            accounttypecode="9999",
+            createdby=self.user,
+        )
+        suspense_head = accountHead.objects.create(
+            entity=self.entity,
+            name="Suspense Head",
+            code=9101,
+            detailsingroup=2,
+            balanceType="Credit",
+            drcreffect="Credit",
+            accounttype=suspense_type,
+            createdby=self.user,
+        )
+        suspense_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=9101,
+            name="Suspense Balance",
+            accounthead=suspense_head,
+            accounttype=suspense_type,
+            createdby=self.user,
+        )
+        suspense_account = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "ledger": suspense_ledger,
+                "accountname": "Suspense Balance",
+                "createdby": self.user,
+            },
+            ledger_overrides={
+                "ledger_code": 9101,
+                "accounthead": suspense_head,
+                "accounttype": suspense_type,
+                "is_party": True,
+            },
+        )
+
+        self._create_entry(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.JOURNAL,
+            txn_id=901,
+            voucher_no="JV-SUSP-001",
+            posting_date="2025-04-11",
+            voucher_date="2025-04-11",
+            status=EntryStatus.POSTED,
+            narration="Excluded suspense balance test",
+            lines=[
+                (self.cash_account, self.cash_ledger, True, "125.00", "Cash debit"),
+                (suspense_account, suspense_ledger, False, "125.00", "Suspense credit"),
+            ],
+        )
+
+        response = self.client.get(
+            reverse("reports_api:financial-balance-sheet"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "from_date": "2025-04-01",
+                "to_date": "2025-04-30",
+                "account_group": "ledger",
+                "posted_only": True,
+                "hide_zero_rows": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        diagnostics = data.get("diagnostics") or {}
+
+        self.assertEqual(diagnostics.get("difference"), "125.00")
+        self.assertEqual((diagnostics.get("primary_reason") or {}).get("code"), "excluded_balance_sheet_rows")
+        self.assertEqual((diagnostics.get("primary_reason") or {}).get("amount"), "125.00")
+        excluded_ledgers = {
+            row.get("ledger_name")
+            for row in diagnostics.get("excluded_rows", [])
+            if row.get("excluded_reason") == "not_balance_sheet_classification"
+        }
+        self.assertIn("Suspense Balance", excluded_ledgers)
+        reason_codes = {row.get("code") for row in diagnostics.get("reason_cards", [])}
+        self.assertIn("base_balance_gap", reason_codes)
+        self.assertIn("excluded_balance_sheet_rows", reason_codes)
+
     def test_balance_sheet_does_not_double_count_posted_opening_balance(self):
         from reports.services.financial.statements import _closing_map
 

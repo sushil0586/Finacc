@@ -277,7 +277,9 @@ def _raw_balance_rows(
             "accounttype_name": acc_type.accounttypename if acc_type else None,
             "amount_decimal": amount,
             "amount": f"{abs(amount):.2f}",
+            "natural_bucket": _balance_sheet_bucket(head, acc_type),
             "bucket": _balance_sheet_bucket_for_amount(amount, head, acc_type),
+            "is_contra_balance": _balance_sheet_bucket(head, acc_type) not in {"", _balance_sheet_bucket_for_amount(amount, head, acc_type)},
             "classification_reason": getattr(classify_financial_head(head, acc_type), "reason", ""),
             **_ledger_drilldown_meta(ledger, entity_id, entityfin_id, subentity_id),
         }
@@ -1309,7 +1311,11 @@ def _build_snapshot(
                 "accounttype_name": "Inventory",
                 "amount_decimal": closing_inventory,
                 "amount": f"{abs(closing_inventory):.2f}",
+                "natural_bucket": "asset" if closing_inventory > 0 else "liability",
                 "bucket": "asset" if closing_inventory > 0 else "liability",
+                "is_contra_balance": False,
+                "classification_reason": "stock_valuation_injected",
+                "source": "stock_valuation",
                 "can_drilldown": False,
                 "drilldown_target": None,
                 "drilldown_params": None,
@@ -1352,7 +1358,11 @@ def _build_snapshot(
                 "accounttype_name": "Equity",
                 "amount_decimal": net_profit,
                 "amount": f"{net_profit:.2f}",
+                "natural_bucket": "liability",
                 "bucket": "liability",
+                "is_contra_balance": False,
+                "classification_reason": "current_period_profit_transfer",
+                "source": "profit_transfer",
                 "can_drilldown": False,
                 "drilldown_target": None,
                 "drilldown_params": None,
@@ -1372,7 +1382,11 @@ def _build_snapshot(
                 "accounttype_name": "Equity",
                 "amount_decimal": loss_amount,
                 "amount": f"{loss_amount:.2f}",
+                "natural_bucket": "asset",
                 "bucket": "asset",
+                "is_contra_balance": False,
+                "classification_reason": "current_period_loss_transfer",
+                "source": "profit_transfer",
                 "can_drilldown": False,
                 "drilldown_target": None,
                 "drilldown_params": None,
@@ -1399,6 +1413,235 @@ def _build_snapshot(
         page_size=effective_page_size,
     )
 
+    def _decimal_str(value):
+        return f"{Decimal(str(value or 0)):.2f}"
+
+    def _row_amount(row):
+        return abs(Decimal(str(row.get("amount_decimal", row.get("amount") or 0) or 0)))
+
+    def _serialize_rows(row_items, *, include_side=False, limit=None):
+        ordered_rows = sorted(row_items or [], key=lambda item: _row_amount(item), reverse=True)
+        if limit is not None:
+            ordered_rows = ordered_rows[:limit]
+
+        payload = []
+        for row in ordered_rows:
+            item = {
+                "ledger_id": row.get("ledger_id"),
+                "ledger_name": row.get("ledger_name"),
+                "ledger_code": row.get("ledger_code"),
+                "amount": row.get("amount"),
+                "bucket": row.get("bucket"),
+                "natural_bucket": row.get("natural_bucket"),
+                "is_contra_balance": bool(row.get("is_contra_balance")),
+                "accounthead_name": row.get("accounthead_name"),
+                "accounttype_name": row.get("accounttype_name"),
+                "classification_reason": row.get("classification_reason"),
+                "excluded_reason": row.get("excluded_reason"),
+                "source": row.get("source"),
+            }
+            if include_side:
+                item["side"] = row.get("side")
+            payload.append(item)
+        return payload
+
+    def _sum_rows(row_items):
+        return sum((_row_amount(row) for row in (row_items or [])), Decimal("0.00"))
+
+    def _build_reason(
+        *,
+        code,
+        title,
+        detail,
+        severity="info",
+        amount=Decimal("0.00"),
+        count=0,
+        action=None,
+        rows=None,
+    ):
+        return {
+            "code": code,
+            "title": title,
+            "detail": detail,
+            "severity": severity,
+            "amount": _decimal_str(amount),
+            "count": int(count or 0),
+            "action": action,
+            "rows": _serialize_rows(rows or [], limit=5),
+        }
+
+    raw_difference = raw_asset_total - raw_liability_total
+    final_difference = asset_total - liability_total
+    raw_rows_with_side = (
+        [{**row, "side": "asset"} for row in assets_source]
+        + [{**row, "side": "liability"} for row in liabilities_source]
+    )
+    base_rows = [row for row in raw_rows_with_side if row.get("source") != "profit_transfer"]
+    excluded_not_bs_rows = [
+        row for row in excluded_rows
+        if row.get("excluded_reason") == "not_balance_sheet_classification" and _row_amount(row) != 0
+    ]
+    search_filtered_rows = [
+        row for row in excluded_rows
+        if row.get("excluded_reason") == "search_filtered" and _row_amount(row) != 0
+    ]
+    contra_rows = [
+        row for row in base_rows
+        if bool(row.get("is_contra_balance")) and _row_amount(row) != 0
+    ]
+    profit_transfer_rows = [row for row in raw_rows_with_side if row.get("source") == "profit_transfer"]
+    stock_rows = [row for row in raw_rows_with_side if row.get("source") == "stock_valuation"]
+    stock_variance = Decimal("0.00")
+    if stock_context["effective_mode"] == "valuation":
+        stock_variance = stock_context["closing_inventory"] - stock_context["gl_inventory_total"]
+
+    reason_cards = []
+    if final_difference == 0:
+        reason_cards.append(
+            _build_reason(
+                code="balanced",
+                title="Balance sheet is aligned",
+                detail="Assets match liabilities and equity after current period profit/loss is carried forward.",
+                severity="success",
+                amount=final_difference,
+                count=len(base_rows),
+                action="No corrective action is required for the selected scope.",
+            )
+        )
+    else:
+        reason_cards.append(
+            _build_reason(
+                code="base_balance_gap",
+                title="Base balance sheet rows do not net to zero",
+                detail=(
+                    "Before current period profit/loss is transferred, the selected balance-sheet rows already show a gap "
+                    f"of {_decimal_str(raw_difference)}."
+                ),
+                severity="warning",
+                amount=raw_difference,
+                count=len(base_rows),
+                action="Compare the largest asset and liability balances below and confirm each ledger is mapped to the correct head/type.",
+                rows=base_rows,
+            )
+        )
+        if excluded_not_bs_rows:
+            excluded_total = _sum_rows(excluded_not_bs_rows)
+            reason_cards.append(
+                _build_reason(
+                    code="excluded_balance_sheet_rows",
+                    title="Some balances were excluded from the balance sheet",
+                    detail=(
+                        f"{len(excluded_not_bs_rows)} row(s) with total impact {_decimal_str(excluded_total)} "
+                        "were classified outside the balance sheet."
+                    ),
+                    severity="warning",
+                    amount=excluded_total,
+                    count=len(excluded_not_bs_rows),
+                    action="Review the excluded ledgers and fix account head/account type mapping where the balance should appear on the balance sheet.",
+                    rows=excluded_not_bs_rows,
+                )
+            )
+        if search_filtered_rows:
+            search_filtered_total = _sum_rows(search_filtered_rows)
+            reason_cards.append(
+                _build_reason(
+                    code="search_filter_scope_gap",
+                    title="Search filter is hiding some rows",
+                    detail=(
+                        f"The current search removed {len(search_filtered_rows)} row(s) with total amount "
+                        f"{_decimal_str(search_filtered_total)} from this view."
+                    ),
+                    severity="info",
+                    amount=search_filtered_total,
+                    count=len(search_filtered_rows),
+                    action="Clear the search filter to validate whether the mismatch exists in the full report or only in the filtered view.",
+                    rows=search_filtered_rows,
+                )
+            )
+        if contra_rows:
+            contra_total = _sum_rows(contra_rows)
+            reason_cards.append(
+                _build_reason(
+                    code="contra_balances_detected",
+                    title="Contra balances were moved to the opposite side",
+                    detail=(
+                        f"{len(contra_rows)} row(s) have debit/credit behaviour opposite to their natural side "
+                        f"with total amount {_decimal_str(contra_total)}."
+                    ),
+                    severity="info",
+                    amount=contra_total,
+                    count=len(contra_rows),
+                    action="Check whether these ledgers are genuine overdrafts/advance balances or whether the ledger mapping needs correction.",
+                    rows=contra_rows,
+                )
+            )
+        if profit_transfer_rows:
+            reason_cards.append(
+                _build_reason(
+                    code="profit_transfer_applied",
+                    title="Current period profit/loss was transferred",
+                    detail=(
+                        f"Profit/loss transfer moved {_decimal_str(net_profit)} into equity and changed the visible gap "
+                        f"from {_decimal_str(raw_difference)} to {_decimal_str(final_difference)}."
+                    ),
+                    severity="info",
+                    amount=net_profit,
+                    count=len(profit_transfer_rows),
+                    action="If the gap appears only after profit transfer, compare this report with Profit & Loss for the same scope.",
+                    rows=profit_transfer_rows,
+                )
+            )
+        if stock_rows or stock_context["effective_mode"] == "valuation":
+            reason_cards.append(
+                _build_reason(
+                    code="stock_valuation_context",
+                    title="Stock valuation affected the balance sheet build",
+                    detail=(
+                        f"Effective stock mode is '{stock_context['effective_mode']}' with closing valuation "
+                        f"{_decimal_str(stock_context['closing_inventory'])} and GL inventory {_decimal_str(stock_context['gl_inventory_total'])}."
+                    ),
+                    severity="info",
+                    amount=stock_variance,
+                    count=len(stock_rows),
+                    action="Validate inventory GL ledgers and stock valuation setup if stock is expected to reconcile differently.",
+                    rows=stock_rows or stock_context["gl_inventory_rows"],
+                )
+            )
+
+    severity_rank = {"warning": 0, "info": 1, "success": 2}
+    reason_priority = {
+        "excluded_balance_sheet_rows": 0,
+        "search_filter_scope_gap": 1,
+        "base_balance_gap": 2,
+        "contra_balances_detected": 3,
+        "profit_transfer_applied": 4,
+        "stock_valuation_context": 5,
+        "balanced": 6,
+    }
+    primary_reason = sorted(
+        reason_cards,
+        key=lambda item: (
+            severity_rank.get(str(item.get("severity")), 9),
+            reason_priority.get(str(item.get("code")), 99),
+            -abs(Decimal(str(item.get("amount") or 0))),
+        ),
+    )[0]
+
+    next_actions = []
+    if final_difference != 0:
+        next_actions.append("Start with the primary reason card and inspect the linked suspect rows first.")
+        if excluded_not_bs_rows:
+            next_actions.append("Review excluded ledgers and correct their account head or account type if they belong on the balance sheet.")
+        if search_filtered_rows:
+            next_actions.append("Clear the search term and rerun the report before treating the filtered mismatch as a real closing issue.")
+        if contra_rows:
+            next_actions.append("Validate contra balances such as overdrafts, advances, and debit balances sitting in liability heads.")
+        if stock_context["effective_mode"] == "valuation":
+            next_actions.append("Cross-check stock valuation against inventory GL balances and ensure the same mode is used consistently across reports.")
+        next_actions.append("After each correction, rerun the same scope and confirm the difference returns to 0.00.")
+    else:
+        next_actions.append("No action is required because the selected scope is already balanced.")
+
     snapshot = {
         "entity_id": entity_id,
         "entity_name": scope_names["entity_name"],
@@ -1424,46 +1667,63 @@ def _build_snapshot(
             "inventory_adjustment_to_profit": pnl["totals"].get("stock_adjustment", f"{stock_context['inventory_delta']:.2f}"),
             "opening_inventory_valuation": f"{stock_context['opening_inventory']:.2f}",
             "closing_inventory_valuation": f"{stock_context['closing_inventory']:.2f}",
+            "balance_difference": f"{final_difference:.2f}",
         },
         "diagnostics": {
             "raw_asset_total": f"{raw_asset_total:.2f}",
             "raw_liability_total": f"{raw_liability_total:.2f}",
+            "raw_difference": f"{raw_difference:.2f}",
             "net_profit_adjustment": f"{net_profit:.2f}",
             "final_asset_total": f"{asset_total:.2f}",
             "final_liability_total": f"{liability_total:.2f}",
-            "difference": f"{(asset_total - liability_total):.2f}",
+            "difference": f"{final_difference:.2f}",
             "stock_effective_mode": stock_context["effective_mode"],
             "stock_valuation_method": stock_context["valuation_method"],
             "inventory_gl_total": f"{stock_context['gl_inventory_total']:.2f}",
             "inventory_delta": f"{stock_context['inventory_delta']:.2f}",
-            "raw_rows": [
+            "primary_reason": primary_reason,
+            "reason_cards": reason_cards,
+            "reconciliation_steps": [
                 {
-                    "side": "asset" if row in assets_source else "liability",
-                    "ledger_id": row.get("ledger_id"),
-                    "ledger_name": row.get("ledger_name"),
-                    "ledger_code": row.get("ledger_code"),
-                    "amount": row.get("amount"),
-                    "bucket": row.get("bucket"),
-                    "accounthead_name": row.get("accounthead_name"),
-                    "accounttype_name": row.get("accounttype_name"),
-                    "classification_reason": row.get("classification_reason"),
-                }
-                for row in (assets_source + liabilities_source)
-            ],
-            "excluded_rows": [
+                    "code": "raw_assets",
+                    "label": "Raw assets",
+                    "value": _decimal_str(raw_asset_total),
+                    "tone": "neutral",
+                },
                 {
-                    "ledger_id": row.get("ledger_id"),
-                    "ledger_name": row.get("ledger_name"),
-                    "ledger_code": row.get("ledger_code"),
-                    "amount": row.get("amount"),
-                    "bucket": row.get("bucket"),
-                    "accounthead_name": row.get("accounthead_name"),
-                    "accounttype_name": row.get("accounttype_name"),
-                    "classification_reason": row.get("classification_reason"),
-                    "excluded_reason": row.get("excluded_reason"),
-                }
-                for row in excluded_rows
+                    "code": "raw_liabilities",
+                    "label": "Raw liabilities and equity",
+                    "value": _decimal_str(raw_liability_total),
+                    "tone": "neutral",
+                },
+                {
+                    "code": "raw_difference",
+                    "label": "Raw difference",
+                    "value": _decimal_str(raw_difference),
+                    "tone": "warning" if raw_difference else "success",
+                },
+                {
+                    "code": "profit_transfer",
+                    "label": "Profit/loss transferred",
+                    "value": _decimal_str(net_profit),
+                    "tone": "accent",
+                },
+                {
+                    "code": "final_difference",
+                    "label": "Final difference",
+                    "value": _decimal_str(final_difference),
+                    "tone": "warning" if final_difference else "success",
+                },
             ],
+            "top_rows": {
+                "assets": _serialize_rows([row for row in base_rows if row.get("side") == "asset"], include_side=True, limit=5),
+                "liabilities": _serialize_rows([row for row in base_rows if row.get("side") == "liability"], include_side=True, limit=5),
+                "excluded": _serialize_rows(excluded_rows, limit=5),
+                "contra": _serialize_rows(contra_rows, include_side=True, limit=5),
+            },
+            "next_actions": next_actions,
+            "raw_rows": _serialize_rows(raw_rows_with_side, include_side=True),
+            "excluded_rows": _serialize_rows(excluded_rows),
         },
         "stock_valuation": {
             "requested_mode": stock_context["requested_mode"],

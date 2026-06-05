@@ -38,6 +38,7 @@ from assets.serializers import (
 )
 from assets.services.asset_service import AssetService
 from assets.services.settings import AssetSettingsService
+from financial.models import account
 from financial.models import Ledger
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
@@ -440,6 +441,11 @@ class AssetMetaAPIView(AssetScopedAPIView):
         if subentity_id:
             categories = categories.filter(subentity_id=subentity_id)
         ledgers = Ledger.objects.filter(entity_id=entity_id).order_by("name").values("id", "name", "ledger_code", "accounthead_id")
+        vendor_accounts = (
+            account.objects.filter(entity_id=entity_id, isactive=True)
+            .order_by("accountname")
+            .values("id", "accountname")
+        )
         return Response(
             {
                 "choices": {
@@ -451,6 +457,7 @@ class AssetMetaAPIView(AssetScopedAPIView):
                 },
                 "categories": list(categories.values("id", "code", "name", "nature", "traceability_controls", "accounting_controls")),
                 "ledgers": list(ledgers),
+                "vendor_accounts": list(vendor_accounts),
             }
         )
 
