@@ -273,7 +273,7 @@ Smart Filter must resolve them into:
 
 Supported:
 
-- entity
+- entity`
 - financial year
 - branch or subentity
 

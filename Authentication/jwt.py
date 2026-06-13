@@ -66,3 +66,6 @@ class JwtAuthentication(BaseAuthentication):
     def _token_from_cookie(self, request) -> str | None:
         cookie_name = getattr(settings, "AUTH_COOKIE_NAME", "fa_access")
         return request.COOKIES.get(cookie_name) or None
+
+    def authenticate_header(self, request):
+        return "Bearer"

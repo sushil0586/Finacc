@@ -51,6 +51,11 @@ class JwtAuthenticationTests(TestCase):
         with self.assertRaises(exceptions.AuthenticationFailed):
             auth.authenticate(request)
 
+    def test_authenticate_header_advertises_bearer_scheme(self):
+        request = self.factory.get("/api/auth/user")
+        auth = JwtAuthentication()
+        self.assertEqual(auth.authenticate_header(request), "Bearer")
+
 
 class AuthUserEndpointTests(TestCase):
     def setUp(self):
@@ -75,6 +80,11 @@ class AuthUserEndpointTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.data["email"], "profile_user@example.com")
         self.assertEqual(resp.data["id"], self.user.id)
+
+    def test_me_endpoint_requires_authentication_with_401(self):
+        self.client.force_authenticate(user=None)
+        resp = self.client.get("/api/auth/me")
+        self.assertEqual(resp.status_code, 401)
 
 
 class AuthFlowTests(TestCase):

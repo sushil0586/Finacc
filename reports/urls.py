@@ -439,12 +439,6 @@ urlpatterns = [
     path("gstr3b/validations/", Gstr3bValidationAPIView.as_view(), name="gstr3b-validations"),
     path("gstr3b/export/", Gstr3bExportAPIView.as_view(), name="gstr3b-export"),
     path("gstr3b/export", Gstr3bExportAPIView.as_view(), name="gstr3b-export-noslash"),
-    # Backward-compatible aliases for older frontend routes.
-    path("gstr3b1/summary/", Gstr3bSummaryAPIView.as_view(), name="gstr3b1-summary"),
-    path("gstr3b1/meta/", Gstr3bMetaAPIView.as_view(), name="gstr3b1-meta"),
-    path("gstr3b1/validations/", Gstr3bValidationAPIView.as_view(), name="gstr3b1-validations"),
-    path("gstr3b1/export/", Gstr3bExportAPIView.as_view(), name="gstr3b1-export"),
-    path("gstr3b1/export", Gstr3bExportAPIView.as_view(), name="gstr3b1-export-noslash"),
     path("gst-reconciliation/summary/", Gstr1VsGstr3bReconciliationAPIView.as_view(), name="gst-reconciliation-summary"),
     path("gst-reconciliation/export/", Gstr1VsGstr3bReconciliationExportAPIView.as_view(), name="gst-reconciliation-export"),
     path("gst-exception-dashboard/summary/", GstExceptionDashboardAPIView.as_view(), name="gst-exception-dashboard-summary"),
