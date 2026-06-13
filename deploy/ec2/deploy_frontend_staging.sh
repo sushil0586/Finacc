@@ -6,7 +6,7 @@ set -euo pipefail
 # Update these values only if your staging server/path changes.
 # ---------------------------------------------------------------------------
 ANGULAR_PROJECT_PATH="${ANGULAR_PROJECT_PATH:-/c/educure/Finacc/accountproject}"
-PEM_PATH="${PEM_PATH:-$HOME/.ssh/bansalrenu.pem}"
+PEM_PATH="${PEM_PATH:-$HOME/Downloads/bansalrenu.pem}"
 REMOTE_USER="${REMOTE_USER:-ubuntu}"
 REMOTE_HOST="${REMOTE_HOST:-16.16.166.34}"
 REMOTE_WEB_ROOT="${REMOTE_WEB_ROOT:-/var/www/accerio}"

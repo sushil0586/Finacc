@@ -45,6 +45,7 @@ from sales.views.sales_bulk_print_views import (
 )
 from sales.views.sales_meta import (
     LegacyCombinedSalesMetaAPIView,
+    SalesInvoiceCustomersMetaAPIView,
     SalesInvoiceFormMetaAPIView,
     SalesInvoiceDetailFormMetaAPIView,
     SalesInvoiceSearchMetaAPIView,
@@ -125,6 +126,7 @@ urlpatterns = [
     path("legacy-import/jobs/<int:job_id>/errors/", SalesInvoiceImportJobErrorsExportAPIView.as_view(), name="sales-legacy-import-job-errors"),
     path("legacy-import/jobs/<int:job_id>/reconciliation/", SalesInvoiceImportJobReconciliationAPIView.as_view(), name="sales-legacy-import-job-reconciliation"),
     path("meta/invoice-form/", SalesInvoiceFormMetaAPIView.as_view(), name="sales-invoice-form-meta"),
+    path("meta/customers/", SalesInvoiceCustomersMetaAPIView.as_view(), name="sales-invoice-customers-meta"),
     path("meta/invoice-detail-form/", SalesInvoiceDetailFormMetaAPIView.as_view(), name="sales-invoice-detail-form-meta"),
     path("meta/invoice-search/", SalesInvoiceSearchMetaAPIView.as_view(), name="sales-invoice-search-meta"),
     path("meta/invoice-lines/", SalesInvoiceLinesMetaAPIView.as_view(), name="sales-invoice-lines-meta"),

@@ -5,7 +5,7 @@ set -euo pipefail
 # Staging backend deploy helper for Git Bash
 # Update these values only if your staging server/path changes.
 # ---------------------------------------------------------------------------
-PEM_PATH="${PEM_PATH:-$HOME/.ssh/bansalrenu.pem}"
+PEM_PATH="${PEM_PATH:-$HOME/Downloads/bansalrenu.pem}"
 REMOTE_USER="${REMOTE_USER:-ubuntu}"
 REMOTE_HOST="${REMOTE_HOST:-16.16.166.34}"
 REMOTE_PROJECT_DIR="${REMOTE_PROJECT_DIR:-/home/ubuntu/Finacc}"

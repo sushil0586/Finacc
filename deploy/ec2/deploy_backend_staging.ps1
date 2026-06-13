@@ -18,7 +18,7 @@ function Invoke-NativeCommand {
 # Staging backend deploy helper
 # Update these values only if your staging server/path changes.
 # ---------------------------------------------------------------------------
-$PemPath = Join-Path $HOME ".ssh\bansalrenu.pem"
+$PemPath = Join-Path $HOME "Downloads\bansalrenu.pem"
 $RemoteUser = "ubuntu"
 $RemoteHost = "16.16.166.34"
 $RemoteProjectDir = "/home/ubuntu/Finacc"

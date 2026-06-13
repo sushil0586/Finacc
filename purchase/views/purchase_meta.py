@@ -437,6 +437,21 @@ class PurchaseInvoiceFormMetaAPIView(PurchaseMetaBaseAPIView):
         return Response(payload)
 
 
+class PurchaseInvoiceVendorsMetaAPIView(PurchaseMetaBaseAPIView):
+    def get(self, request):
+        entity_id, entityfinid_id, subentity_id = self._parse_scope(request, require_entityfinid=False)
+        payload = self._get_cached_meta(
+            namespace="purchase.invoice_vendors_meta",
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            extra={},
+            timeout=getattr(settings, "META_CACHE_FORM_TTL_SECONDS", 600),
+            loader=lambda: {"vendors": self._vendors(entity_id)},
+        )
+        return Response(payload)
+
+
 class PurchaseInvoiceDetailFormMetaAPIView(PurchaseMetaBaseAPIView):
     """
     Edit/detail bootstrap: current invoice data + create-form meta + action flags.

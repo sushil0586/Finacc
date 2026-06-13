@@ -409,6 +409,21 @@ class SalesInvoiceFormMetaAPIView(SalesMetaBaseAPIView):
         return Response(payload)
 
 
+class SalesInvoiceCustomersMetaAPIView(SalesMetaBaseAPIView):
+    def get(self, request):
+        entity_id, _, subentity_id = self._parse_scope(request, require_entityfinid=False)
+        payload = self._get_cached_meta(
+            namespace="sales.invoice_customers_meta",
+            entity_id=entity_id,
+            entityfinid_id=None,
+            subentity_id=subentity_id,
+            extra={},
+            timeout=getattr(settings, "META_CACHE_FORM_TTL_SECONDS", 600),
+            loader=lambda: {"customers": self._customers(entity_id)},
+        )
+        return Response(payload)
+
+
 class SalesInvoiceDetailFormMetaAPIView(SalesMetaBaseAPIView):
     def get(self, request):
         entity_id, entityfinid_id, subentity_id = self._parse_scope(request, require_entityfinid=True)
