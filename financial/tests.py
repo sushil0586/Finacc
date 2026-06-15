@@ -13,6 +13,7 @@ from entity.models import Entity, EntityFinancialYear, SubEntity
 from financial.bulk_accounts import commit_payload as commit_accounts_bulk_payload
 from financial.bulk_accounts import export_payload as export_accounts_bulk_payload
 from financial.bulk_accounts import template_payload as accounts_bulk_template_payload
+from financial.bulk_accounts import validate_payload as validate_accounts_bulk_payload
 from financial.governance import allocate_from_series, resolve_financial_master_rule
 from financial.models import AccountAddress, AccountBankDetails, AccountCommercialProfile, AccountComplianceProfile, ContactDetails, FinancialCodeSeries, FinancialMasterRule, Ledger, ShippingDetails, account, accountHead, accounttype
 from financial.party_accounting_defaults import resolve_party_accounting_ids
@@ -104,6 +105,166 @@ class FinancialLedgerSyncTests(TestCase):
 
         with self.assertRaises(ValidationError):
             sync_ledger_for_account(acc)
+
+
+class FinancialApiContractSmokeTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email="financial-api-smoke@example.com",
+            username="financial-api-smoke@example.com",
+            password="secret123",
+            email_verified=True,
+        )
+        self.entity = Entity.objects.create(entityname="Financial API Smoke Entity", createdby=self.user)
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def test_account_type_duplicate_name_is_rejected_cleanly(self):
+        accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Current Assets",
+            accounttypecode="CA",
+            createdby=self.user,
+        )
+
+        response = self.client.post(
+            "/api/financial/accounttypes-v2",
+            {
+                "entity": self.entity.id,
+                "accounttypename": " current assets ",
+                "accounttypecode": "CA2",
+                "balanceType": True,
+                "isactive": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["accounttypename"][0], "An account type with this name already exists.")
+
+    def test_account_head_delete_returns_409_when_referenced(self):
+        acct_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Liability",
+            accounttypecode="LIA",
+            createdby=self.user,
+        )
+        head = accountHead.objects.create(
+            entity=self.entity,
+            name="Sundry Creditors",
+            code=7000,
+            accounttype=acct_type,
+            drcreffect="Credit",
+            createdby=self.user,
+        )
+        Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=7001,
+            name="Creditors Ledger",
+            accounthead=head,
+            creditaccounthead=head,
+            createdby=self.user,
+        )
+
+        response = self.client.delete(f"/api/financial/accountheads-v2/{head.id}")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(
+            response.data.get("detail"),
+            "This record cannot be deleted because it is already used in other records or transactions.",
+        )
+
+    def test_ledger_duplicate_code_is_rejected_cleanly(self):
+        acct_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Asset",
+            accounttypecode="AST",
+            createdby=self.user,
+        )
+        head = accountHead.objects.create(
+            entity=self.entity,
+            name="Cash",
+            code=1000,
+            accounttype=acct_type,
+            drcreffect="Debit",
+            createdby=self.user,
+        )
+        Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=1200,
+            name="Cash Main",
+            accounthead=head,
+            creditaccounthead=head,
+            accounttype=acct_type,
+            createdby=self.user,
+        )
+
+        response = self.client.post(
+            "/api/financial/ledgers",
+            {
+                "entity": self.entity.id,
+                "ledger_code": 1200,
+                "name": "Cash Duplicate",
+                "accounthead": head.id,
+                "creditaccounthead": head.id,
+                "accounttype": acct_type.id,
+                "isactive": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["ledger_code"][0], "A ledger with this code already exists.")
+
+    def test_account_duplicate_name_and_gstin_are_rejected_cleanly(self):
+        acct_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Party",
+            accounttypecode="PTY",
+            createdby=self.user,
+        )
+        head = accountHead.objects.create(
+            entity=self.entity,
+            name="Customers",
+            code=8100,
+            accounttype=acct_type,
+            drcreffect="Debit",
+            createdby=self.user,
+        )
+        existing = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "accountname": "Northwind Traders",
+                "createdby": self.user,
+            },
+            ledger_overrides={
+                "accounthead": head,
+                "creditaccounthead": head,
+                "accounttype": acct_type,
+            },
+        )
+        apply_normalized_profile_payload(
+            existing,
+            compliance_data={"gstno": "29ABCDE1234F1Z5"},
+            createdby=self.user,
+        )
+
+        response = self.client.post(
+            "/api/financial/accounts-v2",
+            {
+                "entity": self.entity.id,
+                "accountname": " northwind traders ",
+                "accounthead": head.id,
+                "creditaccounthead": head.id,
+                "accounttype": acct_type.id,
+                "compliance_profile": {"gstno": "29ABCDE1234F1Z5"},
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["accountname"][0], "An account with this name already exists.")
+        self.assertEqual(response.data["compliance_profile"]["gstno"], "An account with this GSTIN already exists.")
 
 
 class AccountOpeningPostingIntegrationTests(TestCase):
@@ -257,6 +418,96 @@ class AccountOpeningPostingIntegrationTests(TestCase):
         )
         self.assertTrue(clear_serializer.is_valid(), clear_serializer.errors)
         clear_serializer.save()
+
+    def test_account_write_serializer_rejects_duplicate_account_name(self):
+        create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "accountname": "North Customer",
+                "createdby": self.user,
+            },
+            ledger_overrides={
+                "accounthead": self.party_head,
+                "creditaccounthead": self.party_head,
+            },
+        )
+
+        serializer = AccountProfileV2WriteSerializer(
+            data={
+                "entity": self.entity.id,
+                "accountname": " north customer ",
+                "accounthead": self.party_head.id,
+            },
+            context={"request": None},
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertEqual(serializer.errors["accountname"][0], "An account with this name already exists.")
+
+    def test_account_write_serializer_rejects_duplicate_gstin(self):
+        existing = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "accountname": "GST Account One",
+                "createdby": self.user,
+            },
+            ledger_overrides={
+                "accounthead": self.party_head,
+                "creditaccounthead": self.party_head,
+            },
+        )
+        apply_normalized_profile_payload(
+            existing,
+            compliance_data={"gstno": "29ABCDE1234F1Z5"},
+            createdby=self.user,
+        )
+
+        serializer = AccountProfileV2WriteSerializer(
+            data={
+                "entity": self.entity.id,
+                "accountname": "GST Account Two",
+                "accounthead": self.party_head.id,
+                "compliance_profile": {"gstno": "29abcde1234f1z5"},
+            },
+            context={"request": None},
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertEqual(
+            serializer.errors["compliance_profile"]["gstno"][0],
+            "An account with this GSTIN already exists.",
+        )
+
+    def test_bulk_accounts_validate_and_commit_exported_payload(self):
+        existing = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "accountname": "Bulk Export Customer",
+                "legalname": "Bulk Export Customer Pvt Ltd",
+                "createdby": self.user,
+            },
+            ledger_overrides={
+                "accounthead": self.party_head,
+                "creditaccounthead": self.party_head,
+                "openingbdr": Decimal("10.00"),
+            },
+        )
+        apply_normalized_profile_payload(
+            existing,
+            compliance_data={"gstno": "29ABCDE1234F1Z5", "pan": "ABCDE1234F"},
+            commercial_data={"partytype": "Customer", "paymentterms": "Net30", "currency": "INR"},
+            primary_address_data={"line1": "MG Road", "pincode": "560001"},
+            primary_contact_data={"full_name": "Amit", "phoneno": "9876543210", "emailid": "bulk@example.com"},
+            primary_bank_data={"bankname": "State Bank", "banKAcno": "1234567890"},
+            createdby=self.user,
+        )
+
+        payload = export_accounts_bulk_payload(self.entity)
+        validate_result = validate_accounts_bulk_payload(payload, self.entity)
+        self.assertEqual(validate_result.errors, [])
+
+        commit_result = commit_accounts_bulk_payload(payload, self.entity, request=None)
+        self.assertEqual(commit_result.errors, [])
 
         self.assertFalse(
             JournalLine.objects.filter(

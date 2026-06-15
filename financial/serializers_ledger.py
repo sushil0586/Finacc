@@ -17,6 +17,7 @@ from financial.services import (
     allocate_next_ledger_code,
     apply_normalized_profile_payload,
     create_account_with_synced_ledger,
+    get_or_create_financial_settings,
     ledger_should_be_party,
     sync_ledger_for_account,
 )
@@ -123,6 +124,7 @@ class LedgerSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Ledger
+        validators = []
         fields = (
             "id",
             "entity",
@@ -146,6 +148,33 @@ class LedgerSerializer(serializers.ModelSerializer):
             "management_mode",
             "direct_edit_blocked",
         )
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        entity = attrs.get("entity", getattr(self.instance, "entity", None))
+        name = str(attrs.get("name", getattr(self.instance, "name", "")) or "").strip()
+        legal_name = str(attrs.get("legal_name", getattr(self.instance, "legal_name", "")) or "").strip() or None
+        ledger_code = attrs.get("ledger_code", getattr(self.instance, "ledger_code", None))
+
+        errors = {}
+        if not entity:
+            errors["entity"] = "Entity is required."
+        if not name:
+            errors["name"] = "Ledger name is required."
+
+        if entity and ledger_code not in (None, ""):
+            duplicate_qs = Ledger.objects.filter(entity=entity, ledger_code=ledger_code)
+            if self.instance is not None:
+                duplicate_qs = duplicate_qs.exclude(pk=self.instance.pk)
+            if duplicate_qs.exists():
+                errors["ledger_code"] = "A ledger with this code already exists."
+
+        if errors:
+            raise serializers.ValidationError(errors)
+
+        attrs["name"] = name
+        attrs["legal_name"] = legal_name
+        return attrs
 
     def get_management_mode(self, obj):
         return "auto_managed" if self.get_direct_edit_blocked(obj) else "direct"
@@ -418,6 +447,41 @@ class AccountProfileV2WriteSerializer(serializers.ModelSerializer):
         if self.instance is None and not attrs.get("accountname"):
             raise serializers.ValidationError({"accountname": "Account name is required."})
         entity = attrs.get("entity") or getattr(self.instance, "entity", None)
+        accountname = str(attrs.get("accountname", getattr(self.instance, "accountname", "")) or "").strip()
+        legalname = str(attrs.get("legalname", getattr(self.instance, "legalname", "")) or "").strip() or None
+        attrs["accountname"] = accountname or None
+        attrs["legalname"] = legalname
+
+        if not accountname:
+            raise serializers.ValidationError({"accountname": "Account name is required."})
+
+        errors = {}
+        duplicate_accounts = account.objects.filter(entity=entity)
+        if self.instance is not None:
+            duplicate_accounts = duplicate_accounts.exclude(pk=self.instance.pk)
+        if duplicate_accounts.filter(accountname__iexact=accountname).exists():
+            errors["accountname"] = "An account with this name already exists."
+
+        settings, _ = get_or_create_financial_settings(entity) if entity else (None, False)
+        compliance_gst = str(compliance.get("gstno") or "").strip().upper() or None
+        compliance_pan = str(compliance.get("pan") or "").strip().upper() or None
+        if compliance_gst:
+            gst_qs = account.objects.filter(entity=entity, compliance_profile__gstno__iexact=compliance_gst)
+            if self.instance is not None:
+                gst_qs = gst_qs.exclude(pk=self.instance.pk)
+            if gst_qs.exists() and (settings is None or settings.enforce_gst_uniqueness):
+                errors["compliance_profile"] = {"gstno": "An account with this GSTIN already exists."}
+            compliance["gstno"] = compliance_gst
+        if compliance_pan:
+            pan_qs = account.objects.filter(entity=entity, compliance_profile__pan__iexact=compliance_pan)
+            if self.instance is not None:
+                pan_qs = pan_qs.exclude(pk=self.instance.pk)
+            if pan_qs.exists() and settings is not None and settings.enforce_pan_uniqueness:
+                existing = errors.get("compliance_profile", {})
+                existing["pan"] = "An account with this PAN already exists."
+                errors["compliance_profile"] = existing
+            compliance["pan"] = compliance_pan
+
         commercial = dict(attrs.get("commercial_profile", {}) or {})
         defaults = resolve_party_accounting_ids(entity=entity, partytype=commercial.get("partytype"))
         accounttype_value = attrs.get("accounttype")
@@ -453,6 +517,19 @@ class AccountProfileV2WriteSerializer(serializers.ModelSerializer):
             attrs["creditaccounthead"] = defaults["creditaccounthead_id"]
         if self.instance is None and not (accounthead_value or nested_accounthead_value):
             raise serializers.ValidationError({"accounthead": "Account head is required."})
+        proposed_ledger_code = attrs.get("ledger_code")
+        if proposed_ledger_code in (None, ""):
+            proposed_ledger_code = attrs.get("ledger", {}).get("ledger_code")
+        if entity and proposed_ledger_code not in (None, ""):
+            duplicate_ledgers = Ledger.objects.filter(entity=entity, ledger_code=proposed_ledger_code)
+            current_ledger_id = getattr(self.instance, "ledger_id", None)
+            if current_ledger_id:
+                duplicate_ledgers = duplicate_ledgers.exclude(pk=current_ledger_id)
+            if duplicate_ledgers.exists():
+                errors["ledger_code"] = "An account with this ledger code already exists."
+
+        if errors:
+            raise serializers.ValidationError(errors)
         return attrs
 
     @staticmethod

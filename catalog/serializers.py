@@ -115,8 +115,27 @@ class ProductCategorySerializercreate(serializers.ModelSerializer):
 
 
 class BrandSerializer(serializers.ModelSerializer):
+    def validate(self, attrs):
+        entity = attrs.get("entity") or getattr(self.instance, "entity", None)
+        name = (attrs.get("name") or getattr(self.instance, "name", "") or "").strip()
+
+        if not name:
+            raise serializers.ValidationError({"name": "Brand name is required."})
+
+        attrs["name"] = name
+
+        if entity is not None:
+            duplicate_qs = Brand.objects.filter(entity=entity, name__iexact=name)
+            if self.instance:
+                duplicate_qs = duplicate_qs.exclude(pk=self.instance.pk)
+            if duplicate_qs.exists():
+                raise serializers.ValidationError({"name": "A brand with this name already exists."})
+
+        return attrs
+
     class Meta:
         model = Brand
+        validators = []
         fields = (
             "id",
             "entity",
@@ -127,8 +146,36 @@ class BrandSerializer(serializers.ModelSerializer):
 
 
 class UnitOfMeasureSerializer(serializers.ModelSerializer):
+    def validate(self, attrs):
+        entity = attrs.get("entity") or getattr(self.instance, "entity", None)
+        code = (attrs.get("code") or getattr(self.instance, "code", "") or "").strip()
+        uqc = (attrs.get("uqc") or getattr(self.instance, "uqc", "") or "").strip()
+
+        if not code:
+            raise serializers.ValidationError({"code": "UOM code is required."})
+
+        attrs["code"] = code
+        attrs["uqc"] = uqc
+
+        if entity is not None:
+            duplicate_code_qs = UnitOfMeasure.objects.filter(entity=entity, code__iexact=code)
+            if self.instance:
+                duplicate_code_qs = duplicate_code_qs.exclude(pk=self.instance.pk)
+            if duplicate_code_qs.exists():
+                raise serializers.ValidationError({"code": "A UOM with this code already exists."})
+
+            if uqc:
+                duplicate_uqc_qs = UnitOfMeasure.objects.filter(entity=entity, uqc__iexact=uqc)
+                if self.instance:
+                    duplicate_uqc_qs = duplicate_uqc_qs.exclude(pk=self.instance.pk)
+                if duplicate_uqc_qs.exists():
+                    raise serializers.ValidationError({"uqc": "A UQC with this code already exists."})
+
+        return attrs
+
     class Meta:
         model = UnitOfMeasure
+        validators = []
         fields = (
             "id",
             "entity",
@@ -140,8 +187,27 @@ class UnitOfMeasureSerializer(serializers.ModelSerializer):
 
 
 class HsnSacSerializer(serializers.ModelSerializer):
+    def validate(self, attrs):
+        entity = attrs.get("entity") or getattr(self.instance, "entity", None)
+        code = (attrs.get("code") or getattr(self.instance, "code", "") or "").strip()
+
+        if not code:
+            raise serializers.ValidationError({"code": "HSN / SAC code is required."})
+
+        attrs["code"] = code
+
+        if entity is not None:
+            duplicate_qs = HsnSac.objects.filter(entity=entity, code__iexact=code)
+            if self.instance:
+                duplicate_qs = duplicate_qs.exclude(pk=self.instance.pk)
+            if duplicate_qs.exists():
+                raise serializers.ValidationError({"code": "An HSN / SAC with this code already exists."})
+
+        return attrs
+
     class Meta:
         model = HsnSac
+        validators = []
         fields = (
             "id",
             "entity",
@@ -160,8 +226,27 @@ class HsnSacSerializer(serializers.ModelSerializer):
 
 
 class PriceListSerializer(serializers.ModelSerializer):
+    def validate(self, attrs):
+        entity = attrs.get("entity") or getattr(self.instance, "entity", None)
+        name = (attrs.get("name") or getattr(self.instance, "name", "") or "").strip()
+
+        if not name:
+            raise serializers.ValidationError({"name": "Price list name is required."})
+
+        attrs["name"] = name
+
+        if entity is not None:
+            duplicate_qs = PriceList.objects.filter(entity=entity, name__iexact=name)
+            if self.instance:
+                duplicate_qs = duplicate_qs.exclude(pk=self.instance.pk)
+            if duplicate_qs.exists():
+                raise serializers.ValidationError({"name": "A price list with this name already exists."})
+
+        return attrs
+
     class Meta:
         model = PriceList
+        validators = []
         fields = (
             "id",
             "entity",
@@ -655,7 +740,10 @@ class ProductPlanningSerializer(serializers.ModelSerializer):
         def _normalize_bucket(field_name, allowed, label):
             raw = attrs.get(field_name, getattr(self.instance, field_name, None))
             if raw in (None, ""):
-                attrs[field_name] = None if raw in (None, "") else raw
+                # These model fields are blankable CharFields, not nullable DB columns.
+                # Normalize null/blank API input to an empty string so validation stays
+                # friendly and we never bubble up a database IntegrityError.
+                attrs[field_name] = ""
                 return
             normalized = str(raw).strip().upper()
             if normalized not in allowed:
@@ -681,6 +769,11 @@ class ProductPlanningSerializer(serializers.ModelSerializer):
         max_stock = attrs.get("max_stock", getattr(self.instance, "max_stock", None))
         reorder_level = attrs.get("reorder_level", getattr(self.instance, "reorder_level", None))
         reorder_qty = attrs.get("reorder_qty", getattr(self.instance, "reorder_qty", None))
+        abc_class = attrs.get("abc_class", getattr(self.instance, "abc_class", None))
+        fsn_class = attrs.get("fsn_class", getattr(self.instance, "fsn_class", None))
+
+        if all(value in (None, "") for value in (min_stock, max_stock, reorder_level, reorder_qty, lead_time_days, abc_class, fsn_class)):
+            raise serializers.ValidationError({"non_field_errors": ["Enter at least one planning value before saving."]})
 
         if min_stock is not None and max_stock is not None and max_stock < min_stock:
             raise serializers.ValidationError({"max_stock": "Max stock must be greater than or equal to min stock."})
@@ -1290,8 +1383,27 @@ class ProductListSerializer(serializers.ModelSerializer):
 
 
 class ProductAttributeSerializer(serializers.ModelSerializer):
+    def validate(self, attrs):
+        entity = attrs.get("entity") or getattr(self.instance, "entity", None)
+        name = (attrs.get("name") or getattr(self.instance, "name", "") or "").strip()
+
+        if not name:
+            raise serializers.ValidationError({"name": "Product attribute name is required."})
+
+        attrs["name"] = name
+
+        if entity is not None:
+            duplicate_qs = ProductAttribute.objects.filter(entity=entity, name__iexact=name)
+            if self.instance:
+                duplicate_qs = duplicate_qs.exclude(pk=self.instance.pk)
+            if duplicate_qs.exists():
+                raise serializers.ValidationError({"name": "A product attribute with this name already exists."})
+
+        return attrs
+
     class Meta:
         model = ProductAttribute
+        validators = []
         fields = (
             "id",
             "entity",

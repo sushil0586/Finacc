@@ -13,8 +13,8 @@
 
 from io import BytesIO
 import math
-
 from django.db import transaction
+from django.db.models import ProtectedError
 from django.utils.dateparse import parse_date
 from rest_framework.generics import ListAPIView
 from django.db.models import Q, OuterRef, Subquery
@@ -287,6 +287,23 @@ class ProductRetrieveUpdateDestroyAPIView(EntityFromQueryMixin, generics.Retriev
 
     def perform_update(self, serializer):
         serializer.save(entity=self.get_entity())
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        try:
+            self.perform_destroy(instance)
+        except ProtectedError as exc:
+            return Response(
+                {
+                    "detail": self._build_protected_delete_message(exc),
+                    "code": "product_delete_blocked",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    def _build_protected_delete_message(self, _error: ProtectedError) -> str:
+        return "Product cannot be deleted because it is referenced in other transactions. Remove the related records and try again."
 
 
 # ----------------------------------------------------------------------

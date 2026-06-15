@@ -14,15 +14,25 @@ from assets.models import AssetCategory
 from catalog.bulk_products import commit_payload as commit_product_bulk_payload
 from catalog.bulk_products import export_payload as export_product_bulk_payload
 from catalog.bulk_products import template_payload as product_bulk_template_payload
-from catalog.models import BarcodeLabelTemplate, HsnSac, OpeningStockByLocation, PriceList, Product, ProductAttribute, ProductAttributeValue, ProductBarcode, ProductCategory, ProductClassification, ProductGstRate, ProductImage, ProductPlanning, ProductPrice, ProductPurchaseBehavior, UnitOfMeasure
-from catalog.serializers import OpeningStockByLocationSerializer, ProductBarcodeManageSerializer, ProductPlanningSerializer, ProductSerializer
+from catalog.models import BarcodeLabelTemplate, Brand, HsnSac, OpeningStockByLocation, PriceList, Product, ProductAttribute, ProductAttributeValue, ProductBarcode, ProductCategory, ProductClassification, ProductGstRate, ProductImage, ProductPlanning, ProductPrice, ProductPurchaseBehavior, UnitOfMeasure
+from catalog.serializers import (
+    BrandSerializer,
+    HsnSacSerializer,
+    OpeningStockByLocationSerializer,
+    PriceListSerializer,
+    ProductAttributeSerializer,
+    ProductBarcodeManageSerializer,
+    ProductPlanningSerializer,
+    ProductSerializer,
+    UnitOfMeasureSerializer,
+)
 from catalog.transaction_products import TransactionProductCatalogService
 from catalog.views import ProductBarcodeDownloadPDFAPIView
 from commerce.services import BarcodeResolutionService
 from entity.models import Entity, EntityFinancialYear, Godown, GstRegistrationType, SubEntity
 from financial.models import Ledger, account, accountHead, accounttype
 from financial.services import create_account_with_synced_ledger
-from posting.models import Entry, EntityStaticAccountMap, InventoryMove, JournalLine, StaticAccount, TxnType
+from posting.models import Entry, EntityStaticAccountMap, InventoryMove, JournalLine, PostingBatch, StaticAccount, TxnType
 from reports.services.financial.trial_balance import build_trial_balance
 from reports.services.inventory.stock_summary import build_inventory_stock_summary
 
@@ -217,6 +227,93 @@ class CatalogPhase1Tests(TestCase):
 
         self.assertFalse(serializer.is_valid())
         self.assertIn("is_ecomm_9_5_service", serializer.errors)
+
+    def test_product_delete_returns_clean_message_when_referenced(self):
+        product = self._create_product(sku="LOCKED-001")
+        posting_batch = PostingBatch.objects.create(
+            entity=self.entity,
+            txn_type=TxnType.PURCHASE,
+            txn_id=999,
+            created_by=self.user,
+        )
+        entry = Entry.objects.create(
+            entity=self.entity,
+            txn_type=TxnType.PURCHASE,
+            txn_id=999,
+            posting_date=timezone.now().date(),
+            posting_batch=posting_batch,
+            created_by=self.user,
+        )
+        InventoryMove.objects.create(
+            entry=entry,
+            posting_batch=posting_batch,
+            entity=self.entity,
+            txn_type=TxnType.PURCHASE,
+            txn_id=999,
+            product=product,
+            uom=self.uom,
+            base_uom=self.uom,
+            qty=Decimal("1.0000"),
+            base_qty=Decimal("1.0000"),
+            unit_cost=Decimal("10.0000"),
+            ext_cost=Decimal("10.00"),
+            move_type=InventoryMove.MoveType.IN_,
+            movement_nature=InventoryMove.MovementNature.PURCHASE,
+            posting_date=timezone.now().date(),
+        )
+
+        response = self.client.delete(f"/api/catalog/products/{product.id}/?entity={self.entity.id}")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "product_delete_blocked")
+        self.assertEqual(
+            response.data["detail"],
+            "Product cannot be deleted because it is referenced in other transactions. Remove the related records and try again."
+        )
+
+    def test_master_serializers_return_friendly_duplicate_messages(self):
+        Brand.objects.create(entity=self.entity, name="Acme", description="Existing")
+        PriceList.objects.create(entity=self.entity, name="Retail", description="Existing")
+        ProductAttribute.objects.create(entity=self.entity, name="Weight", data_type="number")
+
+        brand_serializer = BrandSerializer(data={"entity": self.entity.id, "name": "acme", "description": ""})
+        self.assertFalse(brand_serializer.is_valid())
+        self.assertEqual(brand_serializer.errors["name"][0], "A brand with this name already exists.")
+
+        uom_serializer = UnitOfMeasureSerializer(data={"entity": self.entity.id, "code": "pcs", "description": "Duplicate"})
+        self.assertFalse(uom_serializer.is_valid())
+        self.assertEqual(uom_serializer.errors["code"][0], "A UOM with this code already exists.")
+
+        hsn_serializer = HsnSacSerializer(
+            data={
+                "entity": self.entity.id,
+                "code": "9983",
+                "description": "Duplicate",
+                "is_service": False,
+                "default_sgst": 0,
+                "default_cgst": 0,
+                "default_igst": 0,
+                "default_cess": 0,
+                "is_exempt": False,
+                "is_nil_rated": False,
+                "is_non_gst": False,
+                "isactive": True,
+            }
+        )
+        self.assertFalse(hsn_serializer.is_valid())
+        self.assertEqual(hsn_serializer.errors["code"][0], "An HSN / SAC with this code already exists.")
+
+        pricelist_serializer = PriceListSerializer(
+            data={"entity": self.entity.id, "name": "retail", "description": "", "isdefault": False, "isactive": True}
+        )
+        self.assertFalse(pricelist_serializer.is_valid())
+        self.assertEqual(pricelist_serializer.errors["name"][0], "A price list with this name already exists.")
+
+        attribute_serializer = ProductAttributeSerializer(
+            data={"entity": self.entity.id, "name": "weight", "data_type": "number", "isactive": True}
+        )
+        self.assertFalse(attribute_serializer.is_valid())
+        self.assertEqual(attribute_serializer.errors["name"][0], "A product attribute with this name already exists.")
 
     def test_expiry_warning_cannot_exceed_shelf_life(self):
         serializer = ProductSerializer(
@@ -1014,17 +1111,21 @@ class CatalogOpeningStockAndPlanningTests(TestCase):
                 "is_party": False,
             },
         )
-        self.static_inventory = StaticAccount.objects.create(
+        self.static_inventory, _ = StaticAccount.objects.get_or_create(
             code="OPENING_INVENTORY_CARRY_FORWARD",
-            name="Opening Inventory Carry Forward",
-            group="EQUITY",
-            is_active=True,
+            defaults={
+                "name": "Opening Inventory Carry Forward",
+                "group": "EQUITY",
+                "is_active": True,
+            },
         )
-        self.static_equity = StaticAccount.objects.create(
+        self.static_equity, _ = StaticAccount.objects.get_or_create(
             code="OPENING_EQUITY_TRANSFER",
-            name="Opening Equity Transfer",
-            group="EQUITY",
-            is_active=True,
+            defaults={
+                "name": "Opening Equity Transfer",
+                "group": "EQUITY",
+                "is_active": True,
+            },
         )
         EntityStaticAccountMap.objects.create(
             entity=self.entity,
@@ -1197,6 +1298,37 @@ class CatalogOpeningStockAndPlanningTests(TestCase):
         )
         self.assertFalse(serializer.is_valid())
         self.assertIn("max_stock", serializer.errors)
+
+    def test_planning_serializer_rejects_empty_payload(self):
+        serializer = ProductPlanningSerializer(
+            data={
+                "min_stock": None,
+                "max_stock": None,
+                "reorder_level": None,
+                "reorder_qty": None,
+                "lead_time_days": None,
+                "abc_class": "",
+                "fsn_class": "",
+            }
+        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("non_field_errors", serializer.errors)
+
+    def test_planning_serializer_normalizes_null_bucket_values(self):
+        serializer = ProductPlanningSerializer(
+            data={
+                "min_stock": 1,
+                "max_stock": 10,
+                "reorder_level": 1,
+                "reorder_qty": 100,
+                "lead_time_days": 30,
+                "abc_class": "A",
+                "fsn_class": None,
+            }
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data["abc_class"], "A")
+        self.assertEqual(serializer.validated_data["fsn_class"], "")
 
 
 class CatalogBarcodeLabelTemplateTests(TestCase):

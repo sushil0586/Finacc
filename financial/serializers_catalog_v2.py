@@ -8,6 +8,7 @@ class AccountTypeV2Serializer(serializers.ModelSerializer):
 
     class Meta:
         model = accounttype
+        validators = []
         fields = (
             "id",
             "accounttypeid",
@@ -38,9 +39,9 @@ class AccountTypeV2Serializer(serializers.ModelSerializer):
         if self.instance is not None:
             qs = qs.exclude(pk=self.instance.pk)
         if qs.filter(accounttypename__iexact=name).exists():
-            errors["accounttypename"] = "Duplicate account type name for this entity."
+            errors["accounttypename"] = "An account type with this name already exists."
         if qs.filter(accounttypecode__iexact=code).exists():
-            errors["accounttypecode"] = "Duplicate account type code for this entity."
+            errors["accounttypecode"] = "An account type with this code already exists."
         if errors:
             raise serializers.ValidationError(errors)
         attrs["accounttypename"] = name
@@ -54,6 +55,7 @@ class AccountHeadV2Serializer(serializers.ModelSerializer):
 
     class Meta:
         model = accountHead
+        validators = []
         fields = (
             "id",
             "name",
@@ -90,9 +92,9 @@ class AccountHeadV2Serializer(serializers.ModelSerializer):
         if self.instance is not None:
             qs = qs.exclude(pk=self.instance.pk)
         if qs.filter(code=code).exists():
-            errors["code"] = "Duplicate account head code for this entity."
+            errors["code"] = "An account head with this code already exists."
         if qs.filter(name__iexact=name).exists():
-            errors["name"] = "Duplicate account head name for this entity."
+            errors["name"] = "An account head with this name already exists."
         if errors:
             raise serializers.ValidationError(errors)
         attrs["name"] = name

@@ -1,5 +1,7 @@
-from django.db.models import OuterRef, Prefetch, Q, Subquery
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError
+from django.db.models import OuterRef, Prefetch, Q, Subquery
+from django.db.models.deletion import ProtectedError
 from rest_framework import permissions, serializers, status
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.generics import ListAPIView, ListCreateAPIView, RetrieveUpdateDestroyAPIView
@@ -178,17 +180,29 @@ class AccountProfileV2Pagination(PageNumberPagination):
 
 class SoftDeleteRetrieveUpdateDestroyAPIView(RetrieveUpdateDestroyAPIView):
     """
-    New financial APIs are deactivate-first.
-    Legacy endpoints remain unchanged.
+    Financial master deletes should remove the record when safe.
+    When the record is referenced, return a clean validation response
+    instead of silently converting it to inactive.
     """
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
-        if hasattr(instance, "isactive"):
-            instance.isactive = False
-            instance.save(update_fields=["isactive"])
+        try:
+            instance.delete()
             return Response(status=status.HTTP_204_NO_CONTENT)
-        return super().destroy(request, *args, **kwargs)
+        except DjangoValidationError as exc:
+            if hasattr(exc, "message_dict") and exc.message_dict:
+                return Response(exc.message_dict, status=status.HTTP_409_CONFLICT)
+            messages = list(getattr(exc, "messages", []) or [])
+            detail = messages[0] if messages else str(exc)
+            if "because it is referenced in:" in detail:
+                detail = "This record cannot be deleted because it is already used in other records or transactions."
+            return Response({"detail": detail}, status=status.HTTP_409_CONFLICT)
+        except ProtectedError:
+            return Response(
+                {"detail": "This record cannot be deleted because it is already used in other records or transactions."},
+                status=status.HTTP_409_CONFLICT,
+            )
 
 
 class AccountTypeV2ListCreateAPIView(ListCreateAPIView):
@@ -210,7 +224,7 @@ class AccountTypeV2ListCreateAPIView(ListCreateAPIView):
         try:
             serializer.save(createdby=self.request.user)
         except IntegrityError:
-            raise serializers.ValidationError({"detail": "Duplicate account type code/name for this entity."})
+            raise serializers.ValidationError({"detail": "An account type with the same name or code already exists."})
 
 
 class ShippingDetailsListCreateAPIView(ListCreateAPIView):
@@ -342,7 +356,7 @@ class AccountTypeV2RetrieveUpdateDestroyAPIView(SoftDeleteRetrieveUpdateDestroyA
         try:
             serializer.save()
         except IntegrityError:
-            raise serializers.ValidationError({"detail": "Duplicate account type code/name for this entity."})
+            raise serializers.ValidationError({"detail": "An account type with the same name or code already exists."})
 
 
 class AccountHeadV2ListCreateAPIView(ListCreateAPIView):
@@ -367,7 +381,7 @@ class AccountHeadV2ListCreateAPIView(ListCreateAPIView):
         try:
             serializer.save(createdby=self.request.user)
         except IntegrityError:
-            raise serializers.ValidationError({"detail": "Duplicate account head code/name for this entity."})
+            raise serializers.ValidationError({"detail": "An account head with the same name or code already exists."})
 
 
 class AccountHeadV2RetrieveUpdateDestroyAPIView(SoftDeleteRetrieveUpdateDestroyAPIView):
@@ -381,7 +395,7 @@ class AccountHeadV2RetrieveUpdateDestroyAPIView(SoftDeleteRetrieveUpdateDestroyA
         try:
             serializer.save()
         except IntegrityError:
-            raise serializers.ValidationError({"detail": "Duplicate account head code/name for this entity."})
+            raise serializers.ValidationError({"detail": "An account head with the same name or code already exists."})
 
 
 class LedgerListCreateAPIView(ListCreateAPIView):
@@ -418,7 +432,10 @@ class LedgerListCreateAPIView(ListCreateAPIView):
             request_user=self.request.user,
             include_createdby=True,
         )
-        ledger = serializer.save(**save_kwargs)
+        try:
+            ledger = serializer.save(**save_kwargs)
+        except IntegrityError:
+            raise serializers.ValidationError({"detail": "A ledger with this code already exists."})
         _sync_party_management(ledger=ledger, request_user=self.request.user)
 
 
@@ -466,7 +483,10 @@ class LedgerRetrieveUpdateDestroyAPIView(SoftDeleteRetrieveUpdateDestroyAPIView)
             request_user=self.request.user,
             instance=serializer.instance,
         )
-        ledger = serializer.save(**save_kwargs)
+        try:
+            ledger = serializer.save(**save_kwargs)
+        except IntegrityError:
+            raise serializers.ValidationError({"detail": "A ledger with this code already exists."})
         _sync_party_management(ledger=ledger, request_user=self.request.user)
 
     def destroy(self, request, *args, **kwargs):
@@ -816,7 +836,10 @@ class AccountProfileV2ListCreateAPIView(ListCreateAPIView):
     def create(self, request, *args, **kwargs):
         write_serializer = self.get_serializer(data=request.data)
         write_serializer.is_valid(raise_exception=True)
-        instance = write_serializer.save()
+        try:
+            instance = write_serializer.save()
+        except IntegrityError:
+            raise serializers.ValidationError({"detail": "An account with the same key details already exists."})
         read_serializer = AccountProfileV2ReadSerializer(instance, context=self.get_serializer_context())
         headers = self.get_success_headers(read_serializer.data)
         return Response(read_serializer.data, status=status.HTTP_201_CREATED, headers=headers)
@@ -853,6 +876,9 @@ class AccountProfileV2RetrieveUpdateDestroyAPIView(SoftDeleteRetrieveUpdateDestr
         instance = self.get_object()
         write_serializer = self.get_serializer(instance, data=request.data, partial=partial)
         write_serializer.is_valid(raise_exception=True)
-        instance = write_serializer.save()
+        try:
+            instance = write_serializer.save()
+        except IntegrityError:
+            raise serializers.ValidationError({"detail": "An account with the same key details already exists."})
         read_serializer = AccountProfileV2ReadSerializer(instance, context=self.get_serializer_context())
         return Response(read_serializer.data)
