@@ -277,6 +277,26 @@ def allocate_next_ledger_code(
     return (max_code or 999) + 1
 
 
+def allocate_next_account_head_code(*, entity_id):
+    """
+    Generate the next account head code for an entity.
+
+    Account heads do not currently use the financial governance code series, so
+    we allocate the next available positive integer from the existing entity
+    scope. This keeps the create contract simple for the UI while preserving the
+    unique entity+code constraint.
+    """
+    from financial.models import accountHead
+
+    max_code = (
+        accountHead.objects.filter(entity_id=entity_id)
+        .order_by("-code")
+        .values_list("code", flat=True)
+        .first()
+    )
+    return (max_code or 999) + 1
+
+
 def bootstrap_financial_settings_for_all_entities(entity_model, createdby=None):
     created_count = 0
     for entity in entity_model.objects.all().iterator():

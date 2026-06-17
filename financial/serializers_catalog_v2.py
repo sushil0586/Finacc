@@ -1,6 +1,7 @@
 from rest_framework import serializers
 
 from financial.models import accountHead, accounttype
+from financial.services import allocate_next_account_head_code
 
 
 class AccountTypeV2Serializer(serializers.ModelSerializer):
@@ -83,19 +84,27 @@ class AccountHeadV2Serializer(serializers.ModelSerializer):
         errors = {}
         if not name:
             errors["name"] = "Account head name is required."
-        if code in (None, ""):
-            errors["code"] = "Account head code is required."
         if errors:
             raise serializers.ValidationError(errors)
 
         qs = accountHead.objects.filter(entity=entity)
         if self.instance is not None:
             qs = qs.exclude(pk=self.instance.pk)
-        if qs.filter(code=code).exists():
+        normalized_code = None if code in (None, "", 0) else code
+        if normalized_code is not None and qs.filter(code=normalized_code).exists():
             errors["code"] = "An account head with this code already exists."
         if qs.filter(name__iexact=name).exists():
             errors["name"] = "An account head with this name already exists."
         if errors:
             raise serializers.ValidationError(errors)
         attrs["name"] = name
+        attrs["code"] = normalized_code
         return attrs
+
+    def create(self, validated_data):
+        if validated_data.get("code") in (None, "", 0):
+            entity = validated_data.get("entity")
+            if entity is None:
+                raise serializers.ValidationError({"entity": "Entity is required."})
+            validated_data["code"] = allocate_next_account_head_code(entity_id=entity.id)
+        return super().create(validated_data)
