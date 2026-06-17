@@ -174,6 +174,53 @@ class FinancialApiContractSmokeTests(TestCase):
             "This record cannot be deleted because it is already used in other records or transactions.",
         )
 
+    def test_account_head_delete_allows_unreferenced_record(self):
+        acct_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Asset",
+            accounttypecode="AST",
+            createdby=self.user,
+        )
+        head = accountHead.objects.create(
+            entity=self.entity,
+            name="Temporary Head",
+            code=7100,
+            accounttype=acct_type,
+            drcreffect="Debit",
+            createdby=self.user,
+        )
+
+        response = self.client.delete(f"/api/financial/accountheads-v2/{head.id}")
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(accountHead.objects.filter(pk=head.id).exists())
+
+    def test_account_head_create_accepts_null_code_and_auto_allocates(self):
+        acct_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Asset",
+            accounttypecode="AST",
+            createdby=self.user,
+        )
+
+        response = self.client.post(
+            "/api/financial/accountheads-v2",
+            {
+                "entity": self.entity.id,
+                "name": "Receivable Group",
+                "code": None,
+                "accounttype": acct_type.id,
+                "drcreffect": "Debit",
+                "balanceType": "Debit",
+                "isactive": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertIsNotNone(response.data.get("code"))
+        self.assertGreater(response.data["code"], 0)
+
     def test_ledger_duplicate_code_is_rejected_cleanly(self):
         acct_type = accounttype.objects.create(
             entity=self.entity,

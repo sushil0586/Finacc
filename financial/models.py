@@ -1,5 +1,6 @@
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
+from django.db.models.deletion import DO_NOTHING, PROTECT, RESTRICT
 from django.utils.translation import gettext as _
 from django.core.exceptions import ValidationError
 from django.db.models import Q
@@ -106,12 +107,17 @@ CODE_SERIES_REASON_CHOICES = [
 
 def _protect_if_referenced(instance, label: str, display_value: str):
     """
-    Blocks deletion if ANY related rows exist (enforces: 'no delete if referenced').
-    PostgreSQL friendly.
+    Blocks deletion only for reverse relations that Django itself would not
+    clean up automatically, such as PROTECT/RESTRICT/DO_NOTHING references.
+
+    Reverse CASCADE/SET_NULL/SET_DEFAULT relations are safe to delete and
+    should not make a brand-new master row look "in use".
     """
     related_models = set()
 
     for rel in instance._meta.related_objects:
+        if rel.on_delete not in {PROTECT, RESTRICT, DO_NOTHING}:
+            continue
         accessor = rel.get_accessor_name()
         if not accessor:
             continue
@@ -121,13 +127,11 @@ def _protect_if_referenced(instance, label: str, display_value: str):
         except Exception:
             continue
 
-        # reverse FK manager
-        try:
+        # reverse FK / reverse one-to-many manager
+        if hasattr(manager_or_obj, "exists"):
             if manager_or_obj.exists():
                 related_models.add(rel.related_model.__name__)
-                continue
-        except Exception:
-            pass
+            continue
 
         # reverse OneToOne object
         try:

@@ -51,6 +51,7 @@ class AccountTypeV2Serializer(serializers.ModelSerializer):
 
 
 class AccountHeadV2Serializer(serializers.ModelSerializer):
+    code = serializers.IntegerField(required=False, allow_null=True)
     parent_name = serializers.CharField(source="accountheadsr.name", read_only=True)
     accounttype_name = serializers.CharField(source="accounttype.accounttypename", read_only=True)
 
