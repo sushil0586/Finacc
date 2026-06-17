@@ -525,6 +525,82 @@ class AccountOpeningPostingIntegrationTests(TestCase):
             "An account with this GSTIN already exists.",
         )
 
+    def test_account_write_serializer_allows_unchanged_legacy_duplicate_values_on_update(self):
+        first = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "accountname": "Legacy Duplicate",
+                "createdby": self.user,
+            },
+            ledger_overrides={
+                "accounthead": self.party_head,
+                "creditaccounthead": self.party_head,
+            },
+        )
+        second = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "accountname": "Legacy Duplicate",
+                "createdby": self.user,
+            },
+            ledger_overrides={
+                "accounthead": self.party_head,
+                "creditaccounthead": self.party_head,
+            },
+        )
+        apply_normalized_profile_payload(
+            first,
+            compliance_data={"gstno": "29ABCDE1234F1Z5", "pan": "ABCDE1234F"},
+            createdby=self.user,
+        )
+        apply_normalized_profile_payload(
+            second,
+            compliance_data={"gstno": "29ABCDE1234F1Z5", "pan": "ABCDE1234F"},
+            createdby=self.user,
+        )
+
+        serializer = AccountProfileV2WriteSerializer(
+            first,
+            data={
+                "accountname": "Legacy Duplicate",
+                "accounthead": self.party_head.id,
+                "compliance_profile": {"gstno": "29ABCDE1234F1Z5", "pan": "ABCDE1234F"},
+            },
+            partial=True,
+            context={"request": None},
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
+    def test_account_write_serializer_preserves_false_canbedeleted_on_update(self):
+        existing = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "accountname": "Locked Bulk Account",
+                "createdby": self.user,
+            },
+            ledger_overrides={
+                "accounthead": self.party_head,
+                "creditaccounthead": self.party_head,
+            },
+        )
+
+        serializer = AccountProfileV2WriteSerializer(
+            existing,
+            data={
+                "accountname": "Locked Bulk Account",
+                "accounthead": self.party_head.id,
+                "canbedeleted": False,
+            },
+            partial=True,
+            context={"request": None},
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        updated = serializer.save()
+        updated.refresh_from_db()
+        self.assertFalse(updated.canbedeleted)
+
     def test_bulk_accounts_validate_and_commit_exported_payload(self):
         existing = create_account_with_synced_ledger(
             account_data={
@@ -561,9 +637,48 @@ class AccountOpeningPostingIntegrationTests(TestCase):
                 entity_id=self.entity.id,
                 entityfin_id=self.fin_year.id,
                 txn_type=TxnType.OPENING_BALANCE,
-                txn_id=account_opening_txn_id(acc.id),
+                txn_id=account_opening_txn_id(existing.id),
             ).exists()
         )
+
+    def test_bulk_accounts_validate_exported_payload_with_legacy_duplicates(self):
+        first = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "accountname": "Duplicate Bulk Account",
+                "createdby": self.user,
+            },
+            ledger_overrides={
+                "accounthead": self.party_head,
+                "creditaccounthead": self.party_head,
+            },
+        )
+        second = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "accountname": "Duplicate Bulk Account",
+                "createdby": self.user,
+            },
+            ledger_overrides={
+                "accounthead": self.party_head,
+                "creditaccounthead": self.party_head,
+            },
+        )
+        apply_normalized_profile_payload(
+            first,
+            compliance_data={"gstno": "29ABCDE1234F1Z5", "pan": "ABCDE1234F"},
+            createdby=self.user,
+        )
+        apply_normalized_profile_payload(
+            second,
+            compliance_data={"gstno": "29ABCDE1234F1Z5", "pan": "ABCDE1234F"},
+            createdby=self.user,
+        )
+
+        payload = export_accounts_bulk_payload(self.entity)
+        validate_result = validate_accounts_bulk_payload(payload, self.entity)
+
+        self.assertEqual(validate_result.errors, [])
 
     def test_backfill_account_opening_postings_command_posts_legacy_opening(self):
         legacy_account = create_account_with_synced_ledger(

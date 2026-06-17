@@ -459,24 +459,31 @@ class AccountProfileV2WriteSerializer(serializers.ModelSerializer):
         duplicate_accounts = account.objects.filter(entity=entity)
         if self.instance is not None:
             duplicate_accounts = duplicate_accounts.exclude(pk=self.instance.pk)
-        if duplicate_accounts.filter(accountname__iexact=accountname).exists():
+        existing_accountname = str(getattr(self.instance, "accountname", "") or "").strip()
+        accountname_changed = self.instance is None or accountname.lower() != existing_accountname.lower()
+        if accountname_changed and duplicate_accounts.filter(accountname__iexact=accountname).exists():
             errors["accountname"] = "An account with this name already exists."
 
         settings, _ = get_or_create_financial_settings(entity) if entity else (None, False)
         compliance_gst = str(compliance.get("gstno") or "").strip().upper() or None
         compliance_pan = str(compliance.get("pan") or "").strip().upper() or None
+        existing_compliance = getattr(self.instance, "compliance_profile", None) if self.instance is not None else None
+        existing_gst = str(getattr(existing_compliance, "gstno", "") or "").strip().upper() or None
+        existing_pan = str(getattr(existing_compliance, "pan", "") or "").strip().upper() or None
         if compliance_gst:
             gst_qs = account.objects.filter(entity=entity, compliance_profile__gstno__iexact=compliance_gst)
             if self.instance is not None:
                 gst_qs = gst_qs.exclude(pk=self.instance.pk)
-            if gst_qs.exists() and (settings is None or settings.enforce_gst_uniqueness):
+            gst_changed = self.instance is None or compliance_gst != existing_gst
+            if gst_changed and gst_qs.exists() and (settings is None or settings.enforce_gst_uniqueness):
                 errors["compliance_profile"] = {"gstno": "An account with this GSTIN already exists."}
             compliance["gstno"] = compliance_gst
         if compliance_pan:
             pan_qs = account.objects.filter(entity=entity, compliance_profile__pan__iexact=compliance_pan)
             if self.instance is not None:
                 pan_qs = pan_qs.exclude(pk=self.instance.pk)
-            if pan_qs.exists() and settings is not None and settings.enforce_pan_uniqueness:
+            pan_changed = self.instance is None or compliance_pan != existing_pan
+            if pan_changed and pan_qs.exists() and settings is not None and settings.enforce_pan_uniqueness:
                 existing = errors.get("compliance_profile", {})
                 existing["pan"] = "An account with this PAN already exists."
                 errors["compliance_profile"] = existing
@@ -534,6 +541,8 @@ class AccountProfileV2WriteSerializer(serializers.ModelSerializer):
 
     @staticmethod
     def _normalize_fk_value(value):
+        if isinstance(value, bool):
+            return value
         return None if value in (0, "0", "") else value
 
     @staticmethod
