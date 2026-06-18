@@ -11,6 +11,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient, APITestCase
 
 from Authentication.models import User
+from catalog.models import Product, ProductPurchaseBehavior, UnitOfMeasure
 from entity.models import (
     Entity,
     EntityAddress,
@@ -131,6 +132,16 @@ class PurchaseInvoiceContractAlignmentTests(APITestCase):
                 "partytype": "Vendor",
                 "createdby": self.user,
             },
+        )
+        self.uom = UnitOfMeasure.objects.create(code="NOS", name="Numbers")
+        self.inventory_product = Product.objects.create(
+            entity=self.entity,
+            productname="Inventory Product",
+            productdesc="Inventory Product",
+            is_service=False,
+            purchase_behavior=ProductPurchaseBehavior.INVENTORY,
+            purchase_account=self.vendor,
+            createdby=self.user,
         )
 
     def test_purchase_form_meta_exposes_backend_authoritative_contract(self):
@@ -321,3 +332,38 @@ class PurchaseInvoiceContractAlignmentTests(APITestCase):
         )
         self.assertTrue(serializer.is_valid(), serializer.errors)
         self.assertEqual(serializer.validated_data["itc_block_reason"], "ITC not eligible")
+
+    def test_purchase_line_serializer_accepts_null_purchase_behavior_and_defaults_from_product(self):
+        serializer = PurchaseInvoiceLineSerializer(
+            data={
+                "line_no": 1,
+                "product": self.inventory_product.id,
+                "purchase_behavior": None,
+                "product_desc": "Inventory line",
+                "is_service": False,
+                "uom": self.uom.id,
+                "qty": "1.0000",
+                "free_qty": "0.0000",
+                "rate": "100.00",
+                "discount_type": "N",
+                "discount_percent": "0.00",
+                "discount_amount": "0.00",
+                "taxability": 1,
+                "taxable_value": "100.00",
+                "gst_rate": "18.00",
+                "cgst_percent": "9.00",
+                "sgst_percent": "9.00",
+                "igst_percent": "0.00",
+                "cgst_amount": "9.00",
+                "sgst_amount": "9.00",
+                "igst_amount": "0.00",
+                "cess_percent": "0.00",
+                "cess_amount": "0.00",
+                "line_total": "118.00",
+                "is_itc_eligible": True,
+                "itc_block_reason": "",
+            }
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data["purchase_behavior"], ProductPurchaseBehavior.INVENTORY)

@@ -23,6 +23,18 @@ def entity_primary_state(entity):
     return getattr(addr, "state", None)
 
 
+def entity_primary_bank_account(entity):
+    if not entity:
+        return None
+    return entity.bank_accounts_v2.filter(isactive=True, is_primary=True).first()
+
+
+def entity_primary_contact(entity):
+    if not entity:
+        return None
+    return entity.contacts.filter(isactive=True, is_primary=True).first()
+
+
 def account_primary_state(acc):
     addr = account_primary_address(acc)
     return getattr(addr, "state", None)

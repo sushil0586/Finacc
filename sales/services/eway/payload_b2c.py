@@ -4,6 +4,8 @@ from __future__ import annotations
 from typing import Any, Dict, List,Tuple
 from datetime import date
 from datetime import date, datetime
+from dataclasses import dataclass
+from django.conf import settings
 from sales.services.profile_resolvers import entity_primary_address, entity_primary_state
 
 def _float(x) -> float:
@@ -102,7 +104,32 @@ def _sanitize_vehicle_no(s: str) -> str:
     return (s or "").strip().replace(" ", "").replace("-", "").upper()[:20]
 
 
+@dataclass(frozen=True)
+class B2CDirectEWayPolicy:
+    supply_type: str = "O"
+    sub_supply_type: str = "1"
+    sub_supply_desc: str = " "
+    default_doc_type: str = "INV"
+    customer_gstin: str = "URP"
+    transaction_type: int = 1
+    default_vehicle_type: str = "R"
+
+    @classmethod
+    def from_settings(cls) -> "B2CDirectEWayPolicy":
+        raw = getattr(settings, "SALES_EWAY_B2C_POLICY", {}) or {}
+        return cls(
+            supply_type=str(raw.get("supply_type", cls.supply_type)).strip() or cls.supply_type,
+            sub_supply_type=str(raw.get("sub_supply_type", cls.sub_supply_type)).strip() or cls.sub_supply_type,
+            sub_supply_desc=str(raw.get("sub_supply_desc", cls.sub_supply_desc)),
+            default_doc_type=str(raw.get("default_doc_type", cls.default_doc_type)).strip() or cls.default_doc_type,
+            customer_gstin=str(raw.get("customer_gstin", cls.customer_gstin)).strip() or cls.customer_gstin,
+            transaction_type=_int(raw.get("transaction_type", cls.transaction_type), cls.transaction_type),
+            default_vehicle_type=str(raw.get("default_vehicle_type", cls.default_vehicle_type)).strip()[:1] or cls.default_vehicle_type,
+        )
+
+
 def build_b2c_direct_payload(*, invoice: Any, ewb: Any, entity_gstin: str) -> Dict[str, Any]:
+    policy = B2CDirectEWayPolicy.from_settings()
     if str(getattr(invoice, "supply_category", "")).upper() != "2":
         raise ValueError("B2C payload builder called for non-B2C invoice.")
 
@@ -207,11 +234,11 @@ def build_b2c_direct_payload(*, invoice: Any, ewb: Any, entity_gstin: str) -> Di
         trans_dt = inv_doc_date
 
     payload: Dict[str, Any] = {
-        "supplyType": "O",
-        "subSupplyType": "1",
-        "subSupplyDesc": " ",
+        "supplyType": policy.supply_type,
+        "subSupplyType": policy.sub_supply_type,
+        "subSupplyDesc": policy.sub_supply_desc,
 
-        "docType": "INV",
+        "docType": (getattr(ewb, "doc_type", None) or policy.default_doc_type),
         "docNo": str(inv_doc_no),
         "docDate": inv_doc_date_ddmmyyyy,
 
@@ -224,7 +251,7 @@ def build_b2c_direct_payload(*, invoice: Any, ewb: Any, entity_gstin: str) -> Di
         "fromPincode": _int(getattr(ent_addr, "pincode", None), 0),
         "fromStateCode": int(from_state_code),
 
-        "toGstin": "URP",
+        "toGstin": policy.customer_gstin,
         "toTrdName": (getattr(ship, "full_name", None) or "Customer")[:100],
         "toAddr1": (getattr(ship, "address1", None) or "")[:255],
         "toAddr2": (getattr(ship, "address2", None) or "")[:255],
@@ -233,7 +260,7 @@ def build_b2c_direct_payload(*, invoice: Any, ewb: Any, entity_gstin: str) -> Di
         "actToStateCode": int(to_state_code),
         "toStateCode": int(to_state_code),
 
-        "transactionType": 1,
+        "transactionType": policy.transaction_type,
 
         "totalValue": total_taxable,
         "cgstValue": total_cgst,
@@ -252,7 +279,7 @@ def build_b2c_direct_payload(*, invoice: Any, ewb: Any, entity_gstin: str) -> Di
         "transDocDate": trans_dt.strftime("%d/%m/%Y") if trans_dt else None,
 
         "vehicleNo": _sanitize_vehicle_no(getattr(ewb, "vehicle_no", None) or ""),
-        "vehicleType": (getattr(ewb, "vehicle_type", None) or "R")[:1],
+        "vehicleType": (getattr(ewb, "vehicle_type", None) or policy.default_vehicle_type)[:1],
 
         "itemList": item_list,
     }

@@ -46,10 +46,17 @@ def q4(x) -> Decimal:
         return Decimal("0.0000")
 
 
-def clean_hsn(hsn: Optional[str]) -> str:
+def clean_hsn(hsn: Optional[str], *, min_digits: int = 4) -> str:
     s = (hsn or "").strip()
     s = re.sub(r"\D", "", s)  # digits only
-    if not (4 <= len(s) <= 8):
+    if min_digits < 4 or min_digits > 8:
+        min_digits = 4
+    if not (min_digits <= len(s) <= 8):
+        if min_digits > 4:
+            raise ValueError(
+                f"HSN/SAC must be {min_digits}..8 digits for this e-invoice policy. "
+                f"Got: {hsn!r}"
+            )
         raise ValueError(f"HSN/SAC is required (4..8 digits). Got: {hsn!r}")
     return s
 
@@ -118,8 +125,13 @@ class IRPPayloadBuilder:
       - taxable_value, cgst_amount, sgst_amount, igst_amount, line_total
     """
 
-    def __init__(self, invoice):
+    def __init__(self, invoice, *, min_hsn_digits: int = 4):
         self.invoice = invoice
+        try:
+            digits = int(min_hsn_digits)
+        except (TypeError, ValueError):
+            digits = 4
+        self.min_hsn_digits = min(8, max(4, digits))
 
     @staticmethod
     def _map_doc_type(inv) -> str:
@@ -343,6 +355,8 @@ class IRPPayloadBuilder:
         }
 
     def _ship_dtls(self, inv) -> Optional[Dict[str, Any]]:
+        buyer_gstin = str(getattr(inv, "customer_gstin", "") or "").strip().upper()
+
         # Preferred source: selected shipping detail on invoice (ship-to)
         sd = getattr(inv, "shipping_detail", None)
         if sd is not None:
@@ -353,6 +367,11 @@ class IRPPayloadBuilder:
             loc = str(getattr(getattr(sd, "city", None), "cityname", "") or "").strip()
             gstin = str(getattr(sd, "gstno", "") or getattr(inv, "customer_gstin", "") or "").strip().upper()
             if lgl and addr1 and loc and pin and stcd:
+                # When the selected ship-to record belongs to the same registered
+                # buyer GSTIN, omitting ShipDtls is more widely accepted by IRP
+                # providers than sending a duplicate Buyer/Ship GSTIN pair.
+                if gstin and gstin == buyer_gstin:
+                    return None
                 out = {
                     "LglNm": lgl[:100],
                     "Addr1": addr1[:100],
@@ -361,6 +380,8 @@ class IRPPayloadBuilder:
                     "Pin": pin,
                     "Stcd": stcd,
                 }
+                if gstin == buyer_gstin:
+                    gstin = ""
                 if gstin and (gstin == "URP" or re.fullmatch(r"^[0-9A-Z]{15}$", gstin)):
                     out["Gstin"] = gstin
                 trd = str(getattr(inv, "customer_name", "") or "").strip()
@@ -380,6 +401,8 @@ class IRPPayloadBuilder:
         loc = str(src.get("Loc") or src.get("loc") or "").strip()
         gstin = str(src.get("Gstin") or src.get("gstin") or getattr(inv, "customer_gstin", "") or "").strip().upper()
         if not (lgl and addr1 and loc and pin and stcd):
+            return None
+        if gstin and gstin == buyer_gstin:
             return None
         out = {
             "LglNm": lgl[:100],
@@ -449,6 +472,7 @@ class IRPPayloadBuilder:
             ass_amt = q2(line.taxable_value)
             cgst, sgst, igst = self._effective_line_tax_split(line)
             cess = q2(line.cess_amount)
+            cess_rate = q2(getattr(line, "cess_percent", Decimal("0.00")))
 
             disc = q2(line.discount_amount)
 
@@ -466,7 +490,7 @@ class IRPPayloadBuilder:
                     or getattr(product, "hsn_sac", None)
                     or ""
                 )
-            hsn = clean_hsn(str(hsn_raw))
+            hsn = clean_hsn(str(hsn_raw), min_digits=self.min_hsn_digits)
 
             desc = (
                 (getattr(line, "productDesc", None) or "").strip()
@@ -492,6 +516,7 @@ class IRPPayloadBuilder:
                 "CgstAmt": float(cgst) if cgst > 0 else 0,
                 "SgstAmt": float(sgst) if sgst > 0 else 0,
                 "IgstAmt": float(igst) if igst > 0 else 0,
+                "CesRt": float(cess_rate) if cess_rate > 0 else 0,
                 "CesAmt": float(cess) if cess > 0 else 0,
                 "TotItemVal": float(tot_item_val),  # ✅ required
             }
@@ -529,7 +554,9 @@ class IRPPayloadBuilder:
         sgst = q2(sgst)
         igst = q2(igst)
         cess = q2(cess)
-        tot = q2(ass + cgst + sgst + igst + cess)
+        oth_chrg = q2(getattr(inv, "total_other_charges", Decimal("0.00")))
+        rnd_off = q2(getattr(inv, "round_off", Decimal("0.00")))
+        tot = q2(ass + cgst + sgst + igst + cess + oth_chrg + rnd_off)
 
         return {
             "AssVal": float(ass),
@@ -538,10 +565,7 @@ class IRPPayloadBuilder:
             "IgstVal": float(igst),
             "CesVal": float(cess),
             "Discount": float(q2(getattr(inv, "total_discount", Decimal("0.00")))),
-            "OthChrg": float(q2(getattr(inv, "total_other_charges", Decimal("0.00")))),
-            "RndOffAmt": float(q2(getattr(inv, "round_off", Decimal("0.00")))),
-            "TotInvVal": float(
-                tot if bool(getattr(inv, "is_reverse_charge", False))
-                else q2(getattr(inv, "grand_total", None) or tot)
-            ),
+            "OthChrg": float(oth_chrg),
+            "RndOffAmt": float(rnd_off),
+            "TotInvVal": float(tot),
         }

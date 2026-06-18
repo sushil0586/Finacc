@@ -61,6 +61,8 @@ class Command(BaseCommand):
         if entity_id:
             qs = qs.filter(entity_id=entity_id)
 
+        model_field_names = {field.name for field in account._meta.get_fields()}
+
         total = qs.count()
         self.stdout.write(self.style.SUCCESS("Legacy account column audit"))
         self.stdout.write(f"Accounts scanned: {total}")
@@ -68,20 +70,33 @@ class Command(BaseCommand):
             self.stdout.write(f"Entity filter: {entity_id}")
 
         results = []
+        missing_fields = []
 
         for field in self.CHAR_FIELDS:
+            if field not in model_field_names:
+                missing_fields.append(field)
+                continue
             count = qs.exclude(**{f"{field}__isnull": True}).exclude(**{field: ""}).count()
             results.append((field, count))
 
         for field in self.NUMERIC_FIELDS:
+            if field not in model_field_names:
+                missing_fields.append(field)
+                continue
             count = qs.exclude(**{f"{field}__isnull": True}).count()
             results.append((field, count))
 
         for field in self.BOOL_FIELDS:
+            if field not in model_field_names:
+                missing_fields.append(field)
+                continue
             count = qs.filter(**{field: True}).count()
             results.append((field, count))
 
         for field in self.FK_ID_FIELDS:
+            if field not in model_field_names:
+                missing_fields.append(field)
+                continue
             count = qs.exclude(**{f"{field}__isnull": True}).count()
             results.append((field, count))
 
@@ -96,3 +111,9 @@ class Command(BaseCommand):
                 self.stdout.write(f"- {field}: {count}")
         else:
             self.stdout.write(self.style.SUCCESS("All audited legacy columns are empty/false/null-safe for drop."))
+
+        if missing_fields:
+            self.stdout.write("")
+            self.stdout.write(self.style.NOTICE("Legacy columns already absent from the current account model:"))
+            for field in sorted(set(missing_fields)):
+                self.stdout.write(f"- {field}")

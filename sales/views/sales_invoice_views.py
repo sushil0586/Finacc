@@ -616,6 +616,14 @@ class SalesInvoicePrintAPIView(_SalesScopeMixin, APIView):
         image.save(buffer, format="PNG")
         return base64.b64encode(buffer.getvalue()).decode("ascii")
 
+    @staticmethod
+    def _eway_summary(einvoice_artifact: Any, eway_artifact: Any) -> dict[str, Any]:
+        return {
+            "ewb_no": getattr(eway_artifact, "ewb_no", None) or getattr(einvoice_artifact, "ewb_no", None),
+            "ewb_date": getattr(eway_artifact, "ewb_date", None) or getattr(einvoice_artifact, "ewb_date", None),
+            "ewb_valid_till": getattr(eway_artifact, "valid_upto", None) or getattr(einvoice_artifact, "ewb_valid_upto", None),
+        }
+
     def _resolve_transport_for_print(self, header: SalesInvoiceHeader) -> dict[str, str]:
         transport_snapshot = getattr(header, "transport_snapshot", None)
         eway_artifact = getattr(header, "eway_artifact", None)
@@ -739,6 +747,7 @@ class SalesInvoicePrintAPIView(_SalesScopeMixin, APIView):
         shipto_snapshot = getattr(header, "shipto_snapshot", None)
         einvoice_artifact = getattr(header, "einvoice_artifact", None)
         eway_artifact = getattr(header, "eway_artifact", None)
+        eway_summary = self._eway_summary(einvoice_artifact, eway_artifact)
         transport_fields = self._resolve_transport_for_print(header)
 
         seller_state_display = self._state_display(
@@ -861,9 +870,9 @@ class SalesInvoicePrintAPIView(_SalesScopeMixin, APIView):
                 "irn": getattr(einvoice_artifact, "irn", None),
                 "ack_no": getattr(einvoice_artifact, "ack_no", None),
                 "ack_date": self._date_str(getattr(einvoice_artifact, "ack_date", None)),
-                "ewb_no": getattr(eway_artifact, "ewb_no", None) or getattr(einvoice_artifact, "ewb_no", None),
-                "ewb_date": self._date_str(getattr(eway_artifact, "ewb_date", None) or getattr(einvoice_artifact, "ewb_date", None)),
-                "ewb_valid_till": self._date_str(getattr(eway_artifact, "valid_upto", None) or getattr(einvoice_artifact, "ewb_valid_upto", None)),
+                "ewb_no": eway_summary["ewb_no"],
+                "ewb_date": self._date_str(eway_summary["ewb_date"]),
+                "ewb_valid_till": self._date_str(eway_summary["ewb_valid_till"]),
                 "qr_image_base64": self._normalize_qr_image_base64(getattr(einvoice_artifact, "signed_qr_code", None)),
             },
             "saleInvoiceDetails": sale_invoice_details,

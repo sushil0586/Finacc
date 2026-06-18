@@ -35,7 +35,7 @@ class GenerateEWayRequestSerializer(serializers.Serializer):
     transporter_name = serializers.CharField(max_length=128, required=False, allow_blank=True)
 
     trans_doc_no = serializers.CharField(max_length=15, required=False, allow_blank=True)
-    trans_doc_date = serializers.DateField(required=False)
+    trans_doc_date = serializers.DateField(required=False, allow_null=True)
 
     vehicle_no = serializers.CharField(max_length=32, required=False, allow_blank=True)
     vehicle_type = serializers.ChoiceField(choices=[("R", "Regular"), ("O", "ODC")], required=False)

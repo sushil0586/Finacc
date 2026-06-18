@@ -56,6 +56,11 @@ def _norm_text(value) -> str:
 
 class PurchaseInvoiceLineSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False, allow_null=True)
+    purchase_behavior = serializers.ChoiceField(
+        choices=ProductPurchaseBehavior.choices,
+        required=False,
+        allow_null=True,
+    )
     product_name = serializers.SerializerMethodField()
     uom_code = serializers.CharField(source="uom.code", read_only=True)
     taxability_name = serializers.CharField(source="get_taxability_display", read_only=True)

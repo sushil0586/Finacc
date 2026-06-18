@@ -55,6 +55,7 @@ DEFAULT_POLICY_CONTROLS: Dict[str, Any] = {
     "compliance_allow_regenerate_irn_after_cancel": "off",
     "compliance_allow_regenerate_eway_after_cancel": "on",
     "compliance_allow_cancel_irn_when_eway_active": "off",
+    "einvoice_min_hsn_digits": 4,
 }
 
 DEFAULT_INVOICE_PRINTING_CONFIG: Dict[str, Any] = {
@@ -356,6 +357,15 @@ class SalesSettingsService:
         normalized: Dict[str, Any] = {}
         for key, value in raw.items():
             if key not in DEFAULT_POLICY_CONTROLS:
+                continue
+            if key == "einvoice_min_hsn_digits":
+                try:
+                    digits = int(value)
+                except (TypeError, ValueError):
+                    raise ValueError("policy_controls.einvoice_min_hsn_digits must be an integer between 4 and 8.")
+                if digits < 4 or digits > 8:
+                    raise ValueError("policy_controls.einvoice_min_hsn_digits must be between 4 and 8.")
+                normalized[key] = digits
                 continue
             if key == "delete_policy":
                 v = str(value).lower().strip()

@@ -19,6 +19,10 @@ from sales.serializers.sales_compliance_serializers import (
     GenerateEWayActionSerializer,
     CancelIRNActionSerializer,
     GetIRNDetailsActionSerializer,
+    GetIRNByDocDetailsActionSerializer,
+    GetGSTNDetailsActionSerializer,
+    SyncGSTINFromCPActionSerializer,
+    GetB2CQRCodeActionSerializer,
     GetEWayByIRNActionSerializer,
 )
 
@@ -385,6 +389,134 @@ class SalesInvoiceGetIRNDetailsAPIView(_InvoiceMixin, GenericAPIView):
         try:
             svc = SalesComplianceService(invoice=invoice, user=request.user)
             out = svc.get_irn_details(**ser.validated_data)
+        except COMPLIANCE_EXCEPTIONS as e:
+            return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        invoice_data = SalesInvoiceHeaderSerializer(invoice, context={"request": request}).data
+        return Response(
+            {
+                "ok": True,
+                **out,
+                "invoice": invoice_data,
+                "compliance": self._compliance_summary(invoice),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class SalesInvoiceGetIRNByDocDetailsAPIView(_InvoiceMixin, GenericAPIView):
+    """
+    POST /sales-invoices/{pk}/compliance/get-irn-details-by-doc/
+    Body: {doc_type?, doc_number?, doc_date?}
+    """
+    serializer_class = GetIRNByDocDetailsActionSerializer
+
+    def post(self, request, pk: int, *args, **kwargs):
+        invoice = self.get_invoice()
+        self._require_any_permission(
+            ["sales.compliance.fetch", "sales.invoice.update", "sales.invoice.edit"],
+            invoice.entity_id,
+        )
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            svc = SalesComplianceService(invoice=invoice, user=request.user)
+            out = svc.get_irn_details_by_doc(**ser.validated_data)
+        except COMPLIANCE_EXCEPTIONS as e:
+            return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        invoice_data = SalesInvoiceHeaderSerializer(invoice, context={"request": request}).data
+        return Response(
+            {
+                "ok": True,
+                **out,
+                "invoice": invoice_data,
+                "compliance": self._compliance_summary(invoice),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class SalesInvoiceGetGSTNDetailsAPIView(_InvoiceMixin, GenericAPIView):
+    """
+    POST /sales-invoices/{pk}/compliance/get-gstn-details/
+    Body: {gstin}
+    """
+    serializer_class = GetGSTNDetailsActionSerializer
+
+    def post(self, request, pk: int, *args, **kwargs):
+        invoice = self.get_invoice()
+        self._require_any_permission(
+            ["sales.compliance.fetch", "sales.invoice.update", "sales.invoice.edit"],
+            invoice.entity_id,
+        )
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            svc = SalesComplianceService(invoice=invoice, user=request.user)
+            out = svc.get_gstn_details(**ser.validated_data)
+        except COMPLIANCE_EXCEPTIONS as e:
+            return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        invoice_data = SalesInvoiceHeaderSerializer(invoice, context={"request": request}).data
+        return Response(
+            {
+                "ok": True,
+                **out,
+                "invoice": invoice_data,
+                "compliance": self._compliance_summary(invoice),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class SalesInvoiceSyncGSTINFromCPAPIView(_InvoiceMixin, GenericAPIView):
+    """
+    POST /sales-invoices/{pk}/compliance/sync-gstin-from-cp/
+    Body: {gstin}
+    """
+    serializer_class = SyncGSTINFromCPActionSerializer
+
+    def post(self, request, pk: int, *args, **kwargs):
+        invoice = self.get_invoice()
+        self._require_any_permission(
+            ["sales.compliance.fetch", "sales.invoice.update", "sales.invoice.edit"],
+            invoice.entity_id,
+        )
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            svc = SalesComplianceService(invoice=invoice, user=request.user)
+            out = svc.sync_gstin_from_cp(**ser.validated_data)
+        except COMPLIANCE_EXCEPTIONS as e:
+            return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        invoice_data = SalesInvoiceHeaderSerializer(invoice, context={"request": request}).data
+        return Response(
+            {
+                "ok": True,
+                **out,
+                "invoice": invoice_data,
+                "compliance": self._compliance_summary(invoice),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class SalesInvoiceGetB2CQRCodeAPIView(_InvoiceMixin, GenericAPIView):
+    """
+    POST /sales-invoices/{pk}/compliance/get-b2c-qrcode/
+    Body: optional bank/UPI/document overrides
+    """
+    serializer_class = GetB2CQRCodeActionSerializer
+
+    def post(self, request, pk: int, *args, **kwargs):
+        invoice = self.get_invoice()
+        self._require_any_permission(
+            ["sales.compliance.fetch", "sales.invoice.update", "sales.invoice.edit"],
+            invoice.entity_id,
+        )
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            svc = SalesComplianceService(invoice=invoice, user=request.user)
+            out = svc.get_b2c_qrcode(**ser.validated_data)
         except COMPLIANCE_EXCEPTIONS as e:
             return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
         invoice_data = SalesInvoiceHeaderSerializer(invoice, context={"request": request}).data

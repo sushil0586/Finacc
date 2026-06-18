@@ -33,6 +33,7 @@ DEFAULT_POLICY_CONTROLS = {
     "compliance_allow_regenerate_irn_after_cancel": "off",
     "compliance_allow_regenerate_eway_after_cancel": "on",
     "compliance_allow_cancel_irn_when_eway_active": "off",
+    "einvoice_min_hsn_digits": 4,
 }
 
 DEFAULT_INVOICE_PRINTING = {

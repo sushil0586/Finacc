@@ -16,6 +16,26 @@ from sales.serializers.eway_serializers import GenerateEWayRequestSerializer
 from sales.serializers.eway_serializers import SalesEWayB2CGenerateSerializer
 from sales.serializers.sales_compliance_serializers import (
     CancelEWayActionSerializer,
+    GetEWayDetailsActionSerializer,
+    GetEWayTransporterDetailsActionSerializer,
+    GetEWayGSTINDetailsActionSerializer,
+    GetEWayHSNDetailsActionSerializer,
+    GetEWayErrorListActionSerializer,
+    RejectEWayActionSerializer,
+    GetTripSheetActionSerializer,
+    GetEWayByDocumentActionSerializer,
+    GetEWayBillsForTransporterActionSerializer,
+    GetEWayBillReportByTransporterAssignedDateActionSerializer,
+    GetEWayBillsByDateActionSerializer,
+    GetEWayBillsRejectedByOthersActionSerializer,
+    GetEWayBillsForTransporterByGSTINActionSerializer,
+    GetEWayBillsForTransporterByStateActionSerializer,
+    GetEWayBillsOfOtherPartyActionSerializer,
+    GenerateConsolidatedEWayActionSerializer,
+    RegenerateTripSheetActionSerializer,
+    InitiateMultiVehicleActionSerializer,
+    AddMultiVehicleActionSerializer,
+    UpdateMultiVehicleActionSerializer,
     UpdateEWayVehicleActionSerializer,
     UpdateEWayTransporterActionSerializer,
     ExtendEWayValidityActionSerializer,
@@ -270,6 +290,373 @@ class SalesInvoiceEWayB2CGenerateAPIView(_ScopedInvoiceMixin, GenericAPIView):
             out,
             status=(status.HTTP_200_OK if out.get("status") == "SUCCESS" else status.HTTP_400_BAD_REQUEST),
         )
+
+class SalesInvoiceGetEWayDetailsAPIView(_ScopedInvoiceMixin, GenericAPIView):
+    serializer_class = GetEWayDetailsActionSerializer
+
+    def post(self, request, id: int, *args, **kwargs):
+        inv = self._fetch_invoice_with_related(id)
+        self._require_any_permission(
+            ["sales.compliance.fetch", "sales.invoice.update", "sales.invoice.edit"],
+            inv.entity_id,
+        )
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            out = SalesComplianceService(invoice=inv, user=request.user).get_eway_details(**ser.validated_data)
+        except COMPLIANCE_EXCEPTIONS as e:
+            return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        return Response({"ok": True, **out}, status=status.HTTP_200_OK)
+
+
+class SalesInvoiceGetEWayTransporterDetailsAPIView(_ScopedInvoiceMixin, GenericAPIView):
+    serializer_class = GetEWayTransporterDetailsActionSerializer
+
+    def post(self, request, id: int, *args, **kwargs):
+        inv = self._fetch_invoice_with_related(id)
+        self._require_any_permission(
+            ["sales.compliance.fetch", "sales.invoice.update", "sales.invoice.edit"],
+            inv.entity_id,
+        )
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            out = SalesComplianceService(invoice=inv, user=request.user).get_eway_transporter_details(**ser.validated_data)
+        except COMPLIANCE_EXCEPTIONS as e:
+            return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        return Response({"ok": True, **out}, status=status.HTTP_200_OK)
+
+
+class SalesInvoiceGetEWayGSTINDetailsAPIView(_ScopedInvoiceMixin, GenericAPIView):
+    serializer_class = GetEWayGSTINDetailsActionSerializer
+
+    def post(self, request, id: int, *args, **kwargs):
+        inv = self._fetch_invoice_with_related(id)
+        self._require_any_permission(
+            ["sales.compliance.fetch", "sales.invoice.update", "sales.invoice.edit"],
+            inv.entity_id,
+        )
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            out = SalesComplianceService(invoice=inv, user=request.user).get_eway_gstin_details(**ser.validated_data)
+        except COMPLIANCE_EXCEPTIONS as e:
+            return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        return Response({"ok": True, **out}, status=status.HTTP_200_OK)
+
+
+class SalesInvoiceGetEWayHSNDetailsAPIView(_ScopedInvoiceMixin, GenericAPIView):
+    serializer_class = GetEWayHSNDetailsActionSerializer
+
+    def post(self, request, id: int, *args, **kwargs):
+        inv = self._fetch_invoice_with_related(id)
+        self._require_any_permission(
+            ["sales.compliance.fetch", "sales.invoice.update", "sales.invoice.edit"],
+            inv.entity_id,
+        )
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            out = SalesComplianceService(invoice=inv, user=request.user).get_eway_hsn_details(**ser.validated_data)
+        except COMPLIANCE_EXCEPTIONS as e:
+            return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        return Response({"ok": True, **out}, status=status.HTTP_200_OK)
+
+
+class SalesInvoiceGetEWayErrorListAPIView(_ScopedInvoiceMixin, GenericAPIView):
+    serializer_class = GetEWayErrorListActionSerializer
+
+    def post(self, request, id: int, *args, **kwargs):
+        inv = self._fetch_invoice_with_related(id)
+        self._require_any_permission(
+            ["sales.compliance.fetch", "sales.invoice.update", "sales.invoice.edit"],
+            inv.entity_id,
+        )
+        ser = self.get_serializer(data=request.data or {})
+        ser.is_valid(raise_exception=True)
+        try:
+            out = SalesComplianceService(invoice=inv, user=request.user).get_eway_error_list()
+        except COMPLIANCE_EXCEPTIONS as e:
+            return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        return Response({"ok": True, **out}, status=status.HTTP_200_OK)
+
+
+class SalesInvoiceRejectEWayAPIView(_ScopedInvoiceMixin, GenericAPIView):
+    serializer_class = RejectEWayActionSerializer
+
+    def post(self, request, id: int, *args, **kwargs):
+        inv = self._fetch_invoice_with_related(id)
+        self._require_any_permission(
+            ["sales.compliance.fetch", "sales.invoice.update", "sales.invoice.edit"],
+            inv.entity_id,
+        )
+        ser = self.get_serializer(data=request.data or {})
+        ser.is_valid(raise_exception=True)
+        try:
+            out = SalesComplianceService(invoice=inv, user=request.user).reject_eway(**ser.validated_data)
+        except COMPLIANCE_EXCEPTIONS as e:
+            return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        return Response({"ok": True, **out}, status=status.HTTP_200_OK)
+
+
+class SalesInvoiceGetTripSheetAPIView(_ScopedInvoiceMixin, GenericAPIView):
+    serializer_class = GetTripSheetActionSerializer
+
+    def post(self, request, id: int, *args, **kwargs):
+        inv = self._fetch_invoice_with_related(id)
+        self._require_any_permission(
+            ["sales.compliance.fetch", "sales.invoice.update", "sales.invoice.edit"],
+            inv.entity_id,
+        )
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            out = SalesComplianceService(invoice=inv, user=request.user).get_trip_sheet(**ser.validated_data)
+        except COMPLIANCE_EXCEPTIONS as e:
+            return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        return Response({"ok": True, **out}, status=status.HTTP_200_OK)
+
+
+class SalesInvoiceGetEWayByDocumentAPIView(_ScopedInvoiceMixin, GenericAPIView):
+    serializer_class = GetEWayByDocumentActionSerializer
+
+    def post(self, request, id: int, *args, **kwargs):
+        inv = self._fetch_invoice_with_related(id)
+        self._require_any_permission(
+            ["sales.compliance.fetch", "sales.invoice.update", "sales.invoice.edit"],
+            inv.entity_id,
+        )
+        ser = self.get_serializer(data=request.data or {})
+        ser.is_valid(raise_exception=True)
+        try:
+            out = SalesComplianceService(invoice=inv, user=request.user).get_eway_by_document(**ser.validated_data)
+        except COMPLIANCE_EXCEPTIONS as e:
+            return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        return Response({"ok": True, **out}, status=status.HTTP_200_OK)
+
+
+class SalesInvoiceGetEWayBillsForTransporterAPIView(_ScopedInvoiceMixin, GenericAPIView):
+    serializer_class = GetEWayBillsForTransporterActionSerializer
+
+    def post(self, request, id: int, *args, **kwargs):
+        inv = self._fetch_invoice_with_related(id)
+        self._require_any_permission(
+            ["sales.compliance.fetch", "sales.invoice.update", "sales.invoice.edit"],
+            inv.entity_id,
+        )
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            out = SalesComplianceService(invoice=inv, user=request.user).get_eway_bills_for_transporter(**ser.validated_data)
+        except COMPLIANCE_EXCEPTIONS as e:
+            return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        return Response({"ok": True, **out}, status=status.HTTP_200_OK)
+
+
+class SalesInvoiceGetEWayBillReportByTransporterAssignedDateAPIView(_ScopedInvoiceMixin, GenericAPIView):
+    serializer_class = GetEWayBillReportByTransporterAssignedDateActionSerializer
+
+    def post(self, request, id: int, *args, **kwargs):
+        inv = self._fetch_invoice_with_related(id)
+        self._require_any_permission(
+            ["sales.compliance.fetch", "sales.invoice.update", "sales.invoice.edit"],
+            inv.entity_id,
+        )
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            out = SalesComplianceService(invoice=inv, user=request.user).get_eway_bill_report_by_transporter_assigned_date(
+                **ser.validated_data
+            )
+        except COMPLIANCE_EXCEPTIONS as e:
+            return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        return Response({"ok": True, **out}, status=status.HTTP_200_OK)
+
+
+class SalesInvoiceGetEWayBillsByDateAPIView(_ScopedInvoiceMixin, GenericAPIView):
+    serializer_class = GetEWayBillsByDateActionSerializer
+
+    def post(self, request, id: int, *args, **kwargs):
+        inv = self._fetch_invoice_with_related(id)
+        self._require_any_permission(
+            ["sales.compliance.fetch", "sales.invoice.update", "sales.invoice.edit"],
+            inv.entity_id,
+        )
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            out = SalesComplianceService(invoice=inv, user=request.user).get_eway_bills_by_date(**ser.validated_data)
+        except COMPLIANCE_EXCEPTIONS as e:
+            return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        return Response({"ok": True, **out}, status=status.HTTP_200_OK)
+
+
+class SalesInvoiceGetEWayBillsRejectedByOthersAPIView(_ScopedInvoiceMixin, GenericAPIView):
+    serializer_class = GetEWayBillsRejectedByOthersActionSerializer
+
+    def post(self, request, id: int, *args, **kwargs):
+        inv = self._fetch_invoice_with_related(id)
+        self._require_any_permission(
+            ["sales.compliance.fetch", "sales.invoice.update", "sales.invoice.edit"],
+            inv.entity_id,
+        )
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            out = SalesComplianceService(invoice=inv, user=request.user).get_eway_bills_rejected_by_others(
+                **ser.validated_data
+            )
+        except COMPLIANCE_EXCEPTIONS as e:
+            return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        return Response({"ok": True, **out}, status=status.HTTP_200_OK)
+
+
+class SalesInvoiceGetEWayBillsForTransporterByGSTINAPIView(_ScopedInvoiceMixin, GenericAPIView):
+    serializer_class = GetEWayBillsForTransporterByGSTINActionSerializer
+
+    def post(self, request, id: int, *args, **kwargs):
+        inv = self._fetch_invoice_with_related(id)
+        self._require_any_permission(
+            ["sales.compliance.fetch", "sales.invoice.update", "sales.invoice.edit"],
+            inv.entity_id,
+        )
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            out = SalesComplianceService(invoice=inv, user=request.user).get_eway_bills_for_transporter_by_gstin(
+                **ser.validated_data
+            )
+        except COMPLIANCE_EXCEPTIONS as e:
+            return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        return Response({"ok": True, **out}, status=status.HTTP_200_OK)
+
+
+class SalesInvoiceGetEWayBillsForTransporterByStateAPIView(_ScopedInvoiceMixin, GenericAPIView):
+    serializer_class = GetEWayBillsForTransporterByStateActionSerializer
+
+    def post(self, request, id: int, *args, **kwargs):
+        inv = self._fetch_invoice_with_related(id)
+        self._require_any_permission(
+            ["sales.compliance.fetch", "sales.invoice.update", "sales.invoice.edit"],
+            inv.entity_id,
+        )
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            out = SalesComplianceService(invoice=inv, user=request.user).get_eway_bills_for_transporter_by_state(
+                **ser.validated_data
+            )
+        except COMPLIANCE_EXCEPTIONS as e:
+            return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        return Response({"ok": True, **out}, status=status.HTTP_200_OK)
+
+
+class SalesInvoiceGetEWayBillsOfOtherPartyAPIView(_ScopedInvoiceMixin, GenericAPIView):
+    serializer_class = GetEWayBillsOfOtherPartyActionSerializer
+
+    def post(self, request, id: int, *args, **kwargs):
+        inv = self._fetch_invoice_with_related(id)
+        self._require_any_permission(
+            ["sales.compliance.fetch", "sales.invoice.update", "sales.invoice.edit"],
+            inv.entity_id,
+        )
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            out = SalesComplianceService(invoice=inv, user=request.user).get_eway_bills_of_other_party(**ser.validated_data)
+        except COMPLIANCE_EXCEPTIONS as e:
+            return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        return Response({"ok": True, **out}, status=status.HTTP_200_OK)
+
+
+class SalesInvoiceGenerateConsolidatedEWayAPIView(_ScopedInvoiceMixin, GenericAPIView):
+    serializer_class = GenerateConsolidatedEWayActionSerializer
+
+    def post(self, request, id: int, *args, **kwargs):
+        inv = self._fetch_invoice_with_related(id)
+        self._require_any_permission(
+            ["sales.compliance.fetch", "sales.invoice.update", "sales.invoice.edit"],
+            inv.entity_id,
+        )
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            out = SalesComplianceService(invoice=inv, user=request.user).generate_consolidated_eway(req=ser.validated_data)
+        except COMPLIANCE_EXCEPTIONS as e:
+            return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        return Response({"ok": True, **out}, status=status.HTTP_200_OK)
+
+
+class SalesInvoiceRegenerateTripSheetAPIView(_ScopedInvoiceMixin, GenericAPIView):
+    serializer_class = RegenerateTripSheetActionSerializer
+
+    def post(self, request, id: int, *args, **kwargs):
+        inv = self._fetch_invoice_with_related(id)
+        self._require_any_permission(
+            ["sales.compliance.fetch", "sales.invoice.update", "sales.invoice.edit"],
+            inv.entity_id,
+        )
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            out = SalesComplianceService(invoice=inv, user=request.user).regenerate_trip_sheet(req=ser.validated_data)
+        except COMPLIANCE_EXCEPTIONS as e:
+            return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        return Response({"ok": True, **out}, status=status.HTTP_200_OK)
+
+
+class SalesInvoiceInitiateMultiVehicleAPIView(_ScopedInvoiceMixin, GenericAPIView):
+    serializer_class = InitiateMultiVehicleActionSerializer
+
+    def post(self, request, id: int, *args, **kwargs):
+        inv = self._fetch_invoice_with_related(id)
+        self._require_any_permission(
+            ["sales.compliance.fetch", "sales.invoice.update", "sales.invoice.edit"],
+            inv.entity_id,
+        )
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            out = SalesComplianceService(invoice=inv, user=request.user).initiate_multi_vehicle(req=ser.validated_data)
+        except COMPLIANCE_EXCEPTIONS as e:
+            return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        return Response({"ok": True, **out}, status=status.HTTP_200_OK)
+
+
+class SalesInvoiceAddMultiVehicleAPIView(_ScopedInvoiceMixin, GenericAPIView):
+    serializer_class = AddMultiVehicleActionSerializer
+
+    def post(self, request, id: int, *args, **kwargs):
+        inv = self._fetch_invoice_with_related(id)
+        self._require_any_permission(
+            ["sales.compliance.fetch", "sales.invoice.update", "sales.invoice.edit"],
+            inv.entity_id,
+        )
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            out = SalesComplianceService(invoice=inv, user=request.user).add_multi_vehicle(req=ser.validated_data)
+        except COMPLIANCE_EXCEPTIONS as e:
+            return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        return Response({"ok": True, **out}, status=status.HTTP_200_OK)
+
+
+class SalesInvoiceUpdateMultiVehicleAPIView(_ScopedInvoiceMixin, GenericAPIView):
+    serializer_class = UpdateMultiVehicleActionSerializer
+
+    def post(self, request, id: int, *args, **kwargs):
+        inv = self._fetch_invoice_with_related(id)
+        self._require_any_permission(
+            ["sales.compliance.fetch", "sales.invoice.update", "sales.invoice.edit"],
+            inv.entity_id,
+        )
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        try:
+            out = SalesComplianceService(invoice=inv, user=request.user).update_multi_vehicle(req=ser.validated_data)
+        except COMPLIANCE_EXCEPTIONS as e:
+            return Response(self._error_list_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        return Response({"ok": True, **out}, status=status.HTTP_200_OK)
 
 
 class SalesInvoiceCancelEWayAPIView(_ScopedInvoiceMixin, GenericAPIView):

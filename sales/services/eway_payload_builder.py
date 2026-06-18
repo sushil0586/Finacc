@@ -61,13 +61,19 @@ def build_exp_ship_dtls(
     loc: Optional[str],
     pin: Optional[str],
     stcd: Optional[str],
+    gstin: Optional[str] = None,
 ) -> Dict[str, Any]:
+    gstin_value = (gstin or "").strip().upper()
+    state_code = _stcd(stcd)
+    if state_code == "00" and len(gstin_value) >= 2 and gstin_value[:2].isdigit():
+        state_code = gstin_value[:2]
     out = {
         "Addr1": _clean_addr(addr1),
         "Addr2": (addr2 or "").strip() or None,
         "Loc": _clean_loc(loc),
         "Pin": _pin(pin),
-        "Stcd": _stcd(stcd),
+        "Stcd": state_code,
+        "Gstin": gstin_value or None,
     }
     return {k: v for k, v in out.items() if v is not None}
 

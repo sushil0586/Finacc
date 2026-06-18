@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import timedelta
 import base64
 import hashlib
+import ipaddress
 from django.conf import settings
 from django.db import models
 from django.utils import timezone
@@ -110,6 +111,24 @@ class SalesMasterGSTCredential(models.Model):
     def get_gst_password(self) -> str:
         return _dec(self.gst_password) or ""
 
+    def get_eway_username(self) -> str:
+        # Current credential model uses the GST portal username for both e-invoice
+        # and e-way unless a future schema introduces dedicated e-way fields.
+        return str(self.gst_username or "").strip()
+
+    def get_eway_password(self) -> str:
+        return self.get_gst_password()
+
+    def resolve_ip_address(self) -> str | None:
+        ip = str(self.ip_address or "").strip()
+        if not ip:
+            return None
+        try:
+            ipaddress.ip_address(ip)
+        except ValueError as exc:
+            raise ValueError(f"Invalid credential ip_address: {ip}") from exc
+        return ip
+
     def save(self, *args, **kwargs):
         self.client_secret = _enc(self.client_secret)
         self.gst_password = _enc(self.gst_password)
@@ -159,33 +178,4 @@ class SalesMasterGSTToken(models.Model):
     def save(self, *args, **kwargs):
         self.auth_token = _enc(self.auth_token)
         self.eway_auth_token = _enc(self.eway_auth_token)
-        super().save(*args, **kwargs)
-
-
-class MasterGSTToken(models.Model):
-    class Module(models.TextChoices):
-        EWB = "EWB", "E-Way"
-        EINV = "EINV", "E-Invoice"
-
-    entity = models.ForeignKey("entity.Entity", on_delete=models.CASCADE)
-    gstin = models.CharField(max_length=15, db_index=True)
-    module = models.CharField(max_length=8, choices=Module.choices, db_index=True)
-
-    auth_token = models.TextField(null=True, blank=True)
-    token_created_at = models.DateTimeField(null=True, blank=True)
-    last_response_json = models.JSONField(null=True, blank=True)
-
-    updated_at = models.DateTimeField(auto_now=True)
-
-    def is_valid(self) -> bool:
-        if not self.auth_token or not self.token_created_at:
-            return False
-        # 6 hours validity; keep buffer 5 mins
-        return timezone.now() < (self.token_created_at + timedelta(hours=6, minutes=-5))
-
-    def get_auth_token(self) -> str:
-        return _dec(self.auth_token) or ""
-
-    def save(self, *args, **kwargs):
-        self.auth_token = _enc(self.auth_token)
         super().save(*args, **kwargs)

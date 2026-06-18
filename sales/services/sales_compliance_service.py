@@ -4,6 +4,7 @@ import json
 from typing import Any, Dict, Optional
 from sales.services.providers.registry import ProviderRegistry
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
 from django.db import transaction
@@ -19,10 +20,12 @@ from sales.models.sales_compliance import (
     SalesEWayBillCancel,
     SalesEInvoiceStatus,
     SalesEWayStatus,
+    SalesEWaySource,
 )
 from sales.models.mastergst_models import SalesMasterGSTCredential, MasterGSTEnvironment, MasterGSTServiceScope
 from sales.services.providers.mastergst_client import MasterGSTClient
 from sales.services.providers.config import active_einvoice_provider, active_eway_provider
+from sales.services.providers.credential_resolver import CredentialResolver
 
 from sales.services.irp_payload_builder import IRPPayloadBuilder
 from sales.services.party_resolvers import seller_from_entity, buyer_from_account
@@ -38,7 +41,7 @@ from sales.services.eway_payload_builder import (
 )
 
 from sales.services.eway.payload_b2c import build_b2c_direct_payload
-from sales.services.profile_resolvers import entity_primary_address
+from sales.services.profile_resolvers import entity_primary_address, entity_primary_bank_account, entity_primary_contact, entity_primary_gstin
 from sales.services.sales_settings_service import SalesSettingsService
 
 
@@ -105,6 +108,56 @@ class SalesComplianceService:
         return val == "on"
 
     @staticmethod
+    def _einvoice_min_hsn_digits(inv: SalesInvoiceHeader) -> int:
+        controls = SalesComplianceService._controls(inv)
+        raw = controls.get("einvoice_min_hsn_digits", 4)
+        try:
+            digits = int(raw)
+        except (TypeError, ValueError):
+            digits = 4
+        return min(8, max(4, digits))
+
+    @staticmethod
+    def _money_text(value: Any) -> str:
+        try:
+            amount = Decimal(str(value or 0))
+        except (InvalidOperation, TypeError, ValueError):
+            amount = Decimal("0")
+        return f"{amount.quantize(Decimal('0.01'))}"
+
+    @staticmethod
+    def _default_exp_ship_dtls(inv: SalesInvoiceHeader) -> Dict[str, Any]:
+        ship = getattr(inv, "shipto_snapshot", None)
+        return build_exp_ship_dtls(
+            addr1=getattr(ship, "address1", None) if ship else getattr(inv, "bill_to_address1", None),
+            addr2=getattr(ship, "address2", None) if ship else getattr(inv, "bill_to_address2", None),
+            loc=getattr(ship, "city", None) if ship else getattr(inv, "bill_to_city", None),
+            pin=getattr(ship, "pincode", None) if ship else getattr(inv, "bill_to_pincode", None),
+            stcd=(getattr(ship, "state_code", None) or getattr(inv, "bill_to_state_code", None)) if ship else getattr(inv, "bill_to_state_code", None),
+            gstin=(getattr(ship, "gstin", None) or getattr(inv, "customer_gstin", None)) if ship else getattr(inv, "customer_gstin", None),
+        )
+
+    @staticmethod
+    def _normalize_exp_ship_dtls(inv: SalesInvoiceHeader, ship_in: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        fallback = SalesComplianceService._default_exp_ship_dtls(inv)
+        current = dict(ship_in or {})
+        buyer_gstin = str(getattr(inv, "customer_gstin", "") or "").strip().upper()
+        current_gstin = str(current.get("Gstin") or "").strip().upper()
+        current_state = str(current.get("Stcd") or "").strip()
+        if current_gstin and current_state and current_state != "00":
+            return None if buyer_gstin and current_gstin == buyer_gstin else current
+        merged = {**fallback, **current}
+        merged_gstin = str(merged.get("Gstin") or "").strip().upper()
+        if not current_gstin and fallback.get("Gstin"):
+            merged_gstin = str(fallback["Gstin"]).strip().upper()
+            merged["Gstin"] = merged_gstin
+        if not current_state or current_state == "00":
+            merged["Stcd"] = fallback.get("Stcd") or current.get("Stcd")
+        if buyer_gstin and merged_gstin == buyer_gstin:
+            return None
+        return {k: v for k, v in merged.items() if v is not None}
+
+    @staticmethod
     def compliance_action_flags(inv: SalesInvoiceHeader) -> Dict[str, Any]:
         controls = SalesComplianceService._controls(inv)
 
@@ -148,8 +201,6 @@ class SalesComplianceService:
         allow_irn_posted = SalesComplianceService._flag_on(controls, "compliance_allow_generate_irn_on_posted", "on")
         allow_regen_irn = SalesComplianceService._flag_on(controls, "compliance_allow_regenerate_irn_after_cancel", "off")
         allow_regen_eway = SalesComplianceService._flag_on(controls, "compliance_allow_regenerate_eway_after_cancel", "on")
-        allow_irn_cancel_with_eway = SalesComplianceService._flag_on(controls, "compliance_allow_cancel_irn_when_eway_active", "off")
-
         irn_generation_status_ok = (is_confirmed and allow_irn_confirmed) or (is_posted and allow_irn_posted)
         irn_generation_not_already_done = (not irn_generated) and (allow_regen_irn or not irn_cancelled)
         eway_generation_not_already_done = (not eway_generated) and (allow_regen_eway or not eway_cancelled)
@@ -159,7 +210,7 @@ class SalesComplianceService:
         eway_flow_eligible = eway_applicable or irn_generated or eway_generated or eway_cancelled
         can_generate_eway = can_open and eway_flow_eligible and eway_generation_not_already_done and (is_b2c or irn_generated)
 
-        can_cancel_irn = can_open and irn_generated and (allow_irn_cancel_with_eway or not eway_generated)
+        can_cancel_irn = can_open and irn_generated and not eway_generated
         can_cancel_eway = can_open and eway_generated
 
         return {
@@ -171,11 +222,14 @@ class SalesComplianceService:
             "can_generate_irn_and_eway": can_open and (not is_b2c) and can_generate_irn and eway_flow_eligible and eway_generation_not_already_done,
             "can_generate_eway": can_generate_eway,
             "can_generate_eway_b2c": can_generate_eway and is_b2c,
-            "can_load_eway_prefill": can_open and (not is_b2c) and irn_generated and eway_flow_eligible,
-            "can_load_eway_b2c_prefill": can_open and is_b2c,
+            "can_load_eway_prefill": can_open and (not is_b2c) and irn_generated and eway_flow_eligible and not eway_generated,
+            "can_load_eway_b2c_prefill": can_open and is_b2c and not eway_generated,
             "can_cancel_irn": can_cancel_irn,
             "can_cancel_eway": can_cancel_eway,
             "can_get_irn_details": can_open and (einvoice_applicable or irn_generated or irn_cancelled),
+            "can_get_gstn_details": can_open and einvoice_applicable,
+            "can_get_b2c_qrcode": can_open and is_b2c,
+            "can_get_eway_details": can_open and (eway_applicable or eway_generated or eway_cancelled),
             "can_get_eway_by_irn": can_open and (einvoice_applicable or irn_generated or irn_cancelled),
             "can_update_eway_vehicle": can_open and eway_generated,
             "can_update_eway_transporter": can_open and eway_generated,
@@ -503,24 +557,20 @@ class SalesComplianceService:
         return int(raw)
 
     @staticmethod
-    def _get_mastergst_cred_for_entity(entity, *, provider_name: Optional[str] = None) -> SalesMasterGSTCredential:
+    def _get_mastergst_cred_for_entity(
+        entity,
+        *,
+        provider_name: Optional[str] = None,
+        service_scope: int = MasterGSTServiceScope.EINVOICE,
+    ) -> SalesMasterGSTCredential:
         provider_label = (provider_name or SalesComplianceService._einvoice_provider_name()).strip().lower()
         env = SalesComplianceService._mastergst_env_from_settings()
-
-        cred = (
-            SalesMasterGSTCredential.objects
-            .filter(
-                entity=entity,
-                environment=env,
-                service_scope=MasterGSTServiceScope.EINVOICE,
-                is_active=True,
-            )
-            .first()
+        scope = int(service_scope)
+        cred = CredentialResolver.provider_for_entity(
+            entity.id,
+            provider_name=provider_label,
+            service_scope=scope,
         )
-        if not cred:
-            raise ValidationError(
-                f"{provider_label.title()} EINVOICE credential not configured for this entity (env={env}, scope={MasterGSTServiceScope.EINVOICE})."
-            )
 
         missing = []
         if not cred.gstin: missing.append("gstin")
@@ -531,7 +581,20 @@ class SalesComplianceService:
         if not cred.gst_password: missing.append("gst_password")
 
         if missing:
-            raise ValidationError(f"{provider_label.title()} credential incomplete: {', '.join(missing)}")
+            scope_label = MasterGSTServiceScope(scope).label.upper()
+            raise ValidationError(f"{provider_label.title()} {scope_label} credential incomplete: {', '.join(missing)}")
+
+        undecryptable = []
+        if not (cred.get_client_secret() or "").strip():
+            undecryptable.append("client_secret")
+        if not (cred.get_gst_password() or "").strip():
+            undecryptable.append("gst_password")
+        if undecryptable:
+            scope_label = MasterGSTServiceScope(scope).label.upper()
+            raise ValidationError(
+                f"{provider_label.title()} {scope_label} credential secret invalid or not decryptable: {', '.join(undecryptable)}. "
+                "Re-save the credential secrets in the current environment."
+            )
 
         gst_row = entity.gst_registrations.filter(isactive=True, is_primary=True).only("gstin").first()
         entity_gstin = str(getattr(gst_row, "gstin", "") or "").strip().upper()
@@ -539,10 +602,102 @@ class SalesComplianceService:
         if entity_gstin and credential_gstin and entity_gstin != credential_gstin:
             raise ValidationError(
                 f"{provider_label.title()} credential GSTIN ({credential_gstin}) does not match the entity primary GSTIN ({entity_gstin}). "
-                "Update the e-invoice credential or the entity GST registration before generating IRN/E-Way."
+                f"Update the {MasterGSTServiceScope(scope).label.lower()} credential or the entity GST registration before generating IRN/E-Way."
             )
 
         return cred
+
+    @staticmethod
+    def _stamp_einvoice_provenance(
+        einv: SalesEInvoice,
+        *,
+        provider_name: str,
+        cred: Optional[SalesMasterGSTCredential] = None,
+    ) -> None:
+        einv.provider_name = (provider_name or "").strip().lower() or None
+        env_value = getattr(cred, "environment", None)
+        if env_value in (None, ""):
+            env_value = SalesComplianceService._mastergst_env_from_settings()
+        try:
+            einv.provider_environment = int(env_value)
+        except (TypeError, ValueError):
+            einv.provider_environment = None
+        cred_gstin = str(getattr(cred, "gstin", "") or "").strip().upper()
+        einv.credential_gstin = cred_gstin or None
+
+    @staticmethod
+    def _stamp_eway_provenance(
+        ewb: SalesEWayBill,
+        *,
+        provider_name: str,
+        source: str,
+        cred: Optional[SalesMasterGSTCredential] = None,
+    ) -> None:
+        ewb.provider_name = (provider_name or "").strip().lower() or None
+        env_value = getattr(cred, "environment", None)
+        if env_value in (None, ""):
+            env_value = SalesComplianceService._mastergst_env_from_settings()
+        try:
+            ewb.provider_environment = int(env_value)
+        except (TypeError, ValueError):
+            ewb.provider_environment = None
+        cred_gstin = str(getattr(cred, "gstin", "") or "").strip().upper()
+        ewb.credential_gstin = cred_gstin or None
+        ewb.eway_source = source
+
+    @staticmethod
+    def _apply_eway_summary(
+        ewb: SalesEWayBill,
+        *,
+        ewb_no: Optional[Any],
+        ewb_date: Optional[Any],
+        valid_upto: Optional[Any],
+        raw: Optional[Dict[str, Any]] = None,
+        preserve_existing: bool = True,
+        mark_generated: bool = True,
+    ) -> None:
+        resolved_ewb_no = str(ewb_no or "").strip() or None
+        resolved_ewb_date = SalesComplianceService._parse_dt(ewb_date)
+        resolved_valid_upto = SalesComplianceService._parse_dt(valid_upto)
+
+        if preserve_existing:
+            ewb.ewb_no = ewb.ewb_no or resolved_ewb_no
+            ewb.ewb_date = ewb.ewb_date or resolved_ewb_date
+            ewb.valid_upto = ewb.valid_upto or resolved_valid_upto
+        else:
+            ewb.ewb_no = resolved_ewb_no
+            ewb.ewb_date = resolved_ewb_date
+            ewb.valid_upto = resolved_valid_upto
+
+        if mark_generated and ewb.ewb_no and int(getattr(ewb, "status", 0) or 0) != int(SalesEWayStatus.CANCELLED):
+            ewb.status = SalesEWayStatus.GENERATED
+            ewb.last_success_at = timezone.now()
+        if raw is not None:
+            ewb.last_response_json = raw
+            ewb.last_error_code = None
+            ewb.last_error_message = None
+
+    @staticmethod
+    def _mirror_eway_summary_to_einvoice(
+        einv: Optional[SalesEInvoice],
+        ewb: Optional[SalesEWayBill],
+        *,
+        user=None,
+        preserve_existing: bool = True,
+    ) -> None:
+        if not einv or not ewb or not getattr(ewb, "ewb_no", None):
+            return
+        if preserve_existing:
+            einv.ewb_no = einv.ewb_no or ewb.ewb_no
+            einv.ewb_date = einv.ewb_date or ewb.ewb_date
+            einv.ewb_valid_upto = einv.ewb_valid_upto or ewb.valid_upto
+        else:
+            einv.ewb_no = ewb.ewb_no
+            einv.ewb_date = ewb.ewb_date
+            einv.ewb_valid_upto = ewb.valid_upto
+        if user:
+            einv.updated_by = user
+        einv.save(update_fields=["ewb_no", "ewb_date", "ewb_valid_upto", "updated_by", "updated_at"])
 
     # -------------------------
     # IRN
@@ -559,7 +714,10 @@ class SalesComplianceService:
         if int(getattr(self.invoice, "supply_category", 0) or 0) == int(SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2C):
             raise ValidationError("IRN generation is not allowed for B2C invoices.")
 
-        payload = IRPPayloadBuilder(self.invoice).build()
+        payload = IRPPayloadBuilder(
+            self.invoice,
+            min_hsn_digits=self._einvoice_min_hsn_digits(self.invoice),
+        ).build()
         payload["SellerDtls"] = seller_from_entity(self.invoice.entity)
 
         buyer = self._buyer_account()
@@ -567,6 +725,14 @@ class SalesComplianceService:
             buyer,
             pos_state=getattr(self.invoice, "place_of_supply_state_code", None),
         )
+
+        provider_name = self._einvoice_provider_name()
+        cred = self._get_mastergst_cred_for_entity(
+            self.invoice.entity,
+            provider_name=provider_name,
+            service_scope=MasterGSTServiceScope.EINVOICE,
+        )
+        self._stamp_einvoice_provenance(einv, provider_name=provider_name, cred=cred)
 
         einv.last_request_json = payload
         einv.attempt_count = int(einv.attempt_count or 0) + 1
@@ -576,7 +742,6 @@ class SalesComplianceService:
         einv.save()
 
         # if you use ProviderRegistry, keep it; else call MasterGST provider directly
-        provider_name = self._einvoice_provider_name()
         provider = ProviderRegistry.get_einvoice(provider_name)  # noqa: F821 (if you keep ProviderRegistry)
 
         try:
@@ -649,6 +814,19 @@ class SalesComplianceService:
         einv.last_error_message = None
         einv.updated_by = self.user
         einv.save()
+        if einv.ewb_no:
+            ewb = self._ensure_eway_row()
+            self._stamp_eway_provenance(ewb, provider_name=provider_name, source=SalesEWaySource.IRN, cred=cred)
+            self._apply_eway_summary(
+                ewb,
+                ewb_no=einv.ewb_no,
+                ewb_date=einv.ewb_date,
+                valid_upto=einv.ewb_valid_upto,
+                raw=result.raw,
+                preserve_existing=True,
+            )
+            ewb.updated_by = self.user
+            ewb.save()
         ComplianceAuditService.log_action(
             invoice=self.invoice,
             action_type="IRN_GENERATE",
@@ -673,6 +851,12 @@ class SalesComplianceService:
             raise ValidationError("IRN cannot be cancelled while EWB is active. Cancel E-Way Bill first.")
 
         provider_name = self._einvoice_provider_name()
+        cred = self._get_mastergst_cred_for_entity(
+            inv.entity,
+            provider_name=provider_name,
+            service_scope=MasterGSTServiceScope.EINVOICE,
+        )
+        self._stamp_einvoice_provenance(einv, provider_name=provider_name, cred=cred)
         provider = ProviderRegistry.get_einvoice(provider_name)
         result = provider.cancel_irn(invoice=inv, irn=einv.irn, reason_code=reason_code, remarks=remarks)
 
@@ -696,7 +880,7 @@ class SalesComplianceService:
             einv.last_error_code = err_info.code or "IRN_CANCEL_FAILED"
             einv.last_error_message = err_info.as_text()
             einv.updated_by = self.user
-            einv.save(update_fields=["last_error_code", "last_error_message", "updated_by", "updated_at"])
+            einv.save()
             ComplianceAuditService.log_action(
                 invoice=inv,
                 action_type="IRN_CANCEL",
@@ -727,7 +911,7 @@ class SalesComplianceService:
         einv.updated_by = self.user
         einv.last_error_code = None
         einv.last_error_message = None
-        einv.save(update_fields=["status", "updated_by", "last_error_code", "last_error_message", "updated_at"])
+        einv.save()
         ComplianceAuditService.log_action(
             invoice=inv,
             action_type="IRN_CANCEL",
@@ -749,6 +933,12 @@ class SalesComplianceService:
             raise ValidationError("IRN is required. Generate IRN first or pass irn in request.")
 
         provider_name = self._einvoice_provider_name()
+        cred = self._get_mastergst_cred_for_entity(
+            inv.entity,
+            provider_name=provider_name,
+            service_scope=MasterGSTServiceScope.EINVOICE,
+        )
+        self._stamp_einvoice_provenance(einv, provider_name=provider_name, cred=cred)
         provider = ProviderRegistry.get_einvoice(provider_name)
         result = provider.get_irn_details(invoice=inv, irn=irn_to_fetch, supplier_gstin=supplier_gstin)
 
@@ -761,7 +951,7 @@ class SalesComplianceService:
             einv.last_error_message = err_info.as_text()
             einv.last_response_json = result.raw
             einv.updated_by = self.user
-            einv.save(update_fields=["last_error_code", "last_error_message", "last_response_json", "updated_by", "updated_at"])
+            einv.save()
             ComplianceAuditService.log_action(
                 invoice=inv,
                 action_type="IRN_FETCH",
@@ -802,14 +992,15 @@ class SalesComplianceService:
         # Sync EWB summary in artifact when present
         if einv.ewb_no:
             ewb = self._ensure_eway_row()
-            ewb.ewb_no = ewb.ewb_no or einv.ewb_no
-            ewb.ewb_date = ewb.ewb_date or einv.ewb_date
-            ewb.valid_upto = ewb.valid_upto or einv.ewb_valid_upto
-            if not int(getattr(ewb, "status", 0) or 0) == int(SalesEWayStatus.CANCELLED):
-                ewb.status = SalesEWayStatus.GENERATED
-            ewb.last_response_json = result.raw
-            ewb.last_error_code = None
-            ewb.last_error_message = None
+            self._stamp_eway_provenance(ewb, provider_name=provider_name, source=SalesEWaySource.IRN, cred=cred)
+            self._apply_eway_summary(
+                ewb,
+                ewb_no=einv.ewb_no,
+                ewb_date=einv.ewb_date,
+                valid_upto=einv.ewb_valid_upto,
+                raw=result.raw,
+                preserve_existing=True,
+            )
             ewb.updated_by = self.user
             ewb.save()
 
@@ -837,6 +1028,389 @@ class SalesComplianceService:
             "raw": result.raw,
         }
 
+    @staticmethod
+    def _resolve_irn_doc_type(inv) -> str:
+        doc_type = int(getattr(inv, "doc_type", SalesInvoiceHeader.DocType.TAX_INVOICE) or SalesInvoiceHeader.DocType.TAX_INVOICE)
+        if doc_type == int(SalesInvoiceHeader.DocType.CREDIT_NOTE):
+            return "CRN"
+        if doc_type == int(SalesInvoiceHeader.DocType.DEBIT_NOTE):
+            return "DBN"
+        return "INV"
+
+    @transaction.atomic
+    def get_irn_details_by_doc(
+        self,
+        *,
+        doc_type: Optional[str] = None,
+        doc_number: Optional[str] = None,
+        doc_date: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        inv = self.invoice
+        self.assert_action_allowed(inv, "can_get_irn_details")
+        einv = self._ensure_einvoice_row()
+
+        resolved_doc_type = (doc_type or self._resolve_irn_doc_type(inv) or "").strip().upper()
+        resolved_doc_number = str(
+            doc_number
+            or getattr(inv, "invoice_number", None)
+            or getattr(inv, "doc_no", None)
+            or ""
+        ).strip()
+        resolved_doc_date = doc_date or getattr(inv, "bill_date", None)
+        if not resolved_doc_type:
+            raise ValidationError("Document type is required.")
+        if not resolved_doc_number:
+            raise ValidationError("Document number is required.")
+        if not resolved_doc_date:
+            raise ValidationError("Document date is required.")
+
+        if hasattr(resolved_doc_date, "strftime"):
+            resolved_doc_date_text = resolved_doc_date.strftime("%d/%m/%Y")
+        else:
+            parsed_doc_date = datetime.strptime(str(resolved_doc_date), "%Y-%m-%d")
+            resolved_doc_date_text = parsed_doc_date.strftime("%d/%m/%Y")
+
+        provider_name = self._einvoice_provider_name()
+        cred = self._get_mastergst_cred_for_entity(
+            inv.entity,
+            provider_name=provider_name,
+            service_scope=MasterGSTServiceScope.EINVOICE,
+        )
+        self._stamp_einvoice_provenance(einv, provider_name=provider_name, cred=cred)
+        provider = ProviderRegistry.get_einvoice(provider_name)
+        result = provider.get_irn_details_by_doc(
+            invoice=inv,
+            doc_type=resolved_doc_type,
+            doc_number=resolved_doc_number,
+            doc_date=resolved_doc_date_text,
+        )
+
+        if not result.ok:
+            err_info = ComplianceErrorCatalogService.resolve(
+                code=result.error_code or "IRN_GET_BY_DOC_FAILED",
+                message=result.error_message or "IRN details by document fetch failed.",
+            )
+            einv.last_error_code = err_info.code or "IRN_GET_BY_DOC_FAILED"
+            einv.last_error_message = err_info.as_text()
+            einv.last_response_json = result.raw
+            einv.updated_by = self.user
+            einv.save()
+            ComplianceAuditService.log_action(
+                invoice=inv,
+                action_type="IRN_FETCH",
+                outcome="FAILED",
+                user=self.user,
+                error_code=einv.last_error_code,
+                error_message=einv.last_error_message,
+                request_json={"doc_type": resolved_doc_type, "doc_number": resolved_doc_number, "doc_date": resolved_doc_date_text},
+                response_json=result.raw,
+            )
+            raise ValidationError(
+                {
+                    "code": err_info.code,
+                    "message": err_info.message,
+                    "reason": err_info.reason,
+                    "resolution": err_info.resolution,
+                    "raw": result.raw,
+                }
+            )
+
+        einv.irn = result.irn or einv.irn
+        einv.ack_no = result.ack_no or einv.ack_no
+        einv.ack_date = self._parse_dt(result.ack_date) or einv.ack_date
+        einv.signed_invoice = result.signed_invoice or einv.signed_invoice
+        einv.signed_qr_code = result.signed_qr_code or einv.signed_qr_code
+        einv.ewb_no = result.ewb_no or einv.ewb_no
+        einv.ewb_date = self._parse_dt(result.ewb_date) or einv.ewb_date
+        einv.ewb_valid_upto = self._parse_dt(result.ewb_valid_upto) or einv.ewb_valid_upto
+        einv.last_response_json = result.raw
+        einv.last_error_code = None
+        einv.last_error_message = None
+        if einv.irn:
+            einv.status = SalesEInvoiceStatus.GENERATED
+            einv.last_success_at = timezone.now()
+        einv.updated_by = self.user
+        einv.save()
+
+        if einv.ewb_no:
+            ewb = self._ensure_eway_row()
+            self._stamp_eway_provenance(ewb, provider_name=provider_name, source=SalesEWaySource.IRN, cred=cred)
+            self._apply_eway_summary(
+                ewb,
+                ewb_no=einv.ewb_no,
+                ewb_date=einv.ewb_date,
+                valid_upto=einv.ewb_valid_upto,
+                raw=result.raw,
+                preserve_existing=True,
+            )
+            ewb.updated_by = self.user
+            ewb.save()
+
+        ComplianceAuditService.log_action(
+            invoice=inv,
+            action_type="IRN_FETCH",
+            outcome="INFO",
+            user=self.user,
+            request_json={"doc_type": resolved_doc_type, "doc_number": resolved_doc_number, "doc_date": resolved_doc_date_text},
+            response_json=result.raw,
+        )
+        ComplianceAuditService.resolve_exception(
+            invoice=inv,
+            exception_type="IRN_GENERATION_FAILED",
+            user=self.user,
+        )
+        return {
+            "status": "SUCCESS",
+            "irn": einv.irn,
+            "ack_no": einv.ack_no,
+            "ack_date": einv.ack_date,
+            "ewb_no": einv.ewb_no,
+            "ewb_date": einv.ewb_date,
+            "ewb_valid_upto": einv.ewb_valid_upto,
+            "raw": result.raw,
+        }
+
+    @transaction.atomic
+    def get_gstn_details(self, *, gstin: str) -> Dict[str, Any]:
+        inv = self.invoice
+        self.assert_action_allowed(inv, "can_get_gstn_details")
+        gstin_value = (gstin or "").strip().upper()
+        if not gstin_value:
+            raise ValidationError("GSTIN is required.")
+
+        provider_name = self._einvoice_provider_name()
+        provider = ProviderRegistry.get_einvoice(provider_name)
+        result = provider.get_gstn_details(invoice=inv, gstin=gstin_value)
+
+        if not result.ok:
+            err_info = ComplianceErrorCatalogService.resolve(
+                code=result.error_code or "GSTN_GET_FAILED",
+                message=result.error_message or "GSTN details fetch failed.",
+            )
+            ComplianceAuditService.log_action(
+                invoice=inv,
+                action_type="GSTN_FETCH",
+                outcome="FAILED",
+                user=self.user,
+                error_code=err_info.code or "GSTN_GET_FAILED",
+                error_message=err_info.as_text(),
+                request_json={"gstin": gstin_value},
+                response_json=result.raw,
+            )
+            raise ValidationError(
+                {
+                    "code": err_info.code,
+                    "message": err_info.message,
+                    "reason": err_info.reason,
+                    "resolution": err_info.resolution,
+                    "raw": result.raw,
+                }
+            )
+
+        ComplianceAuditService.log_action(
+            invoice=inv,
+            action_type="GSTN_FETCH",
+            outcome="INFO",
+            user=self.user,
+            request_json={"gstin": gstin_value},
+            response_json=result.raw,
+        )
+        return {
+            "status": "SUCCESS",
+            "gstin": result.gstin or gstin_value,
+            "legal_name": result.legal_name,
+            "trade_name": result.trade_name,
+            "registration_status": result.status,
+            "raw": result.raw,
+        }
+
+    @transaction.atomic
+    def get_b2c_qrcode(
+        self,
+        *,
+        upiid: Optional[str] = None,
+        bankaccno: Optional[str] = None,
+        bankifsccode: Optional[str] = None,
+        accountholdername: Optional[str] = None,
+        sgstin: Optional[str] = None,
+        docno: Optional[str] = None,
+        docdate: Optional[Any] = None,
+        totinvval: Optional[Any] = None,
+        igstamount: Optional[Any] = None,
+        cgstamount: Optional[Any] = None,
+        sgstamount: Optional[Any] = None,
+        cessamount: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        inv = self.invoice
+        self.assert_action_allowed(inv, "can_get_b2c_qrcode")
+        einv = self._ensure_einvoice_row()
+
+        entity = getattr(inv, "entity", None)
+        bank = entity_primary_bank_account(entity) if entity else None
+        contact = entity_primary_contact(entity) if entity else None
+
+        seller_gstin = (sgstin or getattr(inv, "seller_gstin", None) or entity_primary_gstin(entity) or "").strip().upper()
+        document_no = str(docno or getattr(inv, "invoice_number", None) or getattr(inv, "doc_no", None) or "").strip()
+        document_date = docdate or getattr(inv, "bill_date", None)
+        total_invoice_value = totinvval if totinvval is not None else getattr(inv, "grand_total", None)
+        total_igst = igstamount if igstamount is not None else getattr(inv, "total_igst", None)
+        total_cgst = cgstamount if cgstamount is not None else getattr(inv, "total_cgst", None)
+        total_sgst = sgstamount if sgstamount is not None else getattr(inv, "total_sgst", None)
+        total_cess = cessamount if cessamount is not None else getattr(inv, "total_cess", None)
+        account_number = str(bankaccno or getattr(bank, "account_number", None) or "").strip()
+        ifsc_code = str(bankifsccode or getattr(bank, "ifsc_code", None) or "").strip().upper()
+        account_holder = str(
+            accountholdername
+            or getattr(contact, "name", None)
+            or getattr(entity, "legalname", None)
+            or getattr(entity, "entityname", None)
+            or ""
+        ).strip()
+
+        if not seller_gstin:
+            raise ValidationError("Seller GSTIN is required for B2C QR code.")
+        if not document_no:
+            raise ValidationError("Document number is required for B2C QR code.")
+        if not document_date:
+            raise ValidationError("Document date is required for B2C QR code.")
+        if not account_number:
+            raise ValidationError("Primary entity bank account number is required for B2C QR code.")
+        if not ifsc_code:
+            raise ValidationError("Primary entity bank IFSC code is required for B2C QR code.")
+        if not account_holder:
+            raise ValidationError("Account holder name is required for B2C QR code.")
+
+        if hasattr(document_date, "strftime"):
+            document_date_text = document_date.strftime("%d-%m-%Y")
+        else:
+            document_date_text = datetime.strptime(str(document_date), "%Y-%m-%d").strftime("%d-%m-%Y")
+
+        payload = {
+            "sgstin": seller_gstin,
+            "docno": document_no,
+            "docdate": document_date_text,
+            "totinvval": self._money_text(total_invoice_value),
+            "bankaccno": account_number,
+            "bankifsccode": ifsc_code,
+            "accountholdername": account_holder,
+            "igstamount": self._money_text(total_igst),
+            "cgstamount": self._money_text(total_cgst),
+            "sgstamount": self._money_text(total_sgst),
+            "cessamount": self._money_text(total_cess),
+        }
+        upi_value = str(upiid or "").strip()
+        if upi_value:
+            payload["upiid"] = upi_value
+
+        provider_name = self._einvoice_provider_name()
+        provider = ProviderRegistry.get_einvoice(provider_name)
+        result = provider.get_b2c_qrcode(invoice=inv, payload=payload)
+
+        if not result.ok:
+            err_info = ComplianceErrorCatalogService.resolve(
+                code=result.error_code or "B2C_QRCODE_FAILED",
+                message=result.error_message or "B2C QR code fetch failed.",
+            )
+            einv.last_error_code = err_info.code or "B2C_QRCODE_FAILED"
+            einv.last_error_message = err_info.as_text()
+            einv.last_response_json = result.raw
+            einv.updated_by = self.user
+            einv.save(update_fields=["last_error_code", "last_error_message", "last_response_json", "updated_by", "updated_at"])
+            ComplianceAuditService.log_action(
+                invoice=inv,
+                action_type="B2C_QRCODE_FETCH",
+                outcome="FAILED",
+                user=self.user,
+                error_code=einv.last_error_code,
+                error_message=einv.last_error_message,
+                request_json=payload,
+                response_json=result.raw,
+            )
+            raise ValidationError(
+                {
+                    "code": err_info.code,
+                    "message": err_info.message,
+                    "reason": err_info.reason,
+                    "resolution": err_info.resolution,
+                    "raw": result.raw,
+                }
+            )
+
+        einv.signed_qr_code = result.qr_code or einv.signed_qr_code
+        einv.last_response_json = result.raw
+        einv.last_error_code = None
+        einv.last_error_message = None
+        einv.updated_by = self.user
+        einv.save(update_fields=["signed_qr_code", "last_response_json", "last_error_code", "last_error_message", "updated_by", "updated_at"])
+
+        ComplianceAuditService.log_action(
+            invoice=inv,
+            action_type="B2C_QRCODE_FETCH",
+            outcome="INFO",
+            user=self.user,
+            request_json=payload,
+            response_json=result.raw,
+        )
+        return {
+            "status": "SUCCESS",
+            "qr_code": result.qr_code,
+            "raw": result.raw,
+        }
+
+    @transaction.atomic
+    def sync_gstin_from_cp(self, *, gstin: str) -> Dict[str, Any]:
+        inv = self.invoice
+        self.assert_action_allowed(inv, "can_get_gstn_details")
+        gstin_value = (gstin or "").strip().upper()
+        if not gstin_value:
+            raise ValidationError("GSTIN is required.")
+
+        provider_name = self._einvoice_provider_name()
+        provider = ProviderRegistry.get_einvoice(provider_name)
+        result = provider.sync_gstin_from_cp(invoice=inv, gstin=gstin_value)
+
+        if not result.ok:
+            err_info = ComplianceErrorCatalogService.resolve(
+                code=result.error_code or "GSTN_SYNC_FAILED",
+                message=result.error_message or "GSTIN sync from CP failed.",
+            )
+            ComplianceAuditService.log_action(
+                invoice=inv,
+                action_type="GSTN_FETCH",
+                outcome="FAILED",
+                user=self.user,
+                error_code=err_info.code or "GSTN_SYNC_FAILED",
+                error_message=err_info.as_text(),
+                request_json={"gstin": gstin_value, "mode": "sync_from_cp"},
+                response_json=result.raw,
+            )
+            raise ValidationError(
+                {
+                    "code": err_info.code,
+                    "message": err_info.message,
+                    "reason": err_info.reason,
+                    "resolution": err_info.resolution,
+                    "raw": result.raw,
+                }
+            )
+
+        ComplianceAuditService.log_action(
+            invoice=inv,
+            action_type="GSTN_FETCH",
+            outcome="INFO",
+            user=self.user,
+            request_json={"gstin": gstin_value, "mode": "sync_from_cp"},
+            response_json=result.raw,
+        )
+        return {
+            "status": "SUCCESS",
+            "gstin": result.gstin or gstin_value,
+            "legal_name": result.legal_name,
+            "trade_name": result.trade_name,
+            "registration_status": result.status,
+            "raw": result.raw,
+        }
+
     @transaction.atomic
     def get_eway_details_by_irn(self, *, irn: Optional[str] = None, supplier_gstin: Optional[str] = None) -> Dict[str, Any]:
         inv = self.invoice
@@ -847,10 +1421,16 @@ class SalesComplianceService:
             raise ValidationError("IRN is required. Generate IRN first or pass irn in request.")
 
         provider_name = self._einvoice_provider_name()
+        cred = self._get_mastergst_cred_for_entity(
+            inv.entity,
+            provider_name=provider_name,
+            service_scope=MasterGSTServiceScope.EINVOICE,
+        )
         provider = ProviderRegistry.get_einvoice(provider_name)
         result = provider.get_eway_details_by_irn(invoice=inv, irn=irn_to_fetch, supplier_gstin=supplier_gstin)
 
         ewb = self._ensure_eway_row()
+        self._stamp_eway_provenance(ewb, provider_name=provider_name, source=SalesEWaySource.IRN, cred=cred)
         if not result.ok:
             err_info = ComplianceErrorCatalogService.resolve(
                 code=result.error_code or "EWB_GET_FAILED",
@@ -860,7 +1440,7 @@ class SalesComplianceService:
             ewb.last_error_message = err_info.as_text()
             ewb.last_response_json = result.raw
             ewb.updated_by = self.user
-            ewb.save(update_fields=["last_error_code", "last_error_message", "last_response_json", "updated_by", "updated_at"])
+            ewb.save()
             ComplianceAuditService.log_action(
                 invoice=inv,
                 action_type="EWB_FETCH",
@@ -881,25 +1461,18 @@ class SalesComplianceService:
                 }
             )
 
-        ewb.ewb_no = result.ewb_no or ewb.ewb_no
-        ewb.ewb_date = self._parse_dt(result.ewb_date) or ewb.ewb_date
-        ewb.valid_upto = self._parse_dt(result.valid_upto) or ewb.valid_upto
-        if ewb.ewb_no:
-            ewb.status = SalesEWayStatus.GENERATED
-            ewb.last_success_at = timezone.now()
-        ewb.last_response_json = result.raw
-        ewb.last_error_code = None
-        ewb.last_error_message = None
+        self._apply_eway_summary(
+            ewb,
+            ewb_no=result.ewb_no,
+            ewb_date=result.ewb_date,
+            valid_upto=result.valid_upto,
+            raw=result.raw,
+            preserve_existing=True,
+        )
         ewb.updated_by = self.user
         ewb.save()
 
-        # keep e-invoice summary synced too
-        if ewb.ewb_no:
-            einv.ewb_no = einv.ewb_no or ewb.ewb_no
-            einv.ewb_date = einv.ewb_date or ewb.ewb_date
-            einv.ewb_valid_upto = einv.ewb_valid_upto or ewb.valid_upto
-            einv.updated_by = self.user
-            einv.save(update_fields=["ewb_no", "ewb_date", "ewb_valid_upto", "updated_by", "updated_at"])
+        self._mirror_eway_summary_to_einvoice(einv, ewb, user=self.user, preserve_existing=True)
 
         ComplianceAuditService.log_action(
             invoice=inv,
@@ -922,6 +1495,574 @@ class SalesComplianceService:
             "valid_upto": ewb.valid_upto,
             "raw": result.raw,
         }
+
+    @transaction.atomic
+    def get_eway_details(self, *, ewb_no: Optional[str] = None) -> Dict[str, Any]:
+        inv = self.invoice
+        self.assert_action_allowed(inv, "can_get_eway_details")
+        ewb = self._ensure_eway_row()
+        ewb_no_to_fetch = str(ewb_no or getattr(ewb, "ewb_no", None) or "").strip()
+        if not ewb_no_to_fetch:
+            raise ValidationError("E-Way bill number is required.")
+
+        provider_name = self._eway_provider_name()
+        cred = self._get_mastergst_cred_for_entity(
+            inv.entity,
+            provider_name=provider_name,
+            service_scope=MasterGSTServiceScope.EWAY,
+        )
+        provider = ProviderRegistry.get_eway(provider_name)
+        result = provider.get_eway_details(invoice=inv, ewb_no=ewb_no_to_fetch)
+        self._stamp_eway_provenance(
+            ewb,
+            provider_name=provider_name,
+            source=getattr(ewb, "eway_source", None) or SalesEWaySource.DIRECT,
+            cred=cred,
+        )
+
+        if not result.ok:
+            err_info = ComplianceErrorCatalogService.resolve(
+                code=result.error_code or "EWB_GET_FAILED",
+                message=result.error_message or "EWB details fetch failed.",
+            )
+            ewb.last_error_code = err_info.code or "EWB_GET_FAILED"
+            ewb.last_error_message = err_info.as_text()
+            ewb.last_response_json = result.raw
+            ewb.updated_by = self.user
+            ewb.save()
+            ComplianceAuditService.log_action(
+                invoice=inv,
+                action_type="EWB_FETCH",
+                outcome="FAILED",
+                user=self.user,
+                error_code=ewb.last_error_code,
+                error_message=ewb.last_error_message,
+                request_json={"ewb_no": ewb_no_to_fetch},
+                response_json=result.raw,
+            )
+            raise ValidationError(
+                {
+                    "code": err_info.code,
+                    "message": err_info.message,
+                    "reason": err_info.reason,
+                    "resolution": err_info.resolution,
+                    "raw": result.raw,
+                }
+            )
+
+        self._apply_eway_summary(
+            ewb,
+            ewb_no=result.ewb_no,
+            ewb_date=result.ewb_date,
+            valid_upto=result.valid_upto,
+            raw=result.raw,
+            preserve_existing=True,
+        )
+        ewb.updated_by = self.user
+        ewb.save()
+
+        einv = getattr(inv, "einvoice_artifact", None)
+        self._mirror_eway_summary_to_einvoice(einv, ewb, user=self.user, preserve_existing=True)
+
+        ComplianceAuditService.log_action(
+            invoice=inv,
+            action_type="EWB_FETCH",
+            outcome="INFO",
+            user=self.user,
+            request_json={"ewb_no": ewb_no_to_fetch},
+            response_json=result.raw,
+        )
+        ComplianceAuditService.resolve_exception(
+            invoice=inv,
+            exception_type="EWB_GENERATION_FAILED",
+            user=self.user,
+        )
+        return {
+            "status": "SUCCESS",
+            "ewb_no": ewb.ewb_no,
+            "ewb_date": ewb.ewb_date,
+            "valid_upto": ewb.valid_upto,
+            "raw": result.raw,
+        }
+
+    @transaction.atomic
+    def get_eway_transporter_details(self, *, transporter_id: str) -> Dict[str, Any]:
+        inv = self.invoice
+        self.assert_action_allowed(inv, "can_get_eway_details")
+        transporter_value = str(transporter_id or "").strip()
+        if not transporter_value:
+            raise ValidationError("Transporter ID is required.")
+
+        provider = ProviderRegistry.get_eway(self._eway_provider_name())
+        result = provider.get_transporter_details(invoice=inv, transporter_id=transporter_value)
+        return self._finalize_eway_lookup_result(
+            inv=inv,
+            result=result,
+            lookup_code="EWB_TRANSPORTER_DETAILS_FAILED",
+            lookup_message="Transporter details fetch failed.",
+            request_json={"transporter_id": transporter_value},
+        )
+
+    @transaction.atomic
+    def get_eway_gstin_details(self, *, gstin: str) -> Dict[str, Any]:
+        inv = self.invoice
+        self.assert_action_allowed(inv, "can_get_eway_details")
+        gstin_value = str(gstin or "").strip().upper()
+        if not gstin_value:
+            raise ValidationError("GSTIN is required.")
+
+        provider = ProviderRegistry.get_eway(self._eway_provider_name())
+        result = provider.get_gstin_details(invoice=inv, gstin=gstin_value)
+        return self._finalize_eway_lookup_result(
+            inv=inv,
+            result=result,
+            lookup_code="EWB_GSTIN_DETAILS_FAILED",
+            lookup_message="GSTIN details fetch failed.",
+            request_json={"gstin": gstin_value},
+        )
+
+    @transaction.atomic
+    def get_eway_hsn_details(self, *, hsn_code: str) -> Dict[str, Any]:
+        inv = self.invoice
+        self.assert_action_allowed(inv, "can_get_eway_details")
+        hsn_value = str(hsn_code or "").strip()
+        if not hsn_value:
+            raise ValidationError("HSN code is required.")
+
+        provider = ProviderRegistry.get_eway(self._eway_provider_name())
+        result = provider.get_hsn_details(invoice=inv, hsn_code=hsn_value)
+        return self._finalize_eway_lookup_result(
+            inv=inv,
+            result=result,
+            lookup_code="EWB_HSN_DETAILS_FAILED",
+            lookup_message="HSN details fetch failed.",
+            request_json={"hsn_code": hsn_value},
+        )
+
+    @transaction.atomic
+    def get_eway_error_list(self) -> Dict[str, Any]:
+        inv = self.invoice
+        self.assert_action_allowed(inv, "can_get_eway_details")
+
+        provider = ProviderRegistry.get_eway(self._eway_provider_name())
+        result = provider.get_error_list(invoice=inv)
+        return self._finalize_eway_lookup_result(
+            inv=inv,
+            result=result,
+            lookup_code="EWB_ERROR_LIST_FAILED",
+            lookup_message="E-Way error list fetch failed.",
+            request_json={},
+        )
+
+    def _finalize_eway_lookup_result(
+        self,
+        *,
+        inv: SalesInvoiceHeader,
+        result,
+        lookup_code: str,
+        lookup_message: str,
+        request_json: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if not result.ok:
+            err_info = ComplianceErrorCatalogService.resolve(
+                code=result.error_code or lookup_code,
+                message=result.error_message or lookup_message,
+            )
+            ComplianceAuditService.log_action(
+                invoice=inv,
+                action_type="EWB_REFERENCE_FETCH",
+                outcome="FAILED",
+                user=self.user,
+                error_code=err_info.code or lookup_code,
+                error_message=err_info.as_text(),
+                request_json=request_json,
+                response_json=result.raw,
+            )
+            raise ValidationError(
+                {
+                    "code": err_info.code,
+                    "message": err_info.message,
+                    "reason": err_info.reason,
+                    "resolution": err_info.resolution,
+                    "raw": result.raw,
+                }
+            )
+
+        ComplianceAuditService.log_action(
+            invoice=inv,
+            action_type="EWB_REFERENCE_FETCH",
+            outcome="INFO",
+            user=self.user,
+            request_json=request_json,
+            response_json=result.raw,
+        )
+        return {
+            "status": "SUCCESS",
+            "data": result.data,
+            "raw": result.raw,
+        }
+
+    @transaction.atomic
+    def reject_eway(self, *, ewb_no: Optional[str] = None) -> Dict[str, Any]:
+        inv = self.invoice
+        self.assert_action_allowed(inv, "can_get_eway_details")
+        art = self._ensure_eway_row()
+        ewb_no_value = str(ewb_no or getattr(art, "ewb_no", None) or "").strip()
+        if not ewb_no_value:
+            raise ValidationError("E-Way bill number is required.")
+
+        provider = ProviderRegistry.get_eway(self._eway_provider_name())
+        result = provider.reject_eway(invoice=inv, ewb_no=ewb_no_value)
+        out = self._finalize_eway_lookup_result(
+            inv=inv,
+            result=result,
+            lookup_code="EWB_REJECT_FAILED",
+            lookup_message="E-Way rejection failed.",
+            request_json={"ewb_no": ewb_no_value},
+        )
+        art.last_response_json = result.raw
+        art.last_error_code = None
+        art.last_error_message = None
+        art.updated_by = self.user
+        art.save(update_fields=["last_response_json", "last_error_code", "last_error_message", "updated_by", "updated_at"])
+        return out
+
+    @transaction.atomic
+    def get_trip_sheet(self, *, trip_sheet_no: str) -> Dict[str, Any]:
+        inv = self.invoice
+        self.assert_action_allowed(inv, "can_get_eway_details")
+        trip_sheet_value = str(trip_sheet_no or "").strip()
+        if not trip_sheet_value:
+            raise ValidationError("Trip sheet number is required.")
+        provider = ProviderRegistry.get_eway(self._eway_provider_name())
+        result = provider.get_trip_sheet(invoice=inv, trip_sheet_no=trip_sheet_value)
+        return self._finalize_eway_lookup_result(
+            inv=inv,
+            result=result,
+            lookup_code="EWB_TRIP_SHEET_FAILED",
+            lookup_message="Trip sheet fetch failed.",
+            request_json={"trip_sheet_no": trip_sheet_value},
+        )
+
+    @staticmethod
+    def _resolve_eway_doc_type(inv) -> str:
+        doc_type = int(getattr(inv, "doc_type", SalesInvoiceHeader.DocType.TAX_INVOICE) or SalesInvoiceHeader.DocType.TAX_INVOICE)
+        if doc_type == int(SalesInvoiceHeader.DocType.CREDIT_NOTE):
+            return "CHL"
+        if doc_type == int(SalesInvoiceHeader.DocType.DEBIT_NOTE):
+            return "OTH"
+        return "INV"
+
+    @transaction.atomic
+    def get_eway_by_document(self, *, doc_type: Optional[str] = None, doc_no: Optional[str] = None) -> Dict[str, Any]:
+        inv = self.invoice
+        self.assert_action_allowed(inv, "can_get_eway_details")
+        resolved_doc_type = str(doc_type or self._resolve_eway_doc_type(inv) or "").strip().upper()
+        resolved_doc_no = str(doc_no or getattr(inv, "invoice_number", None) or getattr(inv, "doc_no", None) or "").strip()
+        if not resolved_doc_type:
+            raise ValidationError("Document type is required.")
+        if not resolved_doc_no:
+            raise ValidationError("Document number is required.")
+        provider = ProviderRegistry.get_eway(self._eway_provider_name())
+        result = provider.get_eway_by_document(invoice=inv, doc_type=resolved_doc_type, doc_no=resolved_doc_no)
+        return self._finalize_eway_lookup_result(
+            inv=inv,
+            result=result,
+            lookup_code="EWB_GET_BY_DOC_FAILED",
+            lookup_message="E-Way document lookup failed.",
+            request_json={"doc_type": resolved_doc_type, "doc_no": resolved_doc_no},
+        )
+
+    @staticmethod
+    def _format_eway_date(value: Any) -> str:
+        if not value:
+            return ""
+        if hasattr(value, "strftime"):
+            return value.strftime("%d/%m/%Y")
+        return str(value)
+
+    @transaction.atomic
+    def get_eway_bills_for_transporter(self, *, date: Any) -> Dict[str, Any]:
+        inv = self.invoice
+        self.assert_action_allowed(inv, "can_get_eway_details")
+        formatted_date = self._format_eway_date(date)
+        provider = ProviderRegistry.get_eway(self._eway_provider_name())
+        result = provider.get_eway_bills_for_transporter(invoice=inv, date=formatted_date)
+        return self._finalize_eway_lookup_result(
+            inv=inv,
+            result=result,
+            lookup_code="EWB_FOR_TRANSPORTER_FAILED",
+            lookup_message="Transporter E-Way list fetch failed.",
+            request_json={"date": formatted_date},
+        )
+
+    @transaction.atomic
+    def get_eway_bill_report_by_transporter_assigned_date(self, *, date: Any, state_code: str) -> Dict[str, Any]:
+        inv = self.invoice
+        self.assert_action_allowed(inv, "can_get_eway_details")
+        formatted_date = self._format_eway_date(date)
+        state_code_value = str(state_code or "").strip()
+        if not state_code_value:
+            raise ValidationError("State code is required.")
+        provider = ProviderRegistry.get_eway(self._eway_provider_name())
+        result = provider.get_eway_bill_report_by_transporter_assigned_date(
+            invoice=inv,
+            date=formatted_date,
+            state_code=state_code_value,
+        )
+        return self._finalize_eway_lookup_result(
+            inv=inv,
+            result=result,
+            lookup_code="EWB_TRANSPORTER_REPORT_FAILED",
+            lookup_message="Transporter assigned-date report fetch failed.",
+            request_json={"date": formatted_date, "state_code": state_code_value},
+        )
+
+    @transaction.atomic
+    def get_eway_bills_by_date(self, *, date: Any) -> Dict[str, Any]:
+        inv = self.invoice
+        self.assert_action_allowed(inv, "can_get_eway_details")
+        formatted_date = self._format_eway_date(date)
+        provider = ProviderRegistry.get_eway(self._eway_provider_name())
+        result = provider.get_eway_bills_by_date(invoice=inv, date=formatted_date)
+        return self._finalize_eway_lookup_result(
+            inv=inv,
+            result=result,
+            lookup_code="EWB_BY_DATE_FAILED",
+            lookup_message="E-Way date-wise list fetch failed.",
+            request_json={"date": formatted_date},
+        )
+
+    @transaction.atomic
+    def get_eway_bills_rejected_by_others(self, *, date: Any) -> Dict[str, Any]:
+        inv = self.invoice
+        self.assert_action_allowed(inv, "can_get_eway_details")
+        formatted_date = self._format_eway_date(date)
+        provider = ProviderRegistry.get_eway(self._eway_provider_name())
+        result = provider.get_eway_bills_rejected_by_others(invoice=inv, date=formatted_date)
+        return self._finalize_eway_lookup_result(
+            inv=inv,
+            result=result,
+            lookup_code="EWB_REJECTED_BY_OTHERS_FAILED",
+            lookup_message="Rejected E-Way list fetch failed.",
+            request_json={"date": formatted_date},
+        )
+
+    @transaction.atomic
+    def get_eway_bills_for_transporter_by_gstin(self, *, gen_gstin: str, date: Any) -> Dict[str, Any]:
+        inv = self.invoice
+        self.assert_action_allowed(inv, "can_get_eway_details")
+        formatted_date = self._format_eway_date(date)
+        gen_gstin_value = str(gen_gstin or "").strip().upper()
+        if not gen_gstin_value:
+            raise ValidationError("Generator GSTIN is required.")
+        provider = ProviderRegistry.get_eway(self._eway_provider_name())
+        result = provider.get_eway_bills_for_transporter_by_gstin(
+            invoice=inv,
+            gen_gstin=gen_gstin_value,
+            date=formatted_date,
+        )
+        return self._finalize_eway_lookup_result(
+            inv=inv,
+            result=result,
+            lookup_code="EWB_FOR_TRANSPORTER_GSTIN_FAILED",
+            lookup_message="Transporter GSTIN/date report fetch failed.",
+            request_json={"gen_gstin": gen_gstin_value, "date": formatted_date},
+        )
+
+    @transaction.atomic
+    def get_eway_bills_for_transporter_by_state(self, *, state_code: str, date: Any) -> Dict[str, Any]:
+        inv = self.invoice
+        self.assert_action_allowed(inv, "can_get_eway_details")
+        formatted_date = self._format_eway_date(date)
+        state_code_value = str(state_code or "").strip()
+        if not state_code_value:
+            raise ValidationError("State code is required.")
+        provider = ProviderRegistry.get_eway(self._eway_provider_name())
+        result = provider.get_eway_bills_for_transporter_by_state(
+            invoice=inv,
+            state_code=state_code_value,
+            date=formatted_date,
+        )
+        return self._finalize_eway_lookup_result(
+            inv=inv,
+            result=result,
+            lookup_code="EWB_FOR_TRANSPORTER_STATE_FAILED",
+            lookup_message="Transporter state/date report fetch failed.",
+            request_json={"state_code": state_code_value, "date": formatted_date},
+        )
+
+    @transaction.atomic
+    def get_eway_bills_of_other_party(self, *, date: Any) -> Dict[str, Any]:
+        inv = self.invoice
+        self.assert_action_allowed(inv, "can_get_eway_details")
+        formatted_date = self._format_eway_date(date)
+        provider = ProviderRegistry.get_eway(self._eway_provider_name())
+        result = provider.get_eway_bills_of_other_party(invoice=inv, date=formatted_date)
+        return self._finalize_eway_lookup_result(
+            inv=inv,
+            result=result,
+            lookup_code="EWB_OTHER_PARTY_FAILED",
+            lookup_message="Other party E-Way list fetch failed.",
+            request_json={"date": formatted_date},
+        )
+
+    def _resolve_eway_artifact_number(self) -> str:
+        art = self._ensure_eway_row()
+        ewb_no_value = str(getattr(art, "ewb_no", None) or "").strip()
+        if not ewb_no_value:
+            raise ValidationError("E-Way bill number is required.")
+        return ewb_no_value
+
+    @staticmethod
+    def _to_vendor_eway_bill_refs(rows: Any) -> list[Dict[str, Any]]:
+        refs = []
+        for row in rows or []:
+            if isinstance(row, dict):
+                ewb_no = row.get("ewb_no", row.get("ewbNo"))
+            else:
+                ewb_no = row
+            if ewb_no in (None, ""):
+                continue
+            refs.append({"ewbNo": ewb_no})
+        return refs
+
+    def _build_generate_consolidated_eway_payload(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "fromPlace": req.get("from_place"),
+            "fromState": req.get("from_state_code"),
+            "transMode": req.get("trans_mode"),
+            "tripSheetEwbBills": self._to_vendor_eway_bill_refs(req.get("eway_bill_numbers")),
+            "vehicleNo": req.get("vehicle_no") or "",
+            "transDocNo": req.get("trans_doc_no") or "",
+            "transDocDate": self._format_eway_date(req.get("trans_doc_date")),
+        }
+
+    def _build_regenerate_trip_sheet_payload(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "fromPlace": req.get("from_place"),
+            "fromState": req.get("from_state_code"),
+            "reasonCode": req.get("reason_code"),
+            "reasonRem": req.get("remarks"),
+            "transMode": req.get("trans_mode"),
+            "tripSheetNo": req.get("trip_sheet_no"),
+            "vehicleNo": req.get("vehicle_no") or "",
+            "transDocNo": req.get("trans_doc_no") or "",
+            "transDocDate": self._format_eway_date(req.get("trans_doc_date")),
+        }
+
+    def _build_initiate_multi_vehicle_payload(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "ewbNo": req.get("ewb_no") or self._resolve_eway_artifact_number(),
+            "fromPlace": req.get("from_place"),
+            "fromState": req.get("from_state_code"),
+            "toPlace": req.get("to_place"),
+            "toState": req.get("to_state_code"),
+            "reasonCode": req.get("reason_code"),
+            "reasonRem": req.get("remarks"),
+            "transMode": req.get("trans_mode"),
+            "totalQuantity": req.get("total_quantity"),
+            "unitCode": req.get("unit_code"),
+        }
+
+    def _build_add_multi_vehicle_payload(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "ewbNo": req.get("ewb_no") or self._resolve_eway_artifact_number(),
+            "groupNo": req.get("group_no"),
+            "vehicleNo": req.get("vehicle_no"),
+            "transDocNo": req.get("trans_doc_no"),
+            "transDocDate": self._format_eway_date(req.get("trans_doc_date")),
+            "quantity": req.get("quantity"),
+        }
+
+    def _build_update_multi_vehicle_payload(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "ewbNo": req.get("ewb_no") or self._resolve_eway_artifact_number(),
+            "groupNo": req.get("group_no"),
+            "oldvehicleNo": req.get("old_vehicle_no"),
+            "newVehicleNo": req.get("new_vehicle_no"),
+            "oldTranNo": req.get("old_trans_no") or "",
+            "newTranNo": req.get("new_trans_no") or "",
+            "fromPlace": req.get("from_place"),
+            "fromState": req.get("from_state_code"),
+            "reasonCode": req.get("reason_code"),
+            "reasonRem": req.get("remarks"),
+        }
+
+    @transaction.atomic
+    def generate_consolidated_eway(self, *, req: Dict[str, Any]) -> Dict[str, Any]:
+        inv = self.invoice
+        self.assert_action_allowed(inv, "can_get_eway_details")
+        payload = self._build_generate_consolidated_eway_payload(req)
+        provider = ProviderRegistry.get_eway(self._eway_provider_name())
+        result = provider.generate_consolidated_eway(invoice=inv, payload=payload)
+        return self._finalize_eway_lookup_result(
+            inv=inv,
+            result=result,
+            lookup_code="EWB_CONSOLIDATED_FAILED",
+            lookup_message="Consolidated E-Way generation failed.",
+            request_json=payload,
+        )
+
+    @transaction.atomic
+    def regenerate_trip_sheet(self, *, req: Dict[str, Any]) -> Dict[str, Any]:
+        inv = self.invoice
+        self.assert_action_allowed(inv, "can_get_eway_details")
+        payload = self._build_regenerate_trip_sheet_payload(req)
+        provider = ProviderRegistry.get_eway(self._eway_provider_name())
+        result = provider.regenerate_trip_sheet(invoice=inv, payload=payload)
+        return self._finalize_eway_lookup_result(
+            inv=inv,
+            result=result,
+            lookup_code="EWB_TRIP_SHEET_REGENERATE_FAILED",
+            lookup_message="Trip sheet regeneration failed.",
+            request_json=payload,
+        )
+
+    @transaction.atomic
+    def initiate_multi_vehicle(self, *, req: Dict[str, Any]) -> Dict[str, Any]:
+        inv = self.invoice
+        self.assert_action_allowed(inv, "can_get_eway_details")
+        payload = self._build_initiate_multi_vehicle_payload(req)
+        provider = ProviderRegistry.get_eway(self._eway_provider_name())
+        result = provider.initiate_multi_vehicle(invoice=inv, payload=payload)
+        return self._finalize_eway_lookup_result(
+            inv=inv,
+            result=result,
+            lookup_code="EWB_MULTI_INIT_FAILED",
+            lookup_message="Multi vehicle initiation failed.",
+            request_json=payload,
+        )
+
+    @transaction.atomic
+    def add_multi_vehicle(self, *, req: Dict[str, Any]) -> Dict[str, Any]:
+        inv = self.invoice
+        self.assert_action_allowed(inv, "can_get_eway_details")
+        payload = self._build_add_multi_vehicle_payload(req)
+        provider = ProviderRegistry.get_eway(self._eway_provider_name())
+        result = provider.add_multi_vehicle(invoice=inv, payload=payload)
+        return self._finalize_eway_lookup_result(
+            inv=inv,
+            result=result,
+            lookup_code="EWB_MULTI_ADD_FAILED",
+            lookup_message="Add multi vehicle failed.",
+            request_json=payload,
+        )
+
+    @transaction.atomic
+    def update_multi_vehicle(self, *, req: Dict[str, Any]) -> Dict[str, Any]:
+        inv = self.invoice
+        self.assert_action_allowed(inv, "can_get_eway_details")
+        payload = self._build_update_multi_vehicle_payload(req)
+        provider = ProviderRegistry.get_eway(self._eway_provider_name())
+        result = provider.update_multi_vehicle(invoice=inv, payload=payload)
+        return self._finalize_eway_lookup_result(
+            inv=inv,
+            result=result,
+            lookup_code="EWB_MULTI_UPDATE_FAILED",
+            lookup_message="Update multi vehicle failed.",
+            request_json=payload,
+        )
 
     @staticmethod
     def _get_irn(inv: SalesInvoiceHeader) -> str:
@@ -974,13 +2115,9 @@ class SalesComplianceService:
                 or SalesComplianceService._stcd(getattr(inv, "seller_state_code", None)),
         )
 
-        ship = getattr(inv, "shipto_snapshot", None)
-        default_ship = build_exp_ship_dtls(
-            addr1=getattr(ship, "address1", None) if ship else getattr(inv, "bill_to_address1", None),
-            addr2=getattr(ship, "address2", None) if ship else getattr(inv, "bill_to_address2", None),
-            loc=getattr(ship, "city", None) if ship else getattr(inv, "bill_to_city", None),
-            pin=getattr(ship, "pincode", None) if ship else getattr(inv, "bill_to_pincode", None),
-            stcd=SalesComplianceService._stcd(getattr(ship, "state_code", None)) if ship else SalesComplianceService._stcd(getattr(inv, "bill_to_state_code", None)),
+        default_ship = SalesComplianceService._normalize_exp_ship_dtls(
+            inv,
+            SalesComplianceService._default_exp_ship_dtls(inv),
         )
 
         art = getattr(inv, "eway_artifact", None)
@@ -1059,15 +2196,7 @@ class SalesComplianceService:
                 stcd=getattr(getattr(ent_addr, "state", None), "statecode", None) if getattr(ent_addr, "state", None) else getattr(inv, "seller_state_code", None),
             )
 
-        if not ship_in:
-            ship = getattr(inv, "shipto_snapshot", None)
-            ship_in = build_exp_ship_dtls(
-                addr1=getattr(ship, "address1", None) if ship else getattr(inv, "bill_to_address1", None),
-                addr2=getattr(ship, "address2", None) if ship else getattr(inv, "bill_to_address2", None),
-                loc=getattr(ship, "city", None) if ship else getattr(inv, "bill_to_city", None),
-                pin=getattr(ship, "pincode", None) if ship else getattr(inv, "bill_to_pincode", None),
-                stcd=getattr(ship, "state_code", None) if ship else getattr(inv, "bill_to_state_code", None),
-            )
+        ship_in = SalesComplianceService._normalize_exp_ship_dtls(inv, ship_in)
 
         eway_input = EWayInput(
             distance_km=int(req["distance_km"]),
@@ -1103,11 +2232,19 @@ class SalesComplianceService:
             art.updated_by = created_by
             if not art.created_by:
                 art.created_by = created_by
+        cred = SalesComplianceService._get_mastergst_cred_for_entity(
+            entity,
+            provider_name=SalesComplianceService._eway_provider_name(),
+            service_scope=MasterGSTServiceScope.EWAY,
+        )
+        SalesComplianceService._stamp_eway_provenance(
+            art,
+            provider_name=SalesComplianceService._eway_provider_name(),
+            source=SalesEWaySource.IRN,
+            cred=cred,
+        )
         art.save()
 
-        cred = SalesComplianceService._get_mastergst_cred_for_entity(
-            entity, provider_name=SalesComplianceService._eway_provider_name()
-        )
         client = MasterGSTClient(cred=cred, provider_name=SalesComplianceService._eway_provider_name())
 
         resp = client.generate_ewaybill(payload)
@@ -1186,7 +2323,17 @@ class SalesComplianceService:
         if not art.ewb_no or art.status != SalesEWayStatus.GENERATED:
             raise ValidationError("E-Way cancel is allowed only for generated EWB.")
 
-        cred = self._get_mastergst_cred_for_entity(inv.entity, provider_name=self._eway_provider_name())
+        cred = self._get_mastergst_cred_for_entity(
+            inv.entity,
+            provider_name=self._eway_provider_name(),
+            service_scope=MasterGSTServiceScope.EWAY,
+        )
+        self._stamp_eway_provenance(
+            art,
+            provider_name=self._eway_provider_name(),
+            source=getattr(art, "eway_source", None) or SalesEWaySource.IRN,
+            cred=cred,
+        )
         client = MasterGSTClient(cred=cred, provider_name=self._eway_provider_name())
         ewb_no_raw = str(art.ewb_no or "").strip()
         reason_raw = str(reason_code or "").strip()
@@ -1266,7 +2413,17 @@ class SalesComplianceService:
         if not art.ewb_no:
             raise ValidationError("EWB number not found. Generate EWB first.")
 
-        cred = self._get_mastergst_cred_for_entity(inv.entity, provider_name=self._eway_provider_name())
+        cred = self._get_mastergst_cred_for_entity(
+            inv.entity,
+            provider_name=self._eway_provider_name(),
+            service_scope=MasterGSTServiceScope.EWAY,
+        )
+        self._stamp_eway_provenance(
+            art,
+            provider_name=self._eway_provider_name(),
+            source=getattr(art, "eway_source", None) or SalesEWaySource.IRN,
+            cred=cred,
+        )
         client = MasterGSTClient(cred=cred, provider_name=self._eway_provider_name())
         payload = {
             "ewbNo": str(art.ewb_no),
@@ -1328,7 +2485,17 @@ class SalesComplianceService:
         if not art.ewb_no:
             raise ValidationError("EWB number not found. Generate EWB first.")
 
-        cred = self._get_mastergst_cred_for_entity(inv.entity, provider_name=self._eway_provider_name())
+        cred = self._get_mastergst_cred_for_entity(
+            inv.entity,
+            provider_name=self._eway_provider_name(),
+            service_scope=MasterGSTServiceScope.EWAY,
+        )
+        self._stamp_eway_provenance(
+            art,
+            provider_name=self._eway_provider_name(),
+            source=getattr(art, "eway_source", None) or SalesEWaySource.IRN,
+            cred=cred,
+        )
         client = MasterGSTClient(cred=cred, provider_name=self._eway_provider_name())
         payload = {"ewbNo": str(art.ewb_no), "transporterId": str(transporter_id)}
         resp = client.update_eway_transporter(payload)
@@ -1368,13 +2535,18 @@ class SalesComplianceService:
         if not art.ewb_no:
             raise ValidationError("EWB number not found. Generate EWB first.")
 
-        cred = self._get_mastergst_cred_for_entity(inv.entity, provider_name=self._eway_provider_name())
+        cred = self._get_mastergst_cred_for_entity(
+            inv.entity,
+            provider_name=self._eway_provider_name(),
+            service_scope=MasterGSTServiceScope.EWAY,
+        )
         client = MasterGSTClient(cred=cred, provider_name=self._eway_provider_name())
         payload = {
             "ewbNo": str(art.ewb_no),
-            "reasonCode": str(req.get("reason_code") or ""),
-            "reasonRem": str(req.get("remarks") or ""),
+            "extnRsnCode": str(req.get("reason_code") or ""),
+            "extnRemarks": str(req.get("remarks") or ""),
             "fromPlace": str(req.get("from_place") or ""),
+            "fromPincode": int(req.get("from_pincode") or 0) if req.get("from_pincode") not in (None, "") else "",
             "fromState": str(req.get("from_state_code") or ""),
             "remainingDistance": int(req.get("remaining_distance_km") or 0),
             "transDocNo": str(req.get("trans_doc_no") or ""),
@@ -1382,6 +2554,11 @@ class SalesComplianceService:
             "transMode": str(req.get("trans_mode") or ""),
             "vehicleNo": str(req.get("vehicle_no") or ""),
             "vehicleType": str(req.get("vehicle_type") or ""),
+            "consignmentStatus": str(req.get("consignment_status") or ""),
+            "transitType": str(req.get("transit_type") or ""),
+            "addressLine1": str(req.get("address_line1") or ""),
+            "addressLine2": str(req.get("address_line2") or ""),
+            "addressLine3": str(req.get("address_line3") or ""),
         }
         resp = client.extend_eway_validity(payload)
         status_cd = str(resp.get("status_cd") or "")
@@ -1486,10 +2663,20 @@ class SalesComplianceService:
         if ewb.status == SalesEWayStatus.GENERATED and ewb.ewb_no and ewb.valid_upto and ewb.valid_upto > now:
             return {"status": "SUCCESS", "ewb_no": ewb.ewb_no, "valid_upto": ewb.valid_upto, "idempotent": True}
 
-        cred = self._get_mastergst_cred_for_entity(invoice.entity, provider_name=self._eway_provider_name())
+        cred = self._get_mastergst_cred_for_entity(
+            invoice.entity,
+            provider_name=self._eway_provider_name(),
+            service_scope=MasterGSTServiceScope.EWAY,
+        )
         client = MasterGSTClient(cred=cred, provider_name=self._eway_provider_name())
 
         payload = build_b2c_direct_payload(invoice=invoice, ewb=ewb, entity_gstin=cred.gstin)
+        self._stamp_eway_provenance(
+            ewb,
+            provider_name=self._eway_provider_name(),
+            source=SalesEWaySource.DIRECT,
+            cred=cred,
+        )
 
         # Attempt bookkeeping
         ewb.last_request_json = payload
@@ -1534,13 +2721,14 @@ class SalesComplianceService:
         status_cd = str(mgst_resp.get("status_cd") or "")
         if status_cd == "1":
             data = mgst_resp.get("data") or {}
-
-            ewb.ewb_no = str(data.get("ewayBillNo") or data.get("EwbNo") or "") or None
-            ewb.ewb_date = self._parse_dt(data.get("ewayBillDate") or data.get("EwbDt"))
-            ewb.valid_upto = self._parse_dt(data.get("validUpto") or data.get("EwbValidTill"))
-
-            ewb.status = SalesEWayStatus.GENERATED
-            ewb.last_success_at = timezone.now()
+            self._apply_eway_summary(
+                ewb,
+                ewb_no=data.get("ewayBillNo") or data.get("EwbNo"),
+                ewb_date=data.get("ewayBillDate") or data.get("EwbDt"),
+                valid_upto=data.get("validUpto") or data.get("EwbValidTill"),
+                raw=mgst_resp,
+                preserve_existing=False,
+            )
             if user:
                 ewb.updated_by = user
             ewb.save()

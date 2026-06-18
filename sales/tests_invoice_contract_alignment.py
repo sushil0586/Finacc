@@ -35,6 +35,7 @@ from sales.models.sales_ar import CustomerBillOpenItem
 from sales.models.sales_compliance import SalesEInvoice, SalesEInvoiceStatus, SalesEWayBill, SalesEWayStatus
 from sales.models.sales_settings import SalesChoiceOverride
 from sales.serializers.sales_invoice_serializers import SalesInvoiceHeaderSerializer
+from sales.services.sales_compliance_service import SalesComplianceService
 from sales.services.sales_invoice_service import SalesInvoiceService
 from sales.services.sales_choices_service import SalesChoicesService
 from sales.services.sales_settings_service import SalesSettingsService
@@ -244,8 +245,80 @@ class SalesInvoiceContractAlignmentTests(APITestCase):
         self.assertEqual(response.data["invoice"]["einvoice_artifact"]["irn"], "IRN123")
         self.assertEqual(response.data["invoice"]["eway_artifact"]["ewb_no"], "171001234567")
         self.assertEqual(response.data["invoice"]["compliance_action_flags"]["can_generate_irn"], False)
+        self.assertEqual(response.data["invoice"]["compliance_action_flags"]["can_generate_eway"], False)
+        self.assertEqual(response.data["invoice"]["compliance_action_flags"]["can_load_eway_prefill"], False)
+        self.assertEqual(response.data["invoice"]["compliance_action_flags"]["can_cancel_irn"], False)
         self.assertEqual(response.data["invoice"]["compliance_action_flags"]["can_cancel_eway"], True)
         self.assertEqual(response.data["compliance_action_flags"]["can_cancel_eway"], True)
+
+    def test_b2c_generated_eway_disables_b2c_prefill_flag(self):
+        invoice = SalesInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            doc_type=SalesInvoiceHeader.DocType.TAX_INVOICE,
+            status=SalesInvoiceHeader.Status.POSTED,
+            bill_date=datetime(2025, 4, 20).date(),
+            posting_date=datetime(2025, 4, 20).date(),
+            due_date=datetime(2025, 4, 25).date(),
+            doc_code="SI",
+            doc_no=302,
+            invoice_number="SI/302",
+            customer=self.customer,
+            customer_ledger=self.customer.ledger,
+            customer_name="Alpha Retail",
+            customer_gstin="",
+            customer_state_code="27",
+            seller_gstin="27AAAAA9999A1Z5",
+            seller_state_code="27",
+            place_of_supply_state_code="27",
+            place_of_supply_pincode="400001",
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2C,
+            taxability=SalesInvoiceHeader.Taxability.TAXABLE,
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTRA_STATE,
+            gst_compliance_mode=SalesInvoiceHeader.GstComplianceMode.EWAY_ONLY,
+            is_einvoice_applicable=False,
+            is_eway_applicable=True,
+        )
+        SalesInvoiceLine.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            header=invoice,
+            line_no=1,
+            product=self.product,
+            uom=self.uom,
+            hsn_sac_code="8471",
+            is_service=False,
+            qty=Decimal("1.000"),
+            free_qty=Decimal("0.000"),
+            rate=Decimal("100.0000"),
+            discount_type=SalesInvoiceLine.DiscountType.NONE,
+            discount_percent=Decimal("0.0000"),
+            discount_amount=Decimal("0.00"),
+            gst_rate=Decimal("18.00"),
+            taxable_value=Decimal("100.00"),
+            cgst_amount=Decimal("9.00"),
+            sgst_amount=Decimal("9.00"),
+            igst_amount=Decimal("0.00"),
+            cess_percent=Decimal("0.00"),
+            cess_amount=Decimal("0.00"),
+            line_total=Decimal("118.00"),
+        )
+        SalesEWayBill.objects.create(
+            invoice=invoice,
+            status=SalesEWayStatus.GENERATED,
+            ewb_no="171001234568",
+            created_by=self.user,
+            updated_by=self.user,
+        )
+
+        flags = SalesComplianceService.compliance_action_flags(invoice)
+
+        self.assertEqual(flags["state"]["is_b2c"], True)
+        self.assertEqual(flags["can_generate_eway"], False)
+        self.assertEqual(flags["can_load_eway_b2c_prefill"], False)
+        self.assertEqual(flags["can_cancel_eway"], True)
 
     def test_customer_statement_open_items_expose_service_invoice_route(self):
         invoice = SalesInvoiceHeader.objects.create(

@@ -52,3 +52,22 @@ def provider_debug_enabled(provider_name: str) -> bool:
     if provider in mapped:
         return bool(mapped[provider])
     return bool(getattr(settings, "MASTERGST_DEBUG", False))
+
+
+def provider_ip_address(provider_name: str) -> str:
+    provider = (provider_name or DEFAULT_PROVIDER).strip().lower()
+    mapped = getattr(settings, "GST_PROVIDER_IP_ADDRESSES", {}) or {}
+    if provider in mapped and str(mapped[provider] or "").strip():
+        return str(mapped[provider]).strip()
+
+    if provider == "whitebooks":
+        return str(
+            getattr(
+                settings,
+                "WHITEBOOKS_IP_ADDRESS",
+                getattr(settings, "MASTERGST_IP_ADDRESS", "0.0.0.0"),
+            )
+            or "0.0.0.0"
+        ).strip()
+
+    return str(getattr(settings, "MASTERGST_IP_ADDRESS", "0.0.0.0") or "0.0.0.0").strip()

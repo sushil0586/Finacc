@@ -4,7 +4,7 @@ from django.contrib import admin, messages
 from django.db import transaction
 from django.utils.html import format_html
 from django.utils import timezone
-from sales.models.mastergst_models import SalesMasterGSTCredential, SalesMasterGSTToken, MasterGSTToken
+from sales.models.mastergst_models import SalesMasterGSTCredential, SalesMasterGSTToken
 from sales.services.providers.mastergst_client import MasterGSTClient
 
 
@@ -20,7 +20,6 @@ from sales.models.sales_compliance import (
     SalesEInvoiceCancel,
     SalesEWayBill,
     SalesEWayBillCancel,
-    SalesNICCredential,
     SalesComplianceActionLog,
     SalesComplianceExceptionQueue,
     SalesComplianceErrorCode,
@@ -676,14 +675,6 @@ class SalesEWayBillCancelAdmin(admin.ModelAdmin):
         return False
 
 
-@admin.register(SalesNICCredential)
-class SalesNICCredentialAdmin(admin.ModelAdmin):
-    list_display = ("id", "entity", "subentity", "environment", "gstin", "username", "is_active", "updated_at")
-    list_filter = ("environment", "is_active", "entity")
-    search_fields = ("entity__entityname", "subentity__subentityname", "gstin", "username")
-    ordering = ("entity_id", "subentity_id", "environment")
-
-
 @admin.register(SalesInvoiceShipToSnapshot)
 class SalesInvoiceShipToSnapshotAdmin(admin.ModelAdmin):
     list_display = ("header", "city", "state_code", "pincode", "full_name", "phone")
@@ -1002,14 +993,6 @@ class SalesMasterGSTTokenAdmin(admin.ModelAdmin):
         self.message_user(request, f"Cleared {updated} token(s).", level=messages.SUCCESS)
 
 
-@admin.register(MasterGSTToken)
-class MasterGSTTokenAdmin(admin.ModelAdmin):
-    list_display = ("id", "entity", "gstin", "module", "token_created_at", "updated_at")
-    list_filter = ("module", "entity")
-    search_fields = ("entity__entityname", "gstin")
-    ordering = ("-updated_at",)
-
-
 @admin.register(CustomerBillOpenItem)
 class CustomerBillOpenItemAdmin(admin.ModelAdmin):
     list_display = ("id", "invoice_number", "customer", "bill_date", "original_amount", "settled_amount", "outstanding_amount", "is_open")
@@ -1046,4 +1029,3 @@ class CustomerSettlementAdmin(admin.ModelAdmin):
 class CustomerSettlementLineAdmin(admin.ModelAdmin):
     list_display = ("id", "settlement", "open_item", "amount", "applied_amount_signed")
     list_select_related = ("settlement", "open_item")
-

@@ -29,7 +29,7 @@ from .sales_compliance import (
     SalesEInvoiceCancel,
     SalesEWayBill,
     SalesEWayBillCancel,
-    SalesNICCredential,
+    SalesEWaySource,
     SalesComplianceActionLog,
     SalesComplianceExceptionQueue,
     SalesComplianceErrorCode,
@@ -41,6 +41,5 @@ from .sales_transport import (
 from .mastergst_models import (
     SalesMasterGSTCredential,
     SalesMasterGSTToken,
-    MasterGSTToken,
     MasterGSTEnvironment,
 )

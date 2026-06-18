@@ -3,22 +3,32 @@ from decimal import Decimal
 from unittest.mock import MagicMock, patch
 from datetime import date
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIRequestFactory, force_authenticate
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
-from sales.models import SalesInvoiceHeader, SalesSettings
+from sales.models import SalesInvoiceHeader, SalesSettings, SalesEWaySource
 from sales.services.sales_invoice_service import SalesInvoiceService
 from sales.services.sales_stock_balance_service import SalesStockBalanceService
 from sales.services.sales_withholding_service import SalesWithholdingService
 from sales.services.irp_payload_builder import IRPPayloadBuilder
 from sales.services.compliance_error_catalog_service import ComplianceErrorCatalogService
-from sales.services.eway_payload_builder import EWayInput, build_generate_eway_payload
+from sales.services.eway_payload_builder import EWayInput, build_exp_ship_dtls, build_generate_eway_payload
+from sales.services.eway.payload_b2c import build_b2c_direct_payload
 from sales.services.sales_compliance_service import SalesComplianceService
 from sales.services.sales_nav_service import SalesInvoiceNavService
 from sales.services.sales_settings_service import SalesSettingsService
 from sales.services.providers.mastergst import _extract_error
+from sales.services.providers.mastergst_client import MasterGSTClient
+from sales.services.providers.credential_resolver import CredentialResolver
+from sales.models.mastergst_models import MasterGSTServiceScope
+from sales.serializers.sales_compliance_serializers import (
+    EnsureComplianceActionSerializer,
+    ExtendEWayValidityActionSerializer,
+    GenerateIRNAndEWayActionSerializer,
+)
+from sales.serializers.eway_serializers import GenerateEWayRequestSerializer
 from withholding.services import WithholdingResult
 from sales.views.sales_invoice_views import (
     SalesInvoiceCancelAPIView,
@@ -32,8 +42,26 @@ from sales.views.sales_invoice_views import (
 )
 from sales.views.sales_invoice_compliance_api import SalesInvoiceGenerateIRNAndEWayAPIView
 from sales.views.sales_invoice_compliance_api import SalesInvoiceGenerateIRNAPIView
+from sales.views.sales_invoice_compliance_api import SalesInvoiceGetIRNByDocDetailsAPIView
+from sales.views.sales_invoice_compliance_api import SalesInvoiceGetGSTNDetailsAPIView
+from sales.views.sales_invoice_compliance_api import SalesInvoiceSyncGSTINFromCPAPIView
+from sales.views.sales_invoice_compliance_api import SalesInvoiceGetB2CQRCodeAPIView
 from sales.views.sales_invoice_compliance_api import SalesInvoiceGetIRNDetailsAPIView
 from sales.views.sales_invoice_compliance_api import SalesInvoiceGetEWayByIRNAPIView
+from sales.views.eway_views import SalesInvoiceGetEWayDetailsAPIView
+from sales.views.eway_views import (
+    SalesInvoiceGetEWayTransporterDetailsAPIView,
+    SalesInvoiceGetEWayGSTINDetailsAPIView,
+    SalesInvoiceGetEWayHSNDetailsAPIView,
+    SalesInvoiceGetEWayErrorListAPIView,
+    SalesInvoiceRejectEWayAPIView,
+    SalesInvoiceGetTripSheetAPIView,
+    SalesInvoiceGetEWayByDocumentAPIView,
+    SalesInvoiceGetEWayBillsForTransporterAPIView,
+    SalesInvoiceGetEWayBillReportByTransporterAssignedDateAPIView,
+    SalesInvoiceGetEWayBillsForTransporterByGSTINAPIView,
+    SalesInvoiceGenerateConsolidatedEWayAPIView,
+)
 from sales.views.sales_ar_exports import CustomerStatementExcelAPIView
 from posting.adapters.sales_invoice import SalesInvoicePostingAdapter, SalesInvoicePostingConfig
 from posting.common.static_accounts import StaticAccountCodes
@@ -115,6 +143,684 @@ class SalesInvoiceServiceUnitTests(SimpleTestCase):
         self.assertEqual(normalized["copy_labels"]["original"], "ORIGINAL")
         self.assertIn("texts", normalized)
         self.assertTrue(len(normalized["texts"]["line_columns"]) > 0)
+
+
+class MasterGSTClientUnitTests(SimpleTestCase):
+    @patch("sales.services.providers.mastergst_client.requests.get")
+    def test_get_gstn_details_uses_active_provider_endpoint_contract(self, mocked_get):
+        response = MagicMock()
+        response.status_code = 200
+        response.content = b'{"status_cd":"1","data":{"Gstin":"03ABCDE1234F1Z5"}}'
+        response.json.return_value = {"status_cd": "1", "data": {"Gstin": "03ABCDE1234F1Z5"}}
+        response.text = '{"status_cd":"1"}'
+        response.headers = {"Content-Type": "application/json"}
+        mocked_get.return_value = response
+
+        cred = SimpleNamespace(
+            email="ops@example.com",
+            client_id="cid",
+            gstin="03AAAAA0000A1Z5",
+            gst_username="gst-user",
+            get_client_secret=lambda: "secret",
+        )
+        client = MasterGSTClient(cred=cred, provider_name="whitebooks")
+
+        with patch.object(client, "get_token", return_value="tok123"), patch.object(client, "_resolve_ip", return_value="127.0.0.1"):
+            result = client.get_gstn_details(gstin="03abcde1234f1z5")
+
+        self.assertEqual(result["status_cd"], "1")
+        self.assertEqual(result["_lookup_gstin"], "03ABCDE1234F1Z5")
+        mocked_get.assert_called_once()
+        called_url = mocked_get.call_args.args[0]
+        called_headers = mocked_get.call_args.kwargs["headers"]
+        self.assertIn("/einvoice/type/GSTNDETAILS/version/V1_03", called_url)
+        self.assertIn("param1=03ABCDE1234F1Z5", called_url)
+        self.assertEqual(called_headers["auth-token"], "tok123")
+        self.assertEqual(called_headers["username"], "gst-user")
+
+    def test_eway_direct_headers_use_explicit_credential_helpers(self):
+        cred = SimpleNamespace(
+            client_id="cid",
+            gstin="03AAAAA0000A1Z5",
+            get_client_secret=lambda: "secret",
+            get_eway_username=lambda: "eway-user",
+            get_eway_password=lambda: "eway-pass",
+        )
+        client = MasterGSTClient(cred=cred, provider_name="whitebooks")
+
+        with patch.object(client, "_resolve_ip", return_value="10.10.10.10"):
+            headers = client._eway_direct_headers()
+
+        self.assertEqual(headers["username"], "eway-user")
+        self.assertEqual(headers["password"], "eway-pass")
+        self.assertEqual(headers["ip_address"], "10.10.10.10")
+
+    @patch("sales.services.providers.mastergst_client.requests.get")
+    def test_get_irn_details_by_doc_uses_vendor_header_contract(self, mocked_get):
+        response = MagicMock()
+        response.status_code = 200
+        response.content = b'{"status_cd":"1","data":{"Irn":"IRN123"}}'
+        response.json.return_value = {"status_cd": "1", "data": {"Irn": "IRN123"}}
+        response.text = '{"status_cd":"1"}'
+        response.headers = {"Content-Type": "application/json"}
+        mocked_get.return_value = response
+
+        cred = SimpleNamespace(
+            email="ops@example.com",
+            client_id="cid",
+            gstin="03AAAAA0000A1Z5",
+            gst_username="gst-user",
+            get_client_secret=lambda: "secret",
+        )
+        client = MasterGSTClient(cred=cred, provider_name="whitebooks")
+
+        with patch.object(client, "get_token", return_value="tok123"), patch.object(client, "_resolve_ip", return_value="127.0.0.1"):
+            result = client.get_irn_details_by_doc(doc_type="inv", doc_number="SINV/1", doc_date="18/06/2026")
+
+        self.assertEqual(result["status_cd"], "1")
+        mocked_get.assert_called_once()
+        called_url = mocked_get.call_args.args[0]
+        called_headers = mocked_get.call_args.kwargs["headers"]
+        self.assertIn("/einvoice/type/GETIRNBYDOCDETAILS/version/V1_03", called_url)
+        self.assertIn("param1=INV", called_url)
+        self.assertEqual(called_headers["docnum"], "SINV/1")
+        self.assertEqual(called_headers["docdate"], "18/06/2026")
+        self.assertEqual(called_headers["auth-token"], "tok123")
+
+    @patch("sales.services.providers.mastergst_client.requests.get")
+    def test_sync_gstin_from_cp_uses_active_provider_endpoint_contract(self, mocked_get):
+        response = MagicMock()
+        response.status_code = 200
+        response.content = b'{"status_cd":"1","data":{"Gstin":"03ABCDE1234F1Z5"}}'
+        response.json.return_value = {"status_cd": "1", "data": {"Gstin": "03ABCDE1234F1Z5"}}
+        response.text = '{"status_cd":"1"}'
+        response.headers = {"Content-Type": "application/json"}
+        mocked_get.return_value = response
+
+        cred = SimpleNamespace(
+            email="ops@example.com",
+            client_id="cid",
+            gstin="03AAAAA0000A1Z5",
+            gst_username="gst-user",
+            get_client_secret=lambda: "secret",
+        )
+        client = MasterGSTClient(cred=cred, provider_name="whitebooks")
+
+        with patch.object(client, "get_token", return_value="tok123"), patch.object(client, "_resolve_ip", return_value="127.0.0.1"):
+            result = client.sync_gstin_from_cp(gstin="03abcde1234f1z5")
+
+        self.assertEqual(result["status_cd"], "1")
+        mocked_get.assert_called_once()
+        called_url = mocked_get.call_args.args[0]
+        called_headers = mocked_get.call_args.kwargs["headers"]
+        self.assertIn("/einvoice/type/SYNC_GSTIN_FROMCP/version/V1_03", called_url)
+        self.assertIn("param1=03ABCDE1234F1Z5", called_url)
+        self.assertEqual(called_headers["auth-token"], "tok123")
+
+    @patch("sales.services.providers.mastergst_client.requests.get")
+    def test_get_b2c_qrcode_uses_active_provider_endpoint_contract(self, mocked_get):
+        response = MagicMock()
+        response.status_code = 200
+        response.content = b'{"status_cd":"1","data":{"qrCode":"base64-qr"}}'
+        response.json.return_value = {"status_cd": "1", "data": {"qrCode": "base64-qr"}}
+        response.text = '{"status_cd":"1","data":{"qrCode":"base64-qr"}}'
+        response.headers = {"Content-Type": "application/json"}
+        mocked_get.return_value = response
+
+        cred = SimpleNamespace(
+            email="ops@example.com",
+            client_id="cid",
+            gstin="03AAAAA0000A1Z5",
+            gst_username="gst-user",
+            get_client_secret=lambda: "secret",
+        )
+        client = MasterGSTClient(cred=cred, provider_name="whitebooks")
+
+        with patch.object(client, "_resolve_ip", return_value="127.0.0.1"):
+            result = client.get_b2c_qrcode(
+                payload={
+                    "sgstin": "03AAAAA0000A1Z5",
+                    "docno": "SINV-1001",
+                    "docdate": "18-06-2026",
+                    "totinvval": "1180.00",
+                    "bankaccno": "1234567890",
+                    "bankifsccode": "HDFC0001234",
+                    "accountholdername": "Acme Pvt Ltd",
+                    "igstamount": "0.00",
+                    "cgstamount": "90.00",
+                    "sgstamount": "90.00",
+                    "cessamount": "0.00",
+                }
+            )
+
+        self.assertEqual(result["status_cd"], "1")
+        mocked_get.assert_called_once()
+        called_url = mocked_get.call_args.args[0]
+        called_headers = mocked_get.call_args.kwargs["headers"]
+        self.assertIn("/einvoice/qrcode", called_url)
+        self.assertEqual(called_headers["docno"], "SINV-1001")
+        self.assertEqual(called_headers["bankifsccode"], "HDFC0001234")
+        self.assertEqual(called_headers["username"], "gst-user")
+
+    @patch("sales.services.providers.mastergst_client.requests.get")
+    def test_get_eway_details_uses_active_provider_endpoint_contract(self, mocked_get):
+        response = MagicMock()
+        response.status_code = 200
+        response.content = b'{"status_cd":"1","data":{"ewayBillNo":"171001234567","validUpto":"2026-06-19"}}'
+        response.json.return_value = {"status_cd": "1", "data": {"ewayBillNo": "171001234567", "validUpto": "2026-06-19"}}
+        response.text = '{"status_cd":"1"}'
+        response.headers = {"Content-Type": "application/json"}
+        mocked_get.return_value = response
+
+        cred = SimpleNamespace(
+            email="ops@example.com",
+            client_id="cid",
+            gstin="03AAAAA0000A1Z5",
+            gst_username="gst-user",
+            get_client_secret=lambda: "secret",
+            get_eway_username=lambda: "eway-user",
+            get_eway_password=lambda: "eway-pass",
+        )
+        client = MasterGSTClient(cred=cred, provider_name="whitebooks")
+
+        with patch.object(client, "_resolve_ip", return_value="127.0.0.1"):
+            result = client.get_eway_details(ewb_no="171001234567")
+
+        self.assertEqual(result["status_cd"], "1")
+        mocked_get.assert_called_once()
+        called_url = mocked_get.call_args.args[0]
+        called_headers = mocked_get.call_args.kwargs["headers"]
+        self.assertIn("/ewaybillapi/v1.03/ewayapi/getewaybill", called_url)
+        self.assertIn("ewbNo=171001234567", called_url)
+        self.assertEqual(called_headers["username"], "eway-user")
+
+    @patch("sales.services.providers.mastergst_client.requests.get")
+    def test_get_transporter_details_uses_active_provider_endpoint_contract(self, mocked_get):
+        response = MagicMock()
+        response.status_code = 200
+        response.content = b'{"status_cd":"1","data":{"transporterId":"03TRANS1234A1Z5"}}'
+        response.json.return_value = {"status_cd": "1", "data": {"transporterId": "03TRANS1234A1Z5"}}
+        response.text = '{"status_cd":"1"}'
+        response.headers = {"Content-Type": "application/json"}
+        mocked_get.return_value = response
+
+        cred = SimpleNamespace(
+            email="ops@example.com",
+            client_id="cid",
+            gstin="03AAAAA0000A1Z5",
+            gst_username="gst-user",
+            get_client_secret=lambda: "secret",
+            get_eway_username=lambda: "eway-user",
+            get_eway_password=lambda: "eway-pass",
+        )
+        client = MasterGSTClient(cred=cred, provider_name="whitebooks")
+
+        with patch.object(client, "_resolve_ip", return_value="127.0.0.1"):
+            result = client.get_transporter_details(transporter_id="03TRANS1234A1Z5")
+
+        self.assertEqual(result["status_cd"], "1")
+        called_url = mocked_get.call_args.args[0]
+        self.assertIn("/ewaybillapi/v1.03/ewayapi/gettransporterdetails", called_url)
+        self.assertIn("trn_no=03TRANS1234A1Z5", called_url)
+
+    @patch("sales.services.providers.mastergst_client.requests.get")
+    def test_get_gstin_details_uses_active_provider_endpoint_contract(self, mocked_get):
+        response = MagicMock()
+        response.status_code = 200
+        response.content = b'{"status_cd":"1","data":{"Gstin":"03ABCDE1234F1Z5"}}'
+        response.json.return_value = {"status_cd": "1", "data": {"Gstin": "03ABCDE1234F1Z5"}}
+        response.text = '{"status_cd":"1"}'
+        response.headers = {"Content-Type": "application/json"}
+        mocked_get.return_value = response
+
+        cred = SimpleNamespace(
+            email="ops@example.com",
+            client_id="cid",
+            gstin="03AAAAA0000A1Z5",
+            gst_username="gst-user",
+            get_client_secret=lambda: "secret",
+            get_eway_username=lambda: "eway-user",
+            get_eway_password=lambda: "eway-pass",
+        )
+        client = MasterGSTClient(cred=cred, provider_name="whitebooks")
+
+        with patch.object(client, "_resolve_ip", return_value="127.0.0.1"):
+            result = client.get_gstin_details(gstin="03abcde1234f1z5")
+
+        self.assertEqual(result["status_cd"], "1")
+        called_url = mocked_get.call_args.args[0]
+        self.assertIn("/ewaybillapi/v1.03/ewayapi/getgstindetails", called_url)
+        self.assertIn("GSTIN=03ABCDE1234F1Z5", called_url)
+
+    @patch("sales.services.providers.mastergst_client.requests.get")
+    def test_get_hsn_details_uses_active_provider_endpoint_contract(self, mocked_get):
+        response = MagicMock()
+        response.status_code = 200
+        response.content = b'{"status_cd":"1","data":{"hsnCode":"9983"}}'
+        response.json.return_value = {"status_cd": "1", "data": {"hsnCode": "9983"}}
+        response.text = '{"status_cd":"1"}'
+        response.headers = {"Content-Type": "application/json"}
+        mocked_get.return_value = response
+
+        cred = SimpleNamespace(
+            email="ops@example.com",
+            client_id="cid",
+            gstin="03AAAAA0000A1Z5",
+            gst_username="gst-user",
+            get_client_secret=lambda: "secret",
+            get_eway_username=lambda: "eway-user",
+            get_eway_password=lambda: "eway-pass",
+        )
+        client = MasterGSTClient(cred=cred, provider_name="whitebooks")
+
+        with patch.object(client, "_resolve_ip", return_value="127.0.0.1"):
+            result = client.get_hsn_details(hsn_code="9983")
+
+        self.assertEqual(result["status_cd"], "1")
+        called_url = mocked_get.call_args.args[0]
+        self.assertIn("/ewaybillapi/v1.03/ewayapi/gethsndetailsbyhsncode", called_url)
+        self.assertIn("hsncode=9983", called_url)
+
+    @patch("sales.services.providers.mastergst_client.requests.get")
+    def test_get_error_list_uses_active_provider_endpoint_contract(self, mocked_get):
+        response = MagicMock()
+        response.status_code = 200
+        response.content = b'{"status_cd":"1","data":[{"code":"1001"}]}'
+        response.json.return_value = {"status_cd": "1", "data": [{"code": "1001"}]}
+        response.text = '{"status_cd":"1"}'
+        response.headers = {"Content-Type": "application/json"}
+        mocked_get.return_value = response
+
+        cred = SimpleNamespace(
+            email="ops@example.com",
+            client_id="cid",
+            gstin="03AAAAA0000A1Z5",
+            gst_username="gst-user",
+            get_client_secret=lambda: "secret",
+            get_eway_username=lambda: "eway-user",
+            get_eway_password=lambda: "eway-pass",
+        )
+        client = MasterGSTClient(cred=cred, provider_name="whitebooks")
+
+        with patch.object(client, "_resolve_ip", return_value="127.0.0.1"):
+            result = client.get_error_list()
+
+        self.assertEqual(result["status_cd"], "1")
+        called_url = mocked_get.call_args.args[0]
+        self.assertIn("/ewaybillapi/v1.03/ewayapi/geterrorlist", called_url)
+
+    @patch("sales.services.providers.mastergst_client.requests.post")
+    def test_reject_eway_uses_active_provider_endpoint_contract(self, mocked_post):
+        response = MagicMock()
+        response.status_code = 200
+        response.content = b'{"status_cd":"1","data":"Rejected"}'
+        response.json.return_value = {"status_cd": "1", "data": "Rejected"}
+        response.text = '{"status_cd":"1"}'
+        response.headers = {"Content-Type": "application/json"}
+        mocked_post.return_value = response
+
+        cred = SimpleNamespace(
+            email="ops@example.com",
+            client_id="cid",
+            gstin="03AAAAA0000A1Z5",
+            gst_username="gst-user",
+            get_client_secret=lambda: "secret",
+            get_eway_username=lambda: "eway-user",
+            get_eway_password=lambda: "eway-pass",
+        )
+        client = MasterGSTClient(cred=cred, provider_name="whitebooks")
+
+        with patch.object(client, "_resolve_ip", return_value="127.0.0.1"):
+            result = client.reject_eway({"ewbNo": 171001234567})
+
+        self.assertEqual(result["status_cd"], "1")
+        called_url = mocked_post.call_args.args[0]
+        self.assertIn("/ewaybillapi/v1.03/ewayapi/rejewb", called_url)
+
+    @patch("sales.services.providers.mastergst_client.requests.get")
+    def test_get_trip_sheet_uses_active_provider_endpoint_contract(self, mocked_get):
+        response = MagicMock()
+        response.status_code = 200
+        response.content = b'{"status_cd":"1","data":{"tripSheetNo":"TS123"}}'
+        response.json.return_value = {"status_cd": "1", "data": {"tripSheetNo": "TS123"}}
+        response.text = '{"status_cd":"1"}'
+        response.headers = {"Content-Type": "application/json"}
+        mocked_get.return_value = response
+
+        cred = SimpleNamespace(
+            email="ops@example.com",
+            client_id="cid",
+            gstin="03AAAAA0000A1Z5",
+            gst_username="gst-user",
+            get_client_secret=lambda: "secret",
+            get_eway_username=lambda: "eway-user",
+            get_eway_password=lambda: "eway-pass",
+        )
+        client = MasterGSTClient(cred=cred, provider_name="whitebooks")
+
+        with patch.object(client, "_resolve_ip", return_value="127.0.0.1"):
+            result = client.get_trip_sheet(trip_sheet_no="TS123")
+
+        self.assertEqual(result["status_cd"], "1")
+        called_url = mocked_get.call_args.args[0]
+        self.assertIn("/ewaybillapi/v1.03/ewayapi/gettripsheet", called_url)
+        self.assertIn("tripSheetNo=TS123", called_url)
+
+    @patch("sales.services.providers.mastergst_client.requests.get")
+    def test_get_eway_by_document_uses_active_provider_endpoint_contract(self, mocked_get):
+        response = MagicMock()
+        response.status_code = 200
+        response.content = b'{"status_cd":"1","data":{"ewayBillNo":"171001234567"}}'
+        response.json.return_value = {"status_cd": "1", "data": {"ewayBillNo": "171001234567"}}
+        response.text = '{"status_cd":"1"}'
+        response.headers = {"Content-Type": "application/json"}
+        mocked_get.return_value = response
+
+        cred = SimpleNamespace(
+            email="ops@example.com",
+            client_id="cid",
+            gstin="03AAAAA0000A1Z5",
+            gst_username="gst-user",
+            get_client_secret=lambda: "secret",
+            get_eway_username=lambda: "eway-user",
+            get_eway_password=lambda: "eway-pass",
+        )
+        client = MasterGSTClient(cred=cred, provider_name="whitebooks")
+
+        with patch.object(client, "_resolve_ip", return_value="127.0.0.1"):
+            result = client.get_eway_by_document(doc_type="INV", doc_no="SINV-1")
+
+        self.assertEqual(result["status_cd"], "1")
+        called_url = mocked_get.call_args.args[0]
+        self.assertIn("/ewaybillapi/v1.03/ewayapi/getewaybillgeneratedbyconsigner", called_url)
+        self.assertIn("docType=INV", called_url)
+        self.assertIn("docNo=SINV-1", called_url)
+
+    @patch("sales.services.providers.mastergst_client.requests.get")
+    def test_get_eway_bills_for_transporter_uses_active_provider_endpoint_contract(self, mocked_get):
+        response = MagicMock()
+        response.status_code = 200
+        response.content = b'{"status_cd":"1","data":[{"ewayBillNo":"171001234567"}]}'
+        response.json.return_value = {"status_cd": "1", "data": [{"ewayBillNo": "171001234567"}]}
+        response.text = '{"status_cd":"1"}'
+        response.headers = {"Content-Type": "application/json"}
+        mocked_get.return_value = response
+
+        cred = SimpleNamespace(
+            email="ops@example.com",
+            client_id="cid",
+            gstin="03AAAAA0000A1Z5",
+            gst_username="gst-user",
+            get_client_secret=lambda: "secret",
+            get_eway_username=lambda: "eway-user",
+            get_eway_password=lambda: "eway-pass",
+        )
+        client = MasterGSTClient(cred=cred, provider_name="whitebooks")
+
+        with patch.object(client, "_resolve_ip", return_value="127.0.0.1"):
+            result = client.get_eway_bills_for_transporter(date="18/06/2026")
+
+        self.assertEqual(result["status_cd"], "1")
+        called_url = mocked_get.call_args.args[0]
+        self.assertIn("/ewaybillapi/v1.03/ewayapi/getewaybillsfortransporter", called_url)
+        self.assertIn("date=18/06/2026", called_url)
+
+    @patch("sales.services.providers.mastergst_client.requests.get")
+    def test_get_eway_bill_report_by_transporter_assigned_date_uses_active_provider_endpoint_contract(self, mocked_get):
+        response = MagicMock()
+        response.status_code = 200
+        response.content = b'{"status_cd":"1","data":[{"ewayBillNo":"171001234567"}]}'
+        response.json.return_value = {"status_cd": "1", "data": [{"ewayBillNo": "171001234567"}]}
+        response.text = '{"status_cd":"1"}'
+        response.headers = {"Content-Type": "application/json"}
+        mocked_get.return_value = response
+
+        cred = SimpleNamespace(
+            email="ops@example.com",
+            client_id="cid",
+            gstin="03AAAAA0000A1Z5",
+            gst_username="gst-user",
+            get_client_secret=lambda: "secret",
+            get_eway_username=lambda: "eway-user",
+            get_eway_password=lambda: "eway-pass",
+        )
+        client = MasterGSTClient(cred=cred, provider_name="whitebooks")
+
+        with patch.object(client, "_resolve_ip", return_value="127.0.0.1"):
+            result = client.get_eway_bill_report_by_transporter_assigned_date(date="18/06/2026", state_code="03")
+
+        self.assertEqual(result["status_cd"], "1")
+        called_url = mocked_get.call_args.args[0]
+        self.assertIn("/ewaybillapi/v1.03/ewayapi/getewaybillreportbytransporterassigneddate", called_url)
+        self.assertIn("date=18/06/2026", called_url)
+        self.assertIn("stateCode=03", called_url)
+
+    @patch("sales.services.providers.mastergst_client.requests.get")
+    def test_get_eway_bills_for_transporter_by_gstin_uses_active_provider_endpoint_contract(self, mocked_get):
+        response = MagicMock()
+        response.status_code = 200
+        response.content = b'{"status_cd":"1","data":[{"ewayBillNo":"171001234567"}]}'
+        response.json.return_value = {"status_cd": "1", "data": [{"ewayBillNo": "171001234567"}]}
+        response.text = '{"status_cd":"1"}'
+        response.headers = {"Content-Type": "application/json"}
+        mocked_get.return_value = response
+
+        cred = SimpleNamespace(
+            email="ops@example.com",
+            client_id="cid",
+            gstin="03AAAAA0000A1Z5",
+            gst_username="gst-user",
+            get_client_secret=lambda: "secret",
+            get_eway_username=lambda: "eway-user",
+            get_eway_password=lambda: "eway-pass",
+        )
+        client = MasterGSTClient(cred=cred, provider_name="whitebooks")
+
+        with patch.object(client, "_resolve_ip", return_value="127.0.0.1"):
+            result = client.get_eway_bills_for_transporter_by_gstin(gen_gstin="03AAAAA0000A1Z5", date="18/06/2026")
+
+        self.assertEqual(result["status_cd"], "1")
+        called_url = mocked_get.call_args.args[0]
+        self.assertIn("/ewaybillapi/v1.03/ewayapi/getewaybillsfortransporterbygstin", called_url)
+        self.assertIn("Gen_gstin=03AAAAA0000A1Z5", called_url)
+        self.assertIn("date=18/06/2026", called_url)
+
+    @patch("sales.services.providers.mastergst_client.requests.post")
+    def test_generate_consolidated_eway_uses_active_provider_endpoint_contract(self, mocked_post):
+        response = MagicMock()
+        response.status_code = 200
+        response.content = b'{"status_cd":"1","data":{"tripSheetNo":"TS123"}}'
+        response.json.return_value = {"status_cd": "1", "data": {"tripSheetNo": "TS123"}}
+        response.text = '{"status_cd":"1"}'
+        response.headers = {"Content-Type": "application/json"}
+        mocked_post.return_value = response
+
+        cred = SimpleNamespace(
+            email="ops@example.com",
+            client_id="cid",
+            gstin="03AAAAA0000A1Z5",
+            gst_username="gst-user",
+            get_client_secret=lambda: "secret",
+            get_eway_username=lambda: "eway-user",
+            get_eway_password=lambda: "eway-pass",
+        )
+        client = MasterGSTClient(cred=cred, provider_name="whitebooks")
+
+        with patch.object(client, "_resolve_ip", return_value="127.0.0.1"):
+            result = client.generate_consolidated_eway(
+                {
+                    "fromPlace": "Sirhind",
+                    "fromState": 3,
+                    "transMode": "1",
+                    "tripSheetEwbBills": [{"ewbNo": 171001234567}],
+                    "vehicleNo": "PB10AB1234",
+                    "transDocNo": "LR1",
+                    "transDocDate": "18/06/2026",
+                }
+            )
+
+        self.assertEqual(result["status_cd"], "1")
+        called_url = mocked_post.call_args.args[0]
+        self.assertIn("/ewaybillapi/v1.03/ewayapi/gencewb", called_url)
+
+    @patch("sales.services.providers.mastergst_client.requests.post")
+    def test_regenerate_trip_sheet_uses_active_provider_endpoint_contract(self, mocked_post):
+        response = MagicMock()
+        response.status_code = 200
+        response.content = b'{"status_cd":"1","data":{"tripSheetNo":"TS123"}}'
+        response.json.return_value = {"status_cd": "1", "data": {"tripSheetNo": "TS123"}}
+        response.text = '{"status_cd":"1"}'
+        response.headers = {"Content-Type": "application/json"}
+        mocked_post.return_value = response
+
+        cred = SimpleNamespace(
+            email="ops@example.com",
+            client_id="cid",
+            gstin="03AAAAA0000A1Z5",
+            gst_username="gst-user",
+            get_client_secret=lambda: "secret",
+            get_eway_username=lambda: "eway-user",
+            get_eway_password=lambda: "eway-pass",
+        )
+        client = MasterGSTClient(cred=cred, provider_name="whitebooks")
+
+        with patch.object(client, "_resolve_ip", return_value="127.0.0.1"):
+            result = client.regenerate_trip_sheet(
+                {
+                    "fromPlace": "Sirhind",
+                    "fromState": 3,
+                    "reasonCode": "1",
+                    "reasonRem": "Route change",
+                    "transMode": "1",
+                    "tripSheetNo": 123,
+                    "vehicleNo": "PB10AB1234",
+                    "transDocNo": "LR1",
+                    "transDocDate": "18/06/2026",
+                }
+            )
+
+        self.assertEqual(result["status_cd"], "1")
+        called_url = mocked_post.call_args.args[0]
+        self.assertIn("/ewaybillapi/v1.03/ewayapi/regentripsheet", called_url)
+
+    @patch("sales.services.providers.mastergst_client.requests.post")
+    def test_initiate_multi_vehicle_uses_active_provider_endpoint_contract(self, mocked_post):
+        response = MagicMock()
+        response.status_code = 200
+        response.content = b'{"status_cd":"1","data":{"groupNo":"10"}}'
+        response.json.return_value = {"status_cd": "1", "data": {"groupNo": "10"}}
+        response.text = '{"status_cd":"1"}'
+        response.headers = {"Content-Type": "application/json"}
+        mocked_post.return_value = response
+
+        cred = SimpleNamespace(
+            email="ops@example.com",
+            client_id="cid",
+            gstin="03AAAAA0000A1Z5",
+            gst_username="gst-user",
+            get_client_secret=lambda: "secret",
+            get_eway_username=lambda: "eway-user",
+            get_eway_password=lambda: "eway-pass",
+        )
+        client = MasterGSTClient(cred=cred, provider_name="whitebooks")
+
+        with patch.object(client, "_resolve_ip", return_value="127.0.0.1"):
+            result = client.initiate_multi_vehicle(
+                {
+                    "ewbNo": "171001234567",
+                    "fromPlace": "Sirhind",
+                    "fromState": 3,
+                    "toPlace": "Patiala",
+                    "toState": 3,
+                    "reasonCode": "1",
+                    "reasonRem": "Shift",
+                    "transMode": "1",
+                    "totalQuantity": 10,
+                    "unitCode": "BOX",
+                }
+            )
+
+        self.assertEqual(result["status_cd"], "1")
+        called_url = mocked_post.call_args.args[0]
+        self.assertIn("/ewaybillapi/v1.03/ewayapi/initmulti", called_url)
+
+    @patch("sales.services.providers.mastergst_client.requests.post")
+    def test_add_multi_vehicle_uses_active_provider_endpoint_contract(self, mocked_post):
+        response = MagicMock()
+        response.status_code = 200
+        response.content = b'{"status_cd":"1","data":{"groupNo":"10"}}'
+        response.json.return_value = {"status_cd": "1", "data": {"groupNo": "10"}}
+        response.text = '{"status_cd":"1"}'
+        response.headers = {"Content-Type": "application/json"}
+        mocked_post.return_value = response
+
+        cred = SimpleNamespace(
+            email="ops@example.com",
+            client_id="cid",
+            gstin="03AAAAA0000A1Z5",
+            gst_username="gst-user",
+            get_client_secret=lambda: "secret",
+            get_eway_username=lambda: "eway-user",
+            get_eway_password=lambda: "eway-pass",
+        )
+        client = MasterGSTClient(cred=cred, provider_name="whitebooks")
+
+        with patch.object(client, "_resolve_ip", return_value="127.0.0.1"):
+            result = client.add_multi_vehicle(
+                {
+                    "ewbNo": "171001234567",
+                    "groupNo": 10,
+                    "vehicleNo": "PB10AB1234",
+                    "transDocNo": "LR1",
+                    "transDocDate": "18/06/2026",
+                    "quantity": 5,
+                }
+            )
+
+        self.assertEqual(result["status_cd"], "1")
+        called_url = mocked_post.call_args.args[0]
+        self.assertIn("/ewaybillapi/v1.03/ewayapi/addmulti", called_url)
+
+    @patch("sales.services.providers.mastergst_client.requests.post")
+    def test_update_multi_vehicle_uses_active_provider_endpoint_contract(self, mocked_post):
+        response = MagicMock()
+        response.status_code = 200
+        response.content = b'{"status_cd":"1","data":{"groupNo":"10"}}'
+        response.json.return_value = {"status_cd": "1", "data": {"groupNo": "10"}}
+        response.text = '{"status_cd":"1"}'
+        response.headers = {"Content-Type": "application/json"}
+        mocked_post.return_value = response
+
+        cred = SimpleNamespace(
+            email="ops@example.com",
+            client_id="cid",
+            gstin="03AAAAA0000A1Z5",
+            gst_username="gst-user",
+            get_client_secret=lambda: "secret",
+            get_eway_username=lambda: "eway-user",
+            get_eway_password=lambda: "eway-pass",
+        )
+        client = MasterGSTClient(cred=cred, provider_name="whitebooks")
+
+        with patch.object(client, "_resolve_ip", return_value="127.0.0.1"):
+            result = client.update_multi_vehicle(
+                {
+                    "ewbNo": "171001234567",
+                    "groupNo": 10,
+                    "oldvehicleNo": "PB10AB1234",
+                    "newVehicleNo": "PB10AB9999",
+                    "oldTranNo": "LR1",
+                    "newTranNo": "LR2",
+                    "fromPlace": "Sirhind",
+                    "fromState": 3,
+                    "reasonCode": "1",
+                    "reasonRem": "Replacement",
+                }
+            )
+
+        self.assertEqual(result["status_cd"], "1")
+        called_url = mocked_post.call_args.args[0]
+        self.assertIn("/ewaybillapi/v1.03/ewayapi/updtmulti", called_url)
 
     @patch("sales.services.sales_withholding_service.WithholdingResolver.get_entity_config")
     def test_compute_tcs_skips_when_entity_config_disables_tcs(self, mocked_get_cfg):
@@ -2099,6 +2805,509 @@ class SalesComplianceViewUnitTests(SimpleTestCase):
         self.assertEqual(response.data["compliance"]["action_flags"]["can_generate_eway"], True)
         self.assertEqual(response.data["irn"], "IRN123")
 
+    @patch.object(SalesInvoiceGetGSTNDetailsAPIView, "_compliance_summary")
+    @patch("sales.views.sales_invoice_compliance_api.SalesInvoiceHeaderSerializer")
+    @patch("sales.views.sales_invoice_compliance_api.SalesComplianceService")
+    @patch.object(SalesInvoiceGetGSTNDetailsAPIView, "_require_any_permission")
+    @patch.object(SalesInvoiceGetGSTNDetailsAPIView, "get_invoice")
+    def test_get_gstn_details_view_returns_refreshed_invoice_and_compliance_state(
+        self,
+        mocked_get_invoice,
+        mocked_require_permission,
+        mocked_service_cls,
+        mocked_serializer_cls,
+        mocked_compliance_summary,
+    ):
+        header = SimpleNamespace(
+            entity_id=1,
+            id=10,
+            status=int(SalesInvoiceHeader.Status.POSTED),
+            is_einvoice_applicable=True,
+            is_eway_applicable=True,
+            einvoice_artifact=SimpleNamespace(status=2, irn="IRN123"),
+            eway_artifact=None,
+        )
+        mocked_get_invoice.return_value = header
+        mocked_serializer_cls.return_value.data = {"id": 10, "status_name": "Posted"}
+        mocked_compliance_summary.return_value = {
+            "action_flags": {
+                "can_get_gstn_details": True,
+                "state": {"einvoice_applicable": True, "is_b2c": False},
+            }
+        }
+        mocked_service_cls.return_value.get_gstn_details.return_value = {
+            "status": "SUCCESS",
+            "gstin": "03ABCDE1234F1Z5",
+            "legal_name": "Acme Pvt Ltd",
+            "trade_name": "Acme",
+            "registration_status": "Active",
+            "raw": {"gstin": "03ABCDE1234F1Z5"},
+        }
+
+        request = self._build_request(
+            "/api/sales/sales-invoices/10/compliance/get-gstn-details/",
+            {"gstin": "03ABCDE1234F1Z5"},
+        )
+
+        response = SalesInvoiceGetGSTNDetailsAPIView.as_view()(request, pk=10)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["ok"])
+        self.assertEqual(response.data["invoice"]["id"], 10)
+        self.assertEqual(response.data["compliance"]["action_flags"]["can_get_gstn_details"], True)
+        self.assertEqual(response.data["gstin"], "03ABCDE1234F1Z5")
+
+    @patch.object(SalesInvoiceSyncGSTINFromCPAPIView, "_compliance_summary")
+    @patch("sales.views.sales_invoice_compliance_api.SalesInvoiceHeaderSerializer")
+    @patch("sales.views.sales_invoice_compliance_api.SalesComplianceService")
+    @patch.object(SalesInvoiceSyncGSTINFromCPAPIView, "_require_any_permission")
+    @patch.object(SalesInvoiceSyncGSTINFromCPAPIView, "get_invoice")
+    def test_sync_gstin_from_cp_view_returns_refreshed_invoice_and_compliance_state(
+        self,
+        mocked_get_invoice,
+        mocked_require_permission,
+        mocked_service_cls,
+        mocked_serializer_cls,
+        mocked_compliance_summary,
+    ):
+        header = SimpleNamespace(
+            entity_id=1,
+            id=10,
+            status=int(SalesInvoiceHeader.Status.POSTED),
+            is_einvoice_applicable=True,
+            is_eway_applicable=True,
+            einvoice_artifact=SimpleNamespace(status=2, irn="IRN123"),
+            eway_artifact=None,
+        )
+        mocked_get_invoice.return_value = header
+        mocked_serializer_cls.return_value.data = {"id": 10, "status_name": "Posted"}
+        mocked_compliance_summary.return_value = {
+            "action_flags": {
+                "can_get_gstn_details": True,
+                "state": {"einvoice_applicable": True, "is_b2c": False},
+            }
+        }
+        mocked_service_cls.return_value.sync_gstin_from_cp.return_value = {
+            "status": "SUCCESS",
+            "gstin": "03ABCDE1234F1Z5",
+            "legal_name": "Acme Pvt Ltd",
+            "trade_name": "Acme",
+            "registration_status": "Active",
+            "raw": {"gstin": "03ABCDE1234F1Z5"},
+        }
+
+        request = self._build_request(
+            "/api/sales/sales-invoices/10/compliance/sync-gstin-from-cp/",
+            {"gstin": "03ABCDE1234F1Z5"},
+        )
+
+        response = SalesInvoiceSyncGSTINFromCPAPIView.as_view()(request, pk=10)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["ok"])
+        self.assertEqual(response.data["invoice"]["id"], 10)
+        self.assertEqual(response.data["gstin"], "03ABCDE1234F1Z5")
+
+    @patch.object(SalesInvoiceGetB2CQRCodeAPIView, "_compliance_summary")
+    @patch("sales.views.sales_invoice_compliance_api.SalesInvoiceHeaderSerializer")
+    @patch("sales.views.sales_invoice_compliance_api.SalesComplianceService")
+    @patch.object(SalesInvoiceGetB2CQRCodeAPIView, "_require_any_permission")
+    @patch.object(SalesInvoiceGetB2CQRCodeAPIView, "get_invoice")
+    def test_get_b2c_qrcode_view_returns_refreshed_invoice_and_compliance_state(
+        self,
+        mocked_get_invoice,
+        mocked_require_permission,
+        mocked_service_cls,
+        mocked_serializer_cls,
+        mocked_compliance_summary,
+    ):
+        header = SimpleNamespace(
+            entity_id=1,
+            id=10,
+            status=int(SalesInvoiceHeader.Status.POSTED),
+            is_einvoice_applicable=False,
+            is_eway_applicable=True,
+            einvoice_artifact=SimpleNamespace(status=1, signed_qr_code=None),
+            eway_artifact=None,
+        )
+        mocked_get_invoice.return_value = header
+        mocked_serializer_cls.return_value.data = {"id": 10, "status_name": "Posted"}
+        mocked_compliance_summary.return_value = {
+            "action_flags": {
+                "can_get_b2c_qrcode": True,
+                "state": {"is_b2c": True},
+            }
+        }
+        mocked_service_cls.return_value.get_b2c_qrcode.return_value = {
+            "status": "SUCCESS",
+            "qr_code": "base64-qr",
+            "raw": {"qrCode": "base64-qr"},
+        }
+
+        request = self._build_request(
+            "/api/sales/sales-invoices/10/compliance/get-b2c-qrcode/",
+            {"upiid": "merchant@upi"},
+        )
+
+        response = SalesInvoiceGetB2CQRCodeAPIView.as_view()(request, pk=10)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["ok"])
+        self.assertEqual(response.data["invoice"]["id"], 10)
+        self.assertEqual(response.data["qr_code"], "base64-qr")
+
+    @patch("sales.views.eway_views.SalesComplianceService")
+    @patch.object(SalesInvoiceGetEWayDetailsAPIView, "_require_any_permission")
+    @patch.object(SalesInvoiceGetEWayDetailsAPIView, "_fetch_invoice_with_related")
+    def test_get_eway_details_view_returns_lookup_result(
+        self,
+        mocked_get_invoice,
+        mocked_require_permission,
+        mocked_service_cls,
+    ):
+        header = SimpleNamespace(entity_id=1, id=10)
+        mocked_get_invoice.return_value = header
+        mocked_service_cls.return_value.get_eway_details.return_value = {
+            "status": "SUCCESS",
+            "ewb_no": "171001234567",
+            "valid_upto": "2026-06-19",
+            "raw": {"ewayBillNo": "171001234567"},
+        }
+
+        request = self._build_request(
+            "/api/sales/sales-invoices/10/compliance/get-eway-details/",
+            {"ewb_no": "171001234567"},
+        )
+
+        response = SalesInvoiceGetEWayDetailsAPIView.as_view()(request, id=10)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["ok"])
+        self.assertEqual(response.data["ewb_no"], "171001234567")
+
+    @patch("sales.views.eway_views.SalesComplianceService")
+    @patch.object(SalesInvoiceGetEWayTransporterDetailsAPIView, "_require_any_permission")
+    @patch.object(SalesInvoiceGetEWayTransporterDetailsAPIView, "_fetch_invoice_with_related")
+    def test_get_eway_transporter_details_view_returns_lookup_result(
+        self,
+        mocked_get_invoice,
+        mocked_require_permission,
+        mocked_service_cls,
+    ):
+        header = SimpleNamespace(entity_id=1, id=10)
+        mocked_get_invoice.return_value = header
+        mocked_service_cls.return_value.get_eway_transporter_details.return_value = {
+            "status": "SUCCESS",
+            "data": {"transporterId": "03TRANS1234A1Z5"},
+            "raw": {"transporterId": "03TRANS1234A1Z5"},
+        }
+        request = self._build_request(
+            "/api/sales/sales-invoices/10/compliance/get-eway-transporter-details/",
+            {"transporter_id": "03TRANS1234A1Z5"},
+        )
+        response = SalesInvoiceGetEWayTransporterDetailsAPIView.as_view()(request, id=10)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["ok"])
+        self.assertEqual(response.data["data"]["transporterId"], "03TRANS1234A1Z5")
+
+    @patch("sales.views.eway_views.SalesComplianceService")
+    @patch.object(SalesInvoiceGetEWayGSTINDetailsAPIView, "_require_any_permission")
+    @patch.object(SalesInvoiceGetEWayGSTINDetailsAPIView, "_fetch_invoice_with_related")
+    def test_get_eway_gstin_details_view_returns_lookup_result(
+        self,
+        mocked_get_invoice,
+        mocked_require_permission,
+        mocked_service_cls,
+    ):
+        header = SimpleNamespace(entity_id=1, id=10)
+        mocked_get_invoice.return_value = header
+        mocked_service_cls.return_value.get_eway_gstin_details.return_value = {
+            "status": "SUCCESS",
+            "data": {"Gstin": "03ABCDE1234F1Z5"},
+            "raw": {"Gstin": "03ABCDE1234F1Z5"},
+        }
+        request = self._build_request(
+            "/api/sales/sales-invoices/10/compliance/get-eway-gstin-details/",
+            {"gstin": "03ABCDE1234F1Z5"},
+        )
+        response = SalesInvoiceGetEWayGSTINDetailsAPIView.as_view()(request, id=10)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["ok"])
+        self.assertEqual(response.data["data"]["Gstin"], "03ABCDE1234F1Z5")
+
+    @patch("sales.views.eway_views.SalesComplianceService")
+    @patch.object(SalesInvoiceGetEWayHSNDetailsAPIView, "_require_any_permission")
+    @patch.object(SalesInvoiceGetEWayHSNDetailsAPIView, "_fetch_invoice_with_related")
+    def test_get_eway_hsn_details_view_returns_lookup_result(
+        self,
+        mocked_get_invoice,
+        mocked_require_permission,
+        mocked_service_cls,
+    ):
+        header = SimpleNamespace(entity_id=1, id=10)
+        mocked_get_invoice.return_value = header
+        mocked_service_cls.return_value.get_eway_hsn_details.return_value = {
+            "status": "SUCCESS",
+            "data": {"hsnCode": "9983"},
+            "raw": {"hsnCode": "9983"},
+        }
+        request = self._build_request(
+            "/api/sales/sales-invoices/10/compliance/get-eway-hsn-details/",
+            {"hsn_code": "9983"},
+        )
+        response = SalesInvoiceGetEWayHSNDetailsAPIView.as_view()(request, id=10)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["ok"])
+        self.assertEqual(response.data["data"]["hsnCode"], "9983")
+
+    @patch("sales.views.eway_views.SalesComplianceService")
+    @patch.object(SalesInvoiceGetEWayErrorListAPIView, "_require_any_permission")
+    @patch.object(SalesInvoiceGetEWayErrorListAPIView, "_fetch_invoice_with_related")
+    def test_get_eway_error_list_view_returns_lookup_result(
+        self,
+        mocked_get_invoice,
+        mocked_require_permission,
+        mocked_service_cls,
+    ):
+        header = SimpleNamespace(entity_id=1, id=10)
+        mocked_get_invoice.return_value = header
+        mocked_service_cls.return_value.get_eway_error_list.return_value = {
+            "status": "SUCCESS",
+            "data": [{"code": "1001"}],
+            "raw": {"data": [{"code": "1001"}]},
+        }
+        request = self._build_request(
+            "/api/sales/sales-invoices/10/compliance/get-eway-error-list/",
+            {},
+        )
+        response = SalesInvoiceGetEWayErrorListAPIView.as_view()(request, id=10)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["ok"])
+        self.assertEqual(response.data["data"][0]["code"], "1001")
+
+    @patch("sales.views.eway_views.SalesComplianceService")
+    @patch.object(SalesInvoiceRejectEWayAPIView, "_require_any_permission")
+    @patch.object(SalesInvoiceRejectEWayAPIView, "_fetch_invoice_with_related")
+    def test_reject_eway_view_returns_lookup_result(
+        self,
+        mocked_get_invoice,
+        mocked_require_permission,
+        mocked_service_cls,
+    ):
+        header = SimpleNamespace(entity_id=1, id=10)
+        mocked_get_invoice.return_value = header
+        mocked_service_cls.return_value.reject_eway.return_value = {
+            "status": "SUCCESS",
+            "data": "Rejected",
+            "raw": {"data": "Rejected"},
+        }
+        request = self._build_request(
+            "/api/sales/sales-invoices/10/compliance/reject-eway/",
+            {"ewb_no": "171001234567"},
+        )
+        response = SalesInvoiceRejectEWayAPIView.as_view()(request, id=10)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["ok"])
+
+    @patch("sales.views.eway_views.SalesComplianceService")
+    @patch.object(SalesInvoiceGetTripSheetAPIView, "_require_any_permission")
+    @patch.object(SalesInvoiceGetTripSheetAPIView, "_fetch_invoice_with_related")
+    def test_get_trip_sheet_view_returns_lookup_result(
+        self,
+        mocked_get_invoice,
+        mocked_require_permission,
+        mocked_service_cls,
+    ):
+        header = SimpleNamespace(entity_id=1, id=10)
+        mocked_get_invoice.return_value = header
+        mocked_service_cls.return_value.get_trip_sheet.return_value = {
+            "status": "SUCCESS",
+            "data": {"tripSheetNo": "TS123"},
+            "raw": {"tripSheetNo": "TS123"},
+        }
+        request = self._build_request(
+            "/api/sales/sales-invoices/10/compliance/get-trip-sheet/",
+            {"trip_sheet_no": "TS123"},
+        )
+        response = SalesInvoiceGetTripSheetAPIView.as_view()(request, id=10)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["ok"])
+        self.assertEqual(response.data["data"]["tripSheetNo"], "TS123")
+
+    @patch("sales.views.eway_views.SalesComplianceService")
+    @patch.object(SalesInvoiceGetEWayByDocumentAPIView, "_require_any_permission")
+    @patch.object(SalesInvoiceGetEWayByDocumentAPIView, "_fetch_invoice_with_related")
+    def test_get_eway_by_document_view_returns_lookup_result(
+        self,
+        mocked_get_invoice,
+        mocked_require_permission,
+        mocked_service_cls,
+    ):
+        header = SimpleNamespace(entity_id=1, id=10)
+        mocked_get_invoice.return_value = header
+        mocked_service_cls.return_value.get_eway_by_document.return_value = {
+            "status": "SUCCESS",
+            "data": {"ewayBillNo": "171001234567"},
+            "raw": {"ewayBillNo": "171001234567"},
+        }
+        request = self._build_request(
+            "/api/sales/sales-invoices/10/compliance/get-eway-by-document/",
+            {},
+        )
+        response = SalesInvoiceGetEWayByDocumentAPIView.as_view()(request, id=10)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["ok"])
+        self.assertEqual(response.data["data"]["ewayBillNo"], "171001234567")
+
+    @patch("sales.views.eway_views.SalesComplianceService")
+    @patch.object(SalesInvoiceGetEWayBillsForTransporterAPIView, "_require_any_permission")
+    @patch.object(SalesInvoiceGetEWayBillsForTransporterAPIView, "_fetch_invoice_with_related")
+    def test_get_eway_bills_for_transporter_view_returns_lookup_result(
+        self,
+        mocked_get_invoice,
+        mocked_require_permission,
+        mocked_service_cls,
+    ):
+        header = SimpleNamespace(entity_id=1, id=10)
+        mocked_get_invoice.return_value = header
+        mocked_service_cls.return_value.get_eway_bills_for_transporter.return_value = {
+            "status": "SUCCESS",
+            "data": [{"ewayBillNo": "171001234567"}],
+            "raw": {"data": [{"ewayBillNo": "171001234567"}]},
+        }
+        request = self._build_request(
+            "/api/sales/sales-invoices/10/compliance/get-eway-bills-for-transporter/",
+            {"date": "2026-06-18"},
+        )
+        response = SalesInvoiceGetEWayBillsForTransporterAPIView.as_view()(request, id=10)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["ok"])
+        self.assertEqual(response.data["data"][0]["ewayBillNo"], "171001234567")
+
+    @patch("sales.views.eway_views.SalesComplianceService")
+    @patch.object(SalesInvoiceGetEWayBillReportByTransporterAssignedDateAPIView, "_require_any_permission")
+    @patch.object(SalesInvoiceGetEWayBillReportByTransporterAssignedDateAPIView, "_fetch_invoice_with_related")
+    def test_get_eway_bill_report_by_transporter_assigned_date_view_returns_lookup_result(
+        self,
+        mocked_get_invoice,
+        mocked_require_permission,
+        mocked_service_cls,
+    ):
+        header = SimpleNamespace(entity_id=1, id=10)
+        mocked_get_invoice.return_value = header
+        mocked_service_cls.return_value.get_eway_bill_report_by_transporter_assigned_date.return_value = {
+            "status": "SUCCESS",
+            "data": [{"ewayBillNo": "171001234567"}],
+            "raw": {"data": [{"ewayBillNo": "171001234567"}]},
+        }
+        request = self._build_request(
+            "/api/sales/sales-invoices/10/compliance/get-eway-bill-report-by-transporter-assigned-date/",
+            {"date": "2026-06-18", "state_code": "03"},
+        )
+        response = SalesInvoiceGetEWayBillReportByTransporterAssignedDateAPIView.as_view()(request, id=10)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["ok"])
+        self.assertEqual(response.data["data"][0]["ewayBillNo"], "171001234567")
+
+    @patch("sales.views.eway_views.SalesComplianceService")
+    @patch.object(SalesInvoiceGetEWayBillsForTransporterByGSTINAPIView, "_require_any_permission")
+    @patch.object(SalesInvoiceGetEWayBillsForTransporterByGSTINAPIView, "_fetch_invoice_with_related")
+    def test_get_eway_bills_for_transporter_by_gstin_view_returns_lookup_result(
+        self,
+        mocked_get_invoice,
+        mocked_require_permission,
+        mocked_service_cls,
+    ):
+        header = SimpleNamespace(entity_id=1, id=10)
+        mocked_get_invoice.return_value = header
+        mocked_service_cls.return_value.get_eway_bills_for_transporter_by_gstin.return_value = {
+            "status": "SUCCESS",
+            "data": [{"ewayBillNo": "171001234567"}],
+            "raw": {"data": [{"ewayBillNo": "171001234567"}]},
+        }
+        request = self._build_request(
+            "/api/sales/sales-invoices/10/compliance/get-eway-bills-for-transporter-by-gstin/",
+            {"gen_gstin": "03AAAAA0000A1Z5", "date": "2026-06-18"},
+        )
+        response = SalesInvoiceGetEWayBillsForTransporterByGSTINAPIView.as_view()(request, id=10)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["ok"])
+        self.assertEqual(response.data["data"][0]["ewayBillNo"], "171001234567")
+
+    @patch("sales.views.eway_views.SalesComplianceService")
+    @patch.object(SalesInvoiceGenerateConsolidatedEWayAPIView, "_require_any_permission")
+    @patch.object(SalesInvoiceGenerateConsolidatedEWayAPIView, "_fetch_invoice_with_related")
+    def test_generate_consolidated_eway_view_returns_lookup_result(
+        self,
+        mocked_get_invoice,
+        mocked_require_permission,
+        mocked_service_cls,
+    ):
+        header = SimpleNamespace(entity_id=1, id=10)
+        mocked_get_invoice.return_value = header
+        mocked_service_cls.return_value.generate_consolidated_eway.return_value = {
+            "status": "SUCCESS",
+            "data": {"tripSheetNo": "TS123"},
+            "raw": {"tripSheetNo": "TS123"},
+        }
+        request = self._build_request(
+            "/api/sales/sales-invoices/10/compliance/generate-consolidated-eway/",
+            {"from_place": "Sirhind", "from_state_code": 3, "trans_mode": "1", "eway_bill_numbers": [{"ewb_no": 171001234567}]},
+        )
+        response = SalesInvoiceGenerateConsolidatedEWayAPIView.as_view()(request, id=10)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["ok"])
+
+    @patch.object(SalesInvoiceGetIRNByDocDetailsAPIView, "_compliance_summary")
+    @patch("sales.views.sales_invoice_compliance_api.SalesInvoiceHeaderSerializer")
+    @patch("sales.views.sales_invoice_compliance_api.SalesComplianceService")
+    @patch.object(SalesInvoiceGetIRNByDocDetailsAPIView, "_require_any_permission")
+    @patch.object(SalesInvoiceGetIRNByDocDetailsAPIView, "get_invoice")
+    def test_get_irn_details_by_doc_view_returns_refreshed_invoice_and_compliance_state(
+        self,
+        mocked_get_invoice,
+        mocked_require_permission,
+        mocked_service_cls,
+        mocked_serializer_cls,
+        mocked_compliance_summary,
+    ):
+        header = SimpleNamespace(
+            entity_id=1,
+            id=10,
+            status=int(SalesInvoiceHeader.Status.POSTED),
+            is_einvoice_applicable=True,
+            is_eway_applicable=True,
+            einvoice_artifact=SimpleNamespace(status=2, irn="IRN123"),
+            eway_artifact=None,
+        )
+        mocked_get_invoice.return_value = header
+        mocked_serializer_cls.return_value.data = {"id": 10, "status_name": "Posted"}
+        mocked_compliance_summary.return_value = {
+            "action_flags": {
+                "can_get_irn_details": True,
+                "state": {"einvoice_applicable": True, "is_b2c": False},
+            }
+        }
+        mocked_service_cls.return_value.get_irn_details_by_doc.return_value = {
+            "status": "SUCCESS",
+            "irn": "IRN123",
+            "ack_no": "ACK123",
+            "ack_date": "2026-06-18",
+            "raw": {"irn": "IRN123"},
+        }
+
+        request = self._build_request(
+            "/api/sales/sales-invoices/10/compliance/get-irn-details-by-doc/",
+            {"doc_type": "INV", "doc_number": "SINV/1", "doc_date": "2026-06-18"},
+        )
+
+        response = SalesInvoiceGetIRNByDocDetailsAPIView.as_view()(request, pk=10)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["ok"])
+        self.assertEqual(response.data["invoice"]["id"], 10)
+        self.assertEqual(response.data["irn"], "IRN123")
+
     @patch.object(SalesInvoiceGetEWayByIRNAPIView, "_compliance_summary")
     @patch("sales.views.sales_invoice_compliance_api.SalesInvoiceHeaderSerializer")
     @patch("sales.views.sales_invoice_compliance_api.SalesComplianceService")
@@ -2152,8 +3361,451 @@ class SalesComplianceViewUnitTests(SimpleTestCase):
 
 class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
     databases = {"default"}
+    def test_ensure_compliance_serializer_accepts_null_optional_transport_fields(self):
+        serializer = EnsureComplianceActionSerializer(
+            data={
+                "distance_km": None,
+                "trans_mode": None,
+                "transport_mode": None,
+                "transporter_id": None,
+                "transporter_name": None,
+                "trans_doc_no": None,
+                "trans_doc_date": None,
+                "doc_type": None,
+                "vehicle_no": None,
+                "vehicle_type": None,
+                "disp_dtls": None,
+                "exp_ship_dtls": None,
+            }
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
+    def test_generate_irn_and_eway_serializer_ignores_null_optional_flat_fields_when_eway_disabled(self):
+        serializer = GenerateIRNAndEWayActionSerializer(
+            data={
+                "generate_eway": False,
+                "distance_km": None,
+                "trans_mode": None,
+                "transporter_id": None,
+                "transporter_name": None,
+                "trans_doc_no": None,
+                "trans_doc_date": None,
+                "vehicle_no": None,
+                "vehicle_type": None,
+                "disp_dtls": None,
+                "exp_ship_dtls": None,
+            }
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data["eway"], {})
+
+    def test_extend_eway_validity_serializer_accepts_whitebooks_aliases(self):
+        serializer = ExtendEWayValidityActionSerializer(
+            data={
+                "extnRsnCode": "1",
+                "extnRemarks": "Route blocked",
+                "fromPlace": "Sirhind",
+                "fromPincode": 140406,
+                "fromState": 3,
+                "remainingDistance": 120,
+                "transDocNo": "LR-22",
+                "transDocDate": "2026-06-18",
+                "transMode": "1",
+                "vehicleNo": "PB10AB1234",
+                "consignmentStatus": "M",
+                "transitType": "R",
+                "addressLine1": "Warehouse 1",
+                "addressLine2": "Industrial Area",
+                "addressLine3": "Punjab",
+            }
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data["reason_code"], "1")
+        self.assertEqual(serializer.validated_data["remarks"], "Route blocked")
+        self.assertEqual(serializer.validated_data["from_pincode"], 140406)
+        self.assertEqual(serializer.validated_data["consignment_status"], "M")
+        self.assertEqual(serializer.validated_data["transit_type"], "R")
+        self.assertEqual(serializer.validated_data["address_line1"], "Warehouse 1")
+
+    @patch("sales.services.sales_compliance_service.ComplianceAuditService.log_action")
+    @patch("sales.services.sales_compliance_service.MasterGSTClient")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._get_mastergst_cred_for_entity")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._ensure_eway_row")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService.assert_action_allowed")
+    def test_extend_eway_validity_uses_whitebooks_extension_payload_contract(
+        self,
+        mocked_assert_allowed,
+        mocked_ensure_eway,
+        mocked_get_cred,
+        mocked_client_cls,
+        mocked_log_action,
+    ):
+        invoice = SimpleNamespace(id=10, entity=SimpleNamespace(id=1))
+        user = SimpleNamespace(id=7)
+        save_spy = MagicMock()
+        eway = SimpleNamespace(
+            ewb_no="171001234567",
+            valid_upto=None,
+            last_response_json={},
+            save=save_spy,
+        )
+        mocked_ensure_eway.return_value = eway
+        mocked_get_cred.return_value = SimpleNamespace()
+        mocked_client = mocked_client_cls.return_value
+        mocked_client.extend_eway_validity.return_value = {
+            "status_cd": "1",
+            "data": {"validUpto": "2026-06-20 10:00:00"},
+        }
+
+        svc = SalesComplianceService(invoice=invoice, user=user)
+        result = svc.extend_eway_validity(
+            req={
+                "reason_code": "1",
+                "remarks": "Route blocked",
+                "from_place": "Sirhind",
+                "from_pincode": 140406,
+                "from_state_code": 3,
+                "remaining_distance_km": 120,
+                "trans_doc_no": "LR-22",
+                "trans_doc_date": date(2026, 6, 18),
+                "trans_mode": "1",
+                "vehicle_no": "PB10AB1234",
+                "vehicle_type": "R",
+                "consignment_status": "M",
+                "transit_type": "R",
+                "address_line1": "Warehouse 1",
+                "address_line2": "Industrial Area",
+                "address_line3": "Punjab",
+            }
+        )
+
+        self.assertEqual(result["status"], "SUCCESS")
+        mocked_client.extend_eway_validity.assert_called_once()
+        payload = mocked_client.extend_eway_validity.call_args.args[0]
+        self.assertEqual(payload["ewbNo"], "171001234567")
+        self.assertEqual(payload["extnRsnCode"], "1")
+        self.assertEqual(payload["extnRemarks"], "Route blocked")
+        self.assertEqual(payload["fromPincode"], 140406)
+        self.assertEqual(payload["transDocDate"], "18/06/2026")
+        self.assertEqual(payload["consignmentStatus"], "M")
+        self.assertEqual(payload["transitType"], "R")
+        self.assertNotIn("reasonCode", payload)
+        self.assertNotIn("reasonRem", payload)
+        save_spy.assert_called()
+        mocked_log_action.assert_called_once()
+
+    @patch("sales.services.sales_compliance_service.ComplianceAuditService.open_exception")
+    @patch("sales.services.sales_compliance_service.ComplianceAuditService.log_action")
+    @patch("sales.services.sales_compliance_service.MasterGSTClient")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._get_mastergst_cred_for_entity")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._get_irn", return_value="IRN123")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._ensure_invoice_eligible_for_eway")
+    @patch("sales.services.sales_compliance_service.SalesEWayBill.objects")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService.assert_action_allowed")
+    def test_generate_eway_repairs_stale_saved_ship_to_details_before_provider_call(
+        self,
+        mocked_assert_allowed,
+        mocked_eway_objects,
+        mocked_ensure_eligible,
+        mocked_get_irn,
+        mocked_get_cred,
+        mocked_client_cls,
+        mocked_log_action,
+        mocked_open_exception,
+    ):
+        invoice = SimpleNamespace(
+            id=65,
+            entity=SimpleNamespace(id=10),
+            customer_gstin="27AWGPV7107B1Z1",
+            bill_to_state_code="",
+            bill_to_address1="45366",
+            bill_to_address2="",
+            bill_to_city="Bengaluru",
+            bill_to_pincode="560001",
+            shipto_snapshot=SimpleNamespace(
+                address1="45366",
+                address2="",
+                city="Bengaluru",
+                pincode="560001",
+                state_code="",
+                gstin="29AWGPV7107B1Z1",
+            ),
+        )
+        art = SimpleNamespace(
+            status=0,
+            ewb_no=None,
+            attempt_count=5,
+            last_response_json={},
+            last_request_json=None,
+            distance_km=None,
+            transport_mode=None,
+            transporter_id=None,
+            transporter_name=None,
+            doc_no=None,
+            doc_date=None,
+            vehicle_no=None,
+            vehicle_type=None,
+            disp_dtls_json={
+                "Nm": "Arnika",
+                "Addr1": "4368 GT Road",
+                "Addr2": "sirhind",
+                "Loc": "Bengaluru",
+                "Pin": 560001,
+                "Stcd": "29",
+            },
+            exp_ship_dtls_json={
+                "Addr1": "45366",
+                "Loc": "Bengaluru",
+                "Pin": 560001,
+                "Stcd": "00",
+            },
+            save=MagicMock(),
+        )
+        mocked_eway_objects.select_for_update.return_value.get_or_create.return_value = (art, False)
+        mocked_get_cred.return_value = SimpleNamespace(environment=1, gstin="29AAGCB1286Q000")
+        mocked_client = mocked_client_cls.return_value
+        mocked_client.generate_ewaybill.return_value = {
+            "status_cd": "0",
+            "status_desc": '[{"ErrorCode":"5002","ErrorMessage":"The Ship TO GSTIN field is required."}]',
+        }
+
+        result = SalesComplianceService.generate_eway(
+            invoice,
+            invoice.entity,
+            {
+                "distance_km": 3,
+                "trans_mode": "1",
+                "transporter_id": "12AWGPV7107B1Z1",
+                "transporter_name": "avccd",
+                "vehicle_no": "KA123456",
+                "vehicle_type": "R",
+            },
+        )
+
+        self.assertEqual(result["status"], "FAILED")
+        payload = mocked_client.generate_ewaybill.call_args.args[0]
+        self.assertEqual(payload["ExpShipDtls"]["Gstin"], "29AWGPV7107B1Z1")
+        self.assertEqual(payload["ExpShipDtls"]["Stcd"], "29")
+        self.assertEqual(art.exp_ship_dtls_json["Gstin"], "29AWGPV7107B1Z1")
+        self.assertEqual(art.exp_ship_dtls_json["Stcd"], "29")
+        self.assertEqual(art.eway_source, SalesEWaySource.IRN)
+        self.assertEqual(art.provider_name, "whitebooks")
+        self.assertEqual(art.provider_environment, 1)
+        self.assertEqual(art.credential_gstin, "29AAGCB1286Q000")
+        art.save.assert_called()
+        mocked_log_action.assert_called_once()
+        mocked_open_exception.assert_called_once()
+
+    @patch("sales.services.sales_compliance_service.ComplianceAuditService.open_exception")
+    @patch("sales.services.sales_compliance_service.ComplianceAuditService.log_action")
+    @patch("sales.services.sales_compliance_service.MasterGSTClient")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._get_mastergst_cred_for_entity")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._get_irn", return_value="IRN123")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._ensure_invoice_eligible_for_eway")
+    @patch("sales.services.sales_compliance_service.SalesEWayBill.objects")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService.assert_action_allowed")
+    def test_generate_eway_omits_ship_to_block_when_ship_gstin_matches_buyer(
+        self,
+        mocked_assert_allowed,
+        mocked_eway_objects,
+        mocked_ensure_eligible,
+        mocked_get_irn,
+        mocked_get_cred,
+        mocked_client_cls,
+        mocked_log_action,
+        mocked_open_exception,
+    ):
+        invoice = SimpleNamespace(
+            id=65,
+            entity=SimpleNamespace(id=10),
+            customer_gstin="29AWGPV7107B1Z1",
+            bill_to_state_code="",
+            bill_to_address1="45366",
+            bill_to_address2="",
+            bill_to_city="Bengaluru",
+            bill_to_pincode="560001",
+            shipto_snapshot=SimpleNamespace(
+                address1="45366",
+                address2="",
+                city="Bengaluru",
+                pincode="560001",
+                state_code="",
+                gstin=None,
+            ),
+        )
+        art = SimpleNamespace(
+            status=0,
+            ewb_no=None,
+            attempt_count=7,
+            last_response_json={},
+            last_request_json=None,
+            distance_km=None,
+            transport_mode=None,
+            transporter_id=None,
+            transporter_name=None,
+            doc_no=None,
+            doc_date=None,
+            vehicle_no=None,
+            vehicle_type=None,
+            disp_dtls_json={
+                "Nm": "Arnika",
+                "Addr1": "4368 GT Road",
+                "Addr2": "sirhind",
+                "Loc": "Bengaluru",
+                "Pin": 560001,
+                "Stcd": "29",
+            },
+            exp_ship_dtls_json={
+                "Addr1": "45366",
+                "Loc": "Bengaluru",
+                "Pin": 560001,
+                "Stcd": "00",
+            },
+            save=MagicMock(),
+        )
+        mocked_eway_objects.select_for_update.return_value.get_or_create.return_value = (art, False)
+        mocked_get_cred.return_value = SimpleNamespace(environment=1, gstin="29AAGCB1286Q000")
+        mocked_client = mocked_client_cls.return_value
+        mocked_client.generate_ewaybill.return_value = {
+            "status_cd": "0",
+            "status_desc": '[{"ErrorCode":"4073","ErrorMessage":"Buyer  GSTIN and Ship TO GSTIN should not be same"}]',
+        }
+
+        result = SalesComplianceService.generate_eway(
+            invoice,
+            invoice.entity,
+            {
+                "distance_km": 3,
+                "trans_mode": "1",
+                "transporter_id": "12AWGPV7107B1Z1",
+                "transporter_name": "avccd",
+                "vehicle_no": "KA123456",
+                "vehicle_type": "R",
+            },
+        )
+
+        self.assertEqual(result["status"], "FAILED")
+        payload = mocked_client.generate_ewaybill.call_args.args[0]
+        self.assertNotIn("ExpShipDtls", payload)
+        self.assertIsNone(art.exp_ship_dtls_json)
+        self.assertEqual(art.eway_source, SalesEWaySource.IRN)
+        self.assertEqual(art.provider_name, "whitebooks")
+        art.save.assert_called()
+        mocked_log_action.assert_called_once()
+        mocked_open_exception.assert_called_once()
+
     @patch("sales.services.sales_compliance_service.ComplianceAuditService.resolve_exception")
     @patch("sales.services.sales_compliance_service.ComplianceAuditService.log_action")
+    @patch("sales.services.sales_compliance_service.ProviderRegistry.get_einvoice")
+    @patch("sales.services.sales_compliance_service.buyer_from_account", return_value={"BuyerDtls": "ok"})
+    @patch("sales.services.sales_compliance_service.seller_from_entity", return_value={"SellerDtls": "ok"})
+    @patch("sales.services.sales_compliance_service.IRPPayloadBuilder")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._einvoice_min_hsn_digits", return_value=6)
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._get_mastergst_cred_for_entity")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._ensure_eway_row")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._ensure_einvoice_row")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._buyer_account")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._assert_confirmed_for_irn")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService.assert_action_allowed")
+    def test_generate_irn_syncs_eway_artifact_and_provenance_when_irp_returns_eway_details(
+        self,
+        mocked_assert_allowed,
+        mocked_assert_confirmed,
+        mocked_buyer_account,
+        mocked_ensure_einv,
+        mocked_ensure_eway,
+        mocked_get_cred,
+        mocked_min_hsn_digits,
+        mocked_builder_cls,
+        mocked_seller_from_entity,
+        mocked_buyer_from_account,
+        mocked_get_provider,
+        mocked_log_action,
+        mocked_resolve_exception,
+    ):
+        invoice = SimpleNamespace(
+            id=10,
+            entity=SimpleNamespace(id=1),
+            entity_id=1,
+            subentity_id=None,
+            entityfinid_id=None,
+            supply_category=int(SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B),
+            place_of_supply_state_code="03",
+        )
+        user = SimpleNamespace(id=7)
+        einv = SimpleNamespace(
+            status=0,
+            irn=None,
+            ack_no=None,
+            ack_date=None,
+            signed_invoice=None,
+            signed_qr_code=None,
+            ewb_no=None,
+            ewb_date=None,
+            ewb_valid_upto=None,
+            attempt_count=0,
+            last_attempt_at=None,
+            last_success_at=None,
+            last_request_json=None,
+            last_response_json=None,
+            last_error_code=None,
+            last_error_message=None,
+            updated_by=None,
+            save=MagicMock(),
+        )
+        ewb = SimpleNamespace(
+            ewb_no=None,
+            ewb_date=None,
+            valid_upto=None,
+            status=0,
+            last_response_json=None,
+            last_error_code=None,
+            last_error_message=None,
+            updated_by=None,
+            save=MagicMock(),
+        )
+        mocked_ensure_einv.return_value = einv
+        mocked_ensure_eway.return_value = ewb
+        mocked_get_cred.return_value = SimpleNamespace(environment=1, gstin="29AAGCB1286Q000")
+        mocked_builder_cls.return_value.build.return_value = {"Version": "1.1", "ItemList": [], "ValDtls": {}}
+        mocked_get_provider.return_value.generate_irn.return_value = SimpleNamespace(
+            ok=True,
+            irn="IRN123",
+            ack_no="ACK123",
+            ack_date="2026-06-18 10:00:00",
+            signed_invoice="signed",
+            signed_qr_code="qr",
+            ewb_no="171001234567",
+            ewb_date="2026-06-18 10:05:00",
+            ewb_valid_upto="2026-06-19 10:05:00",
+            raw={"irn": "IRN123", "ewb_no": "171001234567"},
+        )
+
+        svc = SalesComplianceService(invoice=invoice, user=user)
+
+        result = svc.generate_irn()
+
+        self.assertIs(result, einv)
+        self.assertEqual(einv.provider_name, "whitebooks")
+        self.assertEqual(einv.provider_environment, 1)
+        self.assertEqual(einv.credential_gstin, "29AAGCB1286Q000")
+        self.assertEqual(ewb.eway_source, SalesEWaySource.IRN)
+        self.assertEqual(ewb.provider_name, "whitebooks")
+        self.assertEqual(ewb.provider_environment, 1)
+        self.assertEqual(ewb.credential_gstin, "29AAGCB1286Q000")
+        self.assertEqual(ewb.ewb_no, "171001234567")
+        self.assertEqual(ewb.status, 2)
+        einv.save.assert_called()
+        ewb.save.assert_called()
+        mocked_log_action.assert_called_once()
+        mocked_resolve_exception.assert_called_once()
+
+    @patch("sales.services.sales_compliance_service.ComplianceAuditService.resolve_exception")
+    @patch("sales.services.sales_compliance_service.ComplianceAuditService.log_action")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._get_mastergst_cred_for_entity")
     @patch("sales.services.sales_compliance_service.ProviderRegistry.get_einvoice")
     @patch("sales.services.sales_compliance_service.SalesComplianceService._ensure_einvoice_row")
     @patch("sales.services.sales_compliance_service.SalesComplianceService.assert_action_allowed")
@@ -2162,6 +3814,7 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
         mocked_assert_allowed,
         mocked_ensure_einv,
         mocked_get_provider,
+        mocked_get_cred,
         mocked_log_action,
         mocked_resolve_exception,
     ):
@@ -2186,6 +3839,7 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
             save=save_spy,
         )
         mocked_ensure_einv.return_value = einv
+        mocked_get_cred.return_value = SimpleNamespace(environment=1, gstin="29AAGCB1286Q000")
         mocked_get_provider.return_value.get_irn_details.return_value = SimpleNamespace(
             ok=True,
             irn="IRN123",
@@ -2207,12 +3861,623 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
         self.assertEqual(einv.last_error_code, None)
         self.assertEqual(einv.last_error_message, None)
         self.assertEqual(einv.irn, "IRN123")
+        self.assertEqual(einv.provider_name, "whitebooks")
+        self.assertEqual(einv.provider_environment, 1)
+        self.assertEqual(einv.credential_gstin, "29AAGCB1286Q000")
         save_spy.assert_called()
         mocked_resolve_exception.assert_called_once_with(
             invoice=invoice,
             exception_type="IRN_GENERATION_FAILED",
             user=user,
         )
+
+    @patch("sales.services.sales_compliance_service.ComplianceAuditService.log_action")
+    @patch("sales.services.sales_compliance_service.ProviderRegistry.get_einvoice")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService.assert_action_allowed")
+    def test_get_gstn_details_returns_normalized_provider_result(
+        self,
+        mocked_assert_allowed,
+        mocked_get_provider,
+        mocked_log_action,
+    ):
+        invoice = SimpleNamespace(id=10, entity=SimpleNamespace(id=1))
+        user = SimpleNamespace(id=7)
+        mocked_get_provider.return_value.get_gstn_details.return_value = SimpleNamespace(
+            ok=True,
+            gstin="03ABCDE1234F1Z5",
+            legal_name="Acme Pvt Ltd",
+            trade_name="Acme",
+            status="Active",
+            raw={"gstin": "03ABCDE1234F1Z5"},
+        )
+
+        svc = SalesComplianceService(invoice=invoice, user=user)
+
+        result = svc.get_gstn_details(gstin="03abcde1234f1z5")
+
+        self.assertEqual(result["status"], "SUCCESS")
+        self.assertEqual(result["gstin"], "03ABCDE1234F1Z5")
+        self.assertEqual(result["legal_name"], "Acme Pvt Ltd")
+        mocked_log_action.assert_called_once()
+
+    @patch("sales.services.sales_compliance_service.ComplianceAuditService.log_action")
+    @patch("sales.services.sales_compliance_service.ProviderRegistry.get_einvoice")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService.assert_action_allowed")
+    def test_sync_gstin_from_cp_returns_normalized_provider_result(
+        self,
+        mocked_assert_allowed,
+        mocked_get_provider,
+        mocked_log_action,
+    ):
+        invoice = SimpleNamespace(id=10, entity=SimpleNamespace(id=1))
+        user = SimpleNamespace(id=7)
+        mocked_get_provider.return_value.sync_gstin_from_cp.return_value = SimpleNamespace(
+            ok=True,
+            gstin="03ABCDE1234F1Z5",
+            legal_name="Acme Pvt Ltd",
+            trade_name="Acme",
+            status="Active",
+            raw={"gstin": "03ABCDE1234F1Z5"},
+        )
+
+        svc = SalesComplianceService(invoice=invoice, user=user)
+
+        result = svc.sync_gstin_from_cp(gstin="03abcde1234f1z5")
+
+        self.assertEqual(result["status"], "SUCCESS")
+        self.assertEqual(result["gstin"], "03ABCDE1234F1Z5")
+        self.assertEqual(result["legal_name"], "Acme Pvt Ltd")
+        mocked_log_action.assert_called_once()
+
+    @patch("sales.services.sales_compliance_service.entity_primary_gstin", return_value="03AAAAA0000A1Z5")
+    @patch("sales.services.sales_compliance_service.entity_primary_contact")
+    @patch("sales.services.sales_compliance_service.entity_primary_bank_account")
+    @patch("sales.services.sales_compliance_service.ComplianceAuditService.log_action")
+    @patch("sales.services.sales_compliance_service.ProviderRegistry.get_einvoice")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._ensure_einvoice_row")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService.assert_action_allowed")
+    def test_get_b2c_qrcode_uses_invoice_and_entity_defaults(
+        self,
+        mocked_assert_allowed,
+        mocked_ensure_einv,
+        mocked_get_provider,
+        mocked_log_action,
+        mocked_bank,
+        mocked_contact,
+        mocked_entity_gstin,
+    ):
+        invoice = SimpleNamespace(
+            id=10,
+            entity=SimpleNamespace(legalname="Acme Pvt Ltd", entityname="Acme"),
+            seller_gstin="",
+            invoice_number="SINV/1",
+            doc_no=1,
+            bill_date=date(2026, 6, 18),
+            grand_total=Decimal("1180.00"),
+            total_igst=Decimal("0.00"),
+            total_cgst=Decimal("90.00"),
+            total_sgst=Decimal("90.00"),
+            total_cess=Decimal("0.00"),
+        )
+        user = SimpleNamespace(id=7)
+        save_spy = MagicMock()
+        einv = SimpleNamespace(
+            signed_qr_code=None,
+            last_response_json=None,
+            last_error_code="OLD",
+            last_error_message="Old error",
+            updated_by=None,
+            save=save_spy,
+        )
+        mocked_ensure_einv.return_value = einv
+        mocked_bank.return_value = SimpleNamespace(account_number="1234567890", ifsc_code="HDFC0001234")
+        mocked_contact.return_value = None
+        mocked_get_provider.return_value.get_b2c_qrcode.return_value = SimpleNamespace(
+            ok=True,
+            qr_code="base64-qr",
+            raw={"qrCode": "base64-qr"},
+        )
+
+        svc = SalesComplianceService(invoice=invoice, user=user)
+        result = svc.get_b2c_qrcode()
+
+        self.assertEqual(result["status"], "SUCCESS")
+        self.assertEqual(result["qr_code"], "base64-qr")
+        self.assertEqual(einv.signed_qr_code, "base64-qr")
+        mocked_get_provider.return_value.get_b2c_qrcode.assert_called_once()
+        called_payload = mocked_get_provider.return_value.get_b2c_qrcode.call_args.kwargs["payload"]
+        self.assertEqual(called_payload["sgstin"], "03AAAAA0000A1Z5")
+        self.assertEqual(called_payload["docno"], "SINV/1")
+        self.assertEqual(called_payload["docdate"], "18-06-2026")
+        self.assertEqual(called_payload["bankaccno"], "1234567890")
+        self.assertEqual(called_payload["cgstamount"], "90.00")
+        save_spy.assert_called()
+        mocked_log_action.assert_called_once()
+
+    @patch("sales.services.sales_compliance_service.ComplianceAuditService.resolve_exception")
+    @patch("sales.services.sales_compliance_service.ComplianceAuditService.log_action")
+    @patch("sales.services.sales_compliance_service.ProviderRegistry.get_eway")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._ensure_eway_row")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService.assert_action_allowed")
+    def test_get_eway_details_uses_existing_artifact_number_when_request_omits_value(
+        self,
+        mocked_assert_allowed,
+        mocked_ensure_eway,
+        mocked_get_provider,
+        mocked_log_action,
+        mocked_resolve_exception,
+    ):
+        invoice = SimpleNamespace(id=10, entity=SimpleNamespace(id=1), einvoice_artifact=None)
+        user = SimpleNamespace(id=7)
+        save_spy = MagicMock()
+        ewb = SimpleNamespace(
+            ewb_no="171001234567",
+            ewb_date=None,
+            valid_upto=None,
+            status=1,
+            last_success_at=None,
+            last_response_json=None,
+            last_error_code="OLD",
+            last_error_message="Old error",
+            updated_by=None,
+            save=save_spy,
+        )
+        mocked_ensure_eway.return_value = ewb
+        mocked_get_provider.return_value.get_eway_details.return_value = SimpleNamespace(
+            ok=True,
+            ewb_no="171001234567",
+            ewb_date="2026-06-18 10:00:00",
+            valid_upto="2026-06-19 23:59:59",
+            raw={"ewayBillNo": "171001234567"},
+        )
+
+        svc = SalesComplianceService(invoice=invoice, user=user)
+        result = svc.get_eway_details()
+
+        self.assertEqual(result["status"], "SUCCESS")
+        self.assertEqual(result["ewb_no"], "171001234567")
+        mocked_get_provider.return_value.get_eway_details.assert_called_once_with(
+            invoice=invoice,
+            ewb_no="171001234567",
+        )
+        save_spy.assert_called()
+        mocked_resolve_exception.assert_called_once()
+        mocked_log_action.assert_called_once()
+
+    @patch("sales.services.sales_compliance_service.ComplianceAuditService.log_action")
+    @patch("sales.services.sales_compliance_service.ProviderRegistry.get_eway")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService.assert_action_allowed")
+    def test_get_eway_transporter_details_returns_lookup_data(
+        self,
+        mocked_assert_allowed,
+        mocked_get_provider,
+        mocked_log_action,
+    ):
+        invoice = SimpleNamespace(id=10, entity=SimpleNamespace(id=1))
+        user = SimpleNamespace(id=7)
+        mocked_get_provider.return_value.get_transporter_details.return_value = SimpleNamespace(
+            ok=True,
+            data={"transporterId": "03TRANS1234A1Z5"},
+            raw={"transporterId": "03TRANS1234A1Z5"},
+        )
+        svc = SalesComplianceService(invoice=invoice, user=user)
+        result = svc.get_eway_transporter_details(transporter_id="03TRANS1234A1Z5")
+        self.assertEqual(result["status"], "SUCCESS")
+        self.assertEqual(result["data"]["transporterId"], "03TRANS1234A1Z5")
+        mocked_log_action.assert_called_once()
+
+    @patch("sales.services.sales_compliance_service.ComplianceAuditService.log_action")
+    @patch("sales.services.sales_compliance_service.ProviderRegistry.get_eway")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService.assert_action_allowed")
+    def test_get_eway_gstin_details_returns_lookup_data(
+        self,
+        mocked_assert_allowed,
+        mocked_get_provider,
+        mocked_log_action,
+    ):
+        invoice = SimpleNamespace(id=10, entity=SimpleNamespace(id=1))
+        user = SimpleNamespace(id=7)
+        mocked_get_provider.return_value.get_gstin_details.return_value = SimpleNamespace(
+            ok=True,
+            data={"Gstin": "03ABCDE1234F1Z5"},
+            raw={"Gstin": "03ABCDE1234F1Z5"},
+        )
+        svc = SalesComplianceService(invoice=invoice, user=user)
+        result = svc.get_eway_gstin_details(gstin="03abcde1234f1z5")
+        self.assertEqual(result["status"], "SUCCESS")
+        self.assertEqual(result["data"]["Gstin"], "03ABCDE1234F1Z5")
+        mocked_log_action.assert_called_once()
+
+    @patch("sales.services.sales_compliance_service.ComplianceAuditService.log_action")
+    @patch("sales.services.sales_compliance_service.ProviderRegistry.get_eway")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService.assert_action_allowed")
+    def test_get_eway_hsn_details_returns_lookup_data(
+        self,
+        mocked_assert_allowed,
+        mocked_get_provider,
+        mocked_log_action,
+    ):
+        invoice = SimpleNamespace(id=10, entity=SimpleNamespace(id=1))
+        user = SimpleNamespace(id=7)
+        mocked_get_provider.return_value.get_hsn_details.return_value = SimpleNamespace(
+            ok=True,
+            data={"hsnCode": "9983"},
+            raw={"hsnCode": "9983"},
+        )
+        svc = SalesComplianceService(invoice=invoice, user=user)
+        result = svc.get_eway_hsn_details(hsn_code="9983")
+        self.assertEqual(result["status"], "SUCCESS")
+        self.assertEqual(result["data"]["hsnCode"], "9983")
+        mocked_log_action.assert_called_once()
+
+    @patch("sales.services.sales_compliance_service.ComplianceAuditService.log_action")
+    @patch("sales.services.sales_compliance_service.ProviderRegistry.get_eway")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService.assert_action_allowed")
+    def test_get_eway_error_list_returns_lookup_data(
+        self,
+        mocked_assert_allowed,
+        mocked_get_provider,
+        mocked_log_action,
+    ):
+        invoice = SimpleNamespace(id=10, entity=SimpleNamespace(id=1))
+        user = SimpleNamespace(id=7)
+        mocked_get_provider.return_value.get_error_list.return_value = SimpleNamespace(
+            ok=True,
+            data=[{"code": "1001"}],
+            raw={"data": [{"code": "1001"}]},
+        )
+        svc = SalesComplianceService(invoice=invoice, user=user)
+        result = svc.get_eway_error_list()
+        self.assertEqual(result["status"], "SUCCESS")
+        self.assertEqual(result["data"][0]["code"], "1001")
+        mocked_log_action.assert_called_once()
+
+    @patch("sales.services.sales_compliance_service.ComplianceAuditService.log_action")
+    @patch("sales.services.sales_compliance_service.ProviderRegistry.get_eway")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._ensure_eway_row")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService.assert_action_allowed")
+    def test_reject_eway_uses_existing_artifact_number_when_request_omits_value(
+        self,
+        mocked_assert_allowed,
+        mocked_ensure_eway,
+        mocked_get_provider,
+        mocked_log_action,
+    ):
+        invoice = SimpleNamespace(id=10, entity=SimpleNamespace(id=1))
+        user = SimpleNamespace(id=7)
+        save_spy = MagicMock()
+        ewb = SimpleNamespace(
+            ewb_no="171001234567",
+            last_response_json=None,
+            last_error_code="OLD",
+            last_error_message="Old error",
+            updated_by=None,
+            save=save_spy,
+        )
+        mocked_ensure_eway.return_value = ewb
+        mocked_get_provider.return_value.reject_eway.return_value = SimpleNamespace(
+            ok=True,
+            data="Rejected",
+            raw={"data": "Rejected"},
+        )
+        svc = SalesComplianceService(invoice=invoice, user=user)
+        result = svc.reject_eway()
+        self.assertEqual(result["status"], "SUCCESS")
+        mocked_get_provider.return_value.reject_eway.assert_called_once_with(invoice=invoice, ewb_no="171001234567")
+        save_spy.assert_called()
+        mocked_log_action.assert_called_once()
+
+    @patch("sales.services.sales_compliance_service.ComplianceAuditService.log_action")
+    @patch("sales.services.sales_compliance_service.ProviderRegistry.get_eway")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService.assert_action_allowed")
+    def test_get_trip_sheet_returns_lookup_data(
+        self,
+        mocked_assert_allowed,
+        mocked_get_provider,
+        mocked_log_action,
+    ):
+        invoice = SimpleNamespace(id=10, entity=SimpleNamespace(id=1))
+        user = SimpleNamespace(id=7)
+        mocked_get_provider.return_value.get_trip_sheet.return_value = SimpleNamespace(
+            ok=True,
+            data={"tripSheetNo": "TS123"},
+            raw={"tripSheetNo": "TS123"},
+        )
+        svc = SalesComplianceService(invoice=invoice, user=user)
+        result = svc.get_trip_sheet(trip_sheet_no="TS123")
+        self.assertEqual(result["status"], "SUCCESS")
+        self.assertEqual(result["data"]["tripSheetNo"], "TS123")
+        mocked_log_action.assert_called_once()
+
+    @patch("sales.services.sales_compliance_service.ComplianceAuditService.log_action")
+    @patch("sales.services.sales_compliance_service.ProviderRegistry.get_eway")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService.assert_action_allowed")
+    def test_get_eway_by_document_uses_invoice_defaults_when_request_omits_values(
+        self,
+        mocked_assert_allowed,
+        mocked_get_provider,
+        mocked_log_action,
+    ):
+        invoice = SimpleNamespace(
+            id=10,
+            entity=SimpleNamespace(id=1),
+            doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+            invoice_number="SINV/1",
+            doc_no=1,
+        )
+        user = SimpleNamespace(id=7)
+        mocked_get_provider.return_value.get_eway_by_document.return_value = SimpleNamespace(
+            ok=True,
+            data={"ewayBillNo": "171001234567"},
+            raw={"ewayBillNo": "171001234567"},
+        )
+        svc = SalesComplianceService(invoice=invoice, user=user)
+        result = svc.get_eway_by_document()
+        self.assertEqual(result["status"], "SUCCESS")
+        mocked_get_provider.return_value.get_eway_by_document.assert_called_once_with(
+            invoice=invoice,
+            doc_type="INV",
+            doc_no="SINV/1",
+        )
+        mocked_log_action.assert_called_once()
+
+    @patch("sales.services.sales_compliance_service.ComplianceAuditService.log_action")
+    @patch("sales.services.sales_compliance_service.ProviderRegistry.get_eway")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService.assert_action_allowed")
+    def test_get_eway_bills_for_transporter_formats_date_for_provider(
+        self,
+        mocked_assert_allowed,
+        mocked_get_provider,
+        mocked_log_action,
+    ):
+        invoice = SimpleNamespace(id=10, entity=SimpleNamespace(id=1))
+        user = SimpleNamespace(id=7)
+        mocked_get_provider.return_value.get_eway_bills_for_transporter.return_value = SimpleNamespace(
+            ok=True,
+            data=[{"ewayBillNo": "171001234567"}],
+            raw={"data": [{"ewayBillNo": "171001234567"}]},
+        )
+        svc = SalesComplianceService(invoice=invoice, user=user)
+        result = svc.get_eway_bills_for_transporter(date=date(2026, 6, 18))
+        self.assertEqual(result["status"], "SUCCESS")
+        mocked_get_provider.return_value.get_eway_bills_for_transporter.assert_called_once_with(
+            invoice=invoice,
+            date="18/06/2026",
+        )
+        mocked_log_action.assert_called_once()
+
+    @patch("sales.services.sales_compliance_service.ComplianceAuditService.log_action")
+    @patch("sales.services.sales_compliance_service.ProviderRegistry.get_eway")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService.assert_action_allowed")
+    def test_get_eway_bill_report_by_transporter_assigned_date_passes_state_code(
+        self,
+        mocked_assert_allowed,
+        mocked_get_provider,
+        mocked_log_action,
+    ):
+        invoice = SimpleNamespace(id=10, entity=SimpleNamespace(id=1))
+        user = SimpleNamespace(id=7)
+        mocked_get_provider.return_value.get_eway_bill_report_by_transporter_assigned_date.return_value = SimpleNamespace(
+            ok=True,
+            data=[{"ewayBillNo": "171001234567"}],
+            raw={"data": [{"ewayBillNo": "171001234567"}]},
+        )
+        svc = SalesComplianceService(invoice=invoice, user=user)
+        result = svc.get_eway_bill_report_by_transporter_assigned_date(date=date(2026, 6, 18), state_code="03")
+        self.assertEqual(result["status"], "SUCCESS")
+        mocked_get_provider.return_value.get_eway_bill_report_by_transporter_assigned_date.assert_called_once_with(
+            invoice=invoice,
+            date="18/06/2026",
+            state_code="03",
+        )
+        mocked_log_action.assert_called_once()
+
+    @patch("sales.services.sales_compliance_service.ComplianceAuditService.log_action")
+    @patch("sales.services.sales_compliance_service.ProviderRegistry.get_eway")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService.assert_action_allowed")
+    def test_get_eway_bills_for_transporter_by_gstin_normalizes_gstin(
+        self,
+        mocked_assert_allowed,
+        mocked_get_provider,
+        mocked_log_action,
+    ):
+        invoice = SimpleNamespace(id=10, entity=SimpleNamespace(id=1))
+        user = SimpleNamespace(id=7)
+        mocked_get_provider.return_value.get_eway_bills_for_transporter_by_gstin.return_value = SimpleNamespace(
+            ok=True,
+            data=[{"ewayBillNo": "171001234567"}],
+            raw={"data": [{"ewayBillNo": "171001234567"}]},
+        )
+        svc = SalesComplianceService(invoice=invoice, user=user)
+        result = svc.get_eway_bills_for_transporter_by_gstin(gen_gstin="03aaaaa0000a1z5", date=date(2026, 6, 18))
+        self.assertEqual(result["status"], "SUCCESS")
+        mocked_get_provider.return_value.get_eway_bills_for_transporter_by_gstin.assert_called_once_with(
+            invoice=invoice,
+            gen_gstin="03AAAAA0000A1Z5",
+            date="18/06/2026",
+        )
+        mocked_log_action.assert_called_once()
+
+    @patch("sales.services.sales_compliance_service.ComplianceAuditService.log_action")
+    @patch("sales.services.sales_compliance_service.ProviderRegistry.get_eway")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._ensure_eway_row")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService.assert_action_allowed")
+    def test_initiate_multi_vehicle_uses_existing_artifact_number_when_request_omits_value(
+        self,
+        mocked_assert_allowed,
+        mocked_ensure_eway,
+        mocked_get_provider,
+        mocked_log_action,
+    ):
+        invoice = SimpleNamespace(id=10, entity=SimpleNamespace(id=1))
+        user = SimpleNamespace(id=7)
+        mocked_ensure_eway.return_value = SimpleNamespace(ewb_no="171001234567")
+        mocked_get_provider.return_value.initiate_multi_vehicle.return_value = SimpleNamespace(
+            ok=True,
+            data={"groupNo": "10"},
+            raw={"groupNo": "10"},
+        )
+        svc = SalesComplianceService(invoice=invoice, user=user)
+        result = svc.initiate_multi_vehicle(
+            req={
+                "from_place": "Sirhind",
+                "from_state_code": 3,
+                "to_place": "Patiala",
+                "to_state_code": 3,
+                "reason_code": "1",
+                "remarks": "Shift",
+                "trans_mode": "1",
+                "total_quantity": 10,
+                "unit_code": "BOX",
+            }
+        )
+        self.assertEqual(result["status"], "SUCCESS")
+        mocked_get_provider.return_value.initiate_multi_vehicle.assert_called_once()
+        called_payload = mocked_get_provider.return_value.initiate_multi_vehicle.call_args.kwargs["payload"]
+        self.assertEqual(called_payload["ewbNo"], "171001234567")
+        mocked_log_action.assert_called_once()
+
+    @patch("sales.services.sales_compliance_service.ComplianceAuditService.log_action")
+    @patch("sales.services.sales_compliance_service.ProviderRegistry.get_eway")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._ensure_eway_row")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService.assert_action_allowed")
+    def test_add_multi_vehicle_formats_transdoc_date_and_defaults_ewb_no(
+        self,
+        mocked_assert_allowed,
+        mocked_ensure_eway,
+        mocked_get_provider,
+        mocked_log_action,
+    ):
+        invoice = SimpleNamespace(id=10, entity=SimpleNamespace(id=1))
+        user = SimpleNamespace(id=7)
+        mocked_ensure_eway.return_value = SimpleNamespace(ewb_no="171001234567")
+        mocked_get_provider.return_value.add_multi_vehicle.return_value = SimpleNamespace(
+            ok=True,
+            data={"groupNo": "10"},
+            raw={"groupNo": "10"},
+        )
+        svc = SalesComplianceService(invoice=invoice, user=user)
+        result = svc.add_multi_vehicle(
+            req={
+                "group_no": 10,
+                "vehicle_no": "PB10AB1234",
+                "trans_doc_no": "LR1",
+                "trans_doc_date": date(2026, 6, 18),
+                "quantity": 5,
+            }
+        )
+        self.assertEqual(result["status"], "SUCCESS")
+        called_payload = mocked_get_provider.return_value.add_multi_vehicle.call_args.kwargs["payload"]
+        self.assertEqual(called_payload["ewbNo"], "171001234567")
+        self.assertEqual(called_payload["transDocDate"], "18/06/2026")
+        mocked_log_action.assert_called_once()
+
+    @patch("sales.services.sales_compliance_service.ComplianceAuditService.log_action")
+    @patch("sales.services.sales_compliance_service.ProviderRegistry.get_eway")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._ensure_eway_row")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService.assert_action_allowed")
+    def test_generate_consolidated_eway_translates_app_contract_to_vendor_payload(
+        self,
+        mocked_assert_allowed,
+        mocked_ensure_eway,
+        mocked_get_provider,
+        mocked_log_action,
+    ):
+        invoice = SimpleNamespace(id=10, entity=SimpleNamespace(id=1))
+        user = SimpleNamespace(id=7)
+        mocked_ensure_eway.return_value = SimpleNamespace(ewb_no="171001234567")
+        mocked_get_provider.return_value.generate_consolidated_eway.return_value = SimpleNamespace(
+            ok=True,
+            data={"tripSheetNo": "TS123"},
+            raw={"tripSheetNo": "TS123"},
+        )
+        svc = SalesComplianceService(invoice=invoice, user=user)
+        result = svc.generate_consolidated_eway(
+            req={
+                "from_place": "Sirhind",
+                "from_state_code": 3,
+                "trans_mode": "1",
+                "eway_bill_numbers": [{"ewb_no": 171001234567}],
+                "vehicle_no": "PB10AB1234",
+                "trans_doc_no": "LR1",
+                "trans_doc_date": date(2026, 6, 18),
+            }
+        )
+        self.assertEqual(result["status"], "SUCCESS")
+        called_payload = mocked_get_provider.return_value.generate_consolidated_eway.call_args.kwargs["payload"]
+        self.assertEqual(called_payload["fromPlace"], "Sirhind")
+        self.assertEqual(called_payload["fromState"], 3)
+        self.assertEqual(called_payload["transMode"], "1")
+        self.assertEqual(called_payload["tripSheetEwbBills"], [{"ewbNo": 171001234567}])
+        self.assertEqual(called_payload["transDocDate"], "18/06/2026")
+        mocked_log_action.assert_called_once()
+
+    @patch("sales.services.sales_compliance_service.ComplianceAuditService.resolve_exception")
+    @patch("sales.services.sales_compliance_service.ComplianceAuditService.log_action")
+    @patch("sales.services.sales_compliance_service.ProviderRegistry.get_einvoice")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._ensure_einvoice_row")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService.assert_action_allowed")
+    def test_get_irn_details_by_doc_uses_invoice_defaults_when_request_omits_values(
+        self,
+        mocked_assert_allowed,
+        mocked_ensure_einv,
+        mocked_get_provider,
+        mocked_log_action,
+        mocked_resolve_exception,
+    ):
+        invoice = SimpleNamespace(
+            id=10,
+            entity=SimpleNamespace(id=1),
+            doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+            invoice_number="SINV/1",
+            doc_no=1,
+            bill_date=date(2026, 6, 18),
+        )
+        user = SimpleNamespace(id=7)
+        save_spy = MagicMock()
+        einv = SimpleNamespace(
+            irn=None,
+            ack_no=None,
+            ack_date=None,
+            signed_invoice=None,
+            signed_qr_code=None,
+            ewb_no=None,
+            ewb_date=None,
+            ewb_valid_upto=None,
+            last_response_json={},
+            last_error_code=None,
+            last_error_message=None,
+            status=0,
+            last_success_at=None,
+            updated_by=None,
+            save=save_spy,
+        )
+        mocked_ensure_einv.return_value = einv
+        mocked_get_provider.return_value.get_irn_details_by_doc.return_value = SimpleNamespace(
+            ok=True,
+            irn="IRN123",
+            ack_no="ACK123",
+            ack_date="2026-06-18 10:00:00",
+            signed_invoice=None,
+            signed_qr_code=None,
+            ewb_no=None,
+            ewb_date=None,
+            ewb_valid_upto=None,
+            raw={"irn": "IRN123"},
+        )
+
+        svc = SalesComplianceService(invoice=invoice, user=user)
+
+        result = svc.get_irn_details_by_doc()
+
+        self.assertEqual(result["status"], "SUCCESS")
+        mocked_get_provider.return_value.get_irn_details_by_doc.assert_called_once_with(
+            invoice=invoice,
+            doc_type="INV",
+            doc_number="SINV/1",
+            doc_date="18/06/2026",
+        )
+        save_spy.assert_called()
 
     @patch("sales.services.sales_compliance_service.ComplianceAuditService.resolve_exception")
     @patch("sales.services.sales_compliance_service.ComplianceAuditService.log_action")
@@ -2692,10 +4957,10 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
 
 class IRPPayloadBuilderUnitTests(SimpleTestCase):
     @staticmethod
-    def _make_line():
+    def _make_line(**overrides):
         product = SimpleNamespace(name="Widget", hsn_code="1001")
         uom = SimpleNamespace(code="NOS")
-        return SimpleNamespace(
+        base = dict(
             line_no=1,
             product=product,
             uom=uom,
@@ -2709,10 +4974,13 @@ class IRPPayloadBuilderUnitTests(SimpleTestCase):
             cgst_amount=Decimal("9.00"),
             sgst_amount=Decimal("9.00"),
             igst_amount=Decimal("0.00"),
+            cess_percent=Decimal("0.00"),
             cess_amount=Decimal("0.00"),
             gst_rate=Decimal("18.00"),
             line_total=Decimal("118.00"),
         )
+        base.update(overrides)
+        return SimpleNamespace(**base)
 
     @classmethod
     def _make_invoice(cls, **overrides):
@@ -2778,6 +5046,29 @@ class IRPPayloadBuilderUnitTests(SimpleTestCase):
         with self.assertRaisesMessage(ValueError, "notified GST slab"):
             IRPPayloadBuilder(inv).build()
 
+    def test_build_rejects_short_hsn_when_min_digits_6(self):
+        inv = self._make_invoice()
+        with self.assertRaisesMessage(ValueError, "HSN/SAC must be 6..8 digits"):
+            IRPPayloadBuilder(inv, min_hsn_digits=6).build()
+
+    def test_build_uses_line_derived_totinvval_even_if_header_grand_total_is_stale(self):
+        inv = self._make_invoice(grand_total=Decimal("99999.99"), round_off=Decimal("0.37"))
+        payload = IRPPayloadBuilder(inv).build()
+        self.assertEqual(payload["ValDtls"]["AssVal"], 100.0)
+        self.assertEqual(payload["ValDtls"]["CgstVal"], 9.0)
+        self.assertEqual(payload["ValDtls"]["SgstVal"], 9.0)
+        self.assertEqual(payload["ValDtls"]["CesVal"], 0.0)
+        self.assertEqual(payload["ValDtls"]["RndOffAmt"], 0.37)
+        self.assertEqual(payload["ValDtls"]["TotInvVal"], 118.37)
+
+    def test_build_includes_cess_rate_when_cess_applies(self):
+        line = self._make_line(cess_percent=Decimal("1.00"), cess_amount=Decimal("1.00"), line_total=Decimal("119.00"))
+        inv = self._make_invoice(lines=SimpleNamespace(all=lambda: [line]), grand_total=Decimal("119.00"))
+        payload = IRPPayloadBuilder(inv).build()
+        self.assertEqual(payload["ItemList"][0]["CesRt"], 1.0)
+        self.assertEqual(payload["ItemList"][0]["CesAmt"], 1.0)
+        self.assertEqual(payload["ValDtls"]["CesVal"], 1.0)
+
     def test_build_omits_ecm_gstin_when_blank(self):
         inv = self._make_invoice(ecm_gstin="")
         payload = IRPPayloadBuilder(inv).build()
@@ -2789,6 +5080,58 @@ class IRPPayloadBuilderUnitTests(SimpleTestCase):
         self.assertEqual(payload["TranDtls"]["EcmGstin"], "29ABCDE1234F1Z5")
 
     def test_build_includes_eway_and_dispatch_blocks_when_available(self):
+        line = self._make_line()
+        eway = SimpleNamespace(
+            disp_dtls_json={
+                "Nm": "ABC company pvt ltd",
+                "Addr1": "7th block, kuvempu layout",
+                "Loc": "Bangalore",
+                "Pin": "518360",
+                "Stcd": "37",
+            },
+            exp_ship_dtls_json={
+                "Gstin": "27AWGPV7107B1Z5",
+                "LglNm": "XYZ company pvt ltd",
+                "TrdNm": "XYZ Industries",
+                "Addr1": "7th block, kuvempu layout",
+                "Loc": "Bangalore",
+                "Pin": "560004",
+                "Stcd": "29",
+            },
+            transport_mode=1,
+            distance_km=100,
+            transporter_id="12AWGPV7107B1Z1",
+            transporter_name="XYZ EXPORTS",
+            doc_no="DOC01",
+            doc_date=date(2026, 3, 5),
+            vehicle_no="KA12AB1234",
+            vehicle_type="R",
+        )
+        inv = SimpleNamespace(
+            id=1,
+            doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+            supply_category=int(SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B),
+            is_reverse_charge=False,
+            doc_no=101,
+            invoice_number="SINV-101",
+            bill_date=date(2026, 3, 1),
+            total_discount=Decimal("0.00"),
+            total_other_charges=Decimal("0.00"),
+            round_off=Decimal("0.00"),
+            grand_total=Decimal("118.00"),
+            lines=SimpleNamespace(all=lambda: [line]),
+            original_invoice=None,
+            customer=SimpleNamespace(country=SimpleNamespace(countrycode="IN"), state=SimpleNamespace(statecode="27")),
+            customer_gstin="29AWGPV7107B1Z1",
+            eway_artifact=eway,
+        )
+        payload = IRPPayloadBuilder(inv).build()
+        self.assertIn("DispDtls", payload)
+        self.assertIn("ShipDtls", payload)
+        self.assertIn("EwbDtls", payload)
+        self.assertEqual(payload["EwbDtls"]["TransMode"], "1")
+
+    def test_build_omits_ship_dtls_when_same_as_buyer_gstin(self):
         line = self._make_line()
         eway = SimpleNamespace(
             disp_dtls_json={
@@ -2834,11 +5177,10 @@ class IRPPayloadBuilderUnitTests(SimpleTestCase):
             customer_gstin="29AWGPV7107B1Z1",
             eway_artifact=eway,
         )
+
         payload = IRPPayloadBuilder(inv).build()
-        self.assertIn("DispDtls", payload)
-        self.assertIn("ShipDtls", payload)
-        self.assertIn("EwbDtls", payload)
-        self.assertEqual(payload["EwbDtls"]["TransMode"], "1")
+
+        self.assertNotIn("ShipDtls", payload)
 
 
 class ComplianceErrorCatalogServiceUnitTests(SimpleTestCase):
@@ -2857,6 +5199,16 @@ class ComplianceErrorCatalogServiceUnitTests(SimpleTestCase):
     def test_resolve_without_code_uses_message(self):
         info = ComplianceErrorCatalogService.resolve(code=None, message="Some failure")
         self.assertEqual(info.as_text(), "Some failure")
+
+
+class SalesSettingsPolicyControlUnitTests(SimpleTestCase):
+    def test_normalize_policy_controls_accepts_einvoice_min_hsn_digits(self):
+        data = SalesSettingsService.normalize_policy_controls({"einvoice_min_hsn_digits": 6})
+        self.assertEqual(data["einvoice_min_hsn_digits"], 6)
+
+    def test_normalize_policy_controls_rejects_invalid_einvoice_min_hsn_digits(self):
+        with self.assertRaisesMessage(ValueError, "policy_controls.einvoice_min_hsn_digits must be between 4 and 8."):
+            SalesSettingsService.normalize_policy_controls({"einvoice_min_hsn_digits": 3})
 
 
 class EWayPayloadBuilderUnitTests(SimpleTestCase):
@@ -2890,6 +5242,122 @@ class EWayPayloadBuilderUnitTests(SimpleTestCase):
         self.assertEqual(payload["VehType"], "R")
         self.assertNotIn("TransDocDt", payload)
 
+    def test_build_exp_ship_dtls_falls_back_state_code_from_gstin(self):
+        ship = build_exp_ship_dtls(
+            addr1="45366",
+            addr2="",
+            loc="Bengaluru",
+            pin="560001",
+            stcd="",
+            gstin="29AWGPV7107B1Z1",
+        )
+        self.assertEqual(ship["Gstin"], "29AWGPV7107B1Z1")
+        self.assertEqual(ship["Stcd"], "29")
+
+    def _build_b2c_invoice_fixture(self):
+        line = SimpleNamespace(
+            hsn_sac_code="9983",
+            qty=2,
+            free_qty=0,
+            taxable_value=1000,
+            gst_rate=18,
+            cess_percent=0,
+            uom=SimpleNamespace(code="NOS"),
+            product=SimpleNamespace(name="Service Item"),
+        )
+        invoice = SimpleNamespace(
+            supply_category="2",
+            entity=SimpleNamespace(
+                legalname="Test Entity",
+                entityname="Test Entity",
+            ),
+            shipto_snapshot=SimpleNamespace(
+                pincode="140406",
+                state_code="03",
+                full_name="Walk-in Customer",
+                address1="Street 1",
+                address2="Street 2",
+                city="Sirhind",
+            ),
+            bill_date=date(2026, 6, 18),
+            doc_no="SINV001",
+            lines=SimpleNamespace(all=lambda: [line]),
+        )
+        ewb = SimpleNamespace(
+            distance_km=25,
+            transport_mode=1,
+            transporter_id="03TRANS1234A1Z5",
+            transporter_name="Fast Transport",
+            doc_type=None,
+            doc_no="LR001",
+            doc_date=date(2026, 6, 18),
+            vehicle_no="PB10AB1234",
+            vehicle_type=None,
+        )
+        return invoice, ewb
+
+    @patch("sales.services.eway.payload_b2c.entity_primary_address")
+    @patch("sales.services.eway.payload_b2c.entity_primary_state")
+    def test_build_b2c_direct_payload_uses_explicit_policy_defaults(
+        self,
+        mocked_primary_state,
+        mocked_primary_address,
+    ):
+        invoice, ewb = self._build_b2c_invoice_fixture()
+        mocked_primary_address.return_value = SimpleNamespace(
+            pincode="140406",
+            line1="Entity Street 1",
+            line2="Entity Street 2",
+            city=SimpleNamespace(cityname="Sirhind"),
+        )
+        mocked_primary_state.return_value = SimpleNamespace(statecode="03")
+
+        payload = build_b2c_direct_payload(invoice=invoice, ewb=ewb, entity_gstin="03AAAAA0000A1Z5")
+
+        self.assertEqual(payload["supplyType"], "O")
+        self.assertEqual(payload["subSupplyType"], "1")
+        self.assertEqual(payload["docType"], "INV")
+        self.assertEqual(payload["toGstin"], "URP")
+        self.assertEqual(payload["transactionType"], 1)
+        self.assertEqual(payload["vehicleType"], "R")
+
+    @override_settings(
+        SALES_EWAY_B2C_POLICY={
+            "supply_type": "I",
+            "sub_supply_type": "2",
+            "sub_supply_desc": "Demo policy",
+            "default_doc_type": "BIL",
+            "customer_gstin": "URD",
+            "transaction_type": 3,
+            "default_vehicle_type": "O",
+        }
+    )
+    @patch("sales.services.eway.payload_b2c.entity_primary_address")
+    @patch("sales.services.eway.payload_b2c.entity_primary_state")
+    def test_build_b2c_direct_payload_allows_policy_override_from_settings(
+        self,
+        mocked_primary_state,
+        mocked_primary_address,
+    ):
+        invoice, ewb = self._build_b2c_invoice_fixture()
+        mocked_primary_address.return_value = SimpleNamespace(
+            pincode="140406",
+            line1="Entity Street 1",
+            line2="Entity Street 2",
+            city=SimpleNamespace(cityname="Sirhind"),
+        )
+        mocked_primary_state.return_value = SimpleNamespace(statecode="03")
+
+        payload = build_b2c_direct_payload(invoice=invoice, ewb=ewb, entity_gstin="03AAAAA0000A1Z5")
+
+        self.assertEqual(payload["supplyType"], "I")
+        self.assertEqual(payload["subSupplyType"], "2")
+        self.assertEqual(payload["subSupplyDesc"], "Demo policy")
+        self.assertEqual(payload["docType"], "BIL")
+        self.assertEqual(payload["toGstin"], "URD")
+        self.assertEqual(payload["transactionType"], 3)
+        self.assertEqual(payload["vehicleType"], "O")
+
 
 class SalesComplianceDateParseUnitTests(SimpleTestCase):
     def test_parse_mastergst_datetime_with_ampm(self):
@@ -2902,9 +5370,39 @@ class SalesComplianceDateParseUnitTests(SimpleTestCase):
         self.assertTrue(timezone.is_aware(dt))
 
 
+class EWayRequestSerializerUnitTests(SimpleTestCase):
+    def test_road_mode_allows_null_transport_doc_date(self):
+        serializer = GenerateEWayRequestSerializer(
+            data={
+                "distance_km": 1,
+                "trans_mode": "1",
+                "vehicle_no": "KA12ER1234",
+                "vehicle_type": "R",
+                "trans_doc_no": "",
+                "trans_doc_date": None,
+                "transporter_id": "12AWGPV7107B1Z1",
+                "transporter_name": "abc",
+            }
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
+    def test_rail_mode_requires_transport_doc_date(self):
+        serializer = GenerateEWayRequestSerializer(
+            data={
+                "distance_km": 1,
+                "trans_mode": "2",
+                "trans_doc_no": "LR-22",
+                "trans_doc_date": None,
+            }
+        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("trans_doc_date", serializer.errors)
+
+
 class SalesComplianceCredentialValidationUnitTests(SimpleTestCase):
     def test_get_mastergst_cred_for_entity_rejects_gstin_mismatch(self):
         entity = SimpleNamespace(
+            id=1,
             gst_registrations=SimpleNamespace(
                 filter=lambda **kwargs: SimpleNamespace(
                     only=lambda *args, **kw: SimpleNamespace(
@@ -2920,14 +5418,65 @@ class SalesComplianceCredentialValidationUnitTests(SimpleTestCase):
             email="ops@example.com",
             gst_username="gst-user",
             gst_password="pwd",
+            get_client_secret=lambda: "secret",
+            get_gst_password=lambda: "pwd",
         )
 
         with patch(
-            "sales.services.sales_compliance_service.SalesMasterGSTCredential.objects.filter"
-        ) as mocked_filter:
-            mocked_filter.return_value.first.return_value = cred
+            "sales.services.sales_compliance_service.CredentialResolver.provider_for_entity",
+            return_value=cred,
+        ):
             with self.assertRaisesMessage(ValidationError, "does not match the entity primary GSTIN"):
                 SalesComplianceService._get_mastergst_cred_for_entity(entity, provider_name="mastergst")
+
+    @patch("sales.services.providers.credential_resolver.SalesMasterGSTCredential.objects.filter")
+    def test_provider_for_entity_uses_requested_service_scope(self, mocked_filter):
+        expected = SimpleNamespace(id=9)
+        base_qs = MagicMock()
+        scoped_qs = MagicMock()
+        mocked_filter.return_value = base_qs
+        base_qs.filter.return_value = scoped_qs
+        scoped_qs.first.return_value = expected
+
+        result = CredentialResolver.provider_for_entity(
+            77,
+            provider_name="whitebooks",
+            service_scope=MasterGSTServiceScope.EWAY,
+        )
+
+        self.assertIs(result, expected)
+        mocked_filter.assert_called_once_with(
+            entity_id=77,
+            environment=1,
+            is_active=True,
+        )
+        base_qs.filter.assert_called_once_with(service_scope=int(MasterGSTServiceScope.EWAY))
+
+    @patch("sales.services.providers.credential_resolver.SalesMasterGSTCredential.objects.filter")
+    def test_provider_for_entity_falls_back_to_einvoice_credential_for_eway_scope(self, mocked_filter):
+        expected = SimpleNamespace(id=11)
+        base_qs = MagicMock()
+        eway_qs = MagicMock()
+        einvoice_qs = MagicMock()
+
+        mocked_filter.return_value = base_qs
+        base_qs.filter.side_effect = [eway_qs, einvoice_qs]
+        eway_qs.first.return_value = None
+        einvoice_qs.first.return_value = expected
+
+        result = CredentialResolver.provider_for_entity(
+            77,
+            provider_name="whitebooks",
+            service_scope=MasterGSTServiceScope.EWAY,
+        )
+
+        self.assertIs(result, expected)
+        mocked_filter.assert_called_once_with(
+            entity_id=77,
+            environment=1,
+            is_active=True,
+        )
+        self.assertEqual(base_qs.filter.call_count, 2)
 
 
 class MasterGSTErrorExtractUnitTests(SimpleTestCase):

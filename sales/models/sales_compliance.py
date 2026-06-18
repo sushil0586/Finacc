@@ -73,6 +73,11 @@ class SalesEInvoice(models.Model):
     last_attempt_at = models.DateTimeField(null=True, blank=True)
     last_success_at = models.DateTimeField(null=True, blank=True)
 
+    # ---- provider provenance ----
+    provider_name = models.CharField(max_length=40, null=True, blank=True, db_index=True)
+    provider_environment = models.PositiveSmallIntegerField(choices=NICEnvironment.choices, null=True, blank=True, db_index=True)
+    credential_gstin = models.CharField(max_length=15, null=True, blank=True, db_index=True)
+
     # ---- audit ----
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
@@ -195,6 +200,11 @@ class SalesEWayBill(models.Model):
     last_attempt_at = models.DateTimeField(null=True, blank=True)
     last_success_at = models.DateTimeField(null=True, blank=True)
 
+    # ---- provider provenance ----
+    provider_name = models.CharField(max_length=40, null=True, blank=True, db_index=True)
+    provider_environment = models.PositiveSmallIntegerField(choices=NICEnvironment.choices, null=True, blank=True, db_index=True)
+    credential_gstin = models.CharField(max_length=15, null=True, blank=True, db_index=True)
+
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
     created_by = models.ForeignKey(
@@ -252,49 +262,6 @@ class SalesEWayBillCancel(models.Model):
 
     def __str__(self) -> str:
         return f"SalesEWayBillCancel(eway_id={self.eway_id}, at={self.cancelled_at})"
-
-
-class SalesNICCredential(models.Model):
-    """
-    Entity-level NIC credential mapping (environment-aware).
-    Keep this separate and admin-managed like your PayrollComponentGlobal approach.
-    """
-    entity = models.ForeignKey("entity.Entity", on_delete=models.CASCADE, db_index=True)
-    subentity = models.ForeignKey("entity.SubEntity", null=True, blank=True, on_delete=models.CASCADE, db_index=True)
-
-    environment = models.PositiveSmallIntegerField(choices=NICEnvironment.choices, default=NICEnvironment.SANDBOX)
-
-    # Depending on your gateway choice, you may store:
-    # - ASP credentials (GSP/ASP)
-    # - NIC direct credentials
-    # We'll keep generic fields. Secrets should ideally be encrypted at rest.
-    username = models.CharField(max_length=128)
-    password = models.CharField(max_length=256)
-    client_id = models.CharField(max_length=128, null=True, blank=True)
-    client_secret = models.CharField(max_length=256, null=True, blank=True)
-    gstin = models.CharField(max_length=15, db_index=True)
-
-    is_active = models.BooleanField(default=True, db_index=True)
-
-    created_at = models.DateTimeField(default=timezone.now, editable=False)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        db_table = "sales_nic_credential"
-        indexes = [
-            models.Index(fields=["entity", "subentity"], name="idx_sales_nic_scope"),
-            models.Index(fields=["gstin"], name="idx_sales_nic_gstin"),
-            models.Index(fields=["is_active"], name="idx_sales_nic_active"),
-        ]
-        constraints = [
-            models.UniqueConstraint(
-                fields=["entity", "subentity", "environment"],
-                name="uq_sales_nic_scope_env",
-            )
-        ]
-
-    def __str__(self) -> str:
-        return f"SalesNICCredential(entity_id={self.entity_id}, subentity_id={self.subentity_id}, env={self.environment})"
 
 
 class SalesComplianceActionLog(models.Model):
