@@ -22,6 +22,7 @@ from purchase.models.purchase_config import DEFAULT_POLICY_CONTROLS
 from purchase.models.purchase_ap import VendorAdvanceBalance, VendorSettlement
 from purchase.models.purchase_core import PurchaseInvoiceHeader, PurchaseInvoiceLine
 from purchase.models.purchase_addons import PurchaseChargeType
+from purchase.serializers.purchase_attachment import PurchaseAttachmentSerializer
 from purchase.models.purchase_statutory import PurchaseStatutoryChallan, PurchaseStatutoryReturn
 from purchase.serializers.purchase_invoice import PurchaseInvoiceHeaderSerializer
 from purchase.services.purchase_choice_service import PurchaseChoiceService
@@ -50,6 +51,10 @@ class PurchaseMetaBaseAPIView(ScopedEntitlementMixin, APIView):
     permission_classes = [IsAuthenticated]
     subscription_feature_code = SubscriptionLimitCodes.FEATURE_PURCHASE
     subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
+
+    def _attachments(self, header: PurchaseInvoiceHeader) -> list[dict]:
+        rows = header.attachments.order_by("-created_at", "-id")
+        return PurchaseAttachmentSerializer(rows, many=True).data
 
     def _get_cached_meta(
         self,
@@ -488,6 +493,7 @@ class PurchaseInvoiceDetailFormMetaAPIView(PurchaseMetaBaseAPIView):
                 "entityfinid_id": entityfinid_id,
                 "invoice_id": invoice_id,
                 "invoice": invoice_data,
+                "attachments": self._attachments(header),
                 "action_flags": self._invoice_action_flags(header),
                 "vendor": self._vendor_block(header),
                 "gst_tds_contract_summary": self._gst_tds_contract_summary(
@@ -691,6 +697,7 @@ class PurchaseInvoiceSummaryAPIView(PurchaseMetaBaseAPIView):
                     contract_ref=header.gst_tds_contract_ref,
                 ),
                 "action_flags": self._invoice_action_flags(header),
+                "attachments": self._attachments(header),
             }
         )
 
