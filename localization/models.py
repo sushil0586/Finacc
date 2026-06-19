@@ -24,6 +24,11 @@ class LocalizedStringKey(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        indexes = [
+            models.Index(fields=["is_active", "module"], name="ix_l10n_key_active_mod"),
+        ]
+
     def __str__(self):
         return self.key
 
@@ -52,6 +57,7 @@ class LocalizedStringValue(models.Model):
         ]
         indexes = [
             models.Index(fields=["language", "entity"]),
+            models.Index(fields=["language", "is_approved", "entity", "string_key"], name="ix_l10n_val_lang_appr"),
         ]
 
     def __str__(self):

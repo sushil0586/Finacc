@@ -39,6 +39,7 @@ class Gstr2bImportBatch(TrackingModel):
         ]
         indexes = [
             models.Index(fields=["entity", "entityfinid", "subentity", "period"], name="ix_gstr2b_batch_scope_period"),
+            models.Index(fields=["entity", "entityfinid", "subentity", "period", "id"], name="ix_gstr2b_batch_scope_id"),
         ]
 
     def __str__(self):
@@ -83,6 +84,8 @@ class Gstr2bImportRow(TrackingModel):
             models.Index(fields=["batch"], name="ix_gstr2b_row_batch"),
             models.Index(fields=["supplier_gstin", "supplier_invoice_number"], name="ix_gstr2b_row_gstin_invno"),
             models.Index(fields=["matched_purchase"], name="ix_gstr2b_row_matched_purchase"),
+            models.Index(fields=["batch", "match_status", "id"], name="ix_gstr2b_row_batch_stat"),
+            models.Index(fields=["batch", "supplier_gstin", "supplier_invoice_number"], name="ix_gstr2b_row_batch_match"),
         ]
         constraints = [
             models.CheckConstraint(

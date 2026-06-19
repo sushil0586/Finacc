@@ -16,6 +16,7 @@ class Country(TrackingModel):
         ]
         indexes = [
             models.Index(fields=['countrycode', 'countryname']),  # Index for search queries
+            models.Index(fields=['isactive', 'countryname'], name='ix_country_act_name'),
         ]
 
     def __str__(self):
@@ -41,6 +42,7 @@ class State(TrackingModel):
         ]
         indexes = [
             models.Index(fields=['statecode', 'statename']),  # Index for faster state filtering
+            models.Index(fields=['country', 'isactive', 'statename'], name='ix_state_country_act_name'),
         ]
 
     def __str__(self):
@@ -66,6 +68,7 @@ class District(TrackingModel):
         ]
         indexes = [
             models.Index(fields=['districtcode', 'districtname']),
+            models.Index(fields=['state', 'isactive', 'districtname'], name='ix_dist_state_act_name'),
         ]
 
     def __str__(self):
@@ -94,6 +97,8 @@ class City(TrackingModel):
         ]
         indexes = [
             models.Index(fields=['citycode', 'pincode']),
+            models.Index(fields=['distt', 'isactive', 'cityname'], name='ix_city_dist_act_name'),
+            models.Index(fields=['isactive', 'pincode'], name='ix_city_act_pincode'),
         ]
 
     def __str__(self):

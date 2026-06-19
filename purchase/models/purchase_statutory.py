@@ -110,6 +110,10 @@ class PurchaseStatutoryChallan(TrackingModel):
         indexes = [
             models.Index(fields=["entity", "entityfinid", "tax_type", "status"], name="ix_pur_stat_challan_scope"),
             models.Index(fields=["entity", "entityfinid", "challan_date"], name="ix_pur_stat_challan_date"),
+            models.Index(
+                fields=["entity", "entityfinid", "subentity", "tax_type", "status", "challan_date"],
+                name="ix_pur_stat_ch_scope_dt",
+            ),
         ]
 
     def __str__(self) -> str:
@@ -142,6 +146,7 @@ class PurchaseStatutoryChallanLine(TrackingModel):
         indexes = [
             models.Index(fields=["challan"], name="ix_pur_stcl_challan"),
             models.Index(fields=["header"], name="ix_pur_stcl_header"),
+            models.Index(fields=["header", "challan"], name="ix_pur_stcl_hdr_ch"),
         ]
 
     def __str__(self) -> str:
@@ -223,6 +228,12 @@ class PurchaseStatutoryReturn(TrackingModel):
         indexes = [
             models.Index(fields=["entity", "entityfinid", "tax_type", "status"], name="ix_pur_stat_return_scope"),
             models.Index(fields=["entity", "entityfinid", "period_from", "period_to"], name="ix_pur_stat_return_period"),
+            models.Index(
+                fields=["entity", "entityfinid", "subentity", "tax_type", "status", "period_to"],
+                name="ix_pur_stat_ret_scope_dt",
+            ),
+            models.Index(fields=["original_return", "revision_no"], name="ix_pur_stat_ret_orig_rev"),
+            models.Index(fields=["original_return", "status"], name="ix_pur_stat_ret_orig_stat"),
         ]
 
     def __str__(self) -> str:
@@ -282,6 +293,7 @@ class PurchaseStatutoryReturnLine(TrackingModel):
         indexes = [
             models.Index(fields=["filing"], name="ix_pur_stat_return_line_filing"),
             models.Index(fields=["header"], name="ix_pur_stat_return_line_header"),
+            models.Index(fields=["challan", "header"], name="ix_pur_stat_rl_ch_hdr"),
         ]
 
     def __str__(self) -> str:

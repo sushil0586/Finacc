@@ -99,6 +99,9 @@ class VoucherHeader(TrackingModel):
             models.Index(fields=["entity", "entityfinid", "voucher_date"], name="ix_voucher_ent_fin_date"),
             models.Index(fields=["entity", "entityfinid", "voucher_type"], name="ix_voucher_ent_fin_type"),
             models.Index(fields=["entity", "entityfinid", "status"], name="ix_voucher_ent_fin_status"),
+            models.Index(fields=["entity", "entityfinid", "subentity", "voucher_date"], name="ix_vch_entfin_sub_dt"),
+            models.Index(fields=["entity", "entityfinid", "subentity", "status", "voucher_date"], name="ix_vch_sub_stat_dt"),
+            models.Index(fields=["entity", "entityfinid", "subentity", "voucher_type", "voucher_date"], name="ix_vch_sub_type_dt"),
         ]
 
     def __str__(self):

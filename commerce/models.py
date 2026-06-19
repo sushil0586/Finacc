@@ -37,6 +37,9 @@ class CommercePromotion(models.Model):
                 name="uq_commerce_promotion_root_code",
             ),
         ]
+        indexes = [
+            models.Index(fields=["entity", "subentity", "is_active", "code"], name="ix_commerce_promo_scope"),
+        ]
 
     def __str__(self) -> str:
         return f"{self.code} - {self.name}"
@@ -69,4 +72,3 @@ class CommercePromotionSlab(models.Model):
         constraints = [
             models.UniqueConstraint(fields=["promotion", "sequence_no"], name="uq_commerce_promotion_slab_sequence"),
         ]
-

@@ -194,6 +194,8 @@ class Entity(TrackingModel):
             models.Index(fields=["entityname"]),
             models.Index(fields=["legalname"]),
             models.Index(fields=["organization_status"]),
+            models.Index(fields=["isactive", "entityname"], name="ix_entity_act_name"),
+            models.Index(fields=["createdby", "isactive"], name="ix_entity_creator_act"),
         ]
 
     def save(self, *args, **kwargs):
@@ -544,6 +546,7 @@ class SubEntity(TrackingModel):
         indexes = [
             models.Index(fields=["entity", "subentityname"]),
             models.Index(fields=["entity", "subentity_code"]),
+            models.Index(fields=["entity", "isactive", "is_head_office", "subentityname"], name="ix_subent_act_head_nm"),
         ]
 
     def clean(self):
@@ -1026,6 +1029,7 @@ class EntityApprovalPolicy(TrackingModel):
             models.Index(fields=["entity", "subentity", "policy_key"]),
             models.Index(fields=["entity", "org_unit", "policy_key"]),
             models.Index(fields=["entity", "status"]),
+            models.Index(fields=["entity", "policy_key", "status", "subentity"], name="ix_ent_appr_pol_resolve"),
         ]
 
     def __str__(self):
@@ -1102,6 +1106,7 @@ class ApprovalRequest(TrackingModel):
             models.Index(fields=["entity", "status", "workflow_key"]),
             models.Index(fields=["content_type", "object_id"]),
             models.Index(fields=["entity", "subentity", "status"]),
+            models.Index(fields=["entity", "isactive", "workflow_key", "status", "updated_at"], name="ix_appr_req_entity_flow"),
         ]
 
     def __str__(self):
@@ -1145,6 +1150,7 @@ class ApprovalStep(TrackingModel):
         indexes = [
             models.Index(fields=["approval_request", "status"]),
             models.Index(fields=["approver_user", "status"]),
+            models.Index(fields=["approval_request", "status", "step_order"], name="ix_appr_step_req_status"),
         ]
 
     def __str__(self):
@@ -1252,6 +1258,7 @@ class NotificationPreference(TrackingModel):
         ]
         indexes = [
             models.Index(fields=["user", "entity", "event_code"]),
+            models.Index(fields=["user", "event_code", "entity"], name="ix_notif_pref_usr_evt"),
         ]
 
     def __str__(self):
@@ -1303,6 +1310,7 @@ class NotificationEvent(TrackingModel):
             models.Index(fields=["entity", "event_code", "created_at"]),
             models.Index(fields=["content_type", "object_id"]),
             models.Index(fields=["channel", "delivery_status", "created_at"]),
+            models.Index(fields=["entity", "subentity", "created_at"], name="ix_notif_evt_scope_dt"),
         ]
 
     def __str__(self):
@@ -1342,6 +1350,7 @@ class UserNotification(TrackingModel):
         indexes = [
             models.Index(fields=["user", "is_read", "created_at"]),
             models.Index(fields=["event", "user"]),
+            models.Index(fields=["user", "isactive", "is_read", "created_at"], name="ix_user_notif_active_rd"),
         ]
 
     def __str__(self):
@@ -1409,6 +1418,8 @@ class EntityFinancialYear(TrackingModel):
         indexes = [
             models.Index(fields=["entity", "isactive"]),
             models.Index(fields=["entity", "period_status"]),
+            models.Index(fields=["entity", "isactive", "finstartyear"], name="ix_entfy_act_start"),
+            models.Index(fields=["entity", "isactive", "is_year_closed", "finstartyear"], name="ix_entfy_act_closed"),
         ]
 
     def save(self, *args, **kwargs):

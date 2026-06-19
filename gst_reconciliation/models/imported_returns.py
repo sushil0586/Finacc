@@ -54,6 +54,10 @@ class GstImportedReturn(EntityScopedModel):
                 name="ix_gst_imp_scope_type_period",
             ),
             models.Index(
+                fields=["entity", "return_type", "return_period", "status", "created_at"],
+                name="ix_gst_imp_ent_type_st_ct",
+            ),
+            models.Index(
                 fields=["gst_registration_gstin", "return_type", "return_period"],
                 name="ix_gst_imp_gstin_type_period",
             ),
@@ -114,6 +118,10 @@ class GstImportedReturnRow(EntityScopedModel):
                 name="ix_gst_imp_row_match",
             ),
             models.Index(fields=["imported_return", "doc_type_code"], name="ix_gst_imp_row_doctype"),
+            models.Index(
+                fields=["imported_return", "counterparty_gstin_normalized", "row_no"],
+                name="ix_gst_imp_row_gstin_row",
+            ),
         ]
         constraints = [
             models.UniqueConstraint(fields=["imported_return", "row_no"], name="uq_gst_imp_row_return_row"),

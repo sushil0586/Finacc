@@ -146,6 +146,7 @@ class BankStatementLine(TrackingModel):
             Index(fields=["statement_import", "reconciliation_status"], name="ix_bank_stmt_line_reco"),
             Index(fields=["statement_import", "exception_status"], name="ix_bank_stmt_line_exc"),
             Index(fields=["txn_date", "reference_no"], name="ix_bank_stmt_line_txn_ref"),
+            Index(fields=["statement_import", "validation_status", "txn_date"], name="ix_bsl_stmt_val_txn"),
         ]
 
     def save(self, *args, **kwargs):
@@ -214,6 +215,7 @@ class BankReconciliationRun(TrackingModel):
         indexes = [
             Index(fields=["entity", "entityfin", "subentity", "bank_account"], name="ix_bank_reco_run_scope"),
             Index(fields=["entity", "status", "as_of_date"], name="ix_bank_reco_run_status"),
+            Index(fields=["statement_import", "created_at", "id"], name="ix_brr_stmt_latest"),
         ]
 
     def save(self, *args, **kwargs):
@@ -336,4 +338,5 @@ class BankReconciliationAuditLog(TrackingModel):
         indexes = [
             Index(fields=["run", "action"], name="ix_bank_reco_audit_run_action"),
             Index(fields=["statement_import", "action"], name="ix_br_audit_imp_act"),
+            Index(fields=["run", "created_at"], name="ix_bank_reco_audit_run_dt"),
         ]

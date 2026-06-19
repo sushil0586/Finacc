@@ -145,6 +145,7 @@ class AuthSession(TrackingModel):
             models.Index(fields=("user", "revoked_at")),
             models.Index(fields=("user", "expires_at")),
             models.Index(fields=("user", "last_used_at")),
+            models.Index(fields=("user", "revoked_at", "issued_at"), name="ix_auth_sess_user_rev_dt"),
         ]
 
     @property
@@ -229,6 +230,7 @@ class AuthOTP(TrackingModel):
         indexes = [
             models.Index(fields=("email", "purpose", "expires_at")),
             models.Index(fields=("user", "purpose", "consumed_at")),
+            models.Index(fields=("email", "purpose", "consumed_at", "created_at"), name="ix_auth_otp_email_act_dt"),
         ]
 
     @property

@@ -229,6 +229,8 @@ class Ledger(TrackingModel):
             models.Index(fields=["entity", "ledger_code"], name="ix_ledger_entity_code"),
             models.Index(fields=["entity", "name"], name="ix_ledger_entity_name"),
             models.Index(fields=["entity", "is_party"], name="ix_ledger_entity_party"),
+            models.Index(fields=["entity", "isactive", "name"], name="ix_ledger_ent_act_name"),
+            models.Index(fields=["entity", "accounthead"], name="ix_ledger_ent_head"),
         ]
 
 
@@ -335,6 +337,8 @@ class FinancialMasterRule(TrackingModel):
             models.Index(fields=["entity", "priority"], name="ix_finrule_ent_pri"),
             models.Index(fields=["template_code", "priority"], name="ix_finrule_tpl_pri"),
             models.Index(fields=["party_type", "priority"], name="ix_finrule_party_pri"),
+            models.Index(fields=["entity", "isactive", "priority"], name="ix_finrule_ent_actpri"),
+            models.Index(fields=["template_code", "isactive", "priority"], name="ix_finrule_tpl_actpri"),
         ]
 
 
@@ -393,6 +397,8 @@ class FinancialCodeSeries(TrackingModel):
             models.Index(fields=["entity", "priority"], name="ix_fincode_ent_pri"),
             models.Index(fields=["template_code", "priority"], name="ix_fincode_tpl_pri"),
             models.Index(fields=["party_type", "priority"], name="ix_fincode_party_pri"),
+            models.Index(fields=["entity", "isactive", "priority"], name="ix_fincode_ent_actpri"),
+            models.Index(fields=["template_code", "isactive", "priority"], name="ix_fincode_tpl_actpri"),
         ]
 
 
@@ -606,6 +612,9 @@ class account(TrackingModel):
         indexes = [
             models.Index(fields=["entity", "accountname"], name="ix_account_entity_name"),
             models.Index(fields=["entity", "isactive"], name="ix_account_entity_isactive"),
+            models.Index(fields=["entity", "isactive", "accountname"], name="ix_account_ent_act_name"),
+            models.Index(fields=["entity", "isactive", "ledger"], name="ix_account_ent_act_ledg"),
+            models.Index(fields=["entity", "accountname", "id"], name="ix_account_ent_name_id"),
         ]
         # PAN uniqueness is intentionally deferred to a later migration because
         # current data already contains duplicates that must be cleaned first.
@@ -790,6 +799,7 @@ class AccountAddress(TrackingModel):
         indexes = [
             models.Index(fields=["entity", "account"], name="ix_accaddr_ent_acc"),
             models.Index(fields=["account", "address_type"], name="ix_accaddr_acc_type"),
+            models.Index(fields=["account", "isprimary", "isactive"], name="ix_accaddr_acc_prm_act"),
         ]
 
     def clean(self):
@@ -881,6 +891,7 @@ class AccountCommercialProfile(TrackingModel):
         indexes = [
             models.Index(fields=["entity", "partytype"], name="ix_acccom_ent_party"),
             models.Index(fields=["entity", "currency"], name="ix_acccom_ent_curr"),
+            models.Index(fields=["entity", "partytype", "agent"], name="ix_acccom_ent_partyagt"),
         ]
 
 

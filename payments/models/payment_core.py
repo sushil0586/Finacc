@@ -135,6 +135,9 @@ class PaymentVoucherHeader(TrackingModel):
             models.Index(fields=["entity", "entityfinid", "paid_to"], name="ix_pay_ent_fin_vendor"),
             models.Index(fields=["entity", "entityfinid", "paid_to_ledger"], name="ix_pay_ent_fin_vendor_led"),
             models.Index(fields=["entity", "entityfinid", "status"], name="ix_pay_ent_fin_status"),
+            models.Index(fields=["entity", "entityfinid", "subentity", "voucher_date"], name="ix_pay_entfin_sub_dt"),
+            models.Index(fields=["entity", "entityfinid", "subentity", "status", "voucher_date"], name="ix_pay_sub_stat_dt"),
+            models.Index(fields=["entity", "entityfinid", "paid_to", "status", "voucher_date"], name="ix_pay_vend_stat_dt"),
         ]
 
     def __str__(self):
@@ -162,6 +165,7 @@ class PaymentVoucherAllocation(TrackingModel):
         indexes = [
             models.Index(fields=["payment_voucher"], name="ix_payment_alloc_voucher"),
             models.Index(fields=["open_item"], name="ix_payment_alloc_openitem"),
+            models.Index(fields=["open_item", "payment_voucher"], name="ix_pay_alloc_oi_pv"),
         ]
 
     def __str__(self):

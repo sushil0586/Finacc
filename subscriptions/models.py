@@ -344,6 +344,7 @@ class CustomerSubscription(TimeStampedModel, SoftDeleteModel):
             models.Index(fields=["customer_account", "status"]),
             models.Index(fields=["plan"]),
             models.Index(fields=["external_subscription_id"]),
+            models.Index(fields=["customer_account", "is_active", "ended_at", "status", "started_at"], name="ix_sub_acct_active_cur"),
         ]
         constraints = [
             models.UniqueConstraint(
@@ -470,6 +471,8 @@ class UserEntityAccess(TimeStampedModel, SoftDeleteModel):
             models.Index(fields=["user", "customer_account"]),
             models.Index(fields=["customer_account", "role"]),
             models.Index(fields=["expires_at"]),
+            models.Index(fields=["user", "customer_account", "is_active", "expires_at"], name="ix_user_acc_active_usr"),
+            models.Index(fields=["customer_account", "is_active", "expires_at"], name="ix_user_acc_active_acc"),
         ]
         constraints = [
             models.UniqueConstraint(

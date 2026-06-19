@@ -43,6 +43,7 @@ class UserReportPreference(TrackingModel):
         ]
         indexes = [
             models.Index(fields=("user", "entity", "report_code")),
+            models.Index(fields=("user", "entity", "isactive", "report_code"), name="ix_rpt_pref_active"),
         ]
 
     def __str__(self):
@@ -84,6 +85,7 @@ class ReportFreezeSnapshot(TrackingModel):
         ]
         indexes = [
             models.Index(fields=("report_code", "entity", "entityfinid", "subentity", "version")),
+            models.Index(fields=("report_code", "entity", "entityfinid", "subentity", "created_at"), name="ix_rpt_frz_latest"),
         ]
 
     def __str__(self):
@@ -141,6 +143,7 @@ class ReportFilingRun(TrackingModel):
         ordering = ("-created_at",)
         indexes = [
             models.Index(fields=("report_code", "entity", "entityfinid", "subentity", "status")),
+            models.Index(fields=("report_code", "entity", "entityfinid", "subentity", "created_at"), name="ix_rpt_filing_scope"),
         ]
 
     def __str__(self):

@@ -209,6 +209,8 @@ class Entry(models.Model):
         ]
         indexes = [
             Index(fields=["entity", "posting_date"], name="ix_entry_entity_postdate"),
+            Index(fields=["entity", "entityfin", "subentity", "posting_date"], name="ix_entry_scope_postdt"),
+            Index(fields=["entity", "status", "posting_date"], name="ix_entry_entity_statusdt"),
             Index(fields=["entity", "txn_type", "txn_id"], name="ix_entry_txn"),
             Index(fields=["entity", "voucher_no"], name="ix_entry_vno"),
             Index(fields=["status", "posted_at"], name="ix_entry_status_time"),
@@ -267,6 +269,10 @@ class JournalLine(models.Model):
             Index(fields=["entity", "txn_type", "txn_id"], name="ix_jl_locator"),
             Index(fields=["entity", "txn_type", "txn_id", "detail_id"], name="ix_jl_locator_line"),
             Index(fields=["entity", "posting_date"], name="ix_jl_entity_postdate"),
+            Index(fields=["entity", "entityfin", "subentity", "posting_date"], name="ix_jl_scope_postdt"),
+            Index(fields=["entity", "ledger", "posting_date"], name="ix_jl_ent_ledger_dt"),
+            Index(fields=["entity", "account", "posting_date"], name="ix_jl_ent_acct_dt"),
+            Index(fields=["entity", "accounthead", "posting_date"], name="ix_jl_ent_head_dt"),
             Index(fields=["account"], name="ix_jl_posting_account"),
             Index(fields=["ledger"], name="ix_jl_posting_ledger"),
             Index(fields=["accounthead"], name="ix_jl_head"),
@@ -368,9 +374,12 @@ class InventoryMove(models.Model):
         indexes = [
             Index(fields=["entity", "txn_type", "txn_id"], name="ix_im_locator"),
             Index(fields=["entity", "txn_type", "txn_id", "detail_id"], name="ix_im_locator_line"),
+            Index(fields=["entity", "entityfin", "subentity", "posting_date"], name="ix_im_scope_postdt"),
             Index(fields=["entity", "product", "posting_date"], name="ix_im_p_entity_product_date"),
             Index(fields=["posting_batch"], name="ix_im_batch"),
+            Index(fields=["entity", "location", "product", "posting_date"], name="ix_im_ent_loc_prod_dt"),
             Index(fields=["location", "product", "posting_date"], name="ix_im_loc_product_date"),
+            Index(fields=["entity", "location", "product", "batch_number"], name="ix_im_ent_loc_batch"),
             Index(fields=["product", "batch_number"], name="ix_im_product_batch"),
             Index(fields=["product", "expiry_date"], name="ix_im_product_expiry"),
         ]

@@ -36,6 +36,7 @@ class DocumentType(TrackingModel):
         ]
         indexes = [
             models.Index(fields=["module", "doc_key"], name="ix_doc_type_module_key"),
+            models.Index(fields=["module", "default_code", "is_active"], name="ix_doc_type_mod_code_act"),
         ]
 
     def __str__(self):
@@ -101,6 +102,7 @@ class DocumentNumberSeries(TrackingModel):
         indexes = [
             models.Index(fields=["entity", "entityfinid", "subentity"], name="ix_doc_series_scope"),
             models.Index(fields=["doc_type", "doc_code"], name="ix_doc_series_type_code"),
+            models.Index(fields=["entity", "entityfinid", "subentity", "doc_type", "doc_code", "is_active"], name="ix_doc_series_lookup"),
         ]
 
     def __str__(self):

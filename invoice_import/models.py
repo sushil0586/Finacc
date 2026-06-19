@@ -93,6 +93,7 @@ class ImportJob(TrackingModel):
     class Meta:
         indexes = [
             models.Index(fields=["entity", "module", "status"], name="ix_invimp_job_scope"),
+            models.Index(fields=["entity", "module", "created_at"], name="ix_invimp_job_recent"),
         ]
 
     def __str__(self) -> str:
@@ -122,6 +123,7 @@ class ImportRow(TrackingModel):
         indexes = [
             models.Index(fields=["job", "status"], name="ix_invimp_row_job_status"),
             models.Index(fields=["job", "group_key"], name="ix_invimp_row_job_group"),
+            models.Index(fields=["job", "status", "row_no"], name="ix_invimp_row_status_ord"),
         ]
         constraints = [
             models.UniqueConstraint(fields=["job", "row_no"], name="uq_invimp_row_job_rowno"),

@@ -220,6 +220,7 @@ class PurchaseAttachment(TrackingModel):
     class Meta:
         indexes = [
             models.Index(fields=["header"], name="ix_purchase_attachment_header"),
+            models.Index(fields=["header", "created_at"], name="ix_purchase_attach_hdr_dt"),
         ]
 
     def __str__(self):

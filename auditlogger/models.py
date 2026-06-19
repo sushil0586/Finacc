@@ -13,5 +13,11 @@ class AuditLog(models.Model):
     old_data = models.JSONField(null=True, blank=True)
     new_data = models.JSONField(null=True, blank=True)
 
+    class Meta:
+        indexes = [
+            models.Index(fields=["method", "timestamp"], name="ix_auditlog_method_ts"),
+            models.Index(fields=["user", "timestamp"], name="ix_auditlog_user_ts"),
+        ]
+
     def __str__(self):
         return f"{self.timestamp} - {self.user} - {self.action}"

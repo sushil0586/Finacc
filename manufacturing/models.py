@@ -47,6 +47,9 @@ class ManufacturingRoute(models.Model):
                 name="uq_mfg_route_root_code",
             ),
         ]
+        indexes = [
+            models.Index(fields=["entity", "subentity", "is_active", "code"], name="ix_mfg_route_scope_act_cd"),
+        ]
 
     def __str__(self) -> str:
         return f"{self.code} - {self.name}"
@@ -106,6 +109,7 @@ class ManufacturingBOM(models.Model):
         ]
         indexes = [
             models.Index(fields=["entity", "subentity", "finished_product"], name="ix_mfg_bom_scope_product"),
+            models.Index(fields=["entity", "subentity", "is_active", "code"], name="ix_mfg_bom_scope_act_cd"),
         ]
 
     def __str__(self) -> str:
@@ -237,6 +241,7 @@ class ManufacturingWorkOrder(models.Model):
         indexes = [
             models.Index(fields=["entity", "production_date"], name="ix_mfg_wo_entity_date"),
             models.Index(fields=["entity", "work_order_no"], name="ix_mfg_wo_entity_no"),
+            models.Index(fields=["entity", "entityfin", "subentity", "status", "production_date"], name="ix_mfg_wo_scope_stat_dt"),
         ]
 
     def __str__(self) -> str:

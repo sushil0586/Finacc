@@ -57,6 +57,8 @@ class CustomerBillOpenItem(TrackingModel):
             models.Index(fields=["entity", "entityfinid", "customer_ledger", "is_open"], name="ix_sales_ar_open_led_scope"),
             models.Index(fields=["entity", "entityfinid", "bill_date"], name="ix_sales_ar_open_billdt"),
             models.Index(fields=["entity", "entityfinid", "due_date"], name="ix_sales_ar_open_duedt"),
+            models.Index(fields=["entity", "entityfinid", "customer", "is_open", "due_date"], name="ix_sales_ar_cst_due"),
+            models.Index(fields=["entity", "entityfinid", "subentity", "is_open", "due_date"], name="ix_sales_ar_sub_due"),
         ]
 
     def __str__(self) -> str:
@@ -107,6 +109,7 @@ class CustomerSettlement(TrackingModel):
             models.Index(fields=["entity", "entityfinid", "customer", "status"], name="ix_sales_ar_settle_scope"),
             models.Index(fields=["entity", "entityfinid", "customer_ledger", "status"], name="ix_sales_ar_settle_led_scope"),
             models.Index(fields=["entity", "entityfinid", "settlement_date"], name="ix_sales_ar_settle_date"),
+            models.Index(fields=["entity", "entityfinid", "customer", "status", "settlement_date"], name="ix_sales_ar_stldt"),
         ]
 
     def __str__(self) -> str:
@@ -150,6 +153,7 @@ class CustomerAdvanceBalance(TrackingModel):
             models.Index(fields=["entity", "entityfinid", "customer", "is_open"], name="ix_sales_ar_adv_scope"),
             models.Index(fields=["entity", "entityfinid", "customer_ledger", "is_open"], name="ix_sales_ar_adv_led_scope"),
             models.Index(fields=["entity", "entityfinid", "credit_date"], name="ix_sales_ar_adv_creditdt"),
+            models.Index(fields=["entity", "entityfinid", "customer", "is_open", "credit_date"], name="ix_sales_ar_advdt"),
         ]
 
     def __str__(self) -> str:
@@ -171,6 +175,7 @@ class CustomerSettlementLine(TrackingModel):
         indexes = [
             models.Index(fields=["settlement"], name="ix_sales_stl_settle"),
             models.Index(fields=["open_item"], name="ix_sales_stl_open"),
+            models.Index(fields=["open_item", "settlement"], name="ix_sales_stl_oi_set"),
         ]
 
     def __str__(self) -> str:

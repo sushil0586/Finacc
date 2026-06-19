@@ -98,6 +98,9 @@ class ProductCategory(EntityScopedModel):
                 name='uq_productcategory_entity_name'
             )
         ]
+        indexes = [
+            models.Index(fields=["entity", "isactive", "pcategoryname"], name="ix_cat_pcat_lookup"),
+        ]
         ordering = ['pcategoryname']
 
     def __str__(self):
@@ -114,6 +117,9 @@ class Brand(EntityScopedModel):
                 fields=['entity', 'name'],
                 name='uq_brand_entity_name'
             )
+        ]
+        indexes = [
+            models.Index(fields=["entity", "isactive", "name"], name="ix_cat_brand_lookup"),
         ]
         ordering = ['name']
 
@@ -149,6 +155,9 @@ class UnitOfMeasure(EntityScopedModel):
                 condition=Q(uqc__isnull=False) & ~Q(uqc=""),
                 name='uq_uom_entity_uqc'
             ),
+        ]
+        indexes = [
+            models.Index(fields=["entity", "isactive", "code"], name="ix_cat_uom_lookup"),
         ]
         ordering = ['code']
 
@@ -296,6 +305,9 @@ class Product(EntityScopedModel):
                 name='uq_product_entity_sku'
             )
         ]
+        indexes = [
+            models.Index(fields=["entity", "isactive", "productname", "id"], name="ix_cat_prod_list"),
+        ]
 
     def __str__(self):
         return f"{self.productname} ({self.sku})"
@@ -345,6 +357,9 @@ class HsnSac(EntityScopedModel):
                 fields=['entity', 'code'],
                 name='uq_hsnsac_entity_code'
             )
+        ]
+        indexes = [
+            models.Index(fields=["entity", "isactive", "code"], name="ix_cat_hsn_lookup"),
         ]
 
     def __str__(self):
@@ -654,6 +669,9 @@ class ProductBarcode(TimeStampedModel):
                 name='uq_product_one_primary_barcode'
             ),
         ]
+        indexes = [
+            models.Index(fields=["product", "-isprimary", "id"], name="ix_cat_barcode_prod"),
+        ]
 
     def __str__(self):
         return self.barcode or f"Barcode for {self.product_id}"
@@ -866,6 +884,9 @@ class BarcodeLabelTemplate(EntityScopedModel):
                 name="uq_barcode_label_template_one_default_subentity",
             ),
         ]
+        indexes = [
+            models.Index(fields=["entity", "subentity", "-isdefault", "name"], name="ix_cat_lbl_scope"),
+        ]
         ordering = ["-isdefault", "name"]
 
     def __str__(self):
@@ -1017,6 +1038,9 @@ class ProductAttribute(EntityScopedModel):
                 name='uq_productattribute_entity_name'
             )
         ]
+        indexes = [
+            models.Index(fields=["entity", "isactive", "name"], name="ix_cat_attr_lookup"),
+        ]
 
     def __str__(self):
         return self.name
@@ -1075,6 +1099,9 @@ class ProductImage(TimeStampedModel):
                 name='uq_product_one_primary_image'
             )
         ]
+        indexes = [
+            models.Index(fields=["product", "-is_primary", "id"], name="ix_cat_img_prod"),
+        ]
 
     def __str__(self):
         return f"Image for {self.product}"
@@ -1118,6 +1145,9 @@ class OpeningStockByLocation(TimeStampedModel):
                 fields=['entity', 'product', 'branch', 'godown', 'as_of_date'],
                 name='uq_openingstock_entity_product_branch_godown_date'
             )
+        ]
+        indexes = [
+            models.Index(fields=["product", "-as_of_date", "id"], name="ix_cat_open_prod"),
         ]
 
     def __str__(self):
@@ -1175,6 +1205,9 @@ class PriceList(EntityScopedModel):
                 condition=Q(isdefault=True),
                 name='uq_pricelist_one_default_per_entity'
             ),
+        ]
+        indexes = [
+            models.Index(fields=["entity", "isactive", "name"], name="ix_cat_prlist_lkp"),
         ]
         ordering = ['name']
 

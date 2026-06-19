@@ -78,6 +78,7 @@ class BankReconciliationSession(TrackingModel):
             models.Index(fields=["entity", "status"]),
             models.Index(fields=["entity", "entityfin", "bank_account"]),
             models.Index(fields=["date_from", "date_to"]),
+            models.Index(fields=["entity", "entityfin", "subentity", "bank_account", "status", "created_at"], name="ix_brs_scope_bank_stat_ct"),
         ]
 
     def save(self, *args, **kwargs):
@@ -114,6 +115,7 @@ class BankStatementBatch(TrackingModel):
         indexes = [
             models.Index(fields=["session", "source_format"]),
             models.Index(fields=["batch_code"]),
+            models.Index(fields=["session", "created_at"], name="ix_bsb_sess_created"),
         ]
 
     def save(self, *args, **kwargs):
@@ -348,6 +350,7 @@ class BankReconciliationExceptionItem(TrackingModel):
         ordering = ("-created_at", "-id")
         indexes = [
             models.Index(fields=["session", "exception_type", "status"]),
+            models.Index(fields=["session", "status", "created_at"], name="ix_brex_sess_stat_ct"),
         ]
 
     def save(self, *args, **kwargs):
@@ -368,6 +371,7 @@ class BankReconciliationAuditLog(TrackingModel):
         ordering = ("-created_at", "-id")
         indexes = [
             models.Index(fields=["session", "action"]),
+            models.Index(fields=["session", "created_at"], name="ix_bral_sess_created"),
         ]
 
     def __str__(self):

@@ -38,6 +38,7 @@ class InventoryTransfer(models.Model):
         indexes = [
             models.Index(fields=["entity", "transfer_date"], name="ix_inv_transfer_entity_date"),
             models.Index(fields=["entity", "transfer_no"], name="ix_inv_transfer_entity_no"),
+            models.Index(fields=["entity", "entityfin", "subentity", "status", "transfer_date"], name="ix_inv_transfer_scope"),
         ]
 
     def __str__(self) -> str:
@@ -93,6 +94,7 @@ class InventoryAdjustment(models.Model):
         indexes = [
             models.Index(fields=["entity", "adjustment_date"], name="ix_inv_adj_entity_date"),
             models.Index(fields=["entity", "adjustment_no"], name="ix_inv_adj_entity_no"),
+            models.Index(fields=["entity", "entityfin", "subentity", "status", "adjustment_date"], name="ix_inv_adj_scope"),
         ]
 
     def __str__(self) -> str:

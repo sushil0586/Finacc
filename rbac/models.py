@@ -445,6 +445,7 @@ class RBACAuditLog(models.Model):
             models.Index(fields=("entity", "object_type")),
             models.Index(fields=("object_type", "object_id")),
             models.Index(fields=("action", "created_at")),
+            models.Index(fields=("entity", "created_at"), name="ix_rbac_audit_entity_dt"),
         ]
 
     def __str__(self):

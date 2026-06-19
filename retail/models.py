@@ -122,6 +122,7 @@ class RetailTicket(models.Model):
         indexes = [
             models.Index(fields=["entity", "bill_date"], name="ix_retail_ticket_entity_date"),
             models.Index(fields=["entity", "ticket_no"], name="ix_retail_ticket_entity_no"),
+            models.Index(fields=["entity", "subentity", "bill_date"], name="ix_rtl_tkt_scope_dt"),
         ]
 
     def __str__(self) -> str:
@@ -158,6 +159,7 @@ class RetailSession(models.Model):
         ordering = ["-opened_at", "-id"]
         indexes = [
             models.Index(fields=["entity", "session_date"], name="ix_retail_session_entity_date"),
+            models.Index(fields=["entity", "subentity", "location", "status", "opened_at"], name="ix_rtl_sess_scope_stat_ot"),
         ]
 
     def __str__(self) -> str:
@@ -197,6 +199,7 @@ class RetailCloseBatch(models.Model):
         ordering = ["-created_at", "-id"]
         indexes = [
             models.Index(fields=["entity", "session_date"], name="ix_rtl_clsbch_ent_dt"),
+            models.Index(fields=["entity", "subentity", "location", "created_at"], name="ix_rtl_clsbch_scope_ct"),
         ]
 
     def __str__(self) -> str:

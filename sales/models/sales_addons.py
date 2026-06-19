@@ -201,6 +201,8 @@ class SalesAdvanceAdjustment(TrackingModel):
         indexes = [
             models.Index(fields=["entity", "entityfinid", "subentity", "voucher_date"], name="ix_sales_adv_scope_date"),
             models.Index(fields=["entity", "entityfinid", "is_amendment"], name="ix_sales_adv_scope_amd"),
+            models.Index(fields=["entity", "entityfinid", "subentity", "is_amendment", "entry_type", "voucher_date"], name="ix_sales_adv_typ_date"),
+            models.Index(fields=["entity", "entityfinid", "subentity", "entry_type", "voucher_number"], name="ix_sales_adv_typ_vno"),
         ]
         constraints = [
             models.CheckConstraint(
@@ -303,6 +305,9 @@ class SalesEcommerceSupply(TrackingModel):
             models.Index(fields=["entity", "entityfinid", "subentity", "operator_gstin"], name="ix_sales_eco_scope_op"),
             models.Index(fields=["entity", "entityfinid", "supplier_eco_gstin"], name="ix_sales_eco_scope_sup"),
             models.Index(fields=["entity", "entityfinid", "is_amendment"], name="ix_sales_eco_scope_amd"),
+            models.Index(fields=["entity", "entityfinid", "subentity", "is_amendment", "invoice_date"], name="ix_sales_eco_amd_date"),
+            models.Index(fields=["entity", "entityfinid", "subentity", "is_amendment", "supplier_eco_gstin"], name="ix_sales_eco_amd_sup"),
+            models.Index(fields=["entity", "entityfinid", "subentity", "is_amendment", "operator_gstin", "supply_split"], name="ix_sales_eco_amd_opsp"),
         ]
         constraints = [
             models.CheckConstraint(

@@ -20,6 +20,11 @@ class ErrorLog(models.Model):
     module = models.CharField(max_length=100, null=True, blank=True)
     view_name = models.CharField(max_length=200, null=True, blank=True)
 
+    class Meta:
+        indexes = [
+            models.Index(fields=["method", "timestamp"], name="ix_errorlog_method_ts"),
+            models.Index(fields=["user", "timestamp"], name="ix_errorlog_user_ts"),
+        ]
+
     def __str__(self):
         return f"{self.timestamp} - {self.message[:50]}"
-

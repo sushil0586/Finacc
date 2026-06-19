@@ -316,8 +316,11 @@ class PurchaseInvoiceHeader(models.Model):
             models.Index(fields=["entity", "entityfinid", "vendor_ledger", "due_date"], name="ix_pur_ap_vldue"),
             models.Index(fields=["entity", "entityfinid", "subentity", "bill_date"], name="ix_pur_hdr_billdt"),
             models.Index(fields=["entity", "entityfinid", "subentity", "status"], name="ix_pur_hdr_status"),
+            models.Index(fields=["entity", "entityfinid", "subentity", "status", "bill_date"], name="ix_pur_hdr_statdt"),
             models.Index(fields=["entity", "entityfinid", "subentity", "doc_type"], name="ix_pur_hdr_doctyp"),
             models.Index(fields=["entity", "entityfinid", "subentity", "doc_type", "doc_code", "doc_no"], name="ix_pur_hdr_nav"),
+            models.Index(fields=["entity", "entityfinid", "vendor", "status", "bill_date"], name="ix_pur_vend_statdt"),
+            models.Index(fields=["entity", "vendor", "supplier_invoice_date", "supplier_invoice_number"], name="ix_pur_vendor_supinv"),
         ]
 
     def __str__(self):

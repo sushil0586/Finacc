@@ -135,6 +135,9 @@ class ReceiptVoucherHeader(TrackingModel):
             models.Index(fields=["entity", "entityfinid", "received_from"], name="ix_receipt_ent_fin_customer"),
             models.Index(fields=["entity", "entityfinid", "received_from_ledger"], name="ix_receipt_ent_fin_cust_led"),
             models.Index(fields=["entity", "entityfinid", "status"], name="ix_receipt_ent_fin_status"),
+            models.Index(fields=["entity", "entityfinid", "subentity", "voucher_date"], name="ix_rec_entfin_sub_dt"),
+            models.Index(fields=["entity", "entityfinid", "subentity", "status", "voucher_date"], name="ix_rec_sub_stat_dt"),
+            models.Index(fields=["entity", "entityfinid", "received_from", "status", "voucher_date"], name="ix_rec_cust_stat_dt"),
         ]
 
     def __str__(self):
@@ -162,6 +165,7 @@ class ReceiptVoucherAllocation(TrackingModel):
         indexes = [
             models.Index(fields=["receipt_voucher"], name="ix_receipt_alloc_voucher"),
             models.Index(fields=["open_item"], name="ix_receipt_alloc_openitem"),
+            models.Index(fields=["open_item", "receipt_voucher"], name="ix_rec_alloc_oi_rv"),
         ]
 
     def __str__(self):

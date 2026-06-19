@@ -150,6 +150,7 @@ class AssetCategory(TrackingModel):
         indexes = [
             models.Index(fields=["entity", "subentity", "code"], name="ix_asset_category_scope_code"),
             models.Index(fields=["entity", "subentity", "nature"], name="ix_asset_category_scope_nature"),
+            models.Index(fields=["entity", "is_active", "name"], name="ix_asset_cat_ent_act_nm"),
         ]
 
     def __str__(self) -> str:
@@ -293,6 +294,7 @@ class FixedAsset(TrackingModel):
             models.Index(fields=["entity", "category", "status"], name="ix_fa_ent_cat_stat"),
             models.Index(fields=["entity", "capitalization_date"], name="ix_fa_ent_capdate"),
             models.Index(fields=["entity", "depreciation_start_date"], name="ix_fa_ent_depstart"),
+            models.Index(fields=["entity", "subentity", "is_active", "id"], name="ix_fa_ent_sub_act_id"),
         ]
 
     def __str__(self) -> str:
@@ -330,6 +332,7 @@ class DepreciationRun(TrackingModel):
         ]
         indexes = [
             models.Index(fields=["entity", "entityfinid", "subentity", "posting_date"], name="ix_fa_dep_scope_dt"),
+            models.Index(fields=["entity", "entityfinid", "subentity", "status", "period_to"], name="ix_fa_dep_scope_stat_to"),
         ]
 
     def __str__(self) -> str:

@@ -97,6 +97,10 @@ class GstReconciliationRun(EntityScopedModel):
                 fields=["entity", "entityfinid", "subentity", "reconciliation_type", "return_period"],
                 name="ix_gst_run_scope_type_period",
             ),
+            models.Index(
+                fields=["entity", "reconciliation_type", "return_period", "status", "created_at"],
+                name="ix_gst_run_ent_type_st_ct",
+            ),
             models.Index(fields=["status", "reconciliation_type", "return_period"], name="ix_gst_run_status_type_period"),
             models.Index(
                 fields=["gst_registration_gstin", "reconciliation_type", "return_period"],
@@ -258,6 +262,14 @@ class GstReconciliationItem(EntityScopedModel):
             models.Index(
                 fields=["run", "match_confidence_score"],
                 name="ix_gst_item_run_conf",
+            ),
+            models.Index(
+                fields=["run", "resolution_status", "updated_at"],
+                name="ix_gst_item_run_res_upd",
+            ),
+            models.Index(
+                fields=["run", "match_status", "updated_at"],
+                name="ix_gst_item_run_stat_upd",
             ),
         ]
         constraints = [

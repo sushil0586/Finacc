@@ -307,12 +307,17 @@ class SalesInvoiceHeader(EntityScopedModel):
             models.Index(fields=["entity", "entityfinid", "subentity", "posting_date"], name="ix_sales_hdr_postdt"),
             models.Index(fields=["entity", "entityfinid", "subentity", "due_date"], name="ix_sales_hdr_duedt"),
             models.Index(fields=["entity", "entityfinid", "subentity", "doc_type", "doc_code", "doc_no"], name="ix_sales_hdr_nav"),
+            models.Index(fields=["entity", "entityfinid", "subentity", "bill_date", "doc_code", "doc_no"], name="ix_sales_hdr_bdt_nav"),
             models.Index(fields=["entity", "entityfinid", "subentity", "status"], name="ix_sales_hdr_status"),
+            models.Index(fields=["entity", "entityfinid", "subentity", "status", "bill_date"], name="ix_sales_hdr_stdt"),
             models.Index(fields=["entity", "entityfinid", "subentity", "customer"], name="ix_sales_hdr_customer"),
             models.Index(fields=["entity", "entityfinid", "subentity", "customer_ledger"], name="ix_sales_hdr_cust_ledger"),
+            models.Index(fields=["entity", "entityfinid", "customer", "status", "bill_date"], name="ix_sales_cst_stdt"),
             models.Index(fields=["entity", "entityfinid", "subentity", "gst_compliance_mode"], name="ix_sales_hdr_gstmode"),
             models.Index(fields=["entity", "entityfinid", "subentity", "original_invoice"], name="ix_sales_hdr_original"),
             models.Index(fields=["entity", "entityfinid", "subentity", "settlement_status"], name="ix_sales_hdr_settle"),
+            models.Index(fields=["entity", "entityfinid", "subentity", "supply_category", "bill_date"], name="ix_sales_hdr_sup_bdt"),
+            models.Index(fields=["entity", "entityfinid", "subentity", "place_of_supply_state_code", "bill_date"], name="ix_sales_hdr_pos_bdt"),
         ]
 
     def __str__(self) -> str:
@@ -416,6 +421,7 @@ class SalesInvoiceLine(EntityScopedModel):
         indexes = [
             models.Index(fields=["header"], name="ix_sales_line_hdr"),
             models.Index(fields=["header", "is_service"], name="ix_sales_line_hdr_srv"),
+            models.Index(fields=["header", "hsn_sac_code", "is_service", "gst_rate"], name="ix_sales_line_hdr_hsn"),
             models.Index(fields=["entity", "entityfinid", "subentity", "product"], name="ix_sales_line_product"),
             models.Index(fields=["entity", "entityfinid", "subentity", "hsn_sac_code"], name="ix_sales_line_hsn"),
             models.Index(fields=["product", "batch_number"], name="ix_sales_line_product_batch"),
@@ -467,6 +473,7 @@ class SalesTaxSummary(EntityScopedModel):
         ]
         indexes = [
             models.Index(fields=["header"], name="ix_sales_taxsum_hdr"),
+            models.Index(fields=["header", "gst_rate", "taxability", "hsn_sac_code"], name="ix_sales_taxsum_bucket"),
             models.Index(fields=["entity", "entityfinid", "subentity", "gst_rate"], name="ix_sales_taxsum_rate"),
             models.Index(fields=["entity", "entityfinid", "subentity", "hsn_sac_code"], name="ix_sales_taxsum_hsn"),
         ]
