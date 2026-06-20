@@ -42,9 +42,10 @@ class PurchaseInvoiceNavService:
     so doc sequence stays contiguous regardless of current screen mode.
     """
 
-    # Navigation should move across confirmed, posted, and cancelled invoices.
-    # Cancelled invoices are included only when they are numbered.
+    # Navigation should move across saved vouchers in sequence, including the
+    # latest draft. Cancelled invoices are included only when they are numbered.
     DEFAULT_ALLOWED_STATUSES = (
+        int(Status.DRAFT),
         int(Status.CONFIRMED),
         int(Status.POSTED),
         int(Status.CANCELLED),
@@ -181,6 +182,13 @@ class PurchaseInvoiceNavService:
                     )
                 )
             ]
+            unnumbered_forward_candidates = [
+                row for row in rows
+                if (
+                    PurchaseInvoiceNavService._sequence_no(row) <= 0
+                    and int(getattr(row, "id", 0) or 0) > int(getattr(instance, "id", 0) or 0)
+                )
+            ]
             prev_obj = max(
                 prev_candidates,
                 key=lambda row: (
@@ -197,6 +205,12 @@ class PurchaseInvoiceNavService:
                 ),
                 default=None,
             )
+            if next_obj is None:
+                next_obj = min(
+                    unnumbered_forward_candidates,
+                    key=lambda row: int(getattr(row, "id", 0) or 0),
+                    default=None,
+                )
         else:
             # Fallback for unnumbered current record (e.g., draft opened directly).
             prev_obj = all_code_qs.filter(id__lt=instance.id).order_by("-id").first()

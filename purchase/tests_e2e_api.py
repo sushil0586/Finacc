@@ -987,6 +987,29 @@ class PurchaseApiEndToEndTests(APITestCase):
         self.assertEqual(Decimal(str(body["total_igst"])), Decimal("360.00"))
         self.assertEqual(Decimal(str(body["grand_total"])), Decimal("2360.00"))
 
+    def test_patch_can_replace_deleted_line_with_new_line_reusing_same_line_no(self):
+        created = self._create_invoice(supplier_invoice_number="INV-REPLACE-LINE")
+        invoice_id = created["id"]
+
+        replacement_line = self._goods_line_payload(qty="12.0000", rate="150.00")
+        replacement_line["line_no"] = created["lines"][0]["line_no"]
+        replacement_line["id"] = None
+        replacement_line["product_desc"] = "Replacement goods"
+
+        patch_resp = self.client.patch(
+            f"/api/purchase/purchase-invoices/{invoice_id}/{self._scope_qs()}",
+            {"lines": [replacement_line]},
+            format="json",
+        )
+        self.assertEqual(patch_resp.status_code, status.HTTP_200_OK, patch_resp.json())
+
+        lines = list(PurchaseInvoiceLine.objects.filter(header_id=invoice_id).order_by("line_no", "id"))
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0].line_no, 1)
+        self.assertEqual(lines[0].product_desc, "Replacement goods")
+        self.assertEqual(lines[0].qty, Decimal("12.0000"))
+        self.assertEqual(lines[0].rate, Decimal("150.00"))
+
     def test_confirmed_purchase_invoice_can_be_edited_when_policy_allows(self):
         created = self._create_invoice(supplier_invoice_number="INV-CONF-EDIT")
         invoice_id = created["id"]
@@ -3136,9 +3159,9 @@ class PurchaseApiEndToEndTests(APITestCase):
         scope = self._scope_qs()
 
         upload = SimpleUploadedFile(
-            "supporting.txt",
+            "supporting.pdf",
             b"purchase attachment payload",
-            content_type="text/plain",
+            content_type="application/pdf",
         )
         upload_resp = self.client.post(
             f"/api/purchase/purchase-invoices/{invoice_id}/attachments/{scope}",
@@ -3162,6 +3185,25 @@ class PurchaseApiEndToEndTests(APITestCase):
             f"/api/purchase/purchase-invoices/{invoice_id}/attachments/{attachment_id}/{scope}"
         )
         self.assertEqual(delete_resp.status_code, status.HTTP_200_OK, delete_resp.json())
+
+    def test_attachment_upload_rejects_unsupported_text_file(self):
+        created = self._create_invoice(supplier_invoice_number="INV-ATTACH-BAD")
+        invoice_id = created["id"]
+        scope = self._scope_qs()
+
+        upload = SimpleUploadedFile(
+            "supporting.txt",
+            b"purchase attachment payload",
+            content_type="text/plain",
+        )
+        upload_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{invoice_id}/attachments/{scope}",
+            {"attachments": [upload]},
+            format="multipart",
+        )
+
+        self.assertEqual(upload_resp.status_code, status.HTTP_400_BAD_REQUEST, upload_resp.json())
+        self.assertEqual(upload_resp.json()["detail"], "supporting.txt is not a supported format.")
 
     def test_gstr2b_batch_import_match_and_review(self):
         created = self._create_invoice(supplier_invoice_number="G2B-INV-1")

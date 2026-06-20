@@ -1916,6 +1916,27 @@ class SalesInvoiceService:
         if dupes:
             raise ValidationError({"lines": [f"Duplicate line_no in payload: {sorted(dupes)}"]})
 
+        retained_ids = set()
+        for row in incoming_lines:
+            row_id = int(row.get("id") or 0)
+            row_ln = int(row.get("line_no") or 0)
+            if row_id and row_id in existing_by_id:
+                retained_ids.add(row_id)
+                continue
+            if row_id == 0 and row_ln > 0 and row_ln in existing_by_lineno:
+                retained_ids.add(existing_by_lineno[row_ln])
+
+        if allow_delete:
+            # Delete rows dropped from the payload before inserts so newly created
+            # lines can reuse the freed line_no within the same invoice.
+            to_delete = [lid for lid in existing_by_id.keys() if lid not in retained_ids]
+            if to_delete:
+                SalesInvoiceLine.objects.filter(header=header, id__in=to_delete).delete()
+                existing_rows = [r for r in existing_rows if int(r["id"]) not in to_delete]
+                existing_by_id = {int(r["id"]): int(r["line_no"] or 0) for r in existing_rows}
+                existing_by_lineno = {int(r["line_no"]): int(r["id"]) for r in existing_rows if r["line_no"]}
+                max_ln = int(header.lines.aggregate(m=Max("line_no")).get("m") or 0)
+
         seen_ids = set()
 
         for row in incoming_lines:
@@ -1991,10 +2012,7 @@ class SalesInvoiceService:
         # --------------------------
         # DELETE missing rows
         # --------------------------
-        if allow_delete:
-            to_delete = [lid for lid in existing_by_id.keys() if lid not in seen_ids]
-            if to_delete:
-                SalesInvoiceLine.objects.filter(header=header, id__in=to_delete).delete()
+        # Rows omitted from the payload were already deleted before inserts.
 
     @staticmethod
     def apply_line_inputs(line: SalesInvoiceLine, row: dict) -> None:

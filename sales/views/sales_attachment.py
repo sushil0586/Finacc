@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import mimetypes
-from typing import List
 
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
@@ -11,6 +10,7 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from helpers.utils.attachment_validation import validate_attachment_uploads
 from sales.models import SalesAttachment, SalesInvoiceHeader
 from sales.serializers.sales_attachment import SalesAttachmentSerializer
 
@@ -40,23 +40,6 @@ class SalesAttachmentBaseAPIView(APIView):
             qs = qs.filter(subentity_id=subentity_id)
         return get_object_or_404(qs, pk=pk)
 
-    def _validate_files(self, files: List) -> None:
-        max_size = 15 * 1024 * 1024
-        allowed_prefixes = ("application/pdf", "image/", "text/")
-        allowed_suffixes = (".pdf", ".png", ".jpg", ".jpeg", ".webp", ".txt", ".csv", ".xls", ".xlsx")
-        for file_obj in files:
-            if not file_obj:
-                continue
-            if getattr(file_obj, "size", 0) > max_size:
-                raise ValidationError({"detail": f"{file_obj.name} exceeds the 15 MB attachment limit."})
-            content_type = str(getattr(file_obj, "content_type", "") or "").lower()
-            name = str(getattr(file_obj, "name", "") or "").lower()
-            if content_type:
-                if not any(content_type.startswith(prefix) for prefix in allowed_prefixes):
-                    raise ValidationError({"detail": f"{file_obj.name} has unsupported content type {content_type}."})
-            elif not name.endswith(allowed_suffixes):
-                raise ValidationError({"detail": f"{file_obj.name} has unsupported file type."})
-
 
 class SalesInvoiceAttachmentListCreateAPIView(SalesAttachmentBaseAPIView):
     def get(self, request, pk: int):
@@ -69,7 +52,7 @@ class SalesInvoiceAttachmentListCreateAPIView(SalesAttachmentBaseAPIView):
         files = request.FILES.getlist("attachments") or request.FILES.getlist("file")
         if not files:
             raise ValidationError({"detail": "At least one attachment file is required."})
-        self._validate_files(files)
+        validate_attachment_uploads(files)
         created = []
         for file_obj in files:
             created.append(

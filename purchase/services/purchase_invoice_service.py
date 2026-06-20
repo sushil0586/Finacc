@@ -1759,7 +1759,18 @@ class PurchaseInvoiceService:
     @staticmethod
     def upsert_lines(header: PurchaseInvoiceHeader, lines_data: List[Dict[str, Any]]) -> None:
         existing = {obj.id: obj for obj in header.lines.all()}
-        sent_ids = set()
+        retained_ids = {
+            int(line_id)
+            for line_id in (ln.get("id") for ln in lines_data)
+            if line_id and int(line_id) in existing
+        }
+
+        # Remove dropped rows before inserts so a replacement line can safely reuse
+        # the same line_no within the same header during edit flows.
+        for line_id, obj in list(existing.items()):
+            if line_id not in retained_ids:
+                obj.delete()
+                existing.pop(line_id, None)
 
         max_line_no = header.lines.aggregate(m=Max("line_no")).get("m") or 0
         next_line_no = int(max_line_no) + 1
@@ -1775,7 +1786,6 @@ class PurchaseInvoiceService:
                     obj.line_no = obj.line_no
                 obj.full_clean()
                 obj.save()
-                sent_ids.add(line_id)
             else:
                 if not ln.get("line_no"):
                     ln["line_no"] = next_line_no
@@ -1783,11 +1793,6 @@ class PurchaseInvoiceService:
                 obj = PurchaseInvoiceLine(header=header, **{k: v for k, v in ln.items() if k != "id"})
                 obj.full_clean()
                 obj.save()
-                sent_ids.add(obj.id)
-
-        for line_id, obj in existing.items():
-            if line_id not in sent_ids:
-                obj.delete()
 
     # ---------------------------
     # High-level orchestrators

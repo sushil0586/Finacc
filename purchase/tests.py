@@ -635,6 +635,79 @@ class PurchaseInvoiceViewUnitTests(SimpleTestCase):
         self.assertEqual(result["previous"]["purchase_number"], "PINV-1007")
         self.assertEqual(result["next"]["id"], 95)
 
+    @patch("purchase.services.purchase_invoice_nav_service.PurchaseInvoiceNavService._scope_qs")
+    def test_prev_next_includes_latest_draft_as_next_document(self, mocked_scope_qs):
+        scoped_qs = MagicMock()
+        latest_draft = SimpleNamespace(
+            id=101,
+            doc_no=1010,
+            purchase_number="PINV-1010",
+            status=int(PurchaseInvoiceHeader.Status.DRAFT),
+            bill_date=None,
+        )
+        all_code_rows = [
+            SimpleNamespace(id=99, doc_no=1008, purchase_number="PINV-1008", status=3, bill_date=None),
+            SimpleNamespace(id=100, doc_no=1009, purchase_number="PINV-1009", status=3, bill_date=None),
+            latest_draft,
+        ]
+        mocked_scope_qs.side_effect = [scoped_qs, all_code_rows]
+
+        instance = SimpleNamespace(
+            id=100,
+            doc_no=1009,
+            entity_id=10,
+            entityfinid_id=2026,
+            subentity_id=None,
+            doc_type=int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
+            doc_code="PINV",
+        )
+
+        result = PurchaseInvoiceNavService.get_prev_next_for_instance(instance)
+
+        self.assertEqual(result["next"]["id"], latest_draft.id)
+        self.assertEqual(result["next"]["status"], int(PurchaseInvoiceHeader.Status.DRAFT))
+        self.assertEqual(
+            PurchaseInvoiceNavService.DEFAULT_ALLOWED_STATUSES,
+            (
+                int(PurchaseInvoiceHeader.Status.DRAFT),
+                int(PurchaseInvoiceHeader.Status.CONFIRMED),
+                int(PurchaseInvoiceHeader.Status.POSTED),
+                int(PurchaseInvoiceHeader.Status.CANCELLED),
+            ),
+        )
+
+    @patch("purchase.services.purchase_invoice_nav_service.PurchaseInvoiceNavService._scope_qs")
+    def test_prev_next_falls_forward_to_unnumbered_draft_when_no_higher_sequence_exists(self, mocked_scope_qs):
+        scoped_qs = MagicMock()
+        latest_draft = SimpleNamespace(
+            id=101,
+            doc_no=None,
+            purchase_number="",
+            status=int(PurchaseInvoiceHeader.Status.DRAFT),
+            bill_date=None,
+        )
+        all_code_rows = [
+            SimpleNamespace(id=99, doc_no=1008, purchase_number="PINV-1008", status=3, bill_date=None),
+            SimpleNamespace(id=100, doc_no=1009, purchase_number="PINV-1009", status=3, bill_date=None),
+            latest_draft,
+        ]
+        mocked_scope_qs.side_effect = [scoped_qs, all_code_rows]
+
+        instance = SimpleNamespace(
+            id=100,
+            doc_no=1009,
+            entity_id=10,
+            entityfinid_id=2026,
+            subentity_id=None,
+            doc_type=int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
+            doc_code="PINV",
+        )
+
+        result = PurchaseInvoiceNavService.get_prev_next_for_instance(instance)
+
+        self.assertEqual(result["next"]["id"], latest_draft.id)
+        self.assertEqual(result["next"]["status"], int(PurchaseInvoiceHeader.Status.DRAFT))
+
     def test_last_saved_doc_scope_queryset_uses_subentity_isnull(self):
         with patch("purchase.services.purchase_settings_service.PurchaseInvoiceHeader.objects.filter") as mocked_filter:
             mocked_filter.return_value.only.return_value.__iter__.return_value = iter([])

@@ -19,7 +19,7 @@ from financial.services import create_account_with_synced_ledger
 from geography.models import City, Country, District, State
 from numbering.models import DocumentNumberSeries, DocumentType
 from posting.models import Entry, EntryStatus, JournalLine, PostingBatch, TxnType
-from sales.models import SalesInvoiceHeader, SalesLockPeriod
+from sales.models import SalesInvoiceHeader, SalesInvoiceLine, SalesLockPeriod
 from sales.services.sales_settings_service import SalesSettingsService
 
 
@@ -353,6 +353,29 @@ class SalesApiEndToEndTests(APITestCase):
         self.assertEqual(body["remarks"], "Draft updated")
         self.assertEqual(body["status"], int(SalesInvoiceHeader.Status.DRAFT))
 
+    def test_patch_can_replace_deleted_line_with_new_line_reusing_same_line_no(self):
+        created = self._create_invoice(reference="SO-REPLACE-LINE")
+        invoice_id = created["id"]
+
+        replacement_line = self._goods_line_payload(qty="12.000", rate="150.0000")
+        replacement_line["id"] = None
+        replacement_line["line_no"] = created["lines"][0]["line_no"]
+        replacement_line["productDesc"] = "Replacement goods"
+
+        patch_resp = self.client.patch(
+            f"/api/sales/invoices/{invoice_id}/{self._scope_qs()}",
+            {"lines": [replacement_line]},
+            format="json",
+        )
+        self.assertEqual(patch_resp.status_code, status.HTTP_200_OK, patch_resp.json())
+
+        lines = list(SalesInvoiceLine.objects.filter(header_id=invoice_id).order_by("line_no", "id"))
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0].line_no, 1)
+        self.assertEqual(lines[0].productDesc, "Replacement goods")
+        self.assertEqual(lines[0].qty, Decimal("12.000"))
+        self.assertEqual(lines[0].rate, Decimal("150.0000"))
+
     def test_delete_draft_invoice_is_allowed(self):
         created = self._create_invoice(reference="SO-DEL-DRAFT")
         invoice_id = created["id"]
@@ -546,9 +569,9 @@ class SalesApiEndToEndTests(APITestCase):
         scope = self._attachment_scope_qs()
 
         upload = SimpleUploadedFile(
-            "sales-supporting.txt",
+            "sales-supporting.pdf",
             b"sales attachment payload",
-            content_type="text/plain",
+            content_type="application/pdf",
         )
         upload_resp = self.client.post(
             f"/api/sales/invoices/{invoice_id}/attachments/{scope}",
@@ -583,6 +606,25 @@ class SalesApiEndToEndTests(APITestCase):
             f"/api/sales/invoices/{invoice_id}/attachments/{attachment_id}/{scope}"
         )
         self.assertEqual(delete_resp.status_code, status.HTTP_200_OK, delete_resp.json())
+
+    def test_attachment_upload_rejects_unsupported_text_file(self):
+        created = self._create_invoice(reference="SO-ATTACH-BAD")
+        invoice_id = created["id"]
+        scope = self._attachment_scope_qs()
+
+        upload = SimpleUploadedFile(
+            "sales-supporting.txt",
+            b"sales attachment payload",
+            content_type="text/plain",
+        )
+        upload_resp = self.client.post(
+            f"/api/sales/invoices/{invoice_id}/attachments/{scope}",
+            {"attachments": [upload]},
+            format="multipart",
+        )
+
+        self.assertEqual(upload_resp.status_code, status.HTTP_400_BAD_REQUEST, upload_resp.json())
+        self.assertEqual(upload_resp.json()["detail"], "sales-supporting.txt is not a supported format.")
 
     def test_confirmed_invoice_can_be_edited_when_policy_allows(self):
         created = self._create_invoice(reference="SO-CONF-EDIT")
