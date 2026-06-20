@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+from datetime import date, datetime
 from decimal import Decimal
 
 from rest_framework import serializers
 
 from sales.models.sales_ar import CustomerBillOpenItem, CustomerAdvanceBalance, CustomerSettlement, CustomerSettlementLine
 from sales.models.sales_core import SalesInvoiceLine
+
+
+def _serialize_temporal_value(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    return str(value)
 
 
 class CustomerBillOpenItemSerializer(serializers.ModelSerializer):
@@ -15,6 +26,7 @@ class CustomerBillOpenItemSerializer(serializers.ModelSerializer):
     customer_partytype = serializers.CharField(source="customer.commercial_profile.partytype", read_only=True)
     doc_type_name = serializers.SerializerMethodField()
     source_route = serializers.SerializerMethodField()
+    last_settled_at = serializers.SerializerMethodField()
 
     def get_doc_type_name(self, obj):
         try:
@@ -28,6 +40,9 @@ class CustomerBillOpenItemSerializer(serializers.ModelSerializer):
             return "/saleinvoice"
         has_service_lines = SalesInvoiceLine.objects.filter(header_id=header_id, is_service=True).exists()
         return "/saleserviceinvoice" if has_service_lines else "/saleinvoice"
+
+    def get_last_settled_at(self, obj):
+        return _serialize_temporal_value(getattr(obj, "last_settled_at", None))
 
     class Meta:
         model = CustomerBillOpenItem
@@ -154,6 +169,7 @@ class CustomerAdvanceBalanceSerializer(serializers.ModelSerializer):
     receipt_type = serializers.CharField(source="receipt_voucher.receipt_type", read_only=True)
     balance_amount = serializers.DecimalField(source="outstanding_amount", max_digits=14, decimal_places=2, read_only=True)
     consumption_history = serializers.SerializerMethodField()
+    last_adjusted_at = serializers.SerializerMethodField()
 
     def get_doc_no(self, obj):
         pv = getattr(obj, "receipt_voucher", None)
@@ -187,6 +203,9 @@ class CustomerAdvanceBalanceSerializer(serializers.ModelSerializer):
                 "lines": line_items,
             })
         return rows
+
+    def get_last_adjusted_at(self, obj):
+        return _serialize_temporal_value(getattr(obj, "last_adjusted_at", None))
 
     class Meta:
         model = CustomerAdvanceBalance

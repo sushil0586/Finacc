@@ -13,6 +13,7 @@ from payments.models import (
     PaymentVoucherAdjustment,
     PaymentVoucherAdvanceAdjustment,
 )
+from payments.serializers.payment_attachment import PaymentVoucherAttachmentSerializer
 from payments.services.payment_voucher_nav_service import PaymentVoucherNavService
 from payments.services.payment_voucher_service import PaymentVoucherService
 
@@ -126,6 +127,7 @@ class PaymentVoucherHeaderSerializer(serializers.ModelSerializer):
     allocated_amount = serializers.SerializerMethodField()
     settlement_balance_amount = serializers.SerializerMethodField()
     ap_settlement_summary = serializers.SerializerMethodField()
+    attachments = PaymentVoucherAttachmentSerializer(many=True, read_only=True)
 
     @staticmethod
     def _workflow_state(payload):
@@ -269,6 +271,7 @@ class PaymentVoucherHeaderSerializer(serializers.ModelSerializer):
             "allocations",
             "advance_adjustments",
             "adjustments",
+            "attachments",
             "created_at",
             "updated_at",
         ]

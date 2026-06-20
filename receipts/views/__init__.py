@@ -18,6 +18,11 @@ from .receipt_readonly import (
 from .receipt_readonly import ReceiptCustomerSettlementListAPIView, ReceiptCustomerStatementAPIView
 from .receipt_masters import ReceiptModeListAPIView
 from .receipt_exports import ReceiptVoucherPDFAPIView
+from .receipt_attachment import (
+    ReceiptVoucherAttachmentListCreateAPIView,
+    ReceiptVoucherAttachmentDeleteAPIView,
+    ReceiptVoucherAttachmentDownloadAPIView,
+)
 from .receipt_meta import (
     ReceiptVoucherFormMetaAPIView,
     ReceiptVoucherDetailFormMetaAPIView,
@@ -45,6 +50,9 @@ __all__ = [
     "ReceiptAllocationPreviewAPIView",
     "ReceiptModeListAPIView",
     "ReceiptVoucherPDFAPIView",
+    "ReceiptVoucherAttachmentListCreateAPIView",
+    "ReceiptVoucherAttachmentDeleteAPIView",
+    "ReceiptVoucherAttachmentDownloadAPIView",
     "ReceiptVoucherFormMetaAPIView",
     "ReceiptVoucherDetailFormMetaAPIView",
     "ReceiptVoucherSearchMetaAPIView",

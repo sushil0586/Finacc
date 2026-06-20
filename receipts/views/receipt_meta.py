@@ -14,6 +14,7 @@ from financial.models import AccountAddress, account
 from financial.profile_access import account_gstno, account_pan, account_partytype
 from helpers.utils.document_actions import build_document_action_flags
 from receipts.models import ReceiptMode, ReceiptVoucherHeader
+from receipts.serializers.receipt_attachment import ReceiptVoucherAttachmentSerializer
 from receipts.serializers.receipt_voucher import ReceiptVoucherHeaderSerializer
 from receipts.services.receipt_choice_service import ReceiptChoiceService
 from receipts.services.receipt_settings_service import (
@@ -250,6 +251,7 @@ class ReceiptVoucherDetailFormMetaAPIView(ReceiptMetaBaseAPIView):
             {
                 "voucher_id": voucher_id,
                 "voucher": voucher_data,
+                "attachments": ReceiptVoucherAttachmentSerializer(header.attachments.order_by("-created_at", "-id"), many=True).data,
                 "navigation": voucher_data.get("navigation"),
                 "number_navigation": voucher_data.get("number_navigation"),
                 "action_flags": self._action_flags(header),

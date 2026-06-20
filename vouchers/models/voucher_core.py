@@ -157,3 +157,37 @@ class VoucherLine(TrackingModel):
 
     def __str__(self):
         return f"{self.header_id}:{self.line_no} Dr={self.dr_amount} Cr={self.cr_amount}"
+
+
+def _voucher_attachment_upload_to(instance: "VoucherAttachment", filename: str) -> str:
+    voucher_id = getattr(instance, "header_id", None) or "unassigned"
+    entity_id = getattr(getattr(instance, "header", None), "entity_id", None) or "entity"
+    return f"vouchers/attachments/{entity_id}/{voucher_id}/{filename}"
+
+
+class VoucherAttachment(TrackingModel):
+    header = models.ForeignKey(
+        VoucherHeader,
+        related_name="attachments",
+        on_delete=models.CASCADE,
+        db_index=True,
+    )
+    file = models.FileField(upload_to=_voucher_attachment_upload_to)
+    original_name = models.CharField(max_length=255, blank=True, null=True)
+    content_type = models.CharField(max_length=100, blank=True, null=True)
+    uploaded_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="voucher_attachments_uploaded",
+    )
+
+    class Meta:
+        db_table = "voucher_attachment"
+        indexes = [
+            models.Index(fields=["header", "created_at"], name="ix_vchr_att_hdr_created"),
+        ]
+
+    def __str__(self):
+        return self.original_name or self.file.name.split("/")[-1]

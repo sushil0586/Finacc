@@ -21,6 +21,7 @@ from financial.profile_access import account_gstno, account_pan, account_partyty
 from sales.models import SalesChargeType, SalesInvoiceHeader, SalesInvoiceLine, SalesTaxSummary
 from sales.models.sales_ar import CustomerAdvanceBalance, CustomerSettlement
 from sales.models.sales_compliance import SalesEInvoiceStatus, SalesEWayStatus
+from sales.serializers.sales_attachment import SalesAttachmentSerializer
 from sales.serializers.sales_invoice_serializers import SalesInvoiceHeaderSerializer
 from sales.services.sales_choices_service import SalesChoicesService
 from core.invoice_ui_contracts import sales_invoice_ui_contract
@@ -454,6 +455,7 @@ class SalesInvoiceDetailFormMetaAPIView(SalesMetaBaseAPIView):
                     header,
                     context={"request": request, "line_mode": line_mode},
                 ).data,
+                "attachments": SalesAttachmentSerializer(header.attachments.order_by("-created_at", "-id"), many=True).data,
                 "action_flags": self._invoice_action_flags(header),
                 "compliance_action_flags": self._compliance_action_flags(header),
                 "customer": self._customer_block(header),
@@ -716,6 +718,7 @@ class SalesInvoiceSummaryAPIView(SalesMetaBaseAPIView):
                     "charges": header.charges.count(),
                     "tax_summaries": header.tax_summaries.count(),
                 },
+                "attachments": SalesAttachmentSerializer(header.attachments.order_by("-created_at", "-id"), many=True).data,
                 "action_flags": self._invoice_action_flags(header),
                 "compliance_action_flags": self._compliance_action_flags(header),
             }

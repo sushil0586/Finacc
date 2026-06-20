@@ -5,6 +5,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import override_settings
 from django.utils import timezone
 from rest_framework import status
@@ -253,6 +254,9 @@ class SalesApiEndToEndTests(APITestCase):
 
     def _scope_qs(self) -> str:
         return f"?entity_id={self.entity.id}&entityfinid={self.entityfin.id}&subentity_id={self.subentity.id}"
+
+    def _attachment_scope_qs(self) -> str:
+        return f"?entity={self.entity.id}&entityfinid={self.entityfin.id}&subentity={self.subentity.id}"
 
     def _goods_line_payload(self, *, qty: str = "10.000", rate: str = "100.0000") -> dict:
         return {
@@ -535,6 +539,50 @@ class SalesApiEndToEndTests(APITestCase):
         self.assertEqual(confirmed["status"], int(SalesInvoiceHeader.Status.CONFIRMED))
         self.assertEqual(confirmed["doc_no"], 1001)
         self.assertEqual(confirmed["invoice_number"], "SI-SINV-1001")
+
+    def test_attachment_upload_list_download_delete_and_summary(self):
+        created = self._create_invoice(reference="SO-ATTACH")
+        invoice_id = created["id"]
+        scope = self._attachment_scope_qs()
+
+        upload = SimpleUploadedFile(
+            "sales-supporting.txt",
+            b"sales attachment payload",
+            content_type="text/plain",
+        )
+        upload_resp = self.client.post(
+            f"/api/sales/invoices/{invoice_id}/attachments/{scope}",
+            {"attachments": [upload]},
+            format="multipart",
+        )
+        self.assertEqual(upload_resp.status_code, status.HTTP_201_CREATED, upload_resp.json())
+        attachment_id = upload_resp.json()["data"][0]["id"]
+
+        list_resp = self.client.get(f"/api/sales/invoices/{invoice_id}/attachments/{scope}")
+        self.assertEqual(list_resp.status_code, status.HTTP_200_OK, list_resp.json())
+        self.assertEqual(len(list_resp.json()), 1)
+
+        summary_resp = self.client.get(f"/api/sales/invoices/{invoice_id}/summary/{scope}&line_mode=goods")
+        self.assertEqual(summary_resp.status_code, status.HTTP_200_OK, summary_resp.json())
+        self.assertEqual(len(summary_resp.json().get("attachments", [])), 1)
+
+        detail_resp = self.client.get(
+            f"/api/sales/meta/invoice-detail-form/?entity={self.entity.id}&entityfinid={self.entityfin.id}&subentity={self.subentity.id}&invoice={invoice_id}&line_mode=goods"
+        )
+        self.assertEqual(detail_resp.status_code, status.HTTP_200_OK, detail_resp.json())
+        self.assertEqual(len(detail_resp.json().get("attachments", [])), 1)
+        self.assertEqual(len(detail_resp.json().get("invoice", {}).get("attachments", [])), 1)
+
+        download_resp = self.client.get(
+            f"/api/sales/invoices/{invoice_id}/attachments/{attachment_id}/download/{scope}"
+        )
+        self.assertEqual(download_resp.status_code, status.HTTP_200_OK)
+        self.assertIn("attachment;", download_resp.get("Content-Disposition", ""))
+
+        delete_resp = self.client.delete(
+            f"/api/sales/invoices/{invoice_id}/attachments/{attachment_id}/{scope}"
+        )
+        self.assertEqual(delete_resp.status_code, status.HTTP_200_OK, delete_resp.json())
 
     def test_confirmed_invoice_can_be_edited_when_policy_allows(self):
         created = self._create_invoice(reference="SO-CONF-EDIT")

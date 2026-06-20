@@ -5,6 +5,7 @@ from .payment_voucher import (
     PaymentVoucherAdjustmentSerializer,
     PaymentVoucherAdvanceAdjustmentSerializer,
 )
+from .payment_attachment import PaymentVoucherAttachmentSerializer
 from .payment_masters import PaymentModeSerializer
 from .payment_readonly import PaymentOpenAdvanceSerializer
 
@@ -14,6 +15,7 @@ __all__ = [
     "PaymentVoucherAllocationSerializer",
     "PaymentVoucherAdjustmentSerializer",
     "PaymentVoucherAdvanceAdjustmentSerializer",
+    "PaymentVoucherAttachmentSerializer",
     "PaymentModeSerializer",
     "PaymentOpenAdvanceSerializer",
 ]

@@ -13,6 +13,7 @@ from receipts.models import (
     ReceiptVoucherAdjustment,
     ReceiptVoucherAdvanceAdjustment,
 )
+from receipts.serializers.receipt_attachment import ReceiptVoucherAttachmentSerializer
 from receipts.services.receipt_voucher_nav_service import ReceiptVoucherNavService
 from receipts.services.receipt_voucher_service import ReceiptVoucherService
 
@@ -128,6 +129,7 @@ class ReceiptVoucherHeaderSerializer(serializers.ModelSerializer):
     allocated_amount = serializers.SerializerMethodField()
     settlement_balance_amount = serializers.SerializerMethodField()
     ap_settlement_summary = serializers.SerializerMethodField()
+    attachments = ReceiptVoucherAttachmentSerializer(many=True, read_only=True)
 
     @staticmethod
     def _workflow_state(payload):
@@ -271,6 +273,7 @@ class ReceiptVoucherHeaderSerializer(serializers.ModelSerializer):
             "allocations",
             "advance_adjustments",
             "adjustments",
+            "attachments",
             "created_at",
             "updated_at",
         ]

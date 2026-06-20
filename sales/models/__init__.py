@@ -14,6 +14,7 @@ from .sales_settings import (
 from .sales_addons import (
     SalesChargeType,
     SalesChargeLine,
+    SalesAttachment,
     SalesAdvanceAdjustment,
     SalesEcommerceSupply,
 )

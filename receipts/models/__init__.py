@@ -6,6 +6,7 @@ from .receipt_core import (
     ReceiptVoucherAllocation,
     ReceiptVoucherAdjustment,
     ReceiptVoucherAdvanceAdjustment,
+    ReceiptVoucherAttachment,
 )
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "ReceiptVoucherAllocation",
     "ReceiptVoucherAdjustment",
     "ReceiptVoucherAdvanceAdjustment",
+    "ReceiptVoucherAttachment",
 ]

@@ -14,6 +14,11 @@ from .voucher_meta import (
     VoucherSearchMetaAPIView,
     VoucherSettingsMetaAPIView,
 )
+from .voucher_attachment import (
+    VoucherAttachmentListCreateAPIView,
+    VoucherAttachmentDeleteAPIView,
+    VoucherAttachmentDownloadAPIView,
+)
 from .voucher_settings import VoucherSettingsAPIView, VoucherCompiledChoicesAPIView
 from .voucher_exports import VoucherPDFAPIView
 
@@ -30,6 +35,9 @@ __all__ = [
     "VoucherDetailFormMetaAPIView",
     "VoucherSearchMetaAPIView",
     "VoucherSettingsMetaAPIView",
+    "VoucherAttachmentListCreateAPIView",
+    "VoucherAttachmentDeleteAPIView",
+    "VoucherAttachmentDownloadAPIView",
     "VoucherSettingsAPIView",
     "VoucherCompiledChoicesAPIView",
     "VoucherPDFAPIView",

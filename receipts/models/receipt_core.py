@@ -265,3 +265,37 @@ class ReceiptVoucherAdvanceAdjustment(TrackingModel):
 
     def __str__(self):
         return f"{self.receipt_voucher_id} -> {self.advance_balance_id}: {self.adjusted_amount}"
+
+
+def _receipt_attachment_upload_to(instance: "ReceiptVoucherAttachment", filename: str) -> str:
+    voucher_id = getattr(instance, "receipt_voucher_id", None) or "unassigned"
+    entity_id = getattr(getattr(instance, "receipt_voucher", None), "entity_id", None) or "entity"
+    return f"receipts/attachments/{entity_id}/{voucher_id}/{filename}"
+
+
+class ReceiptVoucherAttachment(TrackingModel):
+    receipt_voucher = models.ForeignKey(
+        ReceiptVoucherHeader,
+        related_name="attachments",
+        on_delete=models.CASCADE,
+        db_index=True,
+    )
+    file = models.FileField(upload_to=_receipt_attachment_upload_to)
+    original_name = models.CharField(max_length=255, blank=True, null=True)
+    content_type = models.CharField(max_length=100, blank=True, null=True)
+    uploaded_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="receipt_attachments_uploaded",
+    )
+
+    class Meta:
+        db_table = "receipt_voucher_attachment"
+        indexes = [
+            models.Index(fields=["receipt_voucher", "created_at"], name="ix_rcpt_att_vchr_created"),
+        ]
+
+    def __str__(self):
+        return self.original_name or self.file.name.split("/")[-1]

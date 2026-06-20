@@ -4,13 +4,15 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from django.test import SimpleTestCase
+from django.contrib.auth import get_user_model
+from django.test import SimpleTestCase, TestCase
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from payments.models import PaymentVoucherHeader
 from payments.serializers.payment_voucher import PaymentVoucherHeaderSerializer
 from payments.services.payment_voucher_service import PaymentVoucherService
 from payments.views.payment_exports import PaymentVoucherPDFAPIView
+from payments.views.payment_meta import PaymentVoucherDetailFormMetaAPIView
 from payments.views.payment_voucher import (
     PaymentVoucherApprovalAPIView,
     PaymentVoucherListCreateAPIView,
@@ -19,6 +21,8 @@ from payments.views.payment_voucher import (
 )
 from posting.adapters.payment_voucher import PaymentVoucherPostingAdapter
 from withholding.models import WithholdingBaseRule
+
+User = get_user_model()
 
 
 class FakeRelated(list):
@@ -1309,3 +1313,50 @@ class PaymentRuntimeWithholdingTests(SimpleTestCase):
             },
         )
         self.assertEqual(len(adjustments), 1)
+
+
+class PaymentVoucherDetailFormMetaAttachmentTests(TestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.user = User.objects.create_user(
+            username="payment_meta_user",
+            email="payment_meta_user@example.com",
+            password="pass@12345",
+        )
+
+    @patch("payments.views.payment_meta.PaymentVoucherAttachmentSerializer")
+    @patch("payments.views.payment_meta.PaymentVoucherHeaderSerializer")
+    @patch.object(PaymentVoucherDetailFormMetaAPIView, "enforce_scope")
+    @patch.object(PaymentVoucherDetailFormMetaAPIView, "_action_flags")
+    @patch.object(PaymentVoucherDetailFormMetaAPIView, "_account_block")
+    @patch.object(PaymentVoucherDetailFormMetaAPIView, "_voucher_form_meta")
+    @patch.object(PaymentVoucherDetailFormMetaAPIView, "_voucher_queryset")
+    def test_detail_meta_includes_attachments_payload(
+        self,
+        mocked_queryset,
+        mocked_form_meta,
+        mocked_account_block,
+        mocked_action_flags,
+        _mocked_enforce_scope,
+        mocked_header_serializer,
+        mocked_attachment_serializer,
+    ):
+        header_qs = MagicMock()
+        header = MagicMock()
+        header.attachments.order_by.return_value = ["attachment-row"]
+        header_qs.get.return_value = header
+        mocked_queryset.return_value = header_qs
+        mocked_form_meta.return_value = {"entity_id": 10, "entityfinid_id": 11, "subentity_id": 12}
+        mocked_account_block.side_effect = [{"id": 21}, {"id": 22}]
+        mocked_action_flags.return_value = {"can_edit": True}
+        mocked_header_serializer.return_value.data = {"id": 99, "navigation": {"previous_id": 1}, "number_navigation": {"next_doc_no": 3}}
+        mocked_attachment_serializer.return_value.data = [{"id": 701, "file_name": "payment-proof.pdf"}]
+
+        request = self.factory.get("/api/payments/meta/voucher-detail-form/?entity=10&entityfinid=11&subentity=12&voucher=99")
+        force_authenticate(request, user=self.user)
+
+        response = PaymentVoucherDetailFormMetaAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["attachments"], [{"id": 701, "file_name": "payment-proof.pdf"}])
+        mocked_attachment_serializer.assert_called_once_with(["attachment-row"], many=True)

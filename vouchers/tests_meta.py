@@ -23,12 +23,14 @@ class VoucherDetailFormMetaAPIViewTests(TestCase):
 
     @patch("vouchers.views.voucher_meta.VoucherDetailSerializer")
     @patch("vouchers.views.voucher_meta.get_object_or_404")
+    @patch.object(VoucherDetailFormMetaAPIView, "enforce_scope")
     @patch.object(VoucherDetailFormMetaAPIView, "_voucher_form_meta")
     @patch.object(VoucherDetailFormMetaAPIView, "_voucher_queryset")
     def test_detail_meta_uses_voucher_subentity_when_query_omits_it(
         self,
         mocked_queryset,
         mocked_form_meta,
+        _mocked_enforce_scope,
         mocked_get_object,
         mocked_serializer,
     ):
@@ -37,6 +39,7 @@ class VoucherDetailFormMetaAPIViewTests(TestCase):
             status=VoucherHeader.Status.DRAFT,
             get_status_display=lambda: "Draft",
             cash_bank_account=None,
+            attachments=Mock(order_by=Mock(return_value=[])),
         )
         mocked_queryset.return_value = Mock(name="voucher_queryset")
         mocked_get_object.return_value = header
@@ -54,3 +57,41 @@ class VoucherDetailFormMetaAPIViewTests(TestCase):
         self.assertEqual(response.data["voucher_id"], 16)
         self.assertEqual(response.data["subentity_id"], 9)
         self.assertEqual(response.data["voucher"], {"id": 16})
+
+    @patch("vouchers.views.voucher_meta.VoucherAttachmentSerializer")
+    @patch("vouchers.views.voucher_meta.VoucherDetailSerializer")
+    @patch("vouchers.views.voucher_meta.get_object_or_404")
+    @patch.object(VoucherDetailFormMetaAPIView, "enforce_scope")
+    @patch.object(VoucherDetailFormMetaAPIView, "_voucher_form_meta")
+    @patch.object(VoucherDetailFormMetaAPIView, "_voucher_queryset")
+    def test_detail_meta_includes_attachments_payload(
+        self,
+        mocked_queryset,
+        mocked_form_meta,
+        _mocked_enforce_scope,
+        mocked_get_object,
+        mocked_serializer,
+        mocked_attachment_serializer,
+    ):
+        header = SimpleNamespace(
+            subentity_id=9,
+            status=VoucherHeader.Status.DRAFT,
+            get_status_display=lambda: "Draft",
+            cash_bank_account=None,
+            cash_bank_ledger_id=None,
+            attachments=Mock(order_by=Mock(return_value=["attachment-row"])),
+        )
+        mocked_queryset.return_value = Mock(name="voucher_queryset")
+        mocked_get_object.return_value = header
+        mocked_form_meta.return_value = {"entity_id": 32, "entityfinid_id": 32, "subentity_id": 9}
+        mocked_serializer.return_value.data = {"id": 16}
+        mocked_attachment_serializer.return_value.data = [{"id": 901, "file_name": "journal-proof.pdf"}]
+
+        request = self.factory.get("/api/vouchers/meta/voucher-detail-form/?entity=32&entityfinid=32&voucher=16")
+        force_authenticate(request, user=self.user)
+
+        response = VoucherDetailFormMetaAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["attachments"], [{"id": 901, "file_name": "journal-proof.pdf"}])
+        mocked_attachment_serializer.assert_called_once_with(["attachment-row"], many=True)

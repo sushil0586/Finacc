@@ -14,6 +14,7 @@ from financial.models import AccountAddress, account
 from financial.profile_access import account_gstno, account_pan, account_partytype
 from helpers.utils.document_actions import build_document_action_flags
 from payments.models import PaymentMode, PaymentVoucherHeader
+from payments.serializers.payment_attachment import PaymentVoucherAttachmentSerializer
 from payments.serializers.payment_voucher import PaymentVoucherHeaderSerializer
 from payments.services.payment_choice_service import PaymentChoiceService
 from payments.services.payment_settings_service import (
@@ -257,6 +258,7 @@ class PaymentVoucherDetailFormMetaAPIView(PaymentMetaBaseAPIView):
             {
                 "voucher_id": voucher_id,
                 "voucher": voucher_data,
+                "attachments": PaymentVoucherAttachmentSerializer(header.attachments.order_by("-created_at", "-id"), many=True).data,
                 "navigation": voucher_data.get("navigation"),
                 "number_navigation": voucher_data.get("number_navigation"),
                 "action_flags": self._action_flags(header),

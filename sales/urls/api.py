@@ -45,6 +45,11 @@ from sales.views.sales_invoice_views import (
     SalesInvoiceReverseAPIView,
     SalesInvoiceSettlementAPIView,
 )
+from sales.views.sales_attachment import (
+    SalesInvoiceAttachmentDeleteAPIView,
+    SalesInvoiceAttachmentDownloadAPIView,
+    SalesInvoiceAttachmentListCreateAPIView,
+)
 
 from sales.views.sales_invoice_compliance_api import (
     SalesInvoiceEnsureComplianceAPIView,
@@ -116,11 +121,17 @@ urlpatterns = [
     path("invoices/", SalesInvoiceListCreateAPIView.as_view(), name="sales-invoice-list-create"),
     path("invoices/search/", SalesInvoiceListCreateAPIView.as_view(), name="sales-invoice-search"),
     path("invoices/<int:pk>/", SalesInvoiceRetrieveUpdateAPIView.as_view(), name="sales-invoice-detail"),
+    path("invoices/<int:pk>/attachments/", SalesInvoiceAttachmentListCreateAPIView.as_view(), name="sales-invoice-attachments"),
+    path("invoices/<int:pk>/attachments/<int:attachment_id>/", SalesInvoiceAttachmentDeleteAPIView.as_view(), name="sales-invoice-attachment-delete"),
+    path("invoices/<int:pk>/attachments/<int:attachment_id>/download/", SalesInvoiceAttachmentDownloadAPIView.as_view(), name="sales-invoice-attachment-download"),
     path("invoices/<int:pk>/transport/", SalesInvoiceTransportAPIView.as_view(), name="sales-invoice-transport"),
     path("invoices/<int:pk>/print/", SalesInvoicePrintAPIView.as_view(), name="sales-invoice-print"),
     path("service-invoices/", SalesServiceInvoiceListCreateAPIView.as_view(), name="sales-service-invoice-list-create"),
     path("service-invoices/search/", SalesServiceInvoiceListCreateAPIView.as_view(), name="sales-service-invoice-search"),
     path("service-invoices/<int:pk>/", SalesServiceInvoiceRetrieveUpdateAPIView.as_view(), name="sales-service-invoice-detail"),
+    path("service-invoices/<int:pk>/attachments/", SalesInvoiceAttachmentListCreateAPIView.as_view(), name="sales-service-invoice-attachments"),
+    path("service-invoices/<int:pk>/attachments/<int:attachment_id>/", SalesInvoiceAttachmentDeleteAPIView.as_view(), name="sales-service-invoice-attachment-delete"),
+    path("service-invoices/<int:pk>/attachments/<int:attachment_id>/download/", SalesInvoiceAttachmentDownloadAPIView.as_view(), name="sales-service-invoice-attachment-download"),
     path("service-invoices/<int:pk>/transport/", SalesInvoiceTransportAPIView.as_view(), name="sales-service-invoice-transport"),
     path("service-invoices/<int:pk>/print/", SalesServiceInvoicePrintAPIView.as_view(), name="sales-service-invoice-print"),
 

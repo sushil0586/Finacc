@@ -13,6 +13,7 @@ from financial.models import AccountAddress, account
 from financial.profile_access import account_gstno, account_pan, account_partytype
 from helpers.utils.document_actions import build_document_action_flags
 from vouchers.models import VoucherHeader, VoucherLine
+from vouchers.serializers.voucher_attachment import VoucherAttachmentSerializer
 from vouchers.serializers.voucher import VoucherDetailSerializer
 from vouchers.services.voucher_settings_service import VoucherSettingsService
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
@@ -223,6 +224,7 @@ class VoucherDetailFormMetaAPIView(VoucherMetaBaseAPIView):
                     header,
                     context={"request": request, "skip_preview_numbers": True},
                 ).data,
+                "attachments": VoucherAttachmentSerializer(header.attachments.order_by("-created_at", "-id"), many=True).data,
                 "action_flags": self._action_flags(header),
                 "cash_bank_account": self._account_block(header, "cash_bank_account", "cash_bank_ledger_id"),
             }
@@ -284,4 +286,3 @@ class VoucherSettingsMetaAPIView(VoucherMetaBaseAPIView):
                 "current_doc_numbers": current_doc_numbers,
             }
         )
-

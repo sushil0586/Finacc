@@ -6,12 +6,14 @@ from .voucher import (
     VoucherWriteLineSerializer,
     VoucherWriteSerializer,
 )
+from .voucher_attachment import VoucherAttachmentSerializer
 
 __all__ = [
     "VoucherDetailSerializer",
     "VoucherEditableLineReadSerializer",
     "VoucherJournalLineReadSerializer",
     "VoucherListSerializer",
+    "VoucherAttachmentSerializer",
     "VoucherWriteLineSerializer",
     "VoucherWriteSerializer",
 ]

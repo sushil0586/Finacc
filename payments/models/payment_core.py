@@ -265,3 +265,37 @@ class PaymentVoucherAdvanceAdjustment(TrackingModel):
 
     def __str__(self):
         return f"{self.payment_voucher_id} -> {self.advance_balance_id}: {self.adjusted_amount}"
+
+
+def _payment_attachment_upload_to(instance: "PaymentVoucherAttachment", filename: str) -> str:
+    voucher_id = getattr(instance, "payment_voucher_id", None) or "unassigned"
+    entity_id = getattr(getattr(instance, "payment_voucher", None), "entity_id", None) or "entity"
+    return f"payments/attachments/{entity_id}/{voucher_id}/{filename}"
+
+
+class PaymentVoucherAttachment(TrackingModel):
+    payment_voucher = models.ForeignKey(
+        PaymentVoucherHeader,
+        related_name="attachments",
+        on_delete=models.CASCADE,
+        db_index=True,
+    )
+    file = models.FileField(upload_to=_payment_attachment_upload_to)
+    original_name = models.CharField(max_length=255, blank=True, null=True)
+    content_type = models.CharField(max_length=100, blank=True, null=True)
+    uploaded_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="payment_attachments_uploaded",
+    )
+
+    class Meta:
+        db_table = "payment_voucher_attachment"
+        indexes = [
+            models.Index(fields=["payment_voucher", "created_at"], name="ix_pay_att_vchr_created"),
+        ]
+
+    def __str__(self):
+        return self.original_name or self.file.name.split("/")[-1]

@@ -4,13 +4,15 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from django.test import SimpleTestCase
+from django.contrib.auth import get_user_model
+from django.test import SimpleTestCase, TestCase
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from receipts.models import ReceiptVoucherHeader
 from receipts.serializers.receipt_voucher import ReceiptVoucherHeaderSerializer
 from receipts.services.receipt_voucher_service import ReceiptVoucherService
 from receipts.views.receipt_exports import ReceiptVoucherPDFAPIView
+from receipts.views.receipt_meta import ReceiptVoucherDetailFormMetaAPIView
 from receipts.views.receipt_voucher import (
     ReceiptVoucherApprovalAPIView,
     ReceiptVoucherListCreateAPIView,
@@ -19,6 +21,8 @@ from receipts.views.receipt_voucher import (
 )
 from posting.adapters.receipt_voucher import ReceiptVoucherPostingAdapter
 from withholding.models import WithholdingBaseRule
+
+User = get_user_model()
 
 
 class FakeRelated(list):
@@ -1425,3 +1429,50 @@ class ReceiptRuntimeWithholdingTests(SimpleTestCase):
                 adjustments=[],
                 workflow_payload={"withholding": {"enabled": True, "section_id": 10, "mode": "AUTO"}},
             )
+
+
+class ReceiptVoucherDetailFormMetaAttachmentTests(TestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.user = User.objects.create_user(
+            username="receipt_meta_user",
+            email="receipt_meta_user@example.com",
+            password="pass@12345",
+        )
+
+    @patch("receipts.views.receipt_meta.ReceiptVoucherAttachmentSerializer")
+    @patch("receipts.views.receipt_meta.ReceiptVoucherHeaderSerializer")
+    @patch.object(ReceiptVoucherDetailFormMetaAPIView, "enforce_scope")
+    @patch.object(ReceiptVoucherDetailFormMetaAPIView, "_action_flags")
+    @patch.object(ReceiptVoucherDetailFormMetaAPIView, "_account_block")
+    @patch.object(ReceiptVoucherDetailFormMetaAPIView, "_voucher_form_meta")
+    @patch.object(ReceiptVoucherDetailFormMetaAPIView, "_voucher_queryset")
+    def test_detail_meta_includes_attachments_payload(
+        self,
+        mocked_queryset,
+        mocked_form_meta,
+        mocked_account_block,
+        mocked_action_flags,
+        _mocked_enforce_scope,
+        mocked_header_serializer,
+        mocked_attachment_serializer,
+    ):
+        header_qs = MagicMock()
+        header = MagicMock()
+        header.attachments.order_by.return_value = ["attachment-row"]
+        header_qs.filter.return_value.first.return_value = header
+        mocked_queryset.return_value = header_qs
+        mocked_form_meta.return_value = {"entity_id": 10, "entityfinid_id": 11, "subentity_id": 12}
+        mocked_account_block.side_effect = [{"id": 21}, {"id": 22}]
+        mocked_action_flags.return_value = {"can_edit": True}
+        mocked_header_serializer.return_value.data = {"id": 99, "navigation": {"previous_id": 1}, "number_navigation": {"next_doc_no": 3}}
+        mocked_attachment_serializer.return_value.data = [{"id": 801, "file_name": "receipt-proof.pdf"}]
+
+        request = self.factory.get("/api/receipts/meta/voucher-detail-form/?entity=10&entityfinid=11&subentity=12&voucher=99")
+        force_authenticate(request, user=self.user)
+
+        response = ReceiptVoucherDetailFormMetaAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["attachments"], [{"id": 801, "file_name": "receipt-proof.pdf"}])
+        mocked_attachment_serializer.assert_called_once_with(["attachment-row"], many=True)

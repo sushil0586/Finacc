@@ -19,6 +19,11 @@ from .payment_readonly import (
 )
 from .payment_masters import PaymentModeListAPIView
 from .payment_exports import PaymentVoucherPDFAPIView
+from .payment_attachment import (
+    PaymentVoucherAttachmentListCreateAPIView,
+    PaymentVoucherAttachmentDeleteAPIView,
+    PaymentVoucherAttachmentDownloadAPIView,
+)
 from .payment_meta import (
     PaymentVoucherFormMetaAPIView,
     PaymentVoucherDetailFormMetaAPIView,
@@ -46,6 +51,9 @@ __all__ = [
     "PaymentAllocationPreviewAPIView",
     "PaymentModeListAPIView",
     "PaymentVoucherPDFAPIView",
+    "PaymentVoucherAttachmentListCreateAPIView",
+    "PaymentVoucherAttachmentDeleteAPIView",
+    "PaymentVoucherAttachmentDownloadAPIView",
     "PaymentVoucherFormMetaAPIView",
     "PaymentVoucherDetailFormMetaAPIView",
     "PaymentVoucherSearchMetaAPIView",

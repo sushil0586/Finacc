@@ -1,6 +1,6 @@
 from .base import TrackingModel
 from .voucher_config import VoucherSettings, VoucherLockPeriod, VoucherChoiceOverride
-from .voucher_core import VoucherHeader, VoucherLine
+from .voucher_core import VoucherAttachment, VoucherHeader, VoucherLine
 
 __all__ = [
     "TrackingModel",
@@ -9,4 +9,5 @@ __all__ = [
     "VoucherChoiceOverride",
     "VoucherHeader",
     "VoucherLine",
+    "VoucherAttachment",
 ]

@@ -8,6 +8,7 @@ from rest_framework import serializers
 from entity.financial_year_validation import assert_document_date_within_financial_year
 from financial.profile_access import account_partytype
 from vouchers.models import VoucherHeader, VoucherLine
+from vouchers.serializers.voucher_attachment import VoucherAttachmentSerializer
 from vouchers.services.voucher_settings_service import VoucherSettingsService
 from vouchers.services.voucher_service import VoucherService
 
@@ -159,6 +160,7 @@ class VoucherDetailSerializer(serializers.ModelSerializer):
     system_line = serializers.SerializerMethodField()
     navigation = serializers.SerializerMethodField()
     number_navigation = serializers.SerializerMethodField()
+    attachments = VoucherAttachmentSerializer(many=True, read_only=True)
 
     class Meta:
         model = VoucherHeader
@@ -201,6 +203,7 @@ class VoucherDetailSerializer(serializers.ModelSerializer):
             "lines",
             "editable_lines",
             "system_line",
+            "attachments",
             "navigation",
             "number_navigation",
             "created_at",

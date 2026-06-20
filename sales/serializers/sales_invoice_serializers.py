@@ -18,6 +18,7 @@ from sales.services.sales_settings_service import SalesSettingsService
 from helpers.utils.document_actions import build_document_action_flags
 from financial.invoice_custom_fields_service import InvoiceCustomFieldService
 from sales.serializers.sales_charge_serializers import SalesChargeLineSerializer
+from sales.serializers.sales_attachment import SalesAttachmentSerializer
 from sales.serializers.sales_compliance_serializers import (
     SalesEInvoiceArtifactReadSerializer,
     SalesEWayArtifactReadSerializer,
@@ -225,6 +226,7 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
     tax_summaries = SalesTaxSummarySerializer(many=True, read_only=True)
     einvoice_artifact = SalesEInvoiceArtifactReadSerializer(read_only=True)
     eway_artifact = SalesEWayArtifactReadSerializer(read_only=True)
+    attachments = SalesAttachmentSerializer(many=True, read_only=True)
 
     tcs_section = serializers.PrimaryKeyRelatedField(
         queryset=WithholdingSection.objects.filter(tax_type=WithholdingTaxType.TCS, is_active=True),
@@ -358,6 +360,7 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             "lines",
             "charges",
             "tax_summaries",
+            "attachments",
             "navigation",
             "action_flags",
             "einvoice_artifact",
@@ -401,6 +404,7 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
 
             # nav + summaries
             "tax_summaries",
+            "attachments",
             "navigation",
             "action_flags",
             "einvoice_artifact",

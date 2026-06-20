@@ -6,6 +6,7 @@ from .payment_core import (
     PaymentVoucherAllocation,
     PaymentVoucherAdjustment,
     PaymentVoucherAdvanceAdjustment,
+    PaymentVoucherAttachment,
 )
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "PaymentVoucherAllocation",
     "PaymentVoucherAdjustment",
     "PaymentVoucherAdvanceAdjustment",
+    "PaymentVoucherAttachment",
 ]

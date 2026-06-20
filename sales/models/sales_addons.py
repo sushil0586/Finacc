@@ -11,6 +11,12 @@ from sales.models.sales_core import SalesInvoiceHeader
 ZERO2 = Decimal("0.00")
 
 
+def _sales_attachment_upload_to(instance: "SalesAttachment", filename: str) -> str:
+    header_id = getattr(instance, "header_id", None) or "unassigned"
+    entity_id = getattr(getattr(instance, "header", None), "entity_id", None) or "entity"
+    return f"sales/attachments/{entity_id}/{header_id}/{filename}"
+
+
 class SalesChargeType(TrackingModel):
     class BaseCategory(models.TextChoices):
         FREIGHT = "FREIGHT", "Freight"
@@ -59,6 +65,34 @@ class SalesChargeType(TrackingModel):
 
     def __str__(self) -> str:
         return f"{self.code} - {self.name}"
+
+
+class SalesAttachment(TrackingModel):
+    header = models.ForeignKey(
+        SalesInvoiceHeader,
+        related_name="attachments",
+        on_delete=models.CASCADE,
+        db_index=True,
+    )
+    file = models.FileField(upload_to=_sales_attachment_upload_to)
+    original_name = models.CharField(max_length=255, blank=True, null=True)
+    content_type = models.CharField(max_length=100, blank=True, null=True)
+    uploaded_by = models.ForeignKey(
+        "Authentication.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="sales_attachments_uploaded",
+    )
+
+    class Meta:
+        db_table = "sales_attachment"
+        indexes = [
+            models.Index(fields=["header", "created_at"], name="ix_sales_att_hdr_created"),
+        ]
+
+    def __str__(self) -> str:
+        return self.original_name or self.file.name.split("/")[-1]
 
 
 class SalesChargeLine(TrackingModel):
