@@ -14,7 +14,7 @@ from assets.models import AssetCategory
 from catalog.bulk_products import commit_payload as commit_product_bulk_payload
 from catalog.bulk_products import export_payload as export_product_bulk_payload
 from catalog.bulk_products import template_payload as product_bulk_template_payload
-from catalog.models import BarcodeLabelTemplate, Brand, HsnSac, OpeningStockByLocation, PriceList, Product, ProductAttribute, ProductAttributeValue, ProductBarcode, ProductCategory, ProductClassification, ProductGstRate, ProductImage, ProductPlanning, ProductPrice, ProductPurchaseBehavior, UnitOfMeasure
+from catalog.models import BarcodeLabelTemplate, Brand, GstType, HsnSac, OpeningStockByLocation, PriceList, Product, ProductAttribute, ProductAttributeValue, ProductBarcode, ProductCategory, ProductClassification, ProductGstRate, ProductImage, ProductPlanning, ProductPrice, ProductPurchaseBehavior, UnitOfMeasure
 from catalog.serializers import (
     BrandSerializer,
     HsnSacSerializer,
@@ -269,6 +269,105 @@ class CatalogPhase1Tests(TestCase):
         self.assertEqual(
             response.data["detail"],
             "Product cannot be deleted because it is referenced in other transactions. Remove the related records and try again."
+        )
+
+    def test_product_category_delete_returns_clean_message_when_referenced(self):
+        category = ProductCategory.objects.create(entity=self.entity, pcategoryname="Delete Locked Category")
+        self._create_product(sku="CAT-LOCK-001", productcategory=category)
+
+        response = self.client.delete(f"/api/catalog/product-categories/{category.id}/?entity={self.entity.id}")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "product_category_delete_blocked")
+        self.assertEqual(
+            response.data["detail"],
+            "Product category cannot be deleted because it is referenced by products or child categories. Remove the related records and try again."
+        )
+
+    def test_brand_delete_returns_clean_message_when_referenced(self):
+        brand = Brand.objects.create(entity=self.entity, name="Delete Locked Brand", description="")
+        self._create_product(sku="BR-LOCK-001", brand=brand)
+
+        response = self.client.delete(f"/api/catalog/brands/{brand.id}/?entity={self.entity.id}")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "brand_delete_blocked")
+        self.assertEqual(
+            response.data["detail"],
+            "Brand cannot be deleted because it is referenced by products. Remove the related records and try again."
+        )
+
+    def test_uom_delete_returns_clean_message_when_referenced(self):
+        uom = UnitOfMeasure.objects.create(entity=self.entity, code="LCKDUOM", description="Locked UOM")
+        self._create_product(sku="UOM-LOCK-001", base_uom=uom)
+
+        response = self.client.delete(f"/api/catalog/uoms/{uom.id}/?entity={self.entity.id}")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "uom_delete_blocked")
+        self.assertEqual(
+            response.data["detail"],
+            "UOM cannot be deleted because it is referenced by products or stock records. Remove the related records and try again."
+        )
+
+    def test_hsn_sac_delete_returns_clean_message_when_referenced(self):
+        hsn = HsnSac.objects.create(entity=self.entity, code="778899", description="Delete Locked HSN")
+        product = self._create_product(sku="HSN-LOCK-001")
+        ProductGstRate.objects.create(
+            product=product,
+            hsn=hsn,
+            gst_type=GstType.REGULAR,
+            sgst=Decimal("9.00"),
+            cgst=Decimal("9.00"),
+            igst=Decimal("18.00"),
+            cess=Decimal("0.00"),
+            valid_from=timezone.now().date(),
+            isdefault=True,
+        )
+
+        response = self.client.delete(f"/api/catalog/hsn-sac/{hsn.id}/?entity={self.entity.id}")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "hsn_sac_delete_blocked")
+        self.assertEqual(
+            response.data["detail"],
+            "HSN / SAC cannot be deleted because it is referenced by GST rows or products. Remove the related records and try again."
+        )
+
+    def test_price_list_delete_returns_clean_message_when_referenced(self):
+        price_list = PriceList.objects.create(entity=self.entity, name="Delete Locked Price List", description="")
+        product = self._create_product(sku="PL-LOCK-001")
+        ProductPrice.objects.create(
+            product=product,
+            pricelist=price_list,
+            uom=self.uom,
+            selling_price=Decimal("100.00"),
+            mrp=Decimal("120.00"),
+            purchase_rate=Decimal("80.00"),
+            effective_from=timezone.now().date(),
+        )
+
+        response = self.client.delete(f"/api/catalog/pricelists/{price_list.id}/?entity={self.entity.id}")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "price_list_delete_blocked")
+        self.assertEqual(
+            response.data["detail"],
+            "Price list cannot be deleted because it is referenced by product price rows. Remove the related records and try again."
+        )
+
+    def test_product_attribute_delete_returns_clean_message_when_referenced(self):
+        attribute = ProductAttribute.objects.create(entity=self.entity, name="Delete Locked Attribute", data_type="char")
+        product = self._create_product(sku="PA-LOCK-001")
+        ProductAttributeValue.objects.create(product=product, attribute=attribute, value_char="Blue")
+
+        response = self.client.delete(f"/api/catalog/product-attributes/{attribute.id}/?entity={self.entity.id}")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "product_attribute_delete_blocked")
+        self.assertEqual(
+            response.data["detail"],
+            "Product attribute cannot be deleted because it is referenced by product attribute values. Remove the related records and try again."
         )
 
     def test_master_serializers_return_friendly_duplicate_messages(self):

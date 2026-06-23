@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 
+from django.db import transaction
 from rest_framework import serializers, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -13,6 +14,20 @@ from financial.models import (
     InvoiceCustomFieldDefinition,
     InvoiceCustomFieldDefault,
 )
+from helpers.utils.meta_cache import (
+    PURCHASE_META_NAMESPACES,
+    SALES_META_NAMESPACES,
+    bump_meta_namespaces,
+)
+
+
+def _meta_namespaces_for_module(module: str | None) -> list[str]:
+    normalized = str(module or "").strip().lower()
+    if normalized == InvoiceCustomFieldDefinition.Module.PURCHASE_INVOICE:
+        return PURCHASE_META_NAMESPACES
+    if normalized == InvoiceCustomFieldDefinition.Module.SALES_INVOICE:
+        return SALES_META_NAMESPACES
+    return []
 
 
 class InvoiceCustomFieldDefinitionSerializer(serializers.ModelSerializer):
@@ -172,6 +187,9 @@ class InvoiceCustomFieldDefinitionListCreateAPIView(APIView):
         ser = InvoiceCustomFieldDefinitionSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         obj = ser.save()
+        namespaces = _meta_namespaces_for_module(obj.module)
+        if namespaces:
+            transaction.on_commit(lambda: bump_meta_namespaces(namespaces))
         return Response(InvoiceCustomFieldDefinitionSerializer(obj).data, status=status.HTTP_201_CREATED)
 
 
@@ -180,9 +198,13 @@ class InvoiceCustomFieldDefinitionDetailAPIView(APIView):
 
     def patch(self, request, pk: int):
         obj = get_object_or_404(InvoiceCustomFieldDefinition, pk=pk)
+        previous_module = obj.module
         ser = InvoiceCustomFieldDefinitionSerializer(obj, data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
-        ser.save()
+        saved = ser.save()
+        namespaces = sorted(set(_meta_namespaces_for_module(previous_module) + _meta_namespaces_for_module(saved.module)))
+        if namespaces:
+            transaction.on_commit(lambda: bump_meta_namespaces(namespaces))
         return Response(ser.data, status=200)
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 from datetime import date
 from calendar import monthrange
 import csv
+import mimetypes
 from io import BytesIO
 from decimal import Decimal
 
@@ -23,8 +24,10 @@ from pypdf import PdfReader, PdfWriter
 
 from financial.profile_access import account_pan
 from purchase.models.purchase_core import PurchaseInvoiceHeader
+from purchase.models.itc_models import PurchaseItcAction
 from purchase.models.purchase_statutory import PurchaseStatutoryChallan, PurchaseStatutoryReturn, PurchaseStatutoryReturnLine
 from rbac.services import EffectivePermissionService
+from purchase.services.purchase_invoice_actions import PurchaseInvoiceActions
 from purchase.serializers.purchase_statutory import (
     PurchaseStatutoryChallanSerializer,
     PurchaseStatutoryChallanCreateInputSerializer,
@@ -537,6 +540,90 @@ class PurchaseStatutoryItcStatusRegisterAPIView(APIView):
         return Response(payload)
 
 
+class PurchaseStatutoryItcStatusRegisterReviewAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk: int):
+        entity_id, entityfinid_id, subentity_id = _parse_scope(request)
+        _require_statutory_manage(request, entity_id)
+
+        header = PurchaseInvoiceHeader.objects.filter(
+            pk=pk,
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+        ).first()
+        if not header:
+            raise ValidationError({"detail": "Purchase invoice not found for scope."})
+        if subentity_id is None:
+            if header.subentity_id is not None:
+                raise ValidationError({"detail": "Purchase invoice not found for scope."})
+        elif int(header.subentity_id or 0) != int(subentity_id):
+            raise ValidationError({"detail": "Purchase invoice not found for scope."})
+
+        try:
+            target_status = int(request.data.get("target_status"))
+        except (TypeError, ValueError):
+            raise ValidationError({"detail": "target_status is required and must be an integer."})
+
+        claim_period = (request.data.get("claim_period") or "").strip()
+        block_reason = (request.data.get("block_reason") or "").strip()
+        review_comment = (request.data.get("review_comment") or "").strip()
+
+        try:
+            if target_status == int(PurchaseInvoiceHeader.ItcClaimStatus.CLAIMED):
+                if not claim_period:
+                    raise ValidationError({"detail": "claim_period is required when target_status is Claimed."})
+                result = PurchaseInvoiceActions.mark_itc_claimed(pk, claim_period, acted_by_id=request.user.id)
+            elif target_status == int(PurchaseInvoiceHeader.ItcClaimStatus.BLOCKED):
+                if not block_reason:
+                    raise ValidationError({"detail": "block_reason is required when target_status is Blocked."})
+                result = PurchaseInvoiceActions.mark_itc_blocked(pk, block_reason, acted_by_id=request.user.id)
+            elif target_status == int(PurchaseInvoiceHeader.ItcClaimStatus.REVERSED):
+                if not block_reason:
+                    raise ValidationError({"detail": "block_reason is required when target_status is Reversed."})
+                result = PurchaseInvoiceActions.mark_itc_reversed(pk, block_reason, acted_by_id=request.user.id)
+            elif target_status == int(PurchaseInvoiceHeader.ItcClaimStatus.PENDING):
+                if int(getattr(header, "itc_claim_status", PurchaseInvoiceHeader.ItcClaimStatus.PENDING)) == int(PurchaseInvoiceHeader.ItcClaimStatus.BLOCKED):
+                    result = PurchaseInvoiceActions.mark_itc_unblocked(
+                        pk,
+                        reason=block_reason or None,
+                        acted_by_id=request.user.id,
+                    )
+                else:
+                    result = PurchaseInvoiceActions.mark_itc_pending(pk, acted_by_id=request.user.id)
+            else:
+                raise ValidationError({"detail": "Unsupported target_status for statutory ITC review."})
+        except ValueError as e:
+            raise ValidationError({"detail": str(e)})
+
+        header.refresh_from_db()
+        if review_comment:
+            latest_action = PurchaseItcAction.objects.filter(header_id=pk).order_by("-acted_at", "-id").first()
+            if latest_action is not None:
+                latest_action.notes = review_comment[:1000]
+                latest_action.save(update_fields=["notes", "updated_at"])
+
+        try:
+            payload = PurchaseStatutoryService.itc_status_register(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                date_from=None,
+                date_to=None,
+                itc_claim_status=None,
+                gstr2b_match_status=None,
+                include_cancelled=False,
+            )
+        except ValueError as e:
+            raise ValidationError({"detail": str(e)})
+
+        row = next((item for item in payload.get("rows", []) if int(item.get("header_id") or 0) == int(pk)), None)
+        if row is None:
+            raise ValidationError({"detail": "Reviewed ITC row is no longer available in current scope."})
+
+        return Response({"message": result.message, "row": row})
+
+
 class PurchaseStatutoryReviewNoteAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -898,6 +985,22 @@ class PurchaseStatutoryChallanExportAPIView(APIView):
         tax_type = request.query_params.get("tax_type")
         if tax_type:
             qs = qs.filter(tax_type=tax_type)
+        status_q = request.query_params.get("status")
+        if status_q not in (None, "", "null"):
+            qs = qs.filter(status=int(status_q))
+        date_from_raw = request.query_params.get("date_from")
+        date_to_raw = request.query_params.get("date_to")
+        if date_from_raw or date_to_raw:
+            if not date_from_raw or not date_to_raw:
+                raise ValidationError({"detail": "date_from and date_to are required together."})
+            try:
+                date_from = date.fromisoformat(str(date_from_raw))
+                date_to = date.fromisoformat(str(date_to_raw))
+            except ValueError:
+                raise ValidationError({"detail": "date_from and date_to must be YYYY-MM-DD."})
+            if date_from > date_to:
+                raise ValidationError({"detail": "date_from cannot be greater than date_to."})
+            qs = qs.filter(challan_date__gte=date_from, challan_date__lte=date_to)
         headers = [
             "id", "tax_type", "challan_no", "challan_date", "period_from", "period_to",
             "amount", "interest_amount", "late_fee_amount", "penalty_amount", "status", "cin_no", "bsr_code",
@@ -951,6 +1054,22 @@ class PurchaseStatutoryReturnExportAPIView(APIView):
         tax_type = request.query_params.get("tax_type")
         if tax_type:
             qs = qs.filter(tax_type=tax_type)
+        status_q = request.query_params.get("status")
+        if status_q not in (None, "", "null"):
+            qs = qs.filter(status=int(status_q))
+        date_from_raw = request.query_params.get("date_from")
+        date_to_raw = request.query_params.get("date_to")
+        if date_from_raw or date_to_raw:
+            if not date_from_raw or not date_to_raw:
+                raise ValidationError({"detail": "date_from and date_to are required together."})
+            try:
+                date_from = date.fromisoformat(str(date_from_raw))
+                date_to = date.fromisoformat(str(date_to_raw))
+            except ValueError:
+                raise ValidationError({"detail": "date_from and date_to must be YYYY-MM-DD."})
+            if date_from > date_to:
+                raise ValidationError({"detail": "date_from cannot be greater than date_to."})
+            qs = qs.filter(period_to__gte=date_from, period_from__lte=date_to)
         headers = [
             "id", "tax_type", "return_code", "period_from", "period_to",
             "amount", "interest_amount", "late_fee_amount", "penalty_amount", "status", "ack_no", "arn_no",
@@ -2121,3 +2240,65 @@ class PurchaseStatutoryReturnForm16AOfficialUploadAPIView(APIView):
         except ValueError as e:
             raise ValidationError({"detail": str(e)})
         return Response({"message": "Official Form16A document uploaded.", "data": payload}, status=status.HTTP_201_CREATED)
+
+
+class PurchaseStatutoryReturnForm16ACertificatesAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, pk: int):
+        _require_for_pk_if_resolvable(request, PurchaseStatutoryReturn, pk, level="view")
+        try:
+            payload = PurchaseStatutoryService.list_form16a_certificates(filing_id=pk)
+        except ValueError as e:
+            raise ValidationError({"detail": str(e)})
+        return Response(payload)
+
+
+class PurchaseStatutoryReturnForm16ACertificateUploadAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request, pk: int, deductee_key: str):
+        _require_for_pk_if_resolvable(request, PurchaseStatutoryReturn, pk, level="manage")
+        document = request.FILES.get("document")
+        if not document:
+            raise ValidationError({"detail": "document file is required."})
+        source = request.data.get("source") or "TRACES"
+        certificate_no = request.data.get("certificate_no")
+        remarks = request.data.get("remarks")
+        try:
+            payload = PurchaseStatutoryService.attach_traces_form16a_certificate(
+                filing_id=pk,
+                deductee_key=deductee_key,
+                document=document,
+                uploaded_by_id=request.user.id,
+                source=source,
+                certificate_no=certificate_no,
+                remarks=remarks,
+            )
+        except ValueError as e:
+            raise ValidationError({"detail": str(e)})
+        return Response({"message": "TRACES Form16A certificate uploaded.", "data": payload}, status=status.HTTP_201_CREATED)
+
+
+class PurchaseStatutoryReturnForm16ACertificateDownloadAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, pk: int, deductee_key: str):
+        _require_for_pk_if_resolvable(request, PurchaseStatutoryReturn, pk, level="view")
+        try:
+            payload = PurchaseStatutoryService.traces_form16a_certificate_download_payload(
+                filing_id=pk,
+                deductee_key=deductee_key,
+            )
+        except ValueError as e:
+            raise ValidationError({"detail": str(e)})
+
+        if payload.get("mode") != "file":
+            raise ValidationError({"detail": "TRACES Form16A certificate file is not available."})
+        file_field = payload.get("file_field")
+        filename = payload.get("filename") or f"traces_form16a_{pk}.pdf"
+        guessed_type = mimetypes.guess_type(str(filename))[0] or "application/octet-stream"
+        response = FileResponse(file_field.open("rb"), content_type=guessed_type)
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response

@@ -939,6 +939,26 @@ class PurchaseInvoiceService:
     # ---------------------------
     @staticmethod
     def derive_tax_regime(attrs: Dict[str, Any], instance: Optional[PurchaseInvoiceHeader] = None) -> DerivedRegime:
+        entity_id = attrs.get("entity") or (instance.entity_id if instance else None)
+        subentity_id = attrs.get("subentity") or (instance.subentity_id if instance else None)
+        if hasattr(entity_id, "id"):
+            entity_id = entity_id.id
+        if hasattr(subentity_id, "id"):
+            subentity_id = subentity_id.id
+
+        auto_derive = True
+        if entity_id:
+            try:
+                auto_derive = PurchaseSettingsService.get_policy(entity_id, subentity_id).auto_derive_tax_regime
+            except Exception:
+                auto_derive = True
+
+        tax_regime = attrs.get("tax_regime", (instance.tax_regime if instance else int(TaxRegime.INTRA)))
+        is_igst = attrs.get("is_igst", (instance.is_igst if instance else int(tax_regime) == int(TaxRegime.INTER)))
+
+        if not auto_derive:
+            return DerivedRegime(tax_regime=int(tax_regime), is_igst=bool(is_igst))
+
         vendor_state = attrs.get("vendor_state") or (instance.vendor_state if instance else None)
         pos_state = attrs.get("place_of_supply_state") or (instance.place_of_supply_state if instance else None)
         supplier_state = attrs.get("supplier_state") or (instance.supplier_state if instance else None)
@@ -949,9 +969,6 @@ class PurchaseInvoiceService:
             if vendor_state.id == compare_state.id:
                 return DerivedRegime(tax_regime=int(TaxRegime.INTRA), is_igst=False)
             return DerivedRegime(tax_regime=int(TaxRegime.INTER), is_igst=True)
-
-        tax_regime = attrs.get("tax_regime", (instance.tax_regime if instance else int(TaxRegime.INTRA)))
-        is_igst = attrs.get("is_igst", (instance.is_igst if instance else False))
         return DerivedRegime(tax_regime=int(tax_regime), is_igst=bool(is_igst))
 
     # ---------------------------
@@ -1099,6 +1116,23 @@ class PurchaseInvoiceService:
 
         if PurchaseInvoiceService.is_import_goods_supply(attrs, instance=instance) and header_itc:
             raise ValueError("Import goods supplier invoice cannot create normal ITC in this flow.")
+
+        entity_id = attrs.get("entity") or (instance.entity_id if instance else None)
+        subentity_id = attrs.get("subentity") or (instance.subentity_id if instance else None)
+        if hasattr(entity_id, "id"):
+            entity_id = entity_id.id
+        if hasattr(subentity_id, "id"):
+            subentity_id = subentity_id.id
+        if entity_id:
+            policy = PurchaseSettingsService.get_policy(entity_id, subentity_id)
+            if not policy.allow_mixed_taxability:
+                for i, ln in enumerate(lines or [], start=1):
+                    line_taxability = int(ln.get("taxability", header_taxability))
+                    if line_taxability != int(header_taxability):
+                        raise ValueError(
+                            f"Line {i}: mixed taxability is disabled by purchase settings. "
+                            "Keep all purchase lines aligned with the header taxability."
+                        )
 
         doc_type = int(attrs.get("doc_type", (instance.doc_type if instance else DocType.TAX_INVOICE)))
         ref_document = attrs.get("ref_document") or (instance.ref_document if instance else None)
@@ -1433,6 +1467,8 @@ class PurchaseInvoiceService:
         gst_rate = q2(ln.get("gst_rate", ZERO2))
         taxability = int(ln.get("taxability", header_attrs.get("default_taxability", Taxability.TAXABLE)))
         is_rcm = bool(header_attrs.get("is_reverse_charge", False))
+        suppress_supplier_gst = PurchaseInvoiceService.should_suppress_supplier_gst(attrs=header_attrs)
+        is_gst_manual = bool(ln.get("is_gst_manual", False)) and not suppress_supplier_gst
 
         # inclusive flag fallback: line -> header default -> False
         is_inclusive = ln.get("is_rate_inclusive_of_tax")
@@ -1450,22 +1486,32 @@ class PurchaseInvoiceService:
         after_disc = PurchaseInvoiceService._discounted_amount(gross, dt, dp, da)
 
         # default cess
+        cess_type = str(
+            ln.get("cess_type")
+            or getattr(PurchaseInvoiceLine, "CessType", None).NONE
+        ).strip().lower()
         cess_percent = q2(ln.get("cess_percent", ZERO2))
         if cess_percent < 0:
             cess_percent = ZERO2
         cess_percent = min(cess_percent, Decimal("100.00"))
+        cess_specific_amount = q2(ln.get("cess_specific_amount", ZERO2))
+        if cess_specific_amount < ZERO2:
+            cess_specific_amount = ZERO2
 
         # If non-taxable buckets => GST 0, cess 0 (unless you explicitly want cess for some cases)
         if taxability in (Taxability.EXEMPT, Taxability.NIL_RATED, Taxability.NON_GST):
             taxable_value = q2(after_disc) if not is_inclusive else q2(after_disc)  # show as value basis
             cgst = sgst = igst = ZERO2
             cess_amount = ZERO2
+            cess_type = PurchaseInvoiceLine.CessType.NONE
+            cess_percent = ZERO2
+            cess_specific_amount = ZERO2
             cgst_p = sgst_p = igst_p = ZERO2
             gst_rate_eff = ZERO2
         else:
             # Reverse charge invoice: GST amounts must be 0 on invoice,
             # taxable_value remains (for reporting), but tax components 0.
-            if PurchaseInvoiceService.should_suppress_supplier_gst(attrs=header_attrs):
+            if suppress_supplier_gst:
                 if is_inclusive and gst_rate > 0:
                     # If inclusive+RCM, after_disc includes tax in price but invoice shouldn't show GST.
                     # We still back-calc taxable (recommended), so that taxable_value is correct.
@@ -1475,6 +1521,8 @@ class PurchaseInvoiceService:
 
                 cgst = sgst = igst = ZERO2
                 cess_amount = ZERO2
+                cess_percent = ZERO2
+                cess_specific_amount = ZERO2
                 cgst_p = sgst_p = igst_p = ZERO2
                 gst_rate_eff = gst_rate  # keep rate for reporting
             else:
@@ -1484,10 +1532,26 @@ class PurchaseInvoiceService:
                 else:
                     taxable_value = q2(after_disc)
 
-                cgst, sgst, igst = PurchaseInvoiceService._split_gst(taxable_value, gst_rate, derived)
+                if is_gst_manual:
+                    cgst = q2(ln.get("cgst_amount", ZERO2)) if int(derived.tax_regime) == int(TaxRegime.INTRA) else ZERO2
+                    sgst = q2(ln.get("sgst_amount", ZERO2)) if int(derived.tax_regime) == int(TaxRegime.INTRA) else ZERO2
+                    igst = q2(ln.get("igst_amount", ZERO2)) if int(derived.tax_regime) == int(TaxRegime.INTER) else ZERO2
+                else:
+                    cgst, sgst, igst = PurchaseInvoiceService._split_gst(taxable_value, gst_rate, derived)
 
-                # cess calculated on taxable_value
-                cess_amount = q2(taxable_value * cess_percent / Decimal("100"))
+                if cess_type == PurchaseInvoiceLine.CessType.AD_VALOREM:
+                    cess_amount = q2(taxable_value * cess_percent / Decimal("100"))
+                    cess_specific_amount = ZERO2
+                elif cess_type == PurchaseInvoiceLine.CessType.SPECIFIC:
+                    cess_amount = q2(qty * cess_specific_amount)
+                    cess_percent = ZERO2
+                elif cess_type == PurchaseInvoiceLine.CessType.COMPOSITE:
+                    cess_amount = q2((taxable_value * cess_percent / Decimal("100")) + (qty * cess_specific_amount))
+                else:
+                    cess_type = PurchaseInvoiceLine.CessType.NONE
+                    cess_percent = ZERO2
+                    cess_specific_amount = ZERO2
+                    cess_amount = ZERO2
 
                 if int(derived.tax_regime) == int(TaxRegime.INTRA):
                     cgst_p = q2(gst_rate / Decimal("2"))
@@ -1511,7 +1575,9 @@ class PurchaseInvoiceService:
         ln["cgst_amount"] = q2(cgst)
         ln["sgst_amount"] = q2(sgst)
         ln["igst_amount"] = q2(igst)
+        ln["cess_type"] = cess_type
         ln["cess_percent"] = q2(cess_percent)
+        ln["cess_specific_amount"] = q2(cess_specific_amount)
         ln["cess_amount"] = q2(cess_amount)
         ln["line_total"] = q2(line_total)
         ln["is_rate_inclusive_of_tax"] = bool(is_inclusive)
@@ -1780,7 +1846,7 @@ class PurchaseInvoiceService:
             if line_id and line_id in existing:
                 obj = existing[line_id]
                 for k, v in ln.items():
-                    if k != "id":
+                    if k not in {"id", "is_gst_manual"}:
                         setattr(obj, k, v)
                 if not ln.get("line_no"):
                     obj.line_no = obj.line_no
@@ -1790,7 +1856,10 @@ class PurchaseInvoiceService:
                 if not ln.get("line_no"):
                     ln["line_no"] = next_line_no
                     next_line_no += 1
-                obj = PurchaseInvoiceLine(header=header, **{k: v for k, v in ln.items() if k != "id"})
+                obj = PurchaseInvoiceLine(
+                    header=header,
+                    **{k: v for k, v in ln.items() if k not in {"id", "is_gst_manual"}}
+                )
                 obj.full_clean()
                 obj.save()
 
@@ -2045,6 +2114,15 @@ class PurchaseInvoiceService:
 
     @staticmethod
     def validate_charges(*, header: PurchaseInvoiceHeader, charges: List[Dict[str, Any]]) -> None:
+        policy = PurchaseSettingsService.get_policy(header.entity_id, header.subentity_id)
+        header_taxability = int(getattr(header, "default_taxability", PurchaseInvoiceHeader.Taxability.TAXABLE))
+        header_charge_taxability = {
+            int(PurchaseInvoiceHeader.Taxability.TAXABLE): PurchaseChargeLine.Taxability.TAXABLE,
+            int(PurchaseInvoiceHeader.Taxability.EXEMPT): PurchaseChargeLine.Taxability.EXEMPT,
+            int(PurchaseInvoiceHeader.Taxability.NIL_RATED): PurchaseChargeLine.Taxability.NIL,
+            int(PurchaseInvoiceHeader.Taxability.NON_GST): PurchaseChargeLine.Taxability.NON_GST,
+        }.get(header_taxability, PurchaseChargeLine.Taxability.TAXABLE)
+
         seen_line_no: set[int] = set()
         for i, row in enumerate(charges or [], start=1):
             row = PurchaseInvoiceService._resolve_charge_master(header=header, row=row)
@@ -2065,6 +2143,12 @@ class PurchaseInvoiceService:
             gst_rate = q2(row.get("gst_rate") or ZERO2)
             taxability = str(row.get("taxability") or PurchaseChargeLine.Taxability.TAXABLE)
             hsn = (row.get("hsn_sac_code") or "").strip()
+
+            if not policy.allow_mixed_taxability and taxability != header_charge_taxability:
+                raise ValueError(
+                    f"Charge row {i}: mixed taxability is disabled by purchase settings. "
+                    "Keep all additional charges aligned with the header taxability."
+                )
 
             if taxable < ZERO2:
                 raise ValueError(f"Charge row {i}: taxable_value must be >= 0.")
@@ -2309,7 +2393,10 @@ class PurchaseInvoiceService:
             else:
                 max_ln = max(max_ln, int(ln_no))
             ln["line_no"] = ln_no
-            obj = PurchaseInvoiceLine(header=header, **ln)
+            obj = PurchaseInvoiceLine(
+                header=header,
+                **{k: v for k, v in ln.items() if k != "is_gst_manual"}
+            )
             obj.full_clean()
             objs.append(obj)
         if objs:

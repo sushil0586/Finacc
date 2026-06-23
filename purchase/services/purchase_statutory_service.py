@@ -6,6 +6,7 @@ from calendar import monthrange
 from decimal import Decimal, ROUND_HALF_UP
 import re
 from typing import Dict, List, Optional
+from collections import defaultdict
 
 from django.db import transaction
 from django.db.models import Sum, Q
@@ -17,6 +18,7 @@ from purchase.services.purchase_settings_service import PurchaseSettingsService
 from purchase.models.purchase_statutory import (
     PurchaseStatutoryChallan,
     PurchaseStatutoryChallanLine,
+    PurchaseStatutoryForm16ADeducteeDocument,
     PurchaseStatutoryForm16AOfficialDocument,
     PurchaseStatutoryReviewNote,
     PurchaseStatutoryReviewNoteEvent,
@@ -208,6 +210,7 @@ class PurchaseStatutoryService:
         tax_type: str,
         line_rows: List[Dict],
         exclude_filing_id: Optional[int] = None,
+        exclude_revision_root_return_id: Optional[int] = None,
     ) -> None:
         requested_by_key = PurchaseStatutoryService._requested_return_amounts_by_key(line_rows)
         if not requested_by_key:
@@ -249,6 +252,11 @@ class PurchaseStatutoryService:
             consumed_rows = consumed_rows.filter(filing__subentity_id=subentity_id)
         if exclude_filing_id:
             consumed_rows = consumed_rows.exclude(filing_id=exclude_filing_id)
+        if exclude_revision_root_return_id:
+            consumed_rows = consumed_rows.exclude(
+                Q(filing_id=exclude_revision_root_return_id) |
+                Q(filing__original_return_id=exclude_revision_root_return_id)
+            )
         consumed_by_key = {
             (int(row["header_id"]), int(row["challan_id"])): q2(row["total"])
             for row in consumed_rows.values("header_id", "challan_id").annotate(total=Sum("amount"))
@@ -298,6 +306,24 @@ class PurchaseStatutoryService:
             "total_amount": str(q2(sum((q2(r.get("amount") or 0) for r in line_rows), ZERO2))),
             "lines": line_rows,
         }
+
+    @staticmethod
+    def _safe_form16a_token(value: Optional[str]) -> str:
+        token = re.sub(r"[^A-Z0-9]+", "_", str(value or "").strip().upper())
+        return token.strip("_")
+
+    @staticmethod
+    def _form16a_deductee_key(line: PurchaseStatutoryReturnLine) -> str:
+        pan = PurchaseStatutoryService._safe_form16a_token(line.deductee_pan_snapshot)
+        gstin = PurchaseStatutoryService._safe_form16a_token(line.deductee_gstin_snapshot)
+        tax_id = PurchaseStatutoryService._safe_form16a_token(line.deductee_tax_id_snapshot)
+        if pan:
+            return f"PAN_{pan}"
+        if gstin:
+            return f"GSTIN_{gstin}"
+        if tax_id:
+            return f"TAXID_{tax_id}"
+        return f"LINE_{int(line.id or line.header_id or 0)}"
 
     @staticmethod
     def _is_form16a_eligible_return(filing: PurchaseStatutoryReturn) -> bool:
@@ -1405,6 +1431,7 @@ class PurchaseStatutoryService:
             subentity_id=subentity_id,
             tax_type=tax_type,
             line_rows=line_rows,
+            exclude_revision_root_return_id=original_return_id,
         )
         if not original_return_id:
             PurchaseStatutoryService._assert_unique_original_return(
@@ -1580,6 +1607,7 @@ class PurchaseStatutoryService:
             tax_type=tax_type,
             line_rows=line_rows,
             exclude_filing_id=filing_id,
+            exclude_revision_root_return_id=original_return_id,
         )
         if not original_return_id:
             PurchaseStatutoryService._assert_unique_original_return(
@@ -2075,6 +2103,7 @@ class PurchaseStatutoryService:
                     "acted_at": act.acted_at,
                     "acted_by": user_name,
                     "reason": act.reason,
+                    "notes": act.notes,
                 }
 
         rows: List[Dict[str, object]] = []
@@ -2178,6 +2207,9 @@ class PurchaseStatutoryService:
                     "itc_claim_period": h.itc_claim_period,
                     "itc_claimed_at": h.itc_claimed_at,
                     "itc_block_reason": h.itc_block_reason or "",
+                    "itc_review_comment": action.get("notes") or None,
+                    "itc_reviewed_at": action.get("acted_at"),
+                    "itc_reviewed_by": action.get("acted_by"),
                     "gstr2b_match_status": int(h.gstr2b_match_status or 0),
                     "gstr2b_match_status_name": h.get_gstr2b_match_status_display(),
                     "total_taxable": str(q2(getattr(h, "total_taxable", ZERO2))),
@@ -3099,6 +3131,132 @@ class PurchaseStatutoryService:
                 row["official_document_uploaded_at"] = doc.uploaded_at.isoformat() if doc.uploaded_at else None
             enriched.append(row)
         return {"filing_id": filing.id, "issues": enriched}
+
+    @staticmethod
+    def list_form16a_certificates(*, filing_id: int) -> Dict[str, object]:
+        filing = (
+            PurchaseStatutoryReturn.objects
+            .prefetch_related("lines__header", "lines__challan")
+            .get(pk=filing_id)
+        )
+        if not PurchaseStatutoryService._is_form16a_eligible_return(filing):
+            raise ValueError("TRACES Form16A certificates are available only for IT_TDS returns 26Q/27Q in FILED/REVISED status.")
+
+        grouped: Dict[str, List[PurchaseStatutoryReturnLine]] = defaultdict(list)
+        for line in filing.lines.all():
+            grouped[PurchaseStatutoryService._form16a_deductee_key(line)].append(line)
+
+        existing_docs = {
+            str(doc.deductee_key): doc
+            for doc in PurchaseStatutoryForm16ADeducteeDocument.objects.filter(filing_id=filing_id)
+        }
+        rows: List[Dict[str, object]] = []
+        for deductee_key, lines in grouped.items():
+            sorted_lines = sorted(lines, key=lambda line: (getattr(line.header, "bill_date", None) or date.min, int(line.id or 0)))
+            first = sorted_lines[0]
+            bill_dates = [getattr(line.header, "bill_date", None) for line in sorted_lines if getattr(line.header, "bill_date", None)]
+            invoice_nos = [getattr(line.header, "purchase_number", "") for line in sorted_lines if getattr(line.header, "purchase_number", "")]
+            section_codes = sorted({str(line.section_snapshot_code or "").strip() for line in sorted_lines if str(line.section_snapshot_code or "").strip()})
+            challan_refs = sorted({
+                str(getattr(line.challan, "challan_no", "") or line.cin_snapshot or "").strip()
+                for line in sorted_lines
+                if str(getattr(line.challan, "challan_no", "") or line.cin_snapshot or "").strip()
+            })
+            total_amount = q2(sum((q2(line.amount) for line in sorted_lines), ZERO2))
+            doc = existing_docs.get(deductee_key)
+            rows.append({
+                "deductee_key": deductee_key,
+                "invoice_label": ", ".join(invoice_nos[:3]) if invoice_nos else "--",
+                "invoice_nos": invoice_nos,
+                "bill_date_from": str(min(bill_dates)) if bill_dates else None,
+                "bill_date_to": str(max(bill_dates)) if bill_dates else None,
+                "pan": first.deductee_pan_snapshot or "",
+                "gstin": first.deductee_gstin_snapshot or "",
+                "tax_id": first.deductee_tax_id_snapshot or "",
+                "section_codes": section_codes,
+                "challan_refs": challan_refs,
+                "total_amount": str(total_amount),
+                "line_count": len(sorted_lines),
+                "certificate_no": (doc.certificate_no if doc else "") or "",
+                "official_document_uploaded": bool(doc and doc.document),
+                "official_document_uploaded_at": doc.uploaded_at.isoformat() if doc and doc.uploaded_at else None,
+            })
+        rows.sort(key=lambda row: (str(row.get("pan") or row.get("tax_id") or row.get("gstin") or row.get("deductee_key") or "")))
+        return {"filing_id": filing.id, "certificates": rows}
+
+    @staticmethod
+    @transaction.atomic
+    def attach_traces_form16a_certificate(
+        *,
+        filing_id: int,
+        deductee_key: str,
+        document,
+        uploaded_by_id: Optional[int],
+        source: Optional[str] = "TRACES",
+        certificate_no: Optional[str] = None,
+        remarks: Optional[str] = None,
+    ) -> Dict[str, object]:
+        filing = (
+            PurchaseStatutoryReturn.objects
+            .select_for_update()
+            .prefetch_related("lines")
+            .get(pk=filing_id)
+        )
+        if not PurchaseStatutoryService._is_form16a_eligible_return(filing):
+            raise ValueError("TRACES Form16A upload is allowed only for IT_TDS returns 26Q/27Q in FILED/REVISED status.")
+
+        normalized_key = str(deductee_key or "").strip()
+        if not normalized_key:
+            raise ValueError("Deductee key is required.")
+        matching_lines = [line for line in filing.lines.all() if PurchaseStatutoryService._form16a_deductee_key(line) == normalized_key]
+        if not matching_lines:
+            raise ValueError("Deductee certificate group not found for this return.")
+
+        first = matching_lines[0]
+        doc_obj, _ = PurchaseStatutoryForm16ADeducteeDocument.objects.update_or_create(
+            filing_id=filing_id,
+            deductee_key=normalized_key,
+            defaults={
+                "deductee_pan": first.deductee_pan_snapshot or None,
+                "deductee_tax_id": first.deductee_tax_id_snapshot or None,
+                "deductee_gstin": first.deductee_gstin_snapshot or None,
+                "source": (source or "TRACES").strip() or "TRACES",
+                "certificate_no": PurchaseStatutoryService._clean_text(certificate_no),
+                "remarks": PurchaseStatutoryService._clean_text(remarks),
+                "line_ids_json": [int(line.id) for line in matching_lines if line.id],
+                "document": document,
+                "uploaded_by_id": uploaded_by_id,
+                "uploaded_at": timezone.now(),
+            },
+        )
+        return {
+            "filing_id": filing_id,
+            "deductee_key": normalized_key,
+            "document_id": doc_obj.id,
+            "certificate_no": doc_obj.certificate_no,
+            "source": doc_obj.source,
+        }
+
+    @staticmethod
+    def traces_form16a_certificate_download_payload(*, filing_id: int, deductee_key: str) -> Dict[str, object]:
+        filing = PurchaseStatutoryReturn.objects.get(pk=filing_id)
+        if not PurchaseStatutoryService._is_form16a_eligible_return(filing):
+            raise ValueError("TRACES Form16A download is available only for IT_TDS returns 26Q/27Q in FILED/REVISED status.")
+        normalized_key = str(deductee_key or "").strip()
+        if not normalized_key:
+            raise ValueError("Deductee key is required.")
+        doc = PurchaseStatutoryForm16ADeducteeDocument.objects.filter(
+            filing_id=filing_id,
+            deductee_key=normalized_key,
+        ).first()
+        if not doc or not doc.document:
+            raise ValueError("TRACES Form16A certificate is not uploaded for this deductee group.")
+        filename = doc.document.name.split("/")[-1] or f"traces_form16a_{filing_id}_{normalized_key}.pdf"
+        return {
+            "mode": "file",
+            "file_field": doc.document,
+            "filename": filename,
+        }
 
     @staticmethod
     @transaction.atomic

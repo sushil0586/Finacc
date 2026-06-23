@@ -441,6 +441,23 @@ class accounttype(TrackingModel):
     def __str__(self):
         return f"{self.accounttypename}"
 
+    def delete(self, *args, **kwargs):
+        related_models = []
+
+        if self.accounthead_accounttype.exists():
+            related_models.append("accountHead")
+        if self.financial_master_rules.exists():
+            related_models.append("FinancialMasterRule")
+        if self.financial_code_series.exists():
+            related_models.append("FinancialCodeSeries")
+
+        if related_models:
+            raise ValidationError(
+                f"Cannot delete account type '{self.accounttypename}' because it is referenced in: {', '.join(sorted(related_models))}."
+            )
+
+        super().delete(*args, **kwargs)
+
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=["entity", "accounttypecode"], name="uq_accounttype_entity_accounttypecode"),

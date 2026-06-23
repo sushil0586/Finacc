@@ -21,6 +21,7 @@ from geography.models import City, Country, District, State
 from financial.seeding import FinancialSeedService
 from financial.serializers_ledger import AccountProfileV2ReadSerializer, AccountProfileV2WriteSerializer
 from financial.services_opening_balance import account_opening_txn_id
+from purchase.models.purchase_ap import VendorAdvanceBalance
 from financial.services import (
     apply_normalized_profile_payload,
     create_account_with_synced_ledger,
@@ -106,6 +107,17 @@ class FinancialLedgerSyncTests(TestCase):
         with self.assertRaises(ValidationError):
             sync_ledger_for_account(acc)
 
+    def test_account_read_serializer_reports_direct_mode_when_linked_ledger_is_missing(self):
+        acc = account.objects.create(
+            entity=self.entity_a,
+            accountname="No Ledger Account",
+            createdby=self.user,
+        )
+
+        data = AccountProfileV2ReadSerializer(acc).data
+
+        self.assertEqual(data["ledger_mode"], "direct")
+
 
 class FinancialApiContractSmokeTests(TestCase):
     def setUp(self):
@@ -116,6 +128,15 @@ class FinancialApiContractSmokeTests(TestCase):
             email_verified=True,
         )
         self.entity = Entity.objects.create(entityname="Financial API Smoke Entity", createdby=self.user)
+        self.fin_year = EntityFinancialYear.objects.create(
+            entity=self.entity,
+            desc="FY 2026-27",
+            year_code="2026-27",
+            finstartyear=timezone.make_aware(datetime(2026, 4, 1, 0, 0, 0)),
+            finendyear=timezone.make_aware(datetime(2027, 3, 31, 0, 0, 0)),
+            isactive=True,
+            createdby=self.user,
+        )
         self.client = APIClient()
         self.client.force_authenticate(self.user)
 
@@ -141,6 +162,307 @@ class FinancialApiContractSmokeTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data["accounttypename"][0], "An account type with this name already exists.")
+
+    def test_account_type_update_duplicate_name_returns_field_error(self):
+        first = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Current Assets",
+            accounttypecode="CA",
+            createdby=self.user,
+        )
+        second = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Fixed Assets",
+            accounttypecode="FA",
+            createdby=self.user,
+        )
+
+        response = self.client.patch(
+            f"/api/financial/accounttypes-v2/{second.id}",
+            {"accounttypename": first.accounttypename},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["accounttypename"][0], "An account type with this name already exists.")
+
+    def test_account_head_update_duplicate_name_returns_field_error(self):
+        acct_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Liability",
+            accounttypecode="LIA",
+            createdby=self.user,
+        )
+        first = accountHead.objects.create(
+            entity=self.entity,
+            name="Sundry Creditors",
+            code=7000,
+            accounttype=acct_type,
+            drcreffect="Credit",
+            createdby=self.user,
+        )
+        second = accountHead.objects.create(
+            entity=self.entity,
+            name="Accrued Expenses",
+            code=7001,
+            accounttype=acct_type,
+            drcreffect="Credit",
+            createdby=self.user,
+        )
+
+        response = self.client.patch(
+            f"/api/financial/accountheads-v2/{second.id}",
+            {"name": first.name},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["name"][0], "An account head with this name already exists.")
+
+    def test_purchase_invoice_form_meta_reflects_new_custom_field_after_definition_create(self):
+        initial = self.client.get(
+            f"/api/purchase/meta/invoice-form/?entity={self.entity.id}"
+        )
+        self.assertEqual(initial.status_code, 200)
+        initial_keys = {
+            row["key"]
+            for row in initial.data.get("custom_field_definitions", [])
+        }
+        self.assertNotIn("purchase_cache_probe", initial_keys)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            create_response = self.client.post(
+                "/api/financial/invoice-custom-fields/definitions/",
+                {
+                    "entity": self.entity.id,
+                    "subentity": None,
+                    "module": "purchase_invoice",
+                    "key": "purchase_cache_probe",
+                    "label": "Purchase Cache Probe",
+                    "field_type": "text",
+                    "is_required": False,
+                    "order_no": 1,
+                    "help_text": "Ensures purchase meta cache is invalidated after definition create.",
+                    "options_json": [],
+                    "applies_to_account": None,
+                    "isactive": True,
+                },
+                format="json",
+            )
+        self.assertEqual(create_response.status_code, 201)
+
+        refreshed = self.client.get(
+            f"/api/purchase/meta/invoice-form/?entity={self.entity.id}"
+        )
+        self.assertEqual(refreshed.status_code, 200)
+        refreshed_keys = {
+            row["key"]
+            for row in refreshed.data.get("custom_field_definitions", [])
+        }
+        self.assertIn("purchase_cache_probe", refreshed_keys)
+
+    def test_account_type_list_without_page_returns_plain_array(self):
+        accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Current Assets",
+            accounttypecode="CA",
+            createdby=self.user,
+        )
+
+        response = self.client.get(f"/api/financial/accounttypes-v2?entity={self.entity.id}")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsInstance(response.data, list)
+        self.assertEqual(response.data[0]["accounttypename"], "Current Assets")
+
+    def test_account_type_list_with_page_returns_paginated_payload(self):
+        for index in range(3):
+            accounttype.objects.create(
+                entity=self.entity,
+                accounttypename=f"Type {index}",
+                accounttypecode=f"T{index}",
+                createdby=self.user,
+            )
+
+        response = self.client.get(f"/api/financial/accounttypes-v2?entity={self.entity.id}&page=1&page_size=2")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 3)
+        self.assertEqual(len(response.data["results"]), 2)
+
+    def test_account_head_list_with_page_returns_paginated_payload(self):
+        acct_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Asset",
+            accounttypecode="AST",
+            createdby=self.user,
+        )
+        for index in range(3):
+            accountHead.objects.create(
+                entity=self.entity,
+                name=f"Head {index}",
+                code=7100 + index,
+                accounttype=acct_type,
+                drcreffect="Debit",
+                createdby=self.user,
+            )
+
+        response = self.client.get(f"/api/financial/accountheads-v2?entity={self.entity.id}&page=1&page_size=2")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 3)
+        self.assertEqual(len(response.data["results"]), 2)
+
+    def test_ledger_list_without_page_returns_plain_array(self):
+        acct_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Asset",
+            accounttypecode="AST",
+            createdby=self.user,
+        )
+        head = accountHead.objects.create(
+            entity=self.entity,
+            name="Cash",
+            code=7100,
+            accounttype=acct_type,
+            drcreffect="Debit",
+            createdby=self.user,
+        )
+        Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=1200,
+            name="Cash Main",
+            accounthead=head,
+            creditaccounthead=head,
+            accounttype=acct_type,
+            createdby=self.user,
+        )
+
+        response = self.client.get(f"/api/financial/ledgers?entity={self.entity.id}")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsInstance(response.data, list)
+        self.assertEqual(response.data[0]["name"], "Cash Main")
+
+    def test_ledger_list_with_page_returns_paginated_payload(self):
+        acct_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Asset",
+            accounttypecode="AST",
+            createdby=self.user,
+        )
+        head = accountHead.objects.create(
+            entity=self.entity,
+            name="Cash",
+            code=7100,
+            accounttype=acct_type,
+            drcreffect="Debit",
+            createdby=self.user,
+        )
+        for index in range(3):
+            Ledger.objects.create(
+                entity=self.entity,
+                ledger_code=1200 + index,
+                name=f"Ledger {index}",
+                accounthead=head,
+                creditaccounthead=head,
+                accounttype=acct_type,
+                createdby=self.user,
+            )
+
+        response = self.client.get(f"/api/financial/ledgers?entity={self.entity.id}&page=1&page_size=2")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 3)
+        self.assertEqual(len(response.data["results"]), 2)
+        self.assertEqual(response.data["summary"]["total"], 3)
+        self.assertEqual(response.data["summary"]["active"], 3)
+        self.assertEqual(response.data["summary"]["direct"], 3)
+        self.assertEqual(response.data["summary"]["auto_managed"], 0)
+        self.assertEqual(response.data["summary"]["party"], 0)
+
+    def test_account_list_with_page_returns_paginated_payload_with_summary(self):
+        linked = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "accountname": "Paged Vendor 1",
+                "createdby": self.user,
+            }
+        )
+        apply_normalized_profile_payload(
+            linked,
+            compliance_data={"gstno": "29ABCDE1234F1Z5", "pan": "ABCDE1234F"},
+            commercial_data={"partytype": "Vendor"},
+            createdby=self.user,
+        )
+        create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "accountname": "Paged Vendor 2",
+                "createdby": self.user,
+            }
+        )
+        account.objects.create(
+            entity=self.entity,
+            accountname="Legacy Direct Account",
+            isactive=False,
+            createdby=self.user,
+        )
+
+        response = self.client.get(
+            f"/api/financial/accounts-v2?entity={self.entity.id}&include_inactive=true&page=1&page_size=2"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 3)
+        self.assertEqual(len(response.data["results"]), 2)
+        self.assertEqual(response.data["summary"]["total"], 3)
+        self.assertEqual(response.data["summary"]["active"], 2)
+        self.assertEqual(response.data["summary"]["with_gstin"], 1)
+        self.assertEqual(response.data["summary"]["auto_managed"], 2)
+        self.assertEqual(response.data["summary"]["direct"], 1)
+
+    def test_ledger_list_search_filters_by_name(self):
+        acct_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Asset",
+            accounttypecode="AST",
+            createdby=self.user,
+        )
+        head = accountHead.objects.create(
+            entity=self.entity,
+            name="Cash",
+            code=7100,
+            accounttype=acct_type,
+            drcreffect="Debit",
+            createdby=self.user,
+        )
+        Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=1200,
+            name="Alpha Ledger",
+            accounthead=head,
+            creditaccounthead=head,
+            accounttype=acct_type,
+            createdby=self.user,
+        )
+        Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=1201,
+            name="Beta Ledger",
+            accounthead=head,
+            creditaccounthead=head,
+            accounttype=acct_type,
+            createdby=self.user,
+        )
+
+        response = self.client.get(
+            f"/api/financial/ledgers?entity={self.entity.id}&page=1&page_size=10&q=Alpha"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["name"], "Alpha Ledger")
 
     def test_account_head_delete_returns_409_when_referenced(self):
         acct_type = accounttype.objects.create(
@@ -173,6 +495,71 @@ class FinancialApiContractSmokeTests(TestCase):
             response.data.get("detail"),
             "This record cannot be deleted because it is already used in other records or transactions.",
         )
+
+    def test_account_type_delete_returns_409_when_referenced_by_account_head(self):
+        acct_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Expense Group",
+            accounttypecode="EXP-GRP",
+            createdby=self.user,
+        )
+        accountHead.objects.create(
+            entity=self.entity,
+            name="Consulting Expense",
+            code=7200,
+            accounttype=acct_type,
+            drcreffect="Debit",
+            createdby=self.user,
+        )
+
+        response = self.client.delete(f"/api/financial/accounttypes-v2/{acct_type.id}")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(
+            response.data.get("detail"),
+            "This record cannot be deleted because it is already used in other records or transactions.",
+        )
+
+    def test_account_delete_returns_409_when_referenced_by_vendor_advance(self):
+        vendor = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "accountname": "Protected Vendor",
+                "createdby": self.user,
+            }
+        )
+        VendorAdvanceBalance.objects.create(
+            entity=self.entity,
+            entityfinid=self.fin_year,
+            vendor=vendor,
+            vendor_ledger=vendor.ledger,
+            credit_date=timezone.localdate(),
+            original_amount=Decimal("100.00"),
+            adjusted_amount=Decimal("0.00"),
+            outstanding_amount=Decimal("100.00"),
+            is_open=True,
+        )
+
+        response = self.client.delete(f"/api/financial/accounts-v2/{vendor.id}")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(
+            response.data.get("detail"),
+            "This record cannot be deleted because it is already used in other records or transactions.",
+        )
+
+    def test_account_type_delete_allows_unreferenced_record(self):
+        acct_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Temporary Group",
+            accounttypecode="TMP-GRP",
+            createdby=self.user,
+        )
+
+        response = self.client.delete(f"/api/financial/accounttypes-v2/{acct_type.id}")
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(accounttype.objects.filter(pk=acct_type.id).exists())
 
     def test_account_head_delete_allows_unreferenced_record(self):
         acct_type = accounttype.objects.create(
@@ -262,6 +649,86 @@ class FinancialApiContractSmokeTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data["ledger_code"][0], "A ledger with this code already exists.")
+
+    def test_ledger_update_rejects_self_contra_reference(self):
+        acct_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Asset",
+            accounttypecode="AST",
+            createdby=self.user,
+        )
+        head = accountHead.objects.create(
+            entity=self.entity,
+            name="Cash",
+            code=7200,
+            accounttype=acct_type,
+            drcreffect="Debit",
+            createdby=self.user,
+        )
+        ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=1400,
+            name="Cash Main",
+            accounthead=head,
+            creditaccounthead=head,
+            accounttype=acct_type,
+            createdby=self.user,
+        )
+
+        response = self.client.patch(
+            f"/api/financial/ledgers/{ledger.id}",
+            {"contra_ledger": ledger.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["contra_ledger"][0], "Contra ledger cannot be the same as the current ledger.")
+
+    def test_ledger_list_search_filters_by_governance_management_mode_label(self):
+        acct_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Expenses",
+            accounttypecode="EXP",
+            createdby=self.user,
+        )
+        head = accountHead.objects.create(
+            entity=self.entity,
+            name="Governed Expense",
+            code=7300,
+            accounttype=acct_type,
+            drcreffect="Debit",
+            createdby=self.user,
+        )
+        FinancialMasterRule.objects.create(
+            entity=self.entity,
+            account_type=acct_type,
+            debit_head=head,
+            credit_head=head,
+            management_mode="party_managed",
+            allow_direct_ledger_edit=False,
+            auto_create_account=False,
+            priority=10,
+            createdby=self.user,
+        )
+        Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=1500,
+            name="Governed Ledger",
+            accounthead=head,
+            creditaccounthead=head,
+            accounttype=acct_type,
+            is_party=False,
+            createdby=self.user,
+        )
+
+        response = self.client.get(
+            f"/api/financial/ledgers?entity={self.entity.id}&page=1&page_size=10&q=auto-managed"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["name"], "Governed Ledger")
+        self.assertEqual(response.data["results"][0]["management_mode"], "auto_managed")
 
     def test_account_duplicate_name_and_gstin_are_rejected_cleanly(self):
         acct_type = accounttype.objects.create(

@@ -337,6 +337,12 @@ ItcClaimStatus = PurchaseInvoiceHeader.ItcClaimStatus
 
 
 class PurchaseInvoiceLine(models.Model):
+    class CessType(models.TextChoices):
+        NONE = "none", "None"
+        AD_VALOREM = "ad_valorem", "Ad valorem"
+        SPECIFIC = "specific", "Specific"
+        COMPOSITE = "composite", "Composite"
+
     class DiscountType(models.TextChoices):
         NONE = "N", "None"
         PERCENT = "P", "Percent"
@@ -408,6 +414,8 @@ class PurchaseInvoiceLine(models.Model):
 
     # ✅ cess support (percent + amount). You already had amount; percent makes it complete.
     cess_percent = models.DecimalField(max_digits=5, decimal_places=2, default=ZERO2)
+    cess_type = models.CharField(max_length=20, choices=CessType.choices, default=CessType.NONE)
+    cess_specific_amount = models.DecimalField(max_digits=12, decimal_places=2, default=ZERO2)
     cess_amount = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
 
     line_total = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO2)
@@ -430,6 +438,7 @@ class PurchaseInvoiceLine(models.Model):
             models.CheckConstraint(name="ck_pur_disc_amt_nonneg", check=Q(discount_amount__gte=0)),
             models.CheckConstraint(name="ck_pur_gst_rate_range", check=Q(gst_rate__gte=0) & Q(gst_rate__lte=100)),
             models.CheckConstraint(name="ck_pur_cess_rate_range", check=Q(cess_percent__gte=0) & Q(cess_percent__lte=100)),
+            models.CheckConstraint(name="ck_pur_cess_specific_nonneg", check=Q(cess_specific_amount__gte=0)),
         ]
         indexes = [
             models.Index(fields=["header", "product"], name="ix_pur_line_header_product"),

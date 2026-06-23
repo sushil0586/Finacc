@@ -11,7 +11,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient, APITestCase
 
 from Authentication.models import User
-from catalog.models import Product, ProductPurchaseBehavior, UnitOfMeasure
+from catalog.models import Product, ProductCategory, ProductPurchaseBehavior, UnitOfMeasure
 from entity.models import (
     Entity,
     EntityAddress,
@@ -133,15 +133,25 @@ class PurchaseInvoiceContractAlignmentTests(APITestCase):
                 "createdby": self.user,
             },
         )
-        self.uom = UnitOfMeasure.objects.create(code="NOS", name="Numbers")
+        self.uom = UnitOfMeasure.objects.create(
+            entity=self.entity,
+            code="NOS",
+            description="Numbers",
+        )
+        self.product_category = ProductCategory.objects.create(
+            entity=self.entity,
+            pcategoryname="Inventory Goods",
+        )
         self.inventory_product = Product.objects.create(
             entity=self.entity,
             productname="Inventory Product",
+            sku="INV-PROD-001",
             productdesc="Inventory Product",
+            productcategory=self.product_category,
+            base_uom=self.uom,
             is_service=False,
             purchase_behavior=ProductPurchaseBehavior.INVENTORY,
             purchase_account=self.vendor,
-            createdby=self.user,
         )
 
     def test_purchase_form_meta_exposes_backend_authoritative_contract(self):
@@ -264,7 +274,11 @@ class PurchaseInvoiceContractAlignmentTests(APITestCase):
 
     def test_purchase_compute_line_recomputes_cess_and_suppresses_rcm_gst(self):
         non_rcm = PurchaseInvoiceService.compute_line_authoritative(
-            header_attrs={"default_taxability": 1, "is_reverse_charge": False},
+            header_attrs={
+                "default_taxability": 1,
+                "is_reverse_charge": False,
+                "vendor_gstin": "27ABCDE1234F1Z5",
+            },
             line={
                 "qty": Decimal("2.0000"),
                 "rate": Decimal("50.00"),
@@ -272,6 +286,7 @@ class PurchaseInvoiceContractAlignmentTests(APITestCase):
                 "discount_type": "N",
                 "discount_percent": Decimal("0.00"),
                 "discount_amount": Decimal("0.00"),
+                "cess_type": "ad_valorem",
                 "cess_percent": Decimal("5.00"),
                 "cess_amount": Decimal("999.00"),
                 "taxability": 1,
@@ -301,6 +316,85 @@ class PurchaseInvoiceContractAlignmentTests(APITestCase):
         self.assertEqual(rcm["sgst_amount"], Decimal("0.00"))
         self.assertEqual(rcm["igst_amount"], Decimal("0.00"))
         self.assertEqual(rcm["cess_amount"], Decimal("0.00"))
+
+    def test_purchase_compute_line_supports_specific_and_composite_cess(self):
+        specific = PurchaseInvoiceService.compute_line_authoritative(
+            header_attrs={
+                "default_taxability": 1,
+                "is_reverse_charge": False,
+                "vendor_gstin": "27ABCDE1234F1Z5",
+            },
+            line={
+                "qty": Decimal("3.0000"),
+                "rate": Decimal("100.00"),
+                "gst_rate": Decimal("18.00"),
+                "discount_type": "N",
+                "discount_percent": Decimal("0.00"),
+                "discount_amount": Decimal("0.00"),
+                "cess_type": "specific",
+                "cess_percent": Decimal("0.00"),
+                "cess_specific_amount": Decimal("2.50"),
+                "taxability": 1,
+            },
+            derived=DerivedRegime(tax_regime=2, is_igst=True),
+        )
+        self.assertEqual(specific["cess_type"], "specific")
+        self.assertEqual(specific["cess_percent"], Decimal("0.00"))
+        self.assertEqual(specific["cess_specific_amount"], Decimal("2.50"))
+        self.assertEqual(specific["cess_amount"], Decimal("7.50"))
+        self.assertEqual(specific["line_total"], Decimal("361.50"))
+
+        composite = PurchaseInvoiceService.compute_line_authoritative(
+            header_attrs={
+                "default_taxability": 1,
+                "is_reverse_charge": False,
+                "vendor_gstin": "27ABCDE1234F1Z5",
+            },
+            line={
+                "qty": Decimal("2.0000"),
+                "rate": Decimal("100.00"),
+                "gst_rate": Decimal("18.00"),
+                "discount_type": "N",
+                "discount_percent": Decimal("0.00"),
+                "discount_amount": Decimal("0.00"),
+                "cess_type": "composite",
+                "cess_percent": Decimal("1.50"),
+                "cess_specific_amount": Decimal("2.00"),
+                "taxability": 1,
+            },
+            derived=DerivedRegime(tax_regime=2, is_igst=True),
+        )
+        self.assertEqual(composite["cess_type"], "composite")
+        self.assertEqual(composite["cess_percent"], Decimal("1.50"))
+        self.assertEqual(composite["cess_specific_amount"], Decimal("2.00"))
+        self.assertEqual(composite["cess_amount"], Decimal("7.00"))
+        self.assertEqual(composite["line_total"], Decimal("243.00"))
+
+    def test_purchase_compute_line_preserves_manual_interstate_gst_amount(self):
+        manual = PurchaseInvoiceService.compute_line_authoritative(
+            header_attrs={
+                "default_taxability": 1,
+                "is_reverse_charge": False,
+                "vendor_gstin": "27ABCDE1234F1Z5",
+            },
+            line={
+                "qty": Decimal("1.0000"),
+                "rate": Decimal("100.00"),
+                "gst_rate": Decimal("18.00"),
+                "discount_type": "N",
+                "discount_percent": Decimal("0.00"),
+                "discount_amount": Decimal("0.00"),
+                "igst_amount": Decimal("21.00"),
+                "is_gst_manual": True,
+                "taxability": 1,
+            },
+            derived=DerivedRegime(tax_regime=2, is_igst=True),
+        )
+        self.assertEqual(manual["taxable_value"], Decimal("100.00"))
+        self.assertEqual(manual["cgst_amount"], Decimal("0.00"))
+        self.assertEqual(manual["sgst_amount"], Decimal("0.00"))
+        self.assertEqual(manual["igst_amount"], Decimal("21.00"))
+        self.assertEqual(manual["line_total"], Decimal("121.00"))
 
     def test_purchase_line_serializer_auto_fills_itc_block_reason(self):
         serializer = PurchaseInvoiceLineSerializer(
@@ -332,6 +426,67 @@ class PurchaseInvoiceContractAlignmentTests(APITestCase):
         )
         self.assertTrue(serializer.is_valid(), serializer.errors)
         self.assertEqual(serializer.validated_data["itc_block_reason"], "ITC not eligible")
+
+    def test_purchase_line_serializer_accepts_specific_and_composite_cess_fields(self):
+        specific = PurchaseInvoiceLineSerializer(
+            data={
+                "line_no": 1,
+                "qty": "2.0000",
+                "free_qty": "0.0000",
+                "rate": "100.00",
+                "discount_type": "N",
+                "discount_percent": "0.00",
+                "discount_amount": "0.00",
+                "taxability": 1,
+                "taxable_value": "200.00",
+                "gst_rate": "18.00",
+                "cgst_percent": "0.00",
+                "sgst_percent": "0.00",
+                "igst_percent": "18.00",
+                "cgst_amount": "0.00",
+                "sgst_amount": "0.00",
+                "igst_amount": "36.00",
+                "cess_type": "specific",
+                "cess_percent": "0.00",
+                "cess_specific_amount": "2.50",
+                "cess_amount": "5.00",
+                "line_total": "241.00",
+                "purchase_account": self.vendor.id,
+                "product_desc": "Specific cess purchase line",
+                "is_itc_eligible": True,
+            }
+        )
+        self.assertTrue(specific.is_valid(), specific.errors)
+
+        composite = PurchaseInvoiceLineSerializer(
+            data={
+                "line_no": 1,
+                "qty": "2.0000",
+                "free_qty": "0.0000",
+                "rate": "100.00",
+                "discount_type": "N",
+                "discount_percent": "0.00",
+                "discount_amount": "0.00",
+                "taxability": 1,
+                "taxable_value": "200.00",
+                "gst_rate": "18.00",
+                "cgst_percent": "0.00",
+                "sgst_percent": "0.00",
+                "igst_percent": "18.00",
+                "cgst_amount": "0.00",
+                "sgst_amount": "0.00",
+                "igst_amount": "36.00",
+                "cess_type": "composite",
+                "cess_percent": "1.50",
+                "cess_specific_amount": "2.00",
+                "cess_amount": "7.00",
+                "line_total": "243.00",
+                "purchase_account": self.vendor.id,
+                "product_desc": "Composite cess purchase line",
+                "is_itc_eligible": True,
+            }
+        )
+        self.assertTrue(composite.is_valid(), composite.errors)
 
     def test_purchase_line_serializer_accepts_null_purchase_behavior_and_defaults_from_product(self):
         serializer = PurchaseInvoiceLineSerializer(

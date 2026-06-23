@@ -188,6 +188,71 @@ class SalesSettingsApiTests(SalesApiTestBase):
         self.assertEqual(resp.data["settings"]["enable_einvoice"], False)
         self.assertEqual(resp.data["settings"]["default_doc_code_invoice"], "NSI")
 
+    @patch("sales.views.sales_settings_views.SalesLockPeriod.objects.create")
+    @patch("sales.views.sales_settings_views.SalesLockPeriod.objects.filter")
+    @patch("sales.views.sales_settings_views.SalesChoicesService.get_choices")
+    @patch("sales.views.sales_settings_views.SalesSettingsService.get_seller_profile")
+    @patch("sales.views.sales_settings_views.SalesSettingsService.get_settings")
+    def test_patch_replaces_lock_periods_with_entityfinid_scope(
+        self,
+        mocked_get_settings,
+        mocked_get_seller_profile,
+        mocked_get_choices,
+        mocked_lock_filter,
+        mocked_lock_create,
+    ):
+        settings_obj = SimpleNamespace(
+            default_doc_code_invoice="SI",
+            default_doc_code_cn="SCN",
+            default_doc_code_dn="SDN",
+            default_workflow_action="confirm",
+            auto_derive_tax_regime=True,
+            allow_mixed_taxability_in_one_invoice=False,
+            enable_einvoice=True,
+            enable_eway=True,
+            einvoice_entity_applicable=True,
+            eway_value_threshold="50000.00",
+            compliance_applicability_mode="AUTO_ONLY",
+            auto_generate_einvoice_on_confirm=False,
+            auto_generate_einvoice_on_post=True,
+            auto_generate_eway_on_confirm=False,
+            auto_generate_eway_on_post=True,
+            prefer_irp_generate_einvoice_and_eway_together=True,
+            enforce_statutory_cancel_before_business_cancel=True,
+            tcs_credit_note_policy="DISALLOW",
+            enable_round_off=True,
+            round_grand_total_to=2,
+            save=Mock(),
+        )
+        mocked_get_settings.return_value = settings_obj
+        mocked_get_seller_profile.return_value = {"entity_id": 10}
+        mocked_get_choices.return_value = {}
+        mocked_lock_filter.return_value.filter.return_value = mocked_lock_filter.return_value
+        mocked_lock_filter.return_value.delete.return_value = None
+
+        with patch("sales.views.sales_settings_views.bump_meta_namespaces"):
+            resp = self.client.patch(
+                "/api/sales/settings/?entity_id=10&entityfinid=20&subentity_id=30",
+                {
+                    "lock_periods": [
+                        {
+                            "lock_date": "2026-06-22",
+                            "reason": "June books locked",
+                        }
+                    ]
+                },
+                format="json",
+            )
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        mocked_lock_create.assert_called_once_with(
+            entity_id=10,
+            entityfinid_id=20,
+            subentity_id=30,
+            lock_date="2026-06-22",
+            reason="June books locked",
+        )
+
 
 class SalesChoicesServiceTests(TestCase):
     def test_get_choices_includes_sales_settings_groups(self):

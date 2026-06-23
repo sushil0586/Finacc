@@ -460,6 +460,7 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             allow_unpost_posted=allow_unpost_posted,
             include_reverse=True,
             include_rebuild_tax_summary=True,
+            extra={"can_post": is_draft or is_confirmed},
         )
 
     def validate(self, attrs):

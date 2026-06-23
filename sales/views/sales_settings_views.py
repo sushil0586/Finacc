@@ -203,14 +203,27 @@ class SalesSettingsAPIView(APIView):
                 rows.append(row)
         return rows
 
-    def _replace_lock_periods(self, rows: list[dict], *, entity_id: int, subentity_id: Optional[int]) -> None:
+    def _replace_lock_periods(
+        self,
+        rows: list[dict],
+        *,
+        entity_id: int,
+        subentity_id: Optional[int],
+        entityfinid_id: Optional[int],
+    ) -> None:
         qs = SalesLockPeriod.objects.filter(entity_id=entity_id)
         qs = qs.filter(subentity__isnull=True) if subentity_id is None else qs.filter(subentity_id=subentity_id)
         qs.delete()
         for row in rows:
             if not isinstance(row, dict) or not row.get("lock_date"):
                 raise ValidationError({"lock_periods": "Each lock period must include lock_date."})
-            SalesLockPeriod.objects.create(entity_id=entity_id, subentity_id=subentity_id, lock_date=row["lock_date"], reason=row.get("reason") or "")
+            SalesLockPeriod.objects.create(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                lock_date=row["lock_date"],
+                reason=row.get("reason") or "",
+            )
 
     def _replace_choice_overrides(self, rows: list[dict], *, entity_id: int, subentity_id: Optional[int]) -> None:
         catalog = SalesChoicesService.get_choices(entity_id=entity_id, subentity_id=subentity_id)
@@ -448,7 +461,12 @@ class SalesSettingsAPIView(APIView):
             rows = request.data.get("lock_periods") or []
             if not isinstance(rows, list):
                 raise ValidationError({"lock_periods": "Provide a list of lock periods."})
-            self._replace_lock_periods(rows, entity_id=entity_id, subentity_id=subentity_id)
+            self._replace_lock_periods(
+                rows,
+                entity_id=entity_id,
+                subentity_id=subentity_id,
+                entityfinid_id=entityfinid_id,
+            )
 
         if "choice_overrides" in request.data:
             rows = request.data.get("choice_overrides") or []

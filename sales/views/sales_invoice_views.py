@@ -348,6 +348,13 @@ class SalesInvoiceConfirmAPIView(_SalesScopeMixin, APIView):
 class SalesInvoicePostAPIView(_SalesScopeMixin, APIView):
     def post(self, request, pk: int):
         header = self._get_scoped_header(pk)
+        if int(header.status) == int(SalesInvoiceHeader.Status.DRAFT):
+            require_sales_request_permission(
+                user=request.user,
+                entity_id=header.entity_id,
+                doc_type=header.doc_type,
+                action="confirm",
+            )
         require_sales_request_permission(
             user=request.user,
             entity_id=header.entity_id,

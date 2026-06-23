@@ -2697,7 +2697,7 @@ class SalesInvoiceService:
     def post(cls, *, header: SalesInvoiceHeader, user) -> SalesInvoiceHeader:
         """
         Mirrors Purchase post hook:
-          - requires CONFIRMED
+          - auto-confirms valid drafts before posting
           - assert_not_locked
           - freeze ship-to snapshot (idempotent)
           - ensure doc number (idempotent)
@@ -2710,8 +2710,10 @@ class SalesInvoiceService:
             raise ValueError("Cannot post: document is cancelled.")
         if int(header.status) == int(SalesInvoiceHeader.Status.POSTED):
             return header
+        if int(header.status) == int(SalesInvoiceHeader.Status.DRAFT):
+            header = cls.confirm(header=header, user=user)
         if int(header.status) != int(SalesInvoiceHeader.Status.CONFIRMED):
-            raise ValueError("Only Confirmed invoices can be posted.")
+            raise ValueError("Only Draft or Confirmed invoices can be posted.")
 
         # ---- lock-period validation ----
         controls = cls._policy_controls(header)

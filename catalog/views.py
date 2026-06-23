@@ -173,6 +173,27 @@ class EntityFromQueryMixin:
         raise ValidationError({"isactive": "Invalid value. Use true/false."})
 
 
+class ProtectedDeleteMessageMixin:
+    protected_delete_code = "delete_blocked"
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        try:
+            self.perform_destroy(instance)
+        except ProtectedError as exc:
+            return Response(
+                {
+                    "detail": self._build_protected_delete_message(exc),
+                    "code": self.protected_delete_code,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    def _build_protected_delete_message(self, _error: ProtectedError) -> str:
+        return "This record cannot be deleted because it is referenced in other transactions. Remove the related records and try again."
+
+
 # ----------------------------------------------------------------------
 # Product master views
 # ----------------------------------------------------------------------
@@ -274,7 +295,7 @@ class ProductListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIView)
         serializer.save(entity=self.get_entity())
 
 
-class ProductRetrieveUpdateDestroyAPIView(EntityFromQueryMixin, generics.RetrieveUpdateDestroyAPIView):
+class ProductRetrieveUpdateDestroyAPIView(ProtectedDeleteMessageMixin, EntityFromQueryMixin, generics.RetrieveUpdateDestroyAPIView):
     """
     GET/PATCH/PUT/DELETE /api/products/<pk>/?entity=<id>
     """
@@ -288,19 +309,7 @@ class ProductRetrieveUpdateDestroyAPIView(EntityFromQueryMixin, generics.Retriev
     def perform_update(self, serializer):
         serializer.save(entity=self.get_entity())
 
-    def destroy(self, request, *args, **kwargs):
-        instance = self.get_object()
-        try:
-            self.perform_destroy(instance)
-        except ProtectedError as exc:
-            return Response(
-                {
-                    "detail": self._build_protected_delete_message(exc),
-                    "code": "product_delete_blocked",
-                },
-                status=status.HTTP_409_CONFLICT,
-            )
-        return Response(status=status.HTTP_204_NO_CONTENT)
+    protected_delete_code = "product_delete_blocked"
 
     def _build_protected_delete_message(self, _error: ProtectedError) -> str:
         return "Product cannot be deleted because it is referenced in other transactions. Remove the related records and try again."
@@ -328,9 +337,10 @@ class ProductCategoryListCreateAPIView(EntityFromQueryMixin, generics.ListCreate
         serializer.save(entity=self.get_entity())
 
 
-class ProductCategoryRetrieveUpdateDestroyAPIView(EntityFromQueryMixin, generics.RetrieveUpdateDestroyAPIView):
+class ProductCategoryRetrieveUpdateDestroyAPIView(ProtectedDeleteMessageMixin, EntityFromQueryMixin, generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = ProductCategorySerializercreate
+    protected_delete_code = "product_category_delete_blocked"
 
     def get_queryset(self):
         entity = self.get_entity()
@@ -342,6 +352,9 @@ class ProductCategoryRetrieveUpdateDestroyAPIView(EntityFromQueryMixin, generics
 
     def perform_update(self, serializer):
         serializer.save(entity=self.get_entity())
+
+    def _build_protected_delete_message(self, _error: ProtectedError) -> str:
+        return "Product category cannot be deleted because it is referenced by products or child categories. Remove the related records and try again."
 
 
 class BrandListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIView):
@@ -356,12 +369,16 @@ class BrandListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIView):
         serializer.save(entity=self.get_entity())
 
 
-class BrandRetrieveUpdateDestroyAPIView(EntityFromQueryMixin, generics.RetrieveUpdateDestroyAPIView):
+class BrandRetrieveUpdateDestroyAPIView(ProtectedDeleteMessageMixin, EntityFromQueryMixin, generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = BrandSerializer
+    protected_delete_code = "brand_delete_blocked"
 
     def get_queryset(self):
         return Brand.objects.filter(entity=self.get_entity())
+
+    def _build_protected_delete_message(self, _error: ProtectedError) -> str:
+        return "Brand cannot be deleted because it is referenced by products. Remove the related records and try again."
 
 
 class UnitOfMeasureListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIView):
@@ -376,12 +393,16 @@ class UnitOfMeasureListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAP
         serializer.save(entity=self.get_entity())
 
 
-class UnitOfMeasureRetrieveUpdateDestroyAPIView(EntityFromQueryMixin, generics.RetrieveUpdateDestroyAPIView):
+class UnitOfMeasureRetrieveUpdateDestroyAPIView(ProtectedDeleteMessageMixin, EntityFromQueryMixin, generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = UnitOfMeasureSerializer
+    protected_delete_code = "uom_delete_blocked"
 
     def get_queryset(self):
         return UnitOfMeasure.objects.filter(entity=self.get_entity())
+
+    def _build_protected_delete_message(self, _error: ProtectedError) -> str:
+        return "UOM cannot be deleted because it is referenced by products or stock records. Remove the related records and try again."
 
 
 class HsnSacListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIView):
@@ -396,12 +417,16 @@ class HsnSacListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIView):
         serializer.save(entity=self.get_entity())
 
 
-class HsnSacRetrieveUpdateDestroyAPIView(EntityFromQueryMixin, generics.RetrieveUpdateDestroyAPIView):
+class HsnSacRetrieveUpdateDestroyAPIView(ProtectedDeleteMessageMixin, EntityFromQueryMixin, generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = HsnSacSerializer
+    protected_delete_code = "hsn_sac_delete_blocked"
 
     def get_queryset(self):
         return HsnSac.objects.filter(entity=self.get_entity())
+
+    def _build_protected_delete_message(self, _error: ProtectedError) -> str:
+        return "HSN / SAC cannot be deleted because it is referenced by GST rows or products. Remove the related records and try again."
 
 
 class PriceListListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIView):
@@ -416,12 +441,16 @@ class PriceListListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIVie
         serializer.save(entity=self.get_entity())
 
 
-class PriceListRetrieveUpdateDestroyAPIView(EntityFromQueryMixin, generics.RetrieveUpdateDestroyAPIView):
+class PriceListRetrieveUpdateDestroyAPIView(ProtectedDeleteMessageMixin, EntityFromQueryMixin, generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = PriceListSerializer
+    protected_delete_code = "price_list_delete_blocked"
 
     def get_queryset(self):
         return PriceList.objects.filter(entity=self.get_entity())
+
+    def _build_protected_delete_message(self, _error: ProtectedError) -> str:
+        return "Price list cannot be deleted because it is referenced by product price rows. Remove the related records and try again."
 
 
 class ProductAttributeListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIView):
@@ -436,12 +465,16 @@ class ProductAttributeListCreateAPIView(EntityFromQueryMixin, generics.ListCreat
         serializer.save(entity=self.get_entity())
 
 
-class ProductAttributeRetrieveUpdateDestroyAPIView(EntityFromQueryMixin, generics.RetrieveUpdateDestroyAPIView):
+class ProductAttributeRetrieveUpdateDestroyAPIView(ProtectedDeleteMessageMixin, EntityFromQueryMixin, generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = ProductAttributeSerializer
+    protected_delete_code = "product_attribute_delete_blocked"
 
     def get_queryset(self):
         return ProductAttribute.objects.filter(entity=self.get_entity())
+
+    def _build_protected_delete_message(self, _error: ProtectedError) -> str:
+        return "Product attribute cannot be deleted because it is referenced by product attribute values. Remove the related records and try again."
 
 
 # ----------------------------------------------------------------------

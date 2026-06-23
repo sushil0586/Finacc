@@ -1065,6 +1065,112 @@ class PurchaseApiEndToEndTests(APITestCase):
         self.assertEqual(patch_resp.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("Confirmed purchase invoice editing is disabled by purchase policy.", str(patch_resp.json()))
 
+    def test_purchase_invoice_create_is_blocked_when_no_lines_are_provided(self):
+        PurchaseSettingsService.upsert_settings(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            updates={"policy_controls": {"require_lines_on_confirm": "hard"}},
+        )
+
+        payload = self._invoice_payload(lines=[], supplier_invoice_number="INV-NO-LINES")
+        create_resp = self.client.post("/api/purchase/purchase-invoices/", payload, format="json")
+        self.assertEqual(create_resp.status_code, status.HTTP_400_BAD_REQUEST, create_resp.json())
+        self.assertIn("At least one line is required.", str(create_resp.json()))
+
+    def test_purchase_invoice_create_rejects_mixed_taxability_when_setting_disabled(self):
+        PurchaseSettingsService.upsert_settings(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            updates={"allow_mixed_taxability_in_one_bill": False},
+        )
+
+        exempt_line = self._goods_line_payload(qty="1.0000", rate="100.00")
+        exempt_line.update(
+            {
+                "id": None,
+                "line_no": 2,
+                "taxability": int(PurchaseInvoiceHeader.Taxability.EXEMPT),
+                "gst_rate": "0.00",
+                "cgst_percent": "0.00",
+                "sgst_percent": "0.00",
+                "igst_percent": "0.00",
+                "cgst_amount": "0.00",
+                "sgst_amount": "0.00",
+                "igst_amount": "0.00",
+                "line_total": "100.00",
+                "is_itc_eligible": False,
+            }
+        )
+        payload = self._invoice_payload(
+            lines=[self._goods_line_payload(), exempt_line],
+            supplier_invoice_number="INV-MIXED-TAXABILITY",
+        )
+
+        response = self.client.post("/api/purchase/purchase-invoices/", payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, response.json())
+        self.assertIn("mixed taxability in one bill is disabled for this entity", str(response.json()).lower())
+
+    def test_purchase_invoice_create_rejects_line_amount_mismatch_when_policy_is_hard(self):
+        PurchaseSettingsService.upsert_settings(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            updates={"policy_controls": {"line_amount_mismatch": "hard"}},
+        )
+
+        mismatched_line = self._goods_line_payload()
+        mismatched_line["taxable_value"] = "999.00"
+        payload = self._invoice_payload(lines=[mismatched_line], supplier_invoice_number="INV-MISMATCH-HARD")
+
+        response = self.client.post("/api/purchase/purchase-invoices/", payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, response.json())
+        self.assertIn("Line 1: sent 999.00 but expected 1000.00", str(response.json()))
+
+    def test_purchase_invoice_confirm_is_blocked_when_lock_policy_is_hard(self):
+        PurchaseSettingsService.upsert_settings(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            updates={"policy_controls": {"confirm_lock_check": "hard"}},
+        )
+
+        created = self._create_invoice(supplier_invoice_number="INV-CONFIRM-LOCKED")
+        invoice_id = created["id"]
+        PurchaseLockPeriod.objects.create(
+            entity=self.entity,
+            subentity=self.subentity,
+            lock_date=date(2026, 4, 30),
+            reason="April closed",
+        )
+
+        response = self.client.post(
+            f"/api/purchase/purchase-invoices/{invoice_id}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, response.json())
+        self.assertIn("Purchase period locked.", str(response.json()))
+
+    def test_purchase_invoice_unpost_is_blocked_when_policy_disables_it(self):
+        PurchaseSettingsService.upsert_settings(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            updates={"policy_controls": {"allow_unpost_posted": "off"}},
+        )
+
+        created = self._create_invoice(supplier_invoice_number="INV-UNPOST-OFF")
+        invoice_id = created["id"]
+        PurchaseInvoiceHeader.objects.filter(pk=invoice_id).update(status=PurchaseInvoiceHeader.Status.POSTED)
+
+        unpost_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{invoice_id}/unpost/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(unpost_resp.status_code, status.HTTP_400_BAD_REQUEST, unpost_resp.json())
+        self.assertIn("Unpost after posting is disabled by purchase policy.", str(unpost_resp.json()))
+
     def test_historical_vendor_snapshot_remains_stable_after_vendor_master_change(self):
         created = self._create_invoice(supplier_invoice_number="INV-SNAPSHOT")
         invoice_id = created["id"]

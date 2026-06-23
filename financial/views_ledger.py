@@ -1,6 +1,7 @@
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError
-from django.db.models import OuterRef, Prefetch, Q, Subquery
+from django.db.models import Case, CharField, DecimalField, OuterRef, Prefetch, Q, Subquery, Value, When
+from django.db.models.functions import Coalesce
 from django.db.models.deletion import ProtectedError
 from rest_framework import permissions, serializers, status
 from rest_framework.pagination import PageNumberPagination
@@ -9,7 +10,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from entity.models import EntityFinancialYear
-from financial.models import AccountAddress, AccountBankDetails, ContactDetails, Ledger, ShippingDetails, account, accountHead, accounttype
+from financial.models import AccountAddress, AccountBankDetails, ContactDetails, FinancialMasterRule, Ledger, ShippingDetails, account, accountHead, accounttype
 from financial.serializers_catalog_v2 import AccountHeadV2Serializer, AccountTypeV2Serializer
 from financial.serializers_ledger import (
     AccountProfileV2ReadSerializer,
@@ -60,6 +61,32 @@ def _apply_active_filter(qs, request):
     if _include_inactive(request):
         return qs
     return qs.filter(isactive=True)
+
+
+def _governance_blocked_ids(entity_id):
+    filters = Q(isactive=True, allow_direct_ledger_edit=False)
+    if entity_id is not None:
+        filters &= Q(entity_id=entity_id) | Q(entity__isnull=True)
+    blocked_rules = FinancialMasterRule.objects.filter(filters).values(
+        "account_type_id",
+        "debit_head_id",
+        "credit_head_id",
+        "suggested_account_type_id",
+        "suggested_debit_head_id",
+        "suggested_credit_head_id",
+    )
+    account_type_ids = set()
+    head_ids = set()
+    for row in blocked_rules:
+        for key in ("account_type_id", "suggested_account_type_id"):
+            value = row.get(key)
+            if value:
+                account_type_ids.add(int(value))
+        for key in ("debit_head_id", "credit_head_id", "suggested_debit_head_id", "suggested_credit_head_id"):
+            value = row.get(key)
+            if value:
+                head_ids.add(int(value))
+    return sorted(account_type_ids), sorted(head_ids)
 
 
 def _linked_account_id(ledger):
@@ -178,6 +205,17 @@ class AccountProfileV2Pagination(PageNumberPagination):
     max_page_size = 200
 
 
+class FinancialMasterPagination(PageNumberPagination):
+    page_size = 10
+    page_size_query_param = "page_size"
+    max_page_size = 200
+
+    def paginate_queryset(self, queryset, request, view=None):
+        if "page" not in request.query_params and "page_size" not in request.query_params:
+            return None
+        return super().paginate_queryset(queryset, request, view=view)
+
+
 class SoftDeleteRetrieveUpdateDestroyAPIView(RetrieveUpdateDestroyAPIView):
     """
     Financial master deletes should remove the record when safe.
@@ -208,23 +246,51 @@ class SoftDeleteRetrieveUpdateDestroyAPIView(RetrieveUpdateDestroyAPIView):
 class AccountTypeV2ListCreateAPIView(ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = AccountTypeV2Serializer
+    pagination_class = FinancialMasterPagination
 
     def get_queryset(self):
         entity_id = self.request.query_params.get("entity")
         q = (self.request.query_params.get("q") or "").strip()
+        ordering = (self.request.query_params.get("ordering") or "").strip()
         qs = accounttype.objects.all()
         if entity_id:
             qs = qs.filter(entity_id=entity_id)
         qs = _apply_active_filter(qs, self.request)
         if q:
             qs = qs.filter(Q(accounttypename__icontains=q) | Q(accounttypecode__icontains=q))
-        return qs.order_by("accounttypename")
+        ordering_map = {
+            "accounttypename": "accounttypename",
+            "accounttypecode": "accounttypecode",
+            "balanceType": "balanceType",
+            "isactive": "isactive",
+        }
+        if ordering:
+            descending = ordering.startswith("-")
+            key = ordering[1:] if descending else ordering
+            mapped = ordering_map.get(key)
+            if mapped:
+                return qs.order_by(f"-{mapped}" if descending else mapped, "id")
+        return qs.order_by("accounttypename", "id")
 
     def perform_create(self, serializer):
         try:
             serializer.save(createdby=self.request.user)
-        except IntegrityError:
-            raise serializers.ValidationError({"detail": "An account type with the same name or code already exists."})
+        except IntegrityError as exc:
+            raise serializers.ValidationError(self._build_duplicate_errors(serializer, str(exc)))
+
+    def _build_duplicate_errors(self, serializer, raw_error: str):
+        entity = serializer.validated_data.get("entity")
+        name = str(serializer.validated_data.get("accounttypename") or "").strip()
+        code = str(serializer.validated_data.get("accounttypecode") or "").strip()
+        errors = {}
+        qs = accounttype.objects.filter(entity=entity)
+        if name and qs.filter(accounttypename__iexact=name).exists():
+            errors["accounttypename"] = "An account type with this name already exists."
+        if code and qs.filter(accounttypecode__iexact=code).exists():
+            errors["accounttypecode"] = "An account type with this code already exists."
+        if errors:
+            return errors
+        return {"detail": "An account type with the same name or code already exists."}
 
 
 class ShippingDetailsListCreateAPIView(ListCreateAPIView):
@@ -355,17 +421,28 @@ class AccountTypeV2RetrieveUpdateDestroyAPIView(SoftDeleteRetrieveUpdateDestroyA
     def perform_update(self, serializer):
         try:
             serializer.save()
-        except IntegrityError:
-            raise serializers.ValidationError({"detail": "An account type with the same name or code already exists."})
+        except IntegrityError as exc:
+            entity = serializer.validated_data.get("entity", getattr(serializer.instance, "entity", None))
+            name = str(serializer.validated_data.get("accounttypename", getattr(serializer.instance, "accounttypename", "")) or "").strip()
+            code = str(serializer.validated_data.get("accounttypecode", getattr(serializer.instance, "accounttypecode", "")) or "").strip()
+            qs = accounttype.objects.filter(entity=entity).exclude(pk=getattr(serializer.instance, "pk", None))
+            errors = {}
+            if name and qs.filter(accounttypename__iexact=name).exists():
+                errors["accounttypename"] = "An account type with this name already exists."
+            if code and qs.filter(accounttypecode__iexact=code).exists():
+                errors["accounttypecode"] = "An account type with this code already exists."
+            raise serializers.ValidationError(errors or {"detail": "An account type with the same name or code already exists."})
 
 
 class AccountHeadV2ListCreateAPIView(ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = AccountHeadV2Serializer
+    pagination_class = FinancialMasterPagination
 
     def get_queryset(self):
         entity_id = self.request.query_params.get("entity")
         q = (self.request.query_params.get("q") or "").strip()
+        ordering = (self.request.query_params.get("ordering") or "").strip()
         qs = accountHead.objects.select_related("accountheadsr", "accounttype")
         if entity_id:
             qs = qs.filter(entity_id=entity_id)
@@ -375,13 +452,38 @@ class AccountHeadV2ListCreateAPIView(ListCreateAPIView):
             if q.isdigit():
                 filters |= Q(code=int(q))
             qs = qs.filter(filters)
-        return qs.order_by("code", "name")
+        ordering_map = {
+            "code": "code",
+            "name": "name",
+            "accounttype": "accounttype__accounttypename",
+            "balanceType": "balanceType",
+            "drcreffect": "drcreffect",
+            "detailsingroup": "detailsingroup",
+            "accountheadsr": "accountheadsr__name",
+            "isactive": "isactive",
+        }
+        if ordering:
+            descending = ordering.startswith("-")
+            key = ordering[1:] if descending else ordering
+            mapped = ordering_map.get(key)
+            if mapped:
+                return qs.order_by(f"-{mapped}" if descending else mapped, "id")
+        return qs.order_by("code", "name", "id")
 
     def perform_create(self, serializer):
         try:
             serializer.save(createdby=self.request.user)
-        except IntegrityError:
-            raise serializers.ValidationError({"detail": "An account head with the same name or code already exists."})
+        except IntegrityError as exc:
+            entity = serializer.validated_data.get("entity")
+            name = str(serializer.validated_data.get("name") or "").strip()
+            code = serializer.validated_data.get("code")
+            qs = accountHead.objects.filter(entity=entity)
+            errors = {}
+            if name and qs.filter(name__iexact=name).exists():
+                errors["name"] = "An account head with this name already exists."
+            if code not in (None, "", 0) and qs.filter(code=code).exists():
+                errors["code"] = "An account head with this code already exists."
+            raise serializers.ValidationError(errors or {"detail": "An account head with the same name or code already exists."})
 
 
 class AccountHeadV2RetrieveUpdateDestroyAPIView(SoftDeleteRetrieveUpdateDestroyAPIView):
@@ -394,16 +496,29 @@ class AccountHeadV2RetrieveUpdateDestroyAPIView(SoftDeleteRetrieveUpdateDestroyA
     def perform_update(self, serializer):
         try:
             serializer.save()
-        except IntegrityError:
-            raise serializers.ValidationError({"detail": "An account head with the same name or code already exists."})
+        except IntegrityError as exc:
+            entity = serializer.validated_data.get("entity", getattr(serializer.instance, "entity", None))
+            name = str(serializer.validated_data.get("name", getattr(serializer.instance, "name", "")) or "").strip()
+            code = serializer.validated_data.get("code", getattr(serializer.instance, "code", None))
+            qs = accountHead.objects.filter(entity=entity).exclude(pk=getattr(serializer.instance, "pk", None))
+            errors = {}
+            if name and qs.filter(name__iexact=name).exists():
+                errors["name"] = "An account head with this name already exists."
+            if code not in (None, "", 0) and qs.filter(code=code).exists():
+                errors["code"] = "An account head with this code already exists."
+            raise serializers.ValidationError(errors or {"detail": "An account head with the same name or code already exists."})
 
 
 class LedgerListCreateAPIView(ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
+    pagination_class = FinancialMasterPagination
 
     def get_queryset(self):
         entity_id = self.request.query_params.get("entity")
         q = (self.request.query_params.get("q") or "").strip()
+        ordering = (self.request.query_params.get("ordering") or "").strip()
+        normalized_entity_id = int(entity_id) if str(entity_id or "").isdigit() else None
+        blocked_type_ids, blocked_head_ids = _governance_blocked_ids(normalized_entity_id)
         qs = Ledger.objects.select_related(
             "entity",
             "accounthead",
@@ -416,12 +531,73 @@ class LedgerListCreateAPIView(ListCreateAPIView):
         if entity_id:
             qs = qs.filter(entity_id=entity_id)
         qs = _apply_active_filter(qs, self.request)
+        qs = qs.annotate(
+            management_mode_sort=Case(
+                When(
+                    Q(account_profile__isnull=False)
+                    | Q(is_party=True)
+                    | Q(accounttype_id__in=blocked_type_ids)
+                    | Q(accounthead_id__in=blocked_head_ids)
+                    | Q(creditaccounthead_id__in=blocked_head_ids),
+                    then=Value("auto_managed"),
+                ),
+                default=Value("direct"),
+                output_field=CharField(),
+            )
+        )
         if q:
-            filters = Q(name__icontains=q) | Q(legal_name__icontains=q)
+            mode_query = q.lower().replace("-", "_").replace(" ", "_")
+            filters = (
+                Q(name__icontains=q)
+                | Q(legal_name__icontains=q)
+                | Q(accounthead__name__icontains=q)
+                | Q(accounttype__accounttypename__icontains=q)
+                | Q(management_mode_sort__icontains=mode_query)
+            )
             if q.isdigit():
                 filters |= Q(ledger_code=int(q))
             qs = qs.filter(filters)
-        return qs.order_by("ledger_code", "name")
+        qs = qs.annotate(
+            opening_balance_sort=Coalesce(
+                "openingbdr",
+                "openingbcr",
+                Value(0),
+                output_field=DecimalField(max_digits=15, decimal_places=2),
+            )
+        )
+        ordering_map = {
+            "ledger_code": "ledger_code",
+            "name": "name",
+            "accounthead": "accounthead__name",
+            "management_mode": "management_mode_sort",
+            "opening_balance": "opening_balance_sort",
+            "isactive": "isactive",
+        }
+        if ordering:
+            descending = ordering.startswith("-")
+            key = ordering[1:] if descending else ordering
+            mapped = ordering_map.get(key)
+            if mapped:
+                return qs.order_by(f"-{mapped}" if descending else mapped, "id")
+        return qs.order_by("ledger_code", "name", "id")
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.get_queryset()
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            response = self.get_paginated_response(serializer.data)
+            response.data["summary"] = {
+                "total": queryset.count(),
+                "active": queryset.filter(isactive=True).count(),
+                "party": queryset.filter(is_party=True).count(),
+                "auto_managed": queryset.filter(management_mode_sort="auto_managed").count(),
+                "direct": queryset.filter(management_mode_sort="direct").count(),
+            }
+            return response
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
 
     def get_serializer_class(self):
         return LedgerSerializer
@@ -801,7 +977,21 @@ class AccountProfileV2ListCreateAPIView(ListCreateAPIView):
             isprimary=True,
             isactive=True,
         ).values("city__cityname")[:1]
-        qs = qs.annotate(primary_city_name=Subquery(primary_city_subquery))
+        qs = qs.annotate(
+            primary_city_name=Subquery(primary_city_subquery),
+            ledger_mode_sort=Case(
+                When(ledger__isnull=False, then=Value("auto_managed")),
+                default=Value("direct"),
+                output_field=CharField(),
+            ),
+            has_gstin_sort=Case(
+                When(
+                    Q(compliance_profile__gstno__isnull=False) & ~Q(compliance_profile__gstno__exact=""),
+                    then=Value(1),
+                ),
+                default=Value(0),
+            ),
+        )
 
         ordering_raw = (self.request.query_params.get("ordering") or "").strip()
         ordering_token = ordering_raw.split(",")[0].strip() if ordering_raw else "accountname"
@@ -829,7 +1019,15 @@ class AccountProfileV2ListCreateAPIView(ListCreateAPIView):
             page = self.paginate_queryset(queryset)
             if page is not None:
                 serializer = self.get_serializer(page, many=True)
-                return self.get_paginated_response(serializer.data)
+                response = self.get_paginated_response(serializer.data)
+                response.data["summary"] = {
+                    "total": queryset.count(),
+                    "active": queryset.filter(isactive=True).count(),
+                    "with_gstin": queryset.filter(has_gstin_sort=1).count(),
+                    "auto_managed": queryset.filter(ledger_mode_sort="auto_managed").count(),
+                    "direct": queryset.filter(ledger_mode_sort="direct").count(),
+                }
+                return response
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
 

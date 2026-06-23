@@ -56,6 +56,7 @@ def _norm_text(value) -> str:
 
 class PurchaseInvoiceLineSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False, allow_null=True)
+    is_gst_manual = serializers.BooleanField(required=False, default=False, write_only=True)
     purchase_behavior = serializers.ChoiceField(
         choices=ProductPurchaseBehavior.choices,
         required=False,
@@ -113,8 +114,11 @@ class PurchaseInvoiceLineSerializer(serializers.ModelSerializer):
             "cgst_amount",
             "sgst_amount",
             "igst_amount",
+            "is_gst_manual",
 
             "cess_percent",
+            "cess_type",
+            "cess_specific_amount",
             "cess_amount",
 
             "line_total",
@@ -126,7 +130,9 @@ class PurchaseInvoiceLineSerializer(serializers.ModelSerializer):
             "cgst_amount": {"help_text": "Computed by backend from tax regime and taxable value."},
             "sgst_amount": {"help_text": "Computed by backend from tax regime and taxable value."},
             "igst_amount": {"help_text": "Computed by backend from tax regime and taxable value."},
-            "cess_amount": {"help_text": "Computed by backend from cess percent and taxable value."},
+            "cess_type": {"help_text": "Cess mode: none, ad_valorem, specific, or composite."},
+            "cess_specific_amount": {"help_text": "Specific cess amount per unit for specific/composite cess."},
+            "cess_amount": {"help_text": "Computed by backend from cess type, cess percent, quantity, and taxable value."},
             "line_total": {"help_text": "Computed by backend from taxable value, GST, and cess."},
             "itc_block_reason": {"help_text": "Backend may auto-fill when ITC is not eligible."},
             "batch_number": {"help_text": "Optional batch number for batch-managed products."},
@@ -219,11 +225,40 @@ class PurchaseInvoiceLineSerializer(serializers.ModelSerializer):
         if free_qty < 0:
             raise serializers.ValidationError({"free_qty": "Free qty cannot be negative"})
 
+        cess_type = _norm_text(attrs.get("cess_type", getattr(self.instance, "cess_type", PurchaseInvoiceLine.CessType.NONE)))
+        cess_percent = q2(attrs.get("cess_percent", getattr(self.instance, "cess_percent", ZERO2)))
+        cess_specific_amount = q2(attrs.get("cess_specific_amount", getattr(self.instance, "cess_specific_amount", ZERO2)))
+
+        if cess_specific_amount < ZERO2:
+            raise serializers.ValidationError({"cess_specific_amount": "Specific cess amount cannot be negative."})
+
         # Exempt/Nil/NonGST => ITC false (line-level)
         taxability = attrs.get("taxability", Taxability.TAXABLE)
         if taxability in (Taxability.EXEMPT, Taxability.NIL_RATED, Taxability.NON_GST):
             if bool(attrs.get("is_itc_eligible", True)):
                 raise serializers.ValidationError({"is_itc_eligible": "Not allowed for Exempt/Nil/Non-GST line."})
+            if q2(attrs.get("gst_rate", ZERO2)) > ZERO2:
+                raise serializers.ValidationError({"gst_rate": "Must be 0 for Exempt/Nil/Non-GST line."})
+            if q2(attrs.get("cgst_percent", ZERO2)) > ZERO2:
+                raise serializers.ValidationError({"cgst_percent": "Must be 0 for Exempt/Nil/Non-GST line."})
+            if q2(attrs.get("sgst_percent", ZERO2)) > ZERO2:
+                raise serializers.ValidationError({"sgst_percent": "Must be 0 for Exempt/Nil/Non-GST line."})
+            if q2(attrs.get("igst_percent", ZERO2)) > ZERO2:
+                raise serializers.ValidationError({"igst_percent": "Must be 0 for Exempt/Nil/Non-GST line."})
+            if q2(attrs.get("cgst_amount", ZERO2)) > ZERO2:
+                raise serializers.ValidationError({"cgst_amount": "Must be 0 for Exempt/Nil/Non-GST line."})
+            if q2(attrs.get("sgst_amount", ZERO2)) > ZERO2:
+                raise serializers.ValidationError({"sgst_amount": "Must be 0 for Exempt/Nil/Non-GST line."})
+            if q2(attrs.get("igst_amount", ZERO2)) > ZERO2:
+                raise serializers.ValidationError({"igst_amount": "Must be 0 for Exempt/Nil/Non-GST line."})
+            if q2(attrs.get("cess_percent", ZERO2)) > ZERO2:
+                raise serializers.ValidationError({"cess_percent": "Must be 0 for Exempt/Nil/Non-GST line."})
+            if q2(attrs.get("cess_amount", ZERO2)) > ZERO2:
+                raise serializers.ValidationError({"cess_amount": "Must be 0 for Exempt/Nil/Non-GST line."})
+            if cess_type != PurchaseInvoiceLine.CessType.NONE:
+                raise serializers.ValidationError({"cess_type": "Must be 'none' for Exempt/Nil/Non-GST line."})
+            if cess_specific_amount > ZERO2:
+                raise serializers.ValidationError({"cess_specific_amount": "Must be 0 for Exempt/Nil/Non-GST line."})
 
         # If ITC is blocked, ensure reason
         if attrs.get("is_itc_eligible") is False:
@@ -246,9 +281,34 @@ class PurchaseInvoiceLineSerializer(serializers.ModelSerializer):
             attrs["discount_percent"] = q2(0)
             attrs["discount_amount"] = q2(0)
 
-        cess_percent = q2(attrs.get("cess_percent"))
         if cess_percent < 0 or cess_percent > 100:
             raise serializers.ValidationError({"cess_percent": "Cess percent must be between 0 and 100."})
+
+        if cess_type == PurchaseInvoiceLine.CessType.NONE:
+            if cess_percent > ZERO2:
+                raise serializers.ValidationError({"cess_percent": "Must be 0 when cess_type is none."})
+            if cess_specific_amount > ZERO2:
+                raise serializers.ValidationError({"cess_specific_amount": "Must be 0 when cess_type is none."})
+        elif cess_type == PurchaseInvoiceLine.CessType.AD_VALOREM:
+            if cess_percent <= ZERO2:
+                raise serializers.ValidationError({"cess_percent": "Must be > 0 for ad valorem cess."})
+            if cess_specific_amount > ZERO2:
+                raise serializers.ValidationError({"cess_specific_amount": "Must be 0 for ad valorem cess."})
+        elif cess_type == PurchaseInvoiceLine.CessType.SPECIFIC:
+            if cess_percent > ZERO2:
+                raise serializers.ValidationError({"cess_percent": "Must be 0 for specific cess."})
+            if cess_specific_amount <= ZERO2:
+                raise serializers.ValidationError({"cess_specific_amount": "Must be > 0 for specific cess."})
+        elif cess_type == PurchaseInvoiceLine.CessType.COMPOSITE:
+            if cess_percent <= ZERO2:
+                raise serializers.ValidationError({"cess_percent": "Must be > 0 for composite cess."})
+            if cess_specific_amount <= ZERO2:
+                raise serializers.ValidationError({"cess_specific_amount": "Must be > 0 for composite cess."})
+        else:
+            raise serializers.ValidationError({"cess_type": "Invalid cess type."})
+
+        attrs["cess_type"] = cess_type
+        attrs["cess_specific_amount"] = cess_specific_amount
 
         # NOTE:
         # taxable_value validation is risky if you allow discounts/inclusive pricing.

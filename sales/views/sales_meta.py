@@ -326,6 +326,7 @@ class SalesMetaBaseAPIView(ScopedEntitlementMixin, APIView):
             include_reverse=True,
             include_rebuild_tax_summary=True,
             can_delete=delete_allowed,
+            extra={"can_post": is_draft or is_confirmed},
         )
 
     def _compliance_action_flags(self, header: SalesInvoiceHeader):

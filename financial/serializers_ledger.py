@@ -114,6 +114,22 @@ def _serialize_account_withholding_profile(*, acc, serializer):
     return payload
 
 
+def _ledger_management_mode(ledger):
+    if ledger is None:
+        return "direct"
+    if hasattr(ledger, "account_profile"):
+        return "auto_managed"
+    blocked = ledger_should_be_party(
+        entity=ledger.entity,
+        is_party=ledger.is_party,
+        is_system=ledger.is_system,
+        accounttype_obj=getattr(ledger, "accounttype", None),
+        accounthead_obj=getattr(ledger, "accounthead", None),
+        creditaccounthead_obj=getattr(ledger, "creditaccounthead", None),
+    )
+    return "auto_managed" if blocked else "direct"
+
+
 class LedgerSerializer(serializers.ModelSerializer):
     account_profile_id = serializers.IntegerField(source="account_profile.id", read_only=True)
     account_profile_name = serializers.CharField(source="account_profile.accountname", read_only=True)
@@ -155,12 +171,15 @@ class LedgerSerializer(serializers.ModelSerializer):
         name = str(attrs.get("name", getattr(self.instance, "name", "")) or "").strip()
         legal_name = str(attrs.get("legal_name", getattr(self.instance, "legal_name", "")) or "").strip() or None
         ledger_code = attrs.get("ledger_code", getattr(self.instance, "ledger_code", None))
+        contra_ledger = attrs.get("contra_ledger", getattr(self.instance, "contra_ledger", None))
 
         errors = {}
         if not entity:
             errors["entity"] = "Entity is required."
         if not name:
             errors["name"] = "Ledger name is required."
+        if self.instance is not None and contra_ledger is not None and getattr(contra_ledger, "id", None) == self.instance.id:
+            errors["contra_ledger"] = "Contra ledger cannot be the same as the current ledger."
 
         if entity and ledger_code not in (None, ""):
             duplicate_qs = Ledger.objects.filter(entity=entity, ledger_code=ledger_code)
@@ -177,19 +196,10 @@ class LedgerSerializer(serializers.ModelSerializer):
         return attrs
 
     def get_management_mode(self, obj):
-        return "auto_managed" if self.get_direct_edit_blocked(obj) else "direct"
+        return _ledger_management_mode(obj)
 
     def get_direct_edit_blocked(self, obj):
-        if hasattr(obj, "account_profile"):
-            return True
-        return ledger_should_be_party(
-            entity=obj.entity,
-            is_party=obj.is_party,
-            is_system=obj.is_system,
-            accounttype_obj=getattr(obj, "accounttype", None),
-            accounthead_obj=getattr(obj, "accounthead", None),
-            creditaccounthead_obj=getattr(obj, "creditaccounthead", None),
-        )
+        return self.get_management_mode(obj) == "auto_managed"
 
     def get_account_profile_gstno(self, obj):
         acc = getattr(obj, "account_profile", None)
@@ -919,7 +929,7 @@ class AccountProfileV2ReadSerializer(serializers.ModelSerializer):
         return obj.addresses.filter(isprimary=True, isactive=True).first()
 
     def get_ledger_mode(self, obj):
-        return "auto_managed"
+        return _ledger_management_mode(getattr(obj, "ledger", None))
 
     def get_partytype(self, obj):
         return getattr(self._get_commercial(obj), "partytype", None)

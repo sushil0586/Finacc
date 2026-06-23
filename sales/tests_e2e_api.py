@@ -682,8 +682,11 @@ class SalesApiEndToEndTests(APITestCase):
             {},
             format="json",
         )
-        self.assertEqual(post_resp.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("Only Confirmed invoices can be posted.", str(post_resp.json()))
+        self.assertEqual(post_resp.status_code, status.HTTP_200_OK, post_resp.json())
+        post_body = post_resp.json()
+        self.assertEqual(post_body["id"], invoice_id)
+        self.assertEqual(post_body["status"], int(SalesInvoiceHeader.Status.POSTED))
+        self.assertTrue(str(post_body.get("invoice_number") or "").strip())
 
     @patch("sales.services.sales_invoice_service.SalesInvoiceService._run_auto_compliance")
     @patch("sales.services.sales_invoice_service.SalesArService.sync_open_item_for_header")
