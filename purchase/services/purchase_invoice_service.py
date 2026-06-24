@@ -16,6 +16,7 @@ from django.db.models.functions import Coalesce
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils import timezone
 from catalog.models import Product, ProductPurchaseBehavior
+from catalog.taxability import resolve_product_default_taxability
 from catalog.uom_helpers import resolve_product_uom
 from entity.models import EntityFinancialYear
 from financial.gstin import validate_financial_gstin
@@ -56,6 +57,10 @@ def q2(x) -> Decimal:
 
 def q4(x) -> Decimal:
     return (Decimal(x or 0)).quantize(DEC4, rounding=ROUND_HALF_UP)
+
+
+def _line_product_ref(line: Dict[str, Any]):
+    return line.get("product")
 
 
 def near(a, b, tol=TOL) -> bool:
@@ -103,6 +108,31 @@ class PurchaseInvoiceService:
     - supports free qty, discount, inclusive tax pricing, cess percent
     - persists header totals correctly
     """
+
+    @staticmethod
+    def apply_product_line_defaults(
+        *,
+        header_taxability: int,
+        lines: List[Dict[str, Any]],
+    ) -> None:
+        for line in lines or []:
+            if line.get("taxability") in (None, ""):
+                product = _line_product_ref(line)
+                if product not in (None, "", 0):
+                    line["taxability"] = resolve_product_default_taxability(
+                        product=product if hasattr(product, "_meta") else None,
+                        product_id=getattr(product, "pk", product),
+                        fallback=header_taxability,
+                    )
+                else:
+                    line["taxability"] = int(header_taxability)
+
+            line_taxability = int(line.get("taxability") or header_taxability)
+            if line_taxability in (int(Taxability.EXEMPT), int(Taxability.NIL_RATED), int(Taxability.NON_GST)):
+                if line.get("is_itc_eligible") in (None, ""):
+                    line["is_itc_eligible"] = False
+                if not (line.get("itc_block_reason") or "").strip():
+                    line["itc_block_reason"] = "Not ITC eligible for non-taxable line."
 
     # ---------------------------
     # Period lock
@@ -1465,7 +1495,16 @@ class PurchaseInvoiceService:
         qty = q4(ln.get("qty"))
         rate = q2(ln.get("rate"))
         gst_rate = q2(ln.get("gst_rate", ZERO2))
-        taxability = int(ln.get("taxability", header_attrs.get("default_taxability", Taxability.TAXABLE)))
+        taxability = int(
+            ln.get(
+                "taxability",
+                resolve_product_default_taxability(
+                    product=ln.get("product") if hasattr(ln.get("product"), "_meta") else None,
+                    product_id=getattr(ln.get("product"), "pk", ln.get("product")),
+                    fallback=header_attrs.get("default_taxability", Taxability.TAXABLE),
+                ),
+            )
+        )
         is_rcm = bool(header_attrs.get("is_reverse_charge", False))
         suppress_supplier_gst = PurchaseInvoiceService.should_suppress_supplier_gst(attrs=header_attrs)
         is_gst_manual = bool(ln.get("is_gst_manual", False)) and not suppress_supplier_gst
@@ -1500,6 +1539,9 @@ class PurchaseInvoiceService:
 
         # If non-taxable buckets => GST 0, cess 0 (unless you explicitly want cess for some cases)
         if taxability in (Taxability.EXEMPT, Taxability.NIL_RATED, Taxability.NON_GST):
+            ln["is_itc_eligible"] = False
+            if not (ln.get("itc_block_reason") or "").strip():
+                ln["itc_block_reason"] = "Not ITC eligible for non-taxable line."
             taxable_value = q2(after_disc) if not is_inclusive else q2(after_disc)  # show as value basis
             cgst = sgst = igst = ZERO2
             cess_amount = ZERO2
@@ -2363,6 +2405,10 @@ class PurchaseInvoiceService:
         derived = PurchaseInvoiceService.derive_tax_regime(validated_data)
         validated_data["tax_regime"] = derived.tax_regime
         validated_data["is_igst"] = derived.is_igst
+        PurchaseInvoiceService.apply_product_line_defaults(
+            header_taxability=int(validated_data.get("default_taxability", Taxability.TAXABLE)),
+            lines=lines_client,
+        )
 
         PurchaseInvoiceService.validate_header(validated_data)
         PurchaseInvoiceService.validate_lines_structural(validated_data, lines_client, derived)
@@ -2491,6 +2537,10 @@ class PurchaseInvoiceService:
         derived = PurchaseInvoiceService.derive_tax_regime(validated_data, instance=instance)
         validated_data["tax_regime"] = derived.tax_regime
         validated_data["is_igst"] = derived.is_igst
+        PurchaseInvoiceService.apply_product_line_defaults(
+            header_taxability=int(validated_data.get("default_taxability", instance.default_taxability)),
+            lines=lines_client or [],
+        )
 
         PurchaseInvoiceService.validate_header(validated_data, instance=instance)
         if lines_provided:

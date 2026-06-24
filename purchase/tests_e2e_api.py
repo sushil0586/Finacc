@@ -1111,6 +1111,176 @@ class PurchaseApiEndToEndTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, response.json())
         self.assertIn("mixed taxability in one bill is disabled for this entity", str(response.json()).lower())
 
+    def test_purchase_invoice_create_with_mixed_taxability_off_allows_multi_line_same_taxability_documents(self):
+        PurchaseSettingsService.upsert_settings(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            updates={"allow_mixed_taxability_in_one_bill": False},
+        )
+
+        scenarios = [
+            {
+                "name": "taxable",
+                "default_taxability": int(PurchaseInvoiceHeader.Taxability.TAXABLE),
+                "header_itc": True,
+                "line_taxability": int(PurchaseInvoiceHeader.Taxability.TAXABLE),
+                "line_2_taxability": int(PurchaseInvoiceHeader.Taxability.TAXABLE),
+                "line_1": self._goods_line_payload(qty="10.0000", rate="100.00"),
+                "line_2": {
+                    **self._goods_line_payload(qty="5.0000", rate="50.00"),
+                    "line_no": 2,
+                },
+                "expected_taxable": Decimal("1250.00"),
+                "expected_igst": Decimal("225.00"),
+                "expected_grand": Decimal("1475.00"),
+                "expected_summary_taxability": int(PurchaseInvoiceHeader.Taxability.TAXABLE),
+            },
+            {
+                "name": "exempt",
+                "default_taxability": int(PurchaseInvoiceHeader.Taxability.EXEMPT),
+                "header_itc": False,
+                "line_taxability": int(PurchaseInvoiceHeader.Taxability.EXEMPT),
+                "line_2_taxability": int(PurchaseInvoiceHeader.Taxability.EXEMPT),
+                "line_1": {
+                    **self._goods_line_payload(qty="10.0000", rate="100.00"),
+                    "taxability": int(PurchaseInvoiceHeader.Taxability.EXEMPT),
+                    "gst_rate": "0.00",
+                    "cgst_percent": "0.00",
+                    "sgst_percent": "0.00",
+                    "igst_percent": "0.00",
+                    "cgst_amount": "0.00",
+                    "sgst_amount": "0.00",
+                    "igst_amount": "0.00",
+                    "line_total": "1000.00",
+                    "is_itc_eligible": False,
+                },
+                "line_2": {
+                    **self._goods_line_payload(qty="5.0000", rate="50.00"),
+                    "line_no": 2,
+                    "taxability": int(PurchaseInvoiceHeader.Taxability.EXEMPT),
+                    "gst_rate": "0.00",
+                    "cgst_percent": "0.00",
+                    "sgst_percent": "0.00",
+                    "igst_percent": "0.00",
+                    "cgst_amount": "0.00",
+                    "sgst_amount": "0.00",
+                    "igst_amount": "0.00",
+                    "line_total": "250.00",
+                    "is_itc_eligible": False,
+                },
+                "expected_taxable": Decimal("1250.00"),
+                "expected_igst": Decimal("0.00"),
+                "expected_grand": Decimal("1250.00"),
+                "expected_summary_taxability": int(PurchaseInvoiceHeader.Taxability.EXEMPT),
+            },
+            {
+                "name": "nil-rated",
+                "default_taxability": int(PurchaseInvoiceHeader.Taxability.NIL_RATED),
+                "header_itc": False,
+                "line_taxability": int(PurchaseInvoiceHeader.Taxability.NIL_RATED),
+                "line_2_taxability": int(PurchaseInvoiceHeader.Taxability.NIL_RATED),
+                "line_1": {
+                    **self._goods_line_payload(qty="10.0000", rate="100.00"),
+                    "taxability": int(PurchaseInvoiceHeader.Taxability.NIL_RATED),
+                    "gst_rate": "0.00",
+                    "cgst_percent": "0.00",
+                    "sgst_percent": "0.00",
+                    "igst_percent": "0.00",
+                    "cgst_amount": "0.00",
+                    "sgst_amount": "0.00",
+                    "igst_amount": "0.00",
+                    "line_total": "1000.00",
+                    "is_itc_eligible": False,
+                },
+                "line_2": {
+                    **self._goods_line_payload(qty="5.0000", rate="50.00"),
+                    "line_no": 2,
+                    "taxability": int(PurchaseInvoiceHeader.Taxability.NIL_RATED),
+                    "gst_rate": "0.00",
+                    "cgst_percent": "0.00",
+                    "sgst_percent": "0.00",
+                    "igst_percent": "0.00",
+                    "cgst_amount": "0.00",
+                    "sgst_amount": "0.00",
+                    "igst_amount": "0.00",
+                    "line_total": "250.00",
+                    "is_itc_eligible": False,
+                },
+                "expected_taxable": Decimal("1250.00"),
+                "expected_igst": Decimal("0.00"),
+                "expected_grand": Decimal("1250.00"),
+                "expected_summary_taxability": int(PurchaseInvoiceHeader.Taxability.NIL_RATED),
+            },
+            {
+                "name": "non-gst",
+                "default_taxability": int(PurchaseInvoiceHeader.Taxability.NON_GST),
+                "header_itc": False,
+                "line_taxability": int(PurchaseInvoiceHeader.Taxability.NON_GST),
+                "line_2_taxability": int(PurchaseInvoiceHeader.Taxability.NON_GST),
+                "line_1": {
+                    **self._goods_line_payload(qty="10.0000", rate="100.00"),
+                    "taxability": int(PurchaseInvoiceHeader.Taxability.NON_GST),
+                    "gst_rate": "0.00",
+                    "cgst_percent": "0.00",
+                    "sgst_percent": "0.00",
+                    "igst_percent": "0.00",
+                    "cgst_amount": "0.00",
+                    "sgst_amount": "0.00",
+                    "igst_amount": "0.00",
+                    "line_total": "1000.00",
+                    "is_itc_eligible": False,
+                },
+                "line_2": {
+                    **self._goods_line_payload(qty="5.0000", rate="50.00"),
+                    "line_no": 2,
+                    "taxability": int(PurchaseInvoiceHeader.Taxability.NON_GST),
+                    "gst_rate": "0.00",
+                    "cgst_percent": "0.00",
+                    "sgst_percent": "0.00",
+                    "igst_percent": "0.00",
+                    "cgst_amount": "0.00",
+                    "sgst_amount": "0.00",
+                    "igst_amount": "0.00",
+                    "line_total": "250.00",
+                    "is_itc_eligible": False,
+                },
+                "expected_taxable": Decimal("1250.00"),
+                "expected_igst": Decimal("0.00"),
+                "expected_grand": Decimal("1250.00"),
+                "expected_summary_taxability": int(PurchaseInvoiceHeader.Taxability.NON_GST),
+            },
+        ]
+
+        for scenario in scenarios:
+            with self.subTest(scenario=scenario["name"]):
+                payload = self._invoice_payload(
+                    lines=[scenario["line_1"], scenario["line_2"]],
+                    supplier_invoice_number=f"INV-MIXED-OFF-{scenario['name'].upper()}",
+                )
+                payload["default_taxability"] = scenario["default_taxability"]
+                payload["is_itc_eligible"] = scenario["header_itc"]
+
+                response = self.client.post("/api/purchase/purchase-invoices/", payload, format="json")
+
+                self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.json())
+                body = response.json()
+                self.assertEqual(Decimal(str(body["total_taxable"])), scenario["expected_taxable"])
+                self.assertEqual(Decimal(str(body["total_igst"])), scenario["expected_igst"])
+                self.assertEqual(Decimal(str(body["grand_total"])), scenario["expected_grand"])
+
+                header = PurchaseInvoiceHeader.objects.get(pk=body["id"])
+                self.assertEqual(int(header.default_taxability), scenario["expected_summary_taxability"])
+                self.assertEqual(PurchaseInvoiceLine.objects.filter(header=header).count(), 2)
+
+                summary_rows = list(PurchaseTaxSummary.objects.filter(header=header))
+                self.assertEqual(len(summary_rows), 1)
+                self.assertEqual(int(summary_rows[0].taxability), scenario["expected_summary_taxability"])
+                self.assertEqual(summary_rows[0].taxable_value, scenario["expected_taxable"])
+                self.assertEqual(summary_rows[0].cgst_amount, Decimal("0.00"))
+                self.assertEqual(summary_rows[0].sgst_amount, Decimal("0.00"))
+                self.assertEqual(summary_rows[0].igst_amount, scenario["expected_igst"])
+                self.assertEqual(summary_rows[0].cess_amount, Decimal("0.00"))
+
     def test_purchase_invoice_create_rejects_line_amount_mismatch_when_policy_is_hard(self):
         PurchaseSettingsService.upsert_settings(
             entity_id=self.entity.id,

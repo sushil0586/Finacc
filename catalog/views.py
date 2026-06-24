@@ -61,6 +61,7 @@ from .models import (
     ProductPlanning,
     ProductClassification,
     ProductPurchaseBehavior,
+    ProductTaxability,
 )
 from .serializers import (
     ProductCategorySerializer,
@@ -564,6 +565,7 @@ class ProductPageBootstrapAPIView(APIView):
             "product": product,
             "gst_types": [{"value": choice.value, "label": choice.label} for choice in GstType],
             "cess_types": [{"value": choice.value, "label": choice.label} for choice in CessType],
+            "taxability_choices": [{"value": choice.value, "label": choice.label, "key": choice.name} for choice in ProductTaxability],
             "product_statuses": [{"value": choice.value, "label": choice.label} for choice in ProductStatus],
             "item_classifications": [{"value": choice.value, "label": choice.label} for choice in ProductClassification],
             "purchase_behaviors": [{"value": choice.value, "label": choice.label} for choice in ProductPurchaseBehavior],
@@ -1582,24 +1584,6 @@ class BarcodeLayoutOptionsAPIView(APIView):
             })
         return Response(layouts)
     
-
-def _taxability_from_hsn(hsn_row) -> int:
-    """
-    Align with PurchaseInvoiceHeader.Taxability:
-    1 TAXABLE, 2 EXEMPT, 3 NIL_RATED, 4 NON_GST
-    """
-    if not hsn_row:
-        return 1
-    if hsn_row.get("is_exempt"):
-        return 2
-    if hsn_row.get("is_nil_rated"):
-        return 3
-    if hsn_row.get("is_non_gst"):
-        return 4
-    return 1
-    
-
-
 class PurchaseInvoiceProductListAPIView(APIView):
     """
     Paged transaction-ready product list for purchase invoice screens.

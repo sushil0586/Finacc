@@ -34,7 +34,7 @@ from sales.models import SalesInvoiceHeader, SalesInvoiceLine
 from sales.models.sales_ar import CustomerBillOpenItem, CustomerSettlement, CustomerSettlementLine
 from sales.models.sales_compliance import SalesEInvoice, SalesEInvoiceStatus, SalesEWayBill, SalesEWayStatus
 from sales.models.sales_settings import SalesChoiceOverride
-from sales.serializers.sales_invoice_serializers import SalesInvoiceHeaderSerializer
+from sales.serializers.sales_invoice_serializers import SalesInvoiceHeaderSerializer, SalesInvoiceLineSerializer
 from sales.services.sales_compliance_service import SalesComplianceService
 from sales.services.sales_invoice_service import SalesInvoiceService
 from sales.services.sales_choices_service import SalesChoicesService
@@ -690,6 +690,114 @@ class SalesInvoiceContractAlignmentTests(APITestCase):
         self.assertEqual(header.due_date, datetime(2025, 4, 15).date())
         self.assertEqual(int(header.tax_regime), int(SalesInvoiceHeader.TaxRegime.INTER_STATE))
         self.assertTrue(header.is_igst)
+
+    def test_sales_line_serializer_defaults_taxability_from_product_master(self):
+        self.product.default_taxability = SalesInvoiceHeader.Taxability.EXEMPT
+        self.product.save(update_fields=["default_taxability"])
+
+        serializer = SalesInvoiceLineSerializer(
+            data={
+                "line_no": 1,
+                "product": self.product.id,
+                "uom": self.uom.id,
+                "qty": "1.000",
+                "free_qty": "0.000",
+                "rate": "100.0000",
+                "discount_type": 0,
+                "discount_percent": "0.0000",
+                "discount_amount": "0.00",
+                "gst_rate": "0.00",
+                "cess_percent": "0.00",
+                "cess_amount": "0.00",
+            }
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data["taxability"], SalesInvoiceHeader.Taxability.EXEMPT)
+
+    def test_sales_tax_summary_uses_line_level_taxability_for_mixed_rows(self):
+        invoice = SalesInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            doc_type=SalesInvoiceHeader.DocType.TAX_INVOICE,
+            status=SalesInvoiceHeader.Status.DRAFT,
+            bill_date=datetime(2025, 4, 10).date(),
+            posting_date=datetime(2025, 4, 10).date(),
+            due_date=datetime(2025, 4, 10).date(),
+            doc_code="SI",
+            customer=self.customer,
+            customer_ledger=self.customer.ledger,
+            customer_name="Alpha Retail",
+            customer_gstin="27ABCDE1234F1Z5",
+            customer_state_code="27",
+            seller_gstin="27AAAAA9999A1Z5",
+            seller_state_code="27",
+            place_of_supply_state_code="27",
+            place_of_supply_pincode="400001",
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B,
+            taxability=SalesInvoiceHeader.Taxability.TAXABLE,
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTRA_STATE,
+            is_igst=False,
+        )
+        SalesInvoiceLine.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            header=invoice,
+            line_no=1,
+            product=self.product,
+            uom=self.uom,
+            hsn_sac_code="8471",
+            is_service=False,
+            qty=Decimal("1.000"),
+            free_qty=Decimal("0.000"),
+            rate=Decimal("100.0000"),
+            discount_type=SalesInvoiceLine.DiscountType.NONE,
+            discount_percent=Decimal("0.0000"),
+            discount_amount=Decimal("0.00"),
+            taxability=SalesInvoiceHeader.Taxability.TAXABLE,
+            gst_rate=Decimal("18.00"),
+            taxable_value=Decimal("100.00"),
+            cgst_amount=Decimal("9.00"),
+            sgst_amount=Decimal("9.00"),
+            igst_amount=Decimal("0.00"),
+            cess_percent=Decimal("0.00"),
+            cess_amount=Decimal("0.00"),
+            line_total=Decimal("118.00"),
+        )
+        SalesInvoiceLine.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            header=invoice,
+            line_no=2,
+            product=self.product,
+            uom=self.uom,
+            hsn_sac_code="8471",
+            is_service=False,
+            qty=Decimal("1.000"),
+            free_qty=Decimal("0.000"),
+            rate=Decimal("50.0000"),
+            discount_type=SalesInvoiceLine.DiscountType.NONE,
+            discount_percent=Decimal("0.0000"),
+            discount_amount=Decimal("0.00"),
+            taxability=SalesInvoiceHeader.Taxability.EXEMPT,
+            gst_rate=Decimal("0.00"),
+            taxable_value=Decimal("50.00"),
+            cgst_amount=Decimal("0.00"),
+            sgst_amount=Decimal("0.00"),
+            igst_amount=Decimal("0.00"),
+            cess_percent=Decimal("0.00"),
+            cess_amount=Decimal("0.00"),
+            line_total=Decimal("50.00"),
+        )
+
+        SalesInvoiceService.rebuild_tax_summary(invoice)
+
+        summary_rows = list(invoice.tax_summaries.order_by("taxability", "id"))
+        self.assertEqual(len(summary_rows), 2)
+        self.assertEqual({row.taxability for row in summary_rows}, {SalesInvoiceHeader.Taxability.TAXABLE, SalesInvoiceHeader.Taxability.EXEMPT})
 
     def test_sales_compute_line_amounts_recomputes_or_preserves_cess_per_backend_rule(self):
         header = SalesInvoiceHeader(is_igst=False)

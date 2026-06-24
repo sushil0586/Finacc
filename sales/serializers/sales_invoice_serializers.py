@@ -10,6 +10,7 @@ import re
 from entity.models import Godown
 from entity.financial_year_validation import assert_document_date_within_financial_year
 from sales.models import SalesInvoiceHeader, SalesInvoiceLine, SalesTaxSummary
+from catalog.taxability import resolve_product_default_taxability
 from sales.services.sales_nav_service import SalesInvoiceNavService
 
 from sales.services.sales_invoice_service import SalesInvoiceService
@@ -29,6 +30,7 @@ from sales.serializers.sales_compliance_serializers import (
 class SalesInvoiceLineSerializer(serializers.ModelSerializer):
     product_name = serializers.SerializerMethodField()
     uom_code = serializers.CharField(source="uom.code", read_only=True)
+    taxability_name = serializers.CharField(source="get_taxability_display", read_only=True)
 
     gstRateAmount = serializers.SerializerMethodField()
     discount_type_name = serializers.CharField(
@@ -59,6 +61,8 @@ class SalesInvoiceLineSerializer(serializers.ModelSerializer):
             "discount_type_name",
             "discount_percent",
             "discount_amount",
+            "taxability",
+            "taxability_name",
             "gst_rate",
             "cess_percent",
             "cess_amount",
@@ -143,6 +147,8 @@ class SalesInvoiceLineSerializer(serializers.ModelSerializer):
                 )
             attrs["is_service"] = True if is_service in (None, False) else bool(is_service)
         else:
+            if attrs.get("taxability") in (None, ""):
+                attrs["taxability"] = resolve_product_default_taxability(product=product)
             batch_number = (attrs.get("batch_number") or "").strip()
             manufacture_date = attrs.get("manufacture_date")
             expiry_date = attrs.get("expiry_date")
@@ -152,6 +158,23 @@ class SalesInvoiceLineSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({"expiry_date": "Expiry date is required for expiry-tracked products."})
             if manufacture_date and expiry_date and manufacture_date > expiry_date:
                 raise serializers.ValidationError({"expiry_date": "Expiry date must be on or after manufacture date."})
+
+        taxability = int(
+            attrs.get(
+                "taxability",
+                getattr(self.instance, "taxability", SalesInvoiceHeader.Taxability.TAXABLE),
+            )
+        )
+        gst_rate = Decimal(str(attrs.get("gst_rate", getattr(self.instance, "gst_rate", "0.00")) or "0.00"))
+        cess_percent = Decimal(str(attrs.get("cess_percent", getattr(self.instance, "cess_percent", "0.00")) or "0.00"))
+        cess_amount = Decimal(str(attrs.get("cess_amount", getattr(self.instance, "cess_amount", "0.00")) or "0.00"))
+        if taxability != int(SalesInvoiceHeader.Taxability.TAXABLE):
+            if gst_rate > Decimal("0.00"):
+                raise serializers.ValidationError({"gst_rate": "Must be 0 for non-taxable line."})
+            if cess_percent > Decimal("0.00"):
+                raise serializers.ValidationError({"cess_percent": "Must be 0 for non-taxable line."})
+            if cess_amount > Decimal("0.00"):
+                raise serializers.ValidationError({"cess_amount": "Must be 0 for non-taxable line."})
 
         return attrs
 
@@ -575,6 +598,34 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
                     raise serializers.ValidationError({"lines": [f"Line {idx}: service invoice accepts only service lines."]})
                 if line_mode == "goods" and is_service:
                     raise serializers.ValidationError({"lines": [f"Line {idx}: goods invoice accepts only goods lines."]})
+
+        lines = attrs.get("lines")
+        if lines is not None and entity:
+            entity_id = int(getattr(entity, "id", entity))
+            subentity = attrs.get("subentity") or getattr(self.instance, "subentity", None)
+            subentity_id = int(getattr(subentity, "id", subentity)) if subentity else None
+            policy = SalesSettingsService.get_policy(
+                entity_id,
+                subentity_id,
+                entityfinid_id=int(getattr(entityfinid, "id", entityfinid)) if entityfinid else None,
+            )
+            if not policy.allow_mixed_taxability:
+                header_taxability = int(
+                    attrs.get("taxability", getattr(self.instance, "taxability", SalesInvoiceHeader.Taxability.TAXABLE))
+                )
+                line_taxabilities = {
+                    int(
+                        row.get("taxability")
+                        or resolve_product_default_taxability(
+                            product=row.get("product") if hasattr(row.get("product"), "_meta") else None,
+                            product_id=getattr(row.get("product"), "pk", row.get("product")),
+                            fallback=header_taxability,
+                        )
+                    )
+                    for row in lines
+                }
+                if len(line_taxabilities) > 1:
+                    raise serializers.ValidationError({"lines": "Mixed taxability in one invoice is disabled for this entity."})
 
         if "custom_fields_json" in attrs:
             entity = attrs.get("entity") or getattr(self.instance, "entity", None)

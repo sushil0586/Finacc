@@ -23,6 +23,7 @@ from financial.models import ShippingDetails, account
 from financial.profile_access import account_gstno, account_partytype, account_region_state
 from catalog.models import Product
 from catalog.lot_tracking import resolve_tracked_lot_number
+from catalog.taxability import resolve_product_default_taxability
 from catalog.uom_helpers import resolve_product_uom
 from sales.models.sales_core import SalesInvoiceShipToSnapshot
 from sales.services.profile_resolvers import entity_primary_gstin, entity_primary_state
@@ -1494,6 +1495,7 @@ class SalesInvoiceService:
             "discount_type": int(getattr(line, "discount_type", 0) or 0),
             "discount_percent": str(q4(getattr(line, "discount_percent", ZERO4))),
             "discount_amount": str(q2(getattr(line, "discount_amount", ZERO2))),
+            "taxability": int(getattr(line, "taxability", SalesInvoiceHeader.Taxability.TAXABLE) or SalesInvoiceHeader.Taxability.TAXABLE),
             "gst_rate": f"{Decimal(getattr(line, 'gst_rate', ZERO2) or ZERO2):.2f}",
             "cess_percent": f"{Decimal(getattr(line, 'cess_percent', ZERO2) or ZERO2):.2f}",
             "cess_amount": str(q2(getattr(line, "cess_amount", ZERO2))),
@@ -1587,6 +1589,21 @@ class SalesInvoiceService:
         header.settled_amount = settled
         header.outstanding_amount = outstanding
         header.settlement_status = int(status)
+
+    @staticmethod
+    def apply_product_line_defaults(*, header_taxability: int, lines_data: list[dict]) -> None:
+        for row in lines_data or []:
+            if row.get("taxability") not in (None, ""):
+                continue
+            product = row.get("product")
+            if product not in (None, "", 0):
+                row["taxability"] = resolve_product_default_taxability(
+                    product=product if hasattr(product, "_meta") else None,
+                    product_id=getattr(product, "pk", product),
+                    fallback=header_taxability,
+                )
+            else:
+                row["taxability"] = int(header_taxability)
 
     # -------------------------
     # Public API: Create/Update
@@ -1689,6 +1706,10 @@ class SalesInvoiceService:
         header.full_clean(exclude=None)
         header.save()
 
+        cls.apply_product_line_defaults(
+            header_taxability=int(getattr(header, "taxability", SalesInvoiceHeader.Taxability.TAXABLE)),
+            lines_data=lines_data,
+        )
         cls.upsert_lines(header=header, incoming_lines=lines_data, user=user, allow_delete=True)
         cls.validate_charges(header=header, charges=charges_data or [])
         cls.upsert_charges(header=header, incoming_charges=charges_data or [], user=user, allow_delete=True)
@@ -1828,6 +1849,10 @@ class SalesInvoiceService:
         header.save()
 
         if lines_data is not None:
+            cls.apply_product_line_defaults(
+                header_taxability=int(getattr(header, "taxability", SalesInvoiceHeader.Taxability.TAXABLE)),
+                lines_data=lines_data,
+            )
             cls.upsert_lines(header=header, incoming_lines=lines_data, user=user, allow_delete=True)
         if charges_data is not None:
             cls.validate_charges(header=header, charges=charges_data)
@@ -1954,7 +1979,7 @@ class SalesInvoiceService:
                 line = SalesInvoiceLine.objects.get(id=row_id, header=header)
                 seen_ids.add(row_id)
 
-                SalesInvoiceService.apply_line_inputs(line, row)
+                SalesInvoiceService.apply_line_inputs(line, row, default_taxability=int(header.taxability or SalesInvoiceHeader.Taxability.TAXABLE))
 
                 # allow changing line_no safely
                 if row_ln > 0 and row_ln != int(line.line_no):
@@ -1999,7 +2024,7 @@ class SalesInvoiceService:
                 updated_by=user,
             )
 
-            SalesInvoiceService.apply_line_inputs(line, row)
+            SalesInvoiceService.apply_line_inputs(line, row, default_taxability=int(header.taxability or SalesInvoiceHeader.Taxability.TAXABLE))
             SalesInvoiceService.compute_line_amounts(header, line)
 
             try:
@@ -2015,7 +2040,7 @@ class SalesInvoiceService:
         # Rows omitted from the payload were already deleted before inserts.
 
     @staticmethod
-    def apply_line_inputs(line: SalesInvoiceLine, row: dict) -> None:
+    def apply_line_inputs(line: SalesInvoiceLine, row: dict, *, default_taxability: int) -> None:
         """
         IMPORTANT: line_no is intentionally NOT set here.
         That prevents accidental overwrite during create and avoids unique collisions.
@@ -2036,6 +2061,7 @@ class SalesInvoiceService:
             "discount_type",
             "discount_percent",
             "discount_amount",
+            "taxability",
             "gst_rate",
             "cess_percent",
             "cess_amount",
@@ -2043,6 +2069,17 @@ class SalesInvoiceService:
         ]:
             if fld in row:
                 setattr(line, fld, row.get(fld))
+
+        if getattr(line, "taxability", None) in (None, ""):
+            product = getattr(line, "product", None)
+            if product is not None:
+                line.taxability = resolve_product_default_taxability(
+                    product=product,
+                    product_id=getattr(product, "pk", None),
+                    fallback=default_taxability,
+                )
+            else:
+                line.taxability = int(default_taxability)
 
     @staticmethod
     def compute_line_amounts(header: SalesInvoiceHeader, line: SalesInvoiceLine):
@@ -2059,6 +2096,7 @@ class SalesInvoiceService:
         bill_qty = qty  # taxable usually on billed qty (not free)
         rate = q4(line.rate)
         gst_rate = q4(line.gst_rate)
+        taxability = int(getattr(line, "taxability", SalesInvoiceHeader.Taxability.TAXABLE) or SalesInvoiceHeader.Taxability.TAXABLE)
         hsn = (line.hsn_sac_code or "").strip()
 
         if qty < ZERO4 or free_qty < ZERO4:
@@ -2067,6 +2105,11 @@ class SalesInvoiceService:
             raise ValidationError({"lines": [f"Line {line.line_no}: rate cannot be negative."]})
         if gst_rate < ZERO4 or gst_rate > Decimal("100.0000"):
             raise ValidationError({"lines": [f"Line {line.line_no}: gst_rate must be between 0 and 100."]})
+        if taxability != int(SalesInvoiceHeader.Taxability.TAXABLE):
+            gst_rate = ZERO4
+            line.gst_rate = ZERO2
+            line.cess_percent = ZERO2
+            line.cess_amount = ZERO2
         if gst_rate > ZERO4 and bill_qty > ZERO4 and not hsn:
             raise ValidationError({"lines": [f"Line {line.line_no}: HSN/SAC is required when GST applies."]})
 
@@ -2102,10 +2145,10 @@ class SalesInvoiceService:
         # ad-valorem cess should be derived from the taxable base, not the
         # gross inclusive amount, otherwise inclusive-GST invoices can post a
         # different total than the user saw on screen.
-        if q4(line.cess_percent) > ZERO4:
+        if taxability == int(SalesInvoiceHeader.Taxability.TAXABLE) and q4(line.cess_percent) > ZERO4:
             cess_amt = q2(taxable * q4(line.cess_percent) / Decimal("100"))
         else:
-            cess_amt = q2(line.cess_amount)
+            cess_amt = ZERO2 if taxability != int(SalesInvoiceHeader.Taxability.TAXABLE) else q2(line.cess_amount)
 
         # Reverse-charge invoices should not carry GST/CESS amounts on invoice lines.
         if bool(getattr(header, "is_reverse_charge", False)):
@@ -2424,7 +2467,7 @@ class SalesInvoiceService:
 
         for line in lines:
             key = (
-                int(header.taxability or SalesInvoiceHeader.Taxability.TAXABLE),
+                int(getattr(line, "taxability", header.taxability or SalesInvoiceHeader.Taxability.TAXABLE) or SalesInvoiceHeader.Taxability.TAXABLE),
                 (line.hsn_sac_code or "").strip(),
                 bool(line.is_service),
                 str(q4(line.gst_rate)),

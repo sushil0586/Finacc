@@ -189,6 +189,13 @@ class ProductPurchaseBehavior(models.TextChoices):
     ASSET = "asset", _("Asset")
 
 
+class ProductTaxability(models.IntegerChoices):
+    TAXABLE = 1, _("Taxable")
+    EXEMPT = 2, _("Exempt")
+    NIL_RATED = 3, _("Nil-rated")
+    NON_GST = 4, _("Non-GST")
+
+
 class Product(EntityScopedModel):
     productname = models.CharField(max_length=200)
     sku = models.CharField(max_length=100)
@@ -250,6 +257,11 @@ class Product(EntityScopedModel):
         default=ProductPurchaseBehavior.INVENTORY,
         db_index=True,
         help_text="Controls how purchase lines for this product should flow: inventory, expense, or asset.",
+    )
+    default_taxability = models.PositiveSmallIntegerField(
+        choices=ProductTaxability.choices,
+        default=ProductTaxability.TAXABLE,
+        help_text="Default line-level taxability for purchase and sales invoices. Users can override it per invoice line.",
     )
     default_asset_category = models.ForeignKey(
         AssetCategory,

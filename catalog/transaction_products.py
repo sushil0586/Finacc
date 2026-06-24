@@ -5,6 +5,7 @@ from decimal import Decimal, InvalidOperation
 from django.db.models import Prefetch, Q
 
 from .models import Product, ProductBarcode, ProductGstRate, ProductPrice, ProductUomConversion
+from .taxability import resolve_product_default_taxability
 
 
 class TransactionProductCatalogService:
@@ -21,22 +22,6 @@ class TransactionProductCatalogService:
         if value is None:
             return default
         return str(value)
-
-    @staticmethod
-    def _taxability_from_hsn(hsn_obj) -> int:
-        """
-        Align with purchase/sales taxability semantics:
-        1 TAXABLE, 2 EXEMPT, 3 NIL_RATED, 4 NON_GST
-        """
-        if not hsn_obj:
-            return 1
-        if getattr(hsn_obj, "is_exempt", False):
-            return 2
-        if getattr(hsn_obj, "is_nil_rated", False):
-            return 3
-        if getattr(hsn_obj, "is_non_gst", False):
-            return 4
-        return 1
 
     @staticmethod
     def _normalize_limit(limit):
@@ -240,7 +225,7 @@ class TransactionProductCatalogService:
     def serialize_product(cls, product) -> dict:
         best_gst = cls._best_gst(product)
         hsn = getattr(best_gst, "hsn", None)
-        taxability = cls._taxability_from_hsn(hsn)
+        taxability = resolve_product_default_taxability(product=product)
         if taxability in (2, 3, 4):
             is_itc_eligible = False
             itc_reason = "No GST / no ITC"
@@ -306,6 +291,7 @@ class TransactionProductCatalogService:
             "hsn_id": getattr(best_gst, "hsn_id", None) if best_gst is not None else None,
             "hsn": getattr(hsn, "code", None),
             "hsn_is_service": getattr(hsn, "is_service", None) if hsn is not None else None,
+            "default_taxability": taxability,
             "taxability": taxability,
             "cgst": cls._decimal_str(getattr(best_gst, "cgst", None)),
             "sgst": cls._decimal_str(getattr(best_gst, "sgst", None)),

@@ -102,6 +102,7 @@ class CatalogPhase1Tests(TestCase):
             "is_service": False,
             "item_classification": ProductClassification.TRADING,
             "purchase_behavior": ProductPurchaseBehavior.INVENTORY,
+            "default_taxability": 1,
             "is_batch_managed": False,
             "is_serialized": False,
             "is_expiry_tracked": True,
@@ -132,6 +133,7 @@ class CatalogPhase1Tests(TestCase):
             "is_service": False,
             "item_classification": ProductClassification.TRADING,
             "purchase_behavior": ProductPurchaseBehavior.INVENTORY,
+            "default_taxability": 1,
             "is_batch_managed": False,
             "is_serialized": False,
             "is_expiry_tracked": True,
@@ -1052,12 +1054,46 @@ class CatalogTransactionProductContractTests(TestCase):
 
         self.assertEqual(payload["item_classification"], ProductClassification.TRADING)
         self.assertEqual(payload["product_status"], "active")
+        self.assertEqual(payload["default_taxability"], 1)
+        self.assertEqual(payload["taxability"], 1)
         self.assertEqual(payload["default_uom_id"], product.base_uom_id)
         self.assertEqual(payload["default_uom_code"], "PCS")
         self.assertTrue(payload["default_barcode"]["isprimary"])
         self.assertEqual(payload["default_barcode"]["uom_id"], product.base_uom_id)
         self.assertTrue(payload["uom_options"][0]["primary_barcode"]["isprimary"])
         self.assertTrue(payload["hsn_is_service"])
+
+    def test_transaction_product_payload_prefers_product_default_taxability_over_hsn_derived_taxability(self):
+        product = Product.objects.create(
+            entity=self.entity,
+            productname="Explicit Taxability Product",
+            sku="EXP-TAX-001",
+            productdesc="Taxability comes from product master",
+            productcategory=self.category,
+            base_uom=self.base_uom,
+            item_classification=ProductClassification.TRADING,
+            default_taxability=2,
+            product_status="active",
+            is_service=False,
+            isactive=True,
+        )
+        ProductGstRate.objects.create(
+            product=product,
+            hsn=self.hsn,
+            gst_type="regular",
+            cgst=9,
+            sgst=9,
+            igst=18,
+            cess=0,
+            cess_type="none",
+            valid_from="2026-04-01",
+            isdefault=True,
+        )
+
+        payload = TransactionProductCatalogService.get_product(entity_id=self.entity.id, product_id=product.id)
+
+        self.assertEqual(payload["default_taxability"], 2)
+        self.assertEqual(payload["taxability"], 2)
 
     def test_barcode_pdf_builder_supports_selected_fields_and_attributes(self):
         product = Product.objects.create(
@@ -1745,6 +1781,7 @@ class CatalogBulkProductsCoverageTests(TestCase):
     def test_template_and_export_include_asset_purchase_fields(self):
         template_row = product_bulk_template_payload()["products_basic"][0]
         self.assertIn("purchase_behavior", template_row)
+        self.assertIn("default_taxability", template_row)
         self.assertIn("default_asset_category_code", template_row)
 
         Product.objects.create(
@@ -1763,6 +1800,7 @@ class CatalogBulkProductsCoverageTests(TestCase):
         )
         export_row = export_product_bulk_payload(self.entity)["products_basic"][0]
         self.assertEqual(export_row["purchase_behavior"], ProductPurchaseBehavior.ASSET)
+        self.assertEqual(export_row["default_taxability"], 1)
         self.assertEqual(export_row["default_asset_category_code"], self.asset_category.code)
 
     def test_commit_payload_persists_asset_purchase_fields(self):

@@ -25,6 +25,7 @@ from .models import (
     ProductCategory,
     ProductGstRate,
     ProductPrice,
+    ProductTaxability,
     ProductUomConversion,
     UnitOfMeasure,
 )
@@ -88,6 +89,33 @@ def _norm_text(value: Any) -> str:
     if value is None:
         return ""
     return str(value).strip().lower()
+
+
+def _to_product_taxability(value: Any, default: int = int(ProductTaxability.TAXABLE)) -> int:
+    if value in (None, "", "-", "--"):
+        return default
+    if isinstance(value, int):
+        return int(value)
+    text = str(value).strip()
+    if text.isdigit():
+        return int(text)
+
+    lookup = _norm_text(text).replace("-", "_").replace(" ", "_")
+    by_value = {
+        _norm_text(choice.value): int(choice.value)
+        for choice in ProductTaxability
+    }
+    by_label = {
+        _norm_text(choice.label).replace("-", "_").replace(" ", "_"): int(choice.value)
+        for choice in ProductTaxability
+    }
+    if lookup in by_value:
+        return by_value[lookup]
+    if lookup in by_label:
+        return by_label[lookup]
+    raise ValueError(
+        "default_taxability must be one of: taxable, exempt, nil_rated, non_gst."
+    )
 
 
 def _read_xlsx(content: bytes) -> dict[str, list[dict[str, Any]]]:
@@ -191,6 +219,7 @@ def template_payload() -> dict[str, list[dict[str, Any]]]:
                 "is_service": False,
                 "item_classification": "trading_item",
                 "purchase_behavior": "inventory",
+                "default_taxability": "taxable",
                 "default_asset_category_code": "",
                 "is_batch_managed": False,
                 "is_serialized": False,
@@ -326,6 +355,7 @@ def export_payload(entity: Entity, search: str = "") -> dict[str, list[dict[str,
                 "is_service": p.is_service,
                 "item_classification": p.item_classification,
                 "purchase_behavior": p.purchase_behavior,
+                "default_taxability": int(p.default_taxability or ProductTaxability.TAXABLE),
                 "default_asset_category_code": getattr(p.default_asset_category, "code", "") or "",
                 "is_batch_managed": p.is_batch_managed,
                 "is_serialized": p.is_serialized,
@@ -500,6 +530,10 @@ def validate_payload(payload: dict[str, list[dict[str, Any]]], entity: Entity) -
         category = (row.get("category") or "").strip().lower()
         base_uom = (row.get("base_uom_code") or "").strip().lower()
         purchase_behavior = (row.get("purchase_behavior") or "").strip() or "inventory"
+        try:
+            _to_product_taxability(row.get("default_taxability"))
+        except Exception as exc:
+            errors.append({"sheet": "products_basic", "row": idx, "field": "default_taxability", "message": str(exc)})
         asset_category_code = (row.get("default_asset_category_code") or "").strip().lower()
         if not category:
             errors.append(
@@ -821,6 +855,10 @@ def commit_payload(
                 obj.is_service = _to_bool(row.get("is_service"))
                 obj.item_classification = (row.get("item_classification") or obj.item_classification or "trading_item")
                 obj.purchase_behavior = (row.get("purchase_behavior") or obj.purchase_behavior or "inventory")
+                obj.default_taxability = _to_product_taxability(
+                    row.get("default_taxability"),
+                    default=int(getattr(obj, "default_taxability", ProductTaxability.TAXABLE) or ProductTaxability.TAXABLE),
+                )
                 obj.default_asset_category = asset_category_map.get((row.get("default_asset_category_code") or "").strip().lower())
                 obj.is_batch_managed = _to_bool(row.get("is_batch_managed"))
                 obj.is_serialized = _to_bool(row.get("is_serialized"))

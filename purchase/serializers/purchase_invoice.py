@@ -20,6 +20,7 @@ from purchase.models.purchase_core import (
     Status,
 )
 from catalog.models import ProductPurchaseBehavior
+from catalog.taxability import resolve_product_default_taxability
 from purchase.serializers.purchase_charge import PurchaseChargeLineSerializer
 from purchase.services.purchase_invoice_actions import PurchaseInvoiceActions
 from purchase.services.purchase_invoice_nav_service import PurchaseInvoiceNavService
@@ -188,6 +189,8 @@ class PurchaseInvoiceLineSerializer(serializers.ModelSerializer):
             attrs["is_service"] = bool(attrs.get("is_service", True))
             attrs["purchase_behavior"] = ProductPurchaseBehavior.EXPENSE
         else:
+            if attrs.get("taxability") in (None, ""):
+                attrs["taxability"] = resolve_product_default_taxability(product=product)
             attrs["purchase_behavior"] = (
                 attrs.get("purchase_behavior")
                 or getattr(product, "purchase_behavior", ProductPurchaseBehavior.INVENTORY)
@@ -234,6 +237,8 @@ class PurchaseInvoiceLineSerializer(serializers.ModelSerializer):
 
         # Exempt/Nil/NonGST => ITC false (line-level)
         taxability = attrs.get("taxability", Taxability.TAXABLE)
+        if taxability in (Taxability.EXEMPT, Taxability.NIL_RATED, Taxability.NON_GST) and attrs.get("is_itc_eligible") in (None, ""):
+            attrs["is_itc_eligible"] = False
         if taxability in (Taxability.EXEMPT, Taxability.NIL_RATED, Taxability.NON_GST):
             if bool(attrs.get("is_itc_eligible", True)):
                 raise serializers.ValidationError({"is_itc_eligible": "Not allowed for Exempt/Nil/Non-GST line."})

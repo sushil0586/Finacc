@@ -522,3 +522,48 @@ class PurchaseInvoiceContractAlignmentTests(APITestCase):
 
         self.assertTrue(serializer.is_valid(), serializer.errors)
         self.assertEqual(serializer.validated_data["purchase_behavior"], ProductPurchaseBehavior.INVENTORY)
+
+    def test_purchase_line_serializer_defaults_taxability_from_product_master(self):
+        exempt_product = Product.objects.create(
+            entity=self.entity,
+            productname="Exempt Product",
+            sku="EXEMPT-001",
+            productdesc="Exempt inventory item",
+            productcategory=self.product_category,
+            base_uom=self.uom,
+            is_service=False,
+            purchase_behavior=ProductPurchaseBehavior.INVENTORY,
+            purchase_account=self.vendor,
+            default_taxability=2,
+        )
+        serializer = PurchaseInvoiceLineSerializer(
+            data={
+                "line_no": 1,
+                "product": exempt_product.id,
+                "purchase_behavior": None,
+                "product_desc": "Exempt inventory line",
+                "is_service": False,
+                "uom": self.uom.id,
+                "qty": "1.0000",
+                "free_qty": "0.0000",
+                "rate": "100.00",
+                "discount_type": "N",
+                "discount_percent": "0.00",
+                "discount_amount": "0.00",
+                "taxable_value": "100.00",
+                "gst_rate": "0.00",
+                "cgst_percent": "0.00",
+                "sgst_percent": "0.00",
+                "igst_percent": "0.00",
+                "cgst_amount": "0.00",
+                "sgst_amount": "0.00",
+                "igst_amount": "0.00",
+                "cess_percent": "0.00",
+                "cess_amount": "0.00",
+                "line_total": "100.00",
+            }
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data["taxability"], 2)
+        self.assertFalse(serializer.validated_data["is_itc_eligible"])

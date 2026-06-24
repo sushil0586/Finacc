@@ -368,6 +368,10 @@ class SalesInvoiceLine(EntityScopedModel):
     discount_percent = models.DecimalField(max_digits=9, decimal_places=4, default=Decimal("0.0000"))
     discount_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"))
 
+    taxability = models.PositiveSmallIntegerField(
+        choices=SalesInvoiceHeader.Taxability.choices,
+        default=SalesInvoiceHeader.Taxability.TAXABLE,
+    )
     gst_rate = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
     cess_percent = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
     cess_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"))
