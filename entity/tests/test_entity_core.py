@@ -20,6 +20,7 @@ from purchase.models.purchase_core import PurchaseInvoiceHeader
 from rbac.models import Role as RbacRole
 from rbac.models import UserRoleAssignment
 from geography.models import City, Country, District, State
+from numbering.models import DocumentNumberSeries, DocumentType
 from sales.models.mastergst_models import MasterGSTEnvironment, MasterGSTServiceScope, SalesMasterGSTCredential
 from subscriptions.models import CustomerAccount, CustomerSubscription, UserEntityAccess
 
@@ -258,6 +259,31 @@ class EntityOnboardingTests(TestCase):
         self.assertTrue(FinancialSettings.objects.filter(entity=entity).exists())
         self.assertTrue(accountHead.objects.filter(entity=entity, code=1000).exists())
         self.assertTrue(account.objects.filter(entity=entity, ledger__ledger_code=4000).exists())
+
+        subentity = SubEntity.objects.filter(entity=entity).order_by("id").first()
+        self.assertIsNotNone(subentity)
+
+        cash_doc_type = DocumentType.objects.get(module="vouchers", doc_key="CASH_VOUCHER")
+        bank_doc_type = DocumentType.objects.get(module="vouchers", doc_key="BANK_VOUCHER")
+
+        self.assertTrue(
+            DocumentNumberSeries.objects.filter(
+                entity=entity,
+                entityfinid__entity=entity,
+                subentity=subentity,
+                doc_type=cash_doc_type,
+                doc_code="CV",
+            ).exists()
+        )
+        self.assertTrue(
+            DocumentNumberSeries.objects.filter(
+                entity=entity,
+                entityfinid__entity=entity,
+                subentity=subentity,
+                doc_type=bank_doc_type,
+                doc_code="BV",
+            ).exists()
+        )
         self.assertTrue(Ledger.objects.filter(entity=entity, ledger_code=4000).exists())
         self.assertTrue(UserRoleAssignment.objects.filter(entity=entity, user=self.user).exists())
         self.assertTrue(RbacRole.objects.filter(entity=entity, code="entity.super_admin").exists())

@@ -891,6 +891,122 @@ class PurchaseApiEndToEndTests(APITestCase):
         self.assertTrue(mocked_sync_contract_ledger.called)
         self.assertEqual(mocked_sync_asset_intakes.call_count, 1)
 
+    def test_reverse_charge_goods_invoice_preserves_line_gst_rate_on_create_and_detail(self):
+        intra_line = self._goods_line_payload()
+        intra_line.update(
+            {
+                "cgst_percent": "9.00",
+                "sgst_percent": "9.00",
+                "igst_percent": "0.00",
+                "cgst_amount": "0.00",
+                "sgst_amount": "0.00",
+                "igst_amount": "0.00",
+                "line_total": "1000.00",
+            }
+        )
+        created = self._create_invoice(
+            supplier_invoice_number="INV-RCM-GOODS-RATE",
+            lines=[intra_line],
+            vendor_state=self.state_home.id,
+            supplier_state=self.state_home.id,
+            place_of_supply_state=self.state_home.id,
+            tax_regime=int(PurchaseInvoiceHeader.TaxRegime.INTRA),
+            is_igst=False,
+            is_reverse_charge=True,
+        )
+        invoice_id = created["id"]
+
+        self.assertEqual(len(created["lines"]), 1)
+        created_line = created["lines"][0]
+        self.assertEqual(Decimal(str(created_line["gst_rate"])), Decimal("18.00"))
+        self.assertEqual(Decimal(str(created_line["cgst_percent"])), Decimal("9.00"))
+        self.assertEqual(Decimal(str(created_line["sgst_percent"])), Decimal("9.00"))
+        self.assertEqual(Decimal(str(created_line["igst_percent"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(created_line["cgst_amount"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(created_line["sgst_amount"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(created_line["igst_amount"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(created_line["line_total"])), Decimal("1000.00"))
+
+        detail_resp = self.client.get(f"/api/purchase/purchase-invoices/{invoice_id}/{self._scope_qs()}")
+        self.assertEqual(detail_resp.status_code, status.HTTP_200_OK, detail_resp.json())
+        self.assertEqual(len(detail_resp.json()["lines"]), 1)
+        detail_line = detail_resp.json()["lines"][0]
+        self.assertEqual(Decimal(str(detail_line["gst_rate"])), Decimal("18.00"))
+        self.assertEqual(Decimal(str(detail_line["cgst_percent"])), Decimal("9.00"))
+        self.assertEqual(Decimal(str(detail_line["sgst_percent"])), Decimal("9.00"))
+        self.assertEqual(Decimal(str(detail_line["igst_percent"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(detail_line["cgst_amount"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(detail_line["sgst_amount"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(detail_line["igst_amount"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(detail_line["line_total"])), Decimal("1000.00"))
+
+    def test_reverse_charge_preserves_explicit_line_tax_percentages_without_re_splitting(self):
+        intra_line = self._goods_line_payload()
+        intra_line.update(
+            {
+                "gst_rate": "18.00",
+                "cgst_percent": "8.00",
+                "sgst_percent": "10.00",
+                "igst_percent": "0.00",
+                "cgst_amount": "0.00",
+                "sgst_amount": "0.00",
+                "igst_amount": "0.00",
+                "line_total": "1000.00",
+            }
+        )
+        created = self._create_invoice(
+            supplier_invoice_number="INV-RCM-PRESERVE-PCT",
+            lines=[intra_line],
+            vendor_state=self.state_home.id,
+            supplier_state=self.state_home.id,
+            place_of_supply_state=self.state_home.id,
+            tax_regime=int(PurchaseInvoiceHeader.TaxRegime.INTRA),
+            is_igst=False,
+            is_reverse_charge=True,
+        )
+
+        created_line = created["lines"][0]
+        self.assertEqual(Decimal(str(created_line["gst_rate"])), Decimal("18.00"))
+        self.assertEqual(Decimal(str(created_line["cgst_percent"])), Decimal("8.00"))
+        self.assertEqual(Decimal(str(created_line["sgst_percent"])), Decimal("10.00"))
+        self.assertEqual(Decimal(str(created_line["igst_percent"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(created_line["cgst_amount"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(created_line["sgst_amount"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(created_line["igst_amount"])), Decimal("0.00"))
+
+        inter_line = self._goods_line_payload()
+        inter_line.update(
+            {
+                "gst_rate": "12.00",
+                "cgst_percent": "0.00",
+                "sgst_percent": "0.00",
+                "igst_percent": "12.00",
+                "cgst_amount": "0.00",
+                "sgst_amount": "0.00",
+                "igst_amount": "0.00",
+                "line_total": "1000.00",
+            }
+        )
+        inter_created = self._create_invoice(
+            supplier_invoice_number="INV-RCM-PRESERVE-IGST",
+            lines=[inter_line],
+            vendor_state=self.state_home.id,
+            supplier_state=self.state_home.id,
+            place_of_supply_state=self.state_other.id,
+            tax_regime=int(PurchaseInvoiceHeader.TaxRegime.INTER),
+            is_igst=True,
+            is_reverse_charge=True,
+        )
+
+        inter_created_line = inter_created["lines"][0]
+        self.assertEqual(Decimal(str(inter_created_line["gst_rate"])), Decimal("12.00"))
+        self.assertEqual(Decimal(str(inter_created_line["cgst_percent"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(inter_created_line["sgst_percent"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(inter_created_line["igst_percent"])), Decimal("12.00"))
+        self.assertEqual(Decimal(str(inter_created_line["cgst_amount"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(inter_created_line["sgst_amount"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(inter_created_line["igst_amount"])), Decimal("0.00"))
+
     @patch("purchase.services.purchase_invoice_actions.GstTdsService.sync_contract_ledger_for_header")
     @patch("purchase.services.purchase_invoice_actions.PurchaseApService.sync_open_item_for_header")
     @patch("purchase.services.purchase_invoice_actions.PurchaseAssetIntakeService.sync_asset_intakes_for_posted_header")

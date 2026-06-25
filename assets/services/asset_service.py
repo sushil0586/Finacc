@@ -4,7 +4,7 @@ from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
 from django.db import transaction
-from django.db.models import Max, Q
+from django.db.models import Q
 from django.utils import timezone
 
 from assets.models import AssetCategory, AssetSettings, DepreciationRun, DepreciationRunLine, FixedAsset, default_asset_policy_controls
@@ -393,19 +393,25 @@ class AssetService:
     @staticmethod
     def generate_asset_code(*, entity_id: int, settings: AssetSettings) -> str:
         prefix = settings.default_doc_code_asset or "FA"
-        last_code = (
-            FixedAsset.objects.filter(entity_id=entity_id, asset_code__startswith=f"{prefix}-")
-            .aggregate(max_code=Max("asset_code"))
-            .get("max_code")
-        )
-        if last_code and "-" in last_code:
-            try:
-                seq = int(last_code.rsplit("-", 1)[1]) + 1
-            except ValueError:
-                seq = FixedAsset.objects.filter(entity_id=entity_id).count() + 1
-        else:
-            seq = FixedAsset.objects.filter(entity_id=entity_id).count() + 1
-        return f"{prefix}-{seq:06d}"
+        prefix_token = f"{prefix}-"
+        max_seq = 0
+        existing_codes = FixedAsset.objects.filter(
+            entity_id=entity_id,
+            asset_code__startswith=prefix_token,
+        ).values_list("asset_code", flat=True)
+
+        for code in existing_codes.iterator():
+            suffix = str(code or "")[len(prefix_token):].strip()
+            if not suffix.isdigit():
+                continue
+            max_seq = max(max_seq, int(suffix))
+
+        seq = max_seq + 1
+        candidate = f"{prefix}-{seq:06d}"
+        while FixedAsset.objects.filter(entity_id=entity_id, asset_code=candidate).exists():
+            seq += 1
+            candidate = f"{prefix}-{seq:06d}"
+        return candidate
 
     @staticmethod
     def asset_queryset(*, entity_id: int, subentity_id: int | None = None, search: str | None = None):

@@ -1565,8 +1565,23 @@ class PurchaseInvoiceService:
                 cess_amount = ZERO2
                 cess_percent = ZERO2
                 cess_specific_amount = ZERO2
-                cgst_p = sgst_p = igst_p = ZERO2
-                gst_rate_eff = gst_rate  # keep rate for reporting
+                raw_cgst_p = q2(ln.get("cgst_percent", ZERO2))
+                raw_sgst_p = q2(ln.get("sgst_percent", ZERO2))
+                raw_igst_p = q2(ln.get("igst_percent", ZERO2))
+                if int(derived.tax_regime) == int(TaxRegime.INTRA):
+                    if raw_cgst_p > ZERO2 or raw_sgst_p > ZERO2:
+                        cgst_p = raw_cgst_p
+                        sgst_p = raw_sgst_p
+                    else:
+                        cgst_p = q2(gst_rate / Decimal("2"))
+                        sgst_p = q2(gst_rate - cgst_p)
+                    igst_p = ZERO2
+                    gst_rate_eff = gst_rate if gst_rate > ZERO2 else q2(cgst_p + sgst_p)
+                else:
+                    cgst_p = ZERO2
+                    sgst_p = ZERO2
+                    igst_p = raw_igst_p if raw_igst_p > ZERO2 else gst_rate
+                    gst_rate_eff = gst_rate if gst_rate > ZERO2 else q2(igst_p)
             else:
                 # inclusive: after_disc is "total including GST (and not including cess unless you treat it so)"
                 if is_inclusive and gst_rate > 0:

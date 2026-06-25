@@ -170,6 +170,113 @@ class NumberingTests(TestCase):
         self.assertEqual(series.current_number, 5)
         self.assertEqual(series.prefix, "JV")
 
+    def test_seed_doc_sequences_command_uses_uppercase_cash_and_bank_doc_keys(self):
+        call_command(
+            "seed_doc_sequences",
+            entity=self.entity.id,
+            entityfinid=self.entityfin.id,
+            doc_code="CV",
+            start=3,
+            padding=4,
+        )
+        call_command(
+            "seed_doc_sequences",
+            entity=self.entity.id,
+            entityfinid=self.entityfin.id,
+            doc_code="BV",
+            start=4,
+            padding=4,
+        )
+
+        cash_doc_type = DocumentType.objects.get(module="vouchers", doc_key="CASH_VOUCHER")
+        bank_doc_type = DocumentType.objects.get(module="vouchers", doc_key="BANK_VOUCHER")
+
+        cash_series = DocumentNumberSeries.objects.get(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=None,
+            doc_type=cash_doc_type,
+            doc_code="CV",
+        )
+        bank_series = DocumentNumberSeries.objects.get(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=None,
+            doc_type=bank_doc_type,
+            doc_code="BV",
+        )
+
+        self.assertEqual(cash_series.current_number, 3)
+        self.assertEqual(bank_series.current_number, 4)
+
+    def test_ensure_document_type_reuses_legacy_case_variant_for_voucher_doc_key(self):
+        legacy = DocumentType.objects.create(
+            module="vouchers",
+            doc_key="cash_voucher",
+            name="Cash Voucher",
+            default_code="CV",
+            is_active=True,
+        )
+
+        normalized = ensure_document_type(
+            module="vouchers",
+            doc_key="CASH_VOUCHER",
+            name="Cash Voucher",
+            default_code="CV",
+        )
+
+        self.assertEqual(normalized.id, legacy.id)
+        legacy.refresh_from_db()
+        self.assertEqual(legacy.doc_key, "CASH_VOUCHER")
+
+    def test_allocate_final_relinks_legacy_series_to_requested_document_type(self):
+        legacy_doc_type = DocumentType.objects.create(
+            module="vouchers",
+            doc_key="cash_voucher",
+            name="Cash Voucher",
+            default_code="CV",
+            is_active=True,
+        )
+        canonical_doc_type = DocumentType.objects.create(
+            module="vouchers",
+            doc_key="CASH_VOUCHER",
+            name="Cash Voucher",
+            default_code="CV",
+            is_active=True,
+        )
+        legacy_series = DocumentNumberSeries.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            doc_type=legacy_doc_type,
+            doc_code="CV",
+            prefix="CV",
+            suffix="",
+            starting_number=7,
+            current_number=7,
+            number_padding=4,
+            reset_frequency="yearly",
+            include_year=True,
+            include_month=False,
+            separator="-",
+            is_active=True,
+            last_reset_date=date(2026, 4, 1),
+        )
+
+        allocated = DocumentNumberService.allocate_final(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            doc_type_id=canonical_doc_type.id,
+            doc_code="CV",
+            on_date=date(2026, 4, 1),
+        )
+
+        self.assertEqual(allocated.doc_no, 7)
+        legacy_series.refresh_from_db()
+        self.assertEqual(legacy_series.doc_type_id, canonical_doc_type.id)
+        self.assertEqual(legacy_series.current_number, 8)
+
     def test_numbering_seed_service_creates_document_type_and_series_together(self):
         result = NumberingSeedService.seed_document(
             entity_id=self.entity.id,

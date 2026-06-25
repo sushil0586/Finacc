@@ -22,20 +22,38 @@ class SeedSequenceResult:
 
 
 def ensure_document_type(*, module: str, doc_key: str, name: str, default_code: str) -> DocumentType:
-    doc_type, _ = DocumentType.objects.get_or_create(
-        module=module,
-        doc_key=doc_key,
-        defaults={
-            "name": name,
-            "default_code": default_code,
-            "is_active": True,
-        },
-    )
+    doc_type = DocumentType.objects.filter(module=module, doc_key=doc_key).order_by("id").first()
+    if doc_type is None:
+        doc_type = (
+            DocumentType.objects.filter(module__iexact=module, doc_key__iexact=doc_key).order_by("id").first()
+            or DocumentType.objects.filter(module__iexact=module, default_code__iexact=default_code).order_by("id").first()
+        )
+    if doc_type is None:
+        doc_type = DocumentType.objects.create(
+            module=module,
+            doc_key=doc_key,
+            name=name,
+            default_code=default_code,
+            is_active=True,
+        )
+
     changed = []
+    if doc_type.module != module:
+        doc_type.module = module
+        changed.append("module")
+    if doc_type.doc_key != doc_key:
+        doc_type.doc_key = doc_key
+        changed.append("doc_key")
     if not doc_type.name:
         doc_type.name = name
         changed.append("name")
+    elif doc_type.name != name:
+        doc_type.name = name
+        changed.append("name")
     if not doc_type.default_code:
+        doc_type.default_code = default_code
+        changed.append("default_code")
+    elif doc_type.default_code != default_code:
         doc_type.default_code = default_code
         changed.append("default_code")
     if not doc_type.is_active:
