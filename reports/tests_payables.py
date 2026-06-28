@@ -3,11 +3,13 @@ from __future__ import annotations
 from datetime import date, datetime
 from pathlib import Path
 from decimal import Decimal
+from io import BytesIO
 from uuid import uuid4
 
 from django.test import override_settings
 from django.urls import reverse
 from django.utils import timezone
+from openpyxl import load_workbook
 from rest_framework.test import APIClient, APITestCase
 
 from Authentication.models import User
@@ -908,6 +910,30 @@ class PayableReportAPITests(APITestCase):
         self.assertEqual(response.status_code, 200)
         drilldown = response.json()["rows"][0]["_meta"]["drilldown"]["bill_detail"]
         self.assertEqual(drilldown["route"], "/purchaseserviceinvoice")
+
+    def test_vendor_reconciliation_statement_excel_export_returns_workbook(self):
+        response = self.client.get(
+            reverse("reports_api:vendor-reconciliation-statement-excel"),
+            self._base_scope(as_of_date="2025-04-30"),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response["Content-Type"].startswith("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+        workbook = load_workbook(filename=BytesIO(response.content), read_only=True)
+        self.assertGreaterEqual(len(workbook.sheetnames), 1)
+        self.assertNotRegex(workbook.sheetnames[0], r"[\\\\/*?:\\[\\]]")
+        self.assertLessEqual(len(workbook.sheetnames[0]), 31)
+
+    def test_duplicate_anomalous_bill_detection_excel_export_returns_workbook(self):
+        response = self.client.get(
+            reverse("reports_api:duplicate-anomalous-bill-detection-excel"),
+            self._base_scope(from_date="2025-04-01", to_date="2025-04-30"),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response["Content-Type"].startswith("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+        workbook = load_workbook(filename=BytesIO(response.content), read_only=True)
+        self.assertGreaterEqual(len(workbook.sheetnames), 1)
+        self.assertNotRegex(workbook.sheetnames[0], r"[\\\\/*?:\\[\\]]")
+        self.assertLessEqual(len(workbook.sheetnames[0]), 31)
 
     def test_payables_meta_filters_reports_and_report_endpoints_enforce_permissions(self):
         limited_user = self._create_limited_report_user("reports.vendoroutstanding.view")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import types
 from datetime import timedelta
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase
@@ -354,6 +355,17 @@ class GstTdsApiTests(TestCase):
         )
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
+        self.permission_patch = patch(
+            "gst_tds.views.EffectivePermissionService.permission_codes_for_user",
+            return_value={
+                "gst.tds.config.view",
+                "gst.tds.config.update",
+                "gst.tds.config.edit",
+                "gst.tds.config.create",
+            },
+        )
+        self.permission_patch.start()
+        self.addCleanup(self.permission_patch.stop)
 
         self.entity_1 = Entity.objects.create(entityname="Entity One", createdby=self.user)
         self.entity_2 = Entity.objects.create(entityname="Entity Two", createdby=self.user)
@@ -425,6 +437,28 @@ class GstTdsApiTests(TestCase):
         self.assertEqual(resp.status_code, 400)
         self.assertIn("subentity", resp.data)
 
+    def test_config_get_requires_view_permission(self):
+        with patch(
+            "gst_tds.views.EffectivePermissionService.permission_codes_for_user",
+            return_value=set(),
+        ):
+            resp = self.client.get(f"/api/gst-tds/config/?entity={self.entity_1.id}&subentity={self.sub_1.id}")
+
+        self.assertEqual(resp.status_code, 403)
+
+    def test_config_put_requires_manage_permission(self):
+        with patch(
+            "gst_tds.views.EffectivePermissionService.permission_codes_for_user",
+            return_value={"gst.tds.config.view"},
+        ):
+            resp = self.client.put(
+                f"/api/gst-tds/config/?entity={self.entity_1.id}&subentity={self.sub_1.id}",
+                {"enabled": True, "threshold_amount": "300000.00", "enforce_pos_rule": False},
+                format="json",
+            )
+
+        self.assertEqual(resp.status_code, 403)
+
     def test_contract_ledgers_list_filters_and_scope_guards(self):
         resp = self.client.get(f"/api/gst-tds/contract-ledgers/?entity={self.entity_1.id}&contract_ref=CTR-101")
         self.assertEqual(resp.status_code, 200)
@@ -442,6 +476,15 @@ class GstTdsApiTests(TestCase):
         )
         self.assertEqual(bad_fy.status_code, 400)
         self.assertIn("entityfinid", bad_fy.data)
+
+    def test_contract_ledgers_list_requires_view_permission(self):
+        with patch(
+            "gst_tds.views.EffectivePermissionService.permission_codes_for_user",
+            return_value=set(),
+        ):
+            resp = self.client.get(f"/api/gst-tds/contract-ledgers/?entity={self.entity_1.id}&contract_ref=CTR-101")
+
+        self.assertEqual(resp.status_code, 403)
 
     def test_contract_ledger_summary_returns_totals(self):
         resp = self.client.get(
@@ -461,6 +504,18 @@ class GstTdsApiTests(TestCase):
         self.assertEqual(filtered.data["contract_ref"], "CTR-101")
         self.assertEqual(filtered.data["total_contracts"], 1)
         self.assertEqual(Decimal(filtered.data["total_taxable"]), Decimal("10000.00"))
+
+    def test_contract_ledger_summary_requires_view_permission(self):
+        with patch(
+            "gst_tds.views.EffectivePermissionService.permission_codes_for_user",
+            return_value=set(),
+        ):
+            resp = self.client.get(
+                f"/api/gst-tds/contract-ledgers/summary/?entity={self.entity_1.id}"
+                f"&entityfinid={self.fy_1.id}&subentity={self.sub_1.id}"
+            )
+
+        self.assertEqual(resp.status_code, 403)
 
 
 class GstTdsDeleteProtectionTests(SimpleTestCase):

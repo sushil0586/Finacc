@@ -77,8 +77,10 @@ class SalesWithholdingService:
                 "NOT_APPLICABLE_BASE_RULE_CONTEXT",
             )
 
-        # base rule (most cases excl GST)
-        base = q2(taxable_total or ZERO2)
+        if int(getattr(section, "base_rule", 0) or 0) == int(WithholdingBaseRule.INVOICE_VALUE_INCL_GST):
+            base = q2(gross_total or ZERO2)
+        else:
+            base = q2(taxable_total or ZERO2)
         party_profile = WithholdingResolver.resolve_party_profile(
             party_account_id=customer_account_id,
             entity_id=getattr(header, "entity_id", None),

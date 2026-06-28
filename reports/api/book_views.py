@@ -26,6 +26,7 @@ from receipts.models.receipt_core import ReceiptVoucherHeader
 from reports.schemas.book_reports import CashbookScopeSerializer, DaybookScopeSerializer
 from reports.schemas.common import build_report_envelope
 from reports.api.financial.export_utils import ExportSection, write_sectioned_csv, write_sectioned_excel, write_sectioned_pdf
+from reports.api.report_permissions import assert_any_report_permission
 from reports.services.financial_hub_settings import (
     apply_amount_display_unit_override,
     format_financial_hub_amount,
@@ -48,7 +49,20 @@ from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 from vouchers.models.voucher_core import VoucherHeader
 
 
-class _BaseBookReportAPIView(ScopedEntitlementMixin, APIView):
+class BookReportPermissionMixin:
+    required_permission_codes: tuple[str, ...] = ()
+    permission_denied_message = "You do not have permission to access this report."
+
+    def enforce_report_permission(self, request, *, entity_id: int):
+        assert_any_report_permission(
+            user=request.user,
+            entity_id=entity_id,
+            required_permissions=self.required_permission_codes,
+            message=self.permission_denied_message,
+        )
+
+
+class _BaseBookReportAPIView(BookReportPermissionMixin, ScopedEntitlementMixin, APIView):
     """Common utilities for thin report views that delegate accounting logic to services."""
 
     permission_classes = [permissions.IsAuthenticated]
@@ -66,6 +80,7 @@ class _BaseBookReportAPIView(ScopedEntitlementMixin, APIView):
             entityfinid_id=scope.get("entityfinid"),
             subentity_id=scope.get("subentity"),
         )
+        self.enforce_report_permission(request, entity_id=scope["entity"])
         return scope
 
     def attach_pagination_links(self, request, payload):
@@ -803,6 +818,10 @@ class DaybookAPIView(_BaseBookReportAPIView):
     """Return Daybook rows derived from posting entries and journal totals."""
 
     serializer_class = DaybookScopeSerializer
+    required_permission_codes = (
+        "reports.financial_hub.daybook.view",
+        "reports.daybook.view",
+    )
 
     def get(self, request):
         scope = self.get_scope(request)
@@ -849,12 +868,16 @@ class DaybookAPIView(_BaseBookReportAPIView):
         return Response(response)
 
 
-class DaybookEntryDetailAPIView(ScopedEntitlementMixin, APIView):
+class DaybookEntryDetailAPIView(BookReportPermissionMixin, ScopedEntitlementMixin, APIView):
     """Return a journal-line drill-down payload for a single posting entry."""
 
     permission_classes = [permissions.IsAuthenticated]
     subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
     subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
+    required_permission_codes = (
+        "reports.financial_hub.daybook.view",
+        "reports.daybook.view",
+    )
 
     def get(self, request, entry_id: int):
         entity_id = request.query_params.get("entity")
@@ -868,6 +891,7 @@ class DaybookEntryDetailAPIView(ScopedEntitlementMixin, APIView):
             entityfinid_id=int(entityfin_id) if entityfin_id else None,
             subentity_id=int(subentity_id) if subentity_id else None,
         )
+        self.enforce_report_permission(request, entity_id=int(entity_id))
         try:
             data = build_daybook_entry_detail(
                 entry_id=entry_id,
@@ -880,10 +904,16 @@ class DaybookEntryDetailAPIView(ScopedEntitlementMixin, APIView):
         return Response(data)
 
 
-class PostingDocumentLookupAPIView(ScopedEntitlementMixin, APIView):
+class PostingDocumentLookupAPIView(BookReportPermissionMixin, ScopedEntitlementMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
     subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
+    required_permission_codes = (
+        "reports.financial_hub.ledger_book.view",
+        "reports.ledger_book.view",
+        "reports.financial_hub.daybook.view",
+        "reports.daybook.view",
+    )
 
     def get(self, request):
         entity_id = request.query_params.get("entity")
@@ -906,6 +936,7 @@ class PostingDocumentLookupAPIView(ScopedEntitlementMixin, APIView):
             entityfinid_id=int(entityfin_id) if entityfin_id else None,
             subentity_id=int(subentity_id) if subentity_id else None,
         )
+        self.enforce_report_permission(request, entity_id=int(entity_id))
         try:
             data = resolve_posting_entry_for_document(
                 entity_id=entity_id,
@@ -932,12 +963,18 @@ class PostingDocumentLookupAPIView(ScopedEntitlementMixin, APIView):
         return Response(data)
 
 
-class _BasePostingDetailExportAPIView(ScopedEntitlementMixin, APIView):
+class _BasePostingDetailExportAPIView(BookReportPermissionMixin, ScopedEntitlementMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
     subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
     export_mode = "attachment"
     export_orientation = "landscape"
+    required_permission_codes = (
+        "reports.financial_hub.ledger_book.view",
+        "reports.ledger_book.view",
+        "reports.financial_hub.daybook.view",
+        "reports.daybook.view",
+    )
 
     def export_response(self, *, filename, content, content_type):
         response = HttpResponse(content=content, content_type=content_type)
@@ -965,6 +1002,7 @@ class _BasePostingDetailExportAPIView(ScopedEntitlementMixin, APIView):
             entityfinid_id=int(entityfin_id) if entityfin_id else None,
             subentity_id=int(subentity_id) if subentity_id else None,
         )
+        self.enforce_report_permission(request, entity_id=int(entity_id))
         detail = build_daybook_entry_detail(
             entry_id=entry_id,
             entity_id=entity_id,
@@ -1051,6 +1089,10 @@ class _BaseDaybookExportAPIView(_BaseBookReportAPIView):
     serializer_class = DaybookScopeSerializer
     export_mode = "attachment"
     export_orientation = "landscape"
+    required_permission_codes = (
+        "reports.financial_hub.daybook.view",
+        "reports.daybook.view",
+    )
 
     def export_response(self, *, filename, content, content_type):
         response = HttpResponse(content=content, content_type=content_type)
@@ -1211,6 +1253,11 @@ class CashbookAPIView(_BaseBookReportAPIView):
     """Return audit-safe Cashbook detail or summary output depending on account scope."""
 
     serializer_class = CashbookScopeSerializer
+    required_permission_codes = (
+        "reports.financial_hub.cashbook.view",
+        "reports.cash_book.view",
+        "reports.cashbook.view",
+    )
 
     def get(self, request):
         scope = self.get_scope(request)
@@ -1382,6 +1429,11 @@ class _BaseCashbookExportAPIView(_BaseBookReportAPIView):
     serializer_class = CashbookScopeSerializer
     export_mode = "attachment"
     export_orientation = "landscape"
+    required_permission_codes = (
+        "reports.financial_hub.cashbook.view",
+        "reports.cash_book.view",
+        "reports.cashbook.view",
+    )
 
     def export_response(self, *, filename, content, content_type):
         response = HttpResponse(content=content, content_type=content_type)

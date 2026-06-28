@@ -96,6 +96,11 @@ class GstExceptionDashboardAPITests(APITestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["report_code"], "gst-exception-dashboard")
+        self.assertEqual(payload["report_name"], "GST Exception Dashboard")
+        self.assertEqual(set(payload["available_exports"]), {"excel", "csv", "json"})
+        self.assertIn("excel", payload["actions"]["export_urls"])
+        self.assertIn("csv", payload["actions"]["export_urls"])
+        self.assertIn("json", payload["actions"]["export_urls"])
         self.assertEqual(payload["overview"]["total_exception_count"], 3)
         self.assertEqual(payload["overview"]["reconciliation_mismatch_count"], 0)
         self.assertEqual(payload["overview"]["reconciliation_advisory_count"], 1)
@@ -199,6 +204,10 @@ class GstExceptionDashboardAPITests(APITestCase):
         self.assertIn("GSTR-1", csv_text)
         self.assertIn("INVALID_GSTIN", csv_text)
         self.assertIn("GSTR3B_TAX_BREAKUP_MISSING", csv_text)
+
+        xlsx_response = self.client.get(self.export_url, {**self.params, "format": "xlsx"})
+        self.assertEqual(xlsx_response.status_code, 200)
+        self.assertIn("attachment; filename=\"GST_Exception_Dashboard.xlsx\"", xlsx_response["Content-Disposition"])
 
     @patch("reports.api.gst_exception_dashboard_views.assert_any_report_permission", side_effect=PermissionDenied("forbidden"))
     def test_summary_denies_when_report_permission_is_missing(self, _assert_permission):

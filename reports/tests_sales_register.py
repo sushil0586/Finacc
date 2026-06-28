@@ -814,3 +814,28 @@ class SalesRegisterAPITests(APITestCase):
         self.assertEqual(row["sales_invoice_number"], "EINV-001")
         self.assertEqual(row["e_invoice_no"], "IRN-123")
         self.assertEqual(row["e_way_bill_no"], "EWB-123")
+
+    def test_report_envelope_exposes_print_and_export_actions(self):
+        self._create_sales_document(invoice_number="ENV-001")
+
+        response = self._get(page=1, page_size=1, search="ENV")
+        self.assertEqual(response.status_code, 200)
+
+        payload = response.data
+        self.assertEqual(payload["report_code"], "sales-register")
+        self.assertEqual(payload["report_name"], "Sales Register")
+        self.assertTrue(payload["actions"]["can_view"])
+        self.assertTrue(payload["actions"]["can_export_excel"])
+        self.assertTrue(payload["actions"]["can_export_pdf"])
+        self.assertTrue(payload["actions"]["can_export_csv"])
+        self.assertTrue(payload["actions"]["can_drilldown"])
+        self.assertTrue(payload["actions"]["can_print"])
+        self.assertEqual(payload["available_exports"], ["excel", "pdf", "csv", "print"])
+        self.assertEqual(set(payload["actions"]["export_urls"].keys()), {"excel", "pdf", "csv", "print"})
+        for key in ("excel", "pdf", "csv", "print"):
+            self.assertIn("/api/reports/sales/register/", payload["actions"]["export_urls"][key])
+            self.assertIn("entity=", payload["actions"]["export_urls"][key])
+            self.assertIn(f"entityfinid={self.entityfin.id}", payload["actions"]["export_urls"][key])
+            self.assertIn("search=ENV", payload["actions"]["export_urls"][key])
+        self.assertNotIn("page=", payload["actions"]["export_urls"]["excel"])
+        self.assertNotIn("page_size=", payload["actions"]["export_urls"]["excel"])

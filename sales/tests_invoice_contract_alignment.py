@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.core.cache import cache
@@ -39,6 +40,8 @@ from sales.services.sales_compliance_service import SalesComplianceService
 from sales.services.sales_invoice_service import SalesInvoiceService
 from sales.services.sales_choices_service import SalesChoicesService
 from sales.services.sales_settings_service import SalesSettingsService
+from withholding.models import WithholdingBaseRule, WithholdingSection, WithholdingTaxType
+from withholding.services import WithholdingResult
 
 
 @override_settings(ROOT_URLCONF="FA.urls", AUTH_PASSWORD_VALIDATORS=[])
@@ -144,6 +147,16 @@ class SalesInvoiceContractAlignmentTests(APITestCase):
             sku="WIDGET-001",
             productcategory=self.category,
             base_uom=self.uom,
+        )
+
+    def _settings_stub(self, *, tcs_credit_note_policy: str = "REVERSE"):
+        return SimpleNamespace(
+            enable_einvoice=False,
+            einvoice_entity_applicable=False,
+            enable_eway=False,
+            eway_value_threshold=Decimal("50000.00"),
+            compliance_applicability_mode="AUTO_ONLY",
+            tcs_credit_note_policy=tcs_credit_note_policy,
         )
 
     def test_sales_form_meta_exposes_backend_authoritative_contract(self):
@@ -798,6 +811,406 @@ class SalesInvoiceContractAlignmentTests(APITestCase):
         summary_rows = list(invoice.tax_summaries.order_by("taxability", "id"))
         self.assertEqual(len(summary_rows), 2)
         self.assertEqual({row.taxability for row in summary_rows}, {SalesInvoiceHeader.Taxability.TAXABLE, SalesInvoiceHeader.Taxability.EXEMPT})
+
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._sync_tcs_computation")
+    @patch("sales.services.sales_invoice_service.SalesWithholdingService.compute_tcs")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService.get_settings")
+    def test_create_with_lines_persists_mixed_taxability_and_tcs_on_reload(
+        self,
+        mocked_get_settings,
+        mocked_compute_tcs,
+        mocked_sync_tcs,
+    ):
+        mocked_get_settings.return_value = self._settings_stub()
+        section = WithholdingSection.objects.create(
+            tax_type=WithholdingTaxType.TCS,
+            section_code="206C(1)",
+            description="Sale of goods",
+            base_rule=WithholdingBaseRule.INVOICE_VALUE_EXCL_GST,
+            rate_default=Decimal("0.1000"),
+            threshold_default=Decimal("0.00"),
+            effective_from=datetime(2025, 4, 1).date(),
+            is_active=True,
+        )
+        mocked_compute_tcs.return_value = WithholdingResult(
+            enabled=True,
+            section=section,
+            rate=Decimal("0.1000"),
+            base_amount=Decimal("100.00"),
+            amount=Decimal("10.00"),
+            reason="TCS computed on taxable sale value.",
+            reason_code="OK",
+        )
+
+        exempt_product = Product.objects.create(
+            entity=self.entity,
+            productname="Exempt Widget",
+            sku="WIDGET-EX-001",
+            productcategory=self.category,
+            base_uom=self.uom,
+            default_taxability=SalesInvoiceHeader.Taxability.EXEMPT,
+        )
+
+        header = SalesInvoiceService.create_with_lines(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            header_data={
+                "doc_type": int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+                "bill_date": datetime(2025, 4, 10).date(),
+                "credit_days": 5,
+                "doc_code": "SI",
+                "customer": self.customer,
+                "customer_name": "Alpha Retail",
+                "customer_gstin": "27ABCDE1234F1Z5",
+                "customer_state_code": "27",
+                "seller_gstin": "27AAAAA9999A1Z5",
+                "seller_state_code": "27",
+                "place_of_supply_state_code": "27",
+                "place_of_supply_pincode": "400001",
+                "supply_category": int(SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B),
+                "taxability": int(SalesInvoiceHeader.Taxability.TAXABLE),
+                "withholding_enabled": True,
+                "tcs_section": section,
+            },
+            lines_data=[
+                {
+                    "line_no": 1,
+                    "product": self.product,
+                    "uom": self.uom,
+                    "qty": "1.000",
+                    "free_qty": "0.000",
+                    "rate": "100.0000",
+                    "discount_type": 0,
+                    "discount_percent": "0.0000",
+                    "discount_amount": "0.00",
+                    "hsn_sac_code": "8471",
+                    "taxability": int(SalesInvoiceHeader.Taxability.TAXABLE),
+                    "gst_rate": "18.00",
+                    "cess_percent": "0.00",
+                    "cess_amount": "0.00",
+                },
+                {
+                    "line_no": 2,
+                    "product": exempt_product,
+                    "uom": self.uom,
+                    "qty": "1.000",
+                    "free_qty": "0.000",
+                    "rate": "50.0000",
+                    "discount_type": 0,
+                    "discount_percent": "0.0000",
+                    "discount_amount": "0.00",
+                    "hsn_sac_code": "0000",
+                    "gst_rate": "0.00",
+                    "cess_percent": "0.00",
+                    "cess_amount": "0.00",
+                },
+            ],
+            charges_data=[],
+            user=self.user,
+        )
+
+        header.refresh_from_db()
+        lines = list(header.lines.order_by("line_no"))
+        summary_rows = list(header.tax_summaries.order_by("taxability", "id"))
+
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(lines[0].taxability, int(SalesInvoiceHeader.Taxability.TAXABLE))
+        self.assertEqual(lines[1].taxability, int(SalesInvoiceHeader.Taxability.EXEMPT))
+        self.assertEqual(lines[1].gst_rate, Decimal("0.0000"))
+        self.assertEqual(header.tcs_section_id, section.id)
+        self.assertEqual(header.tcs_base_amount, Decimal("100.00"))
+        self.assertEqual(header.tcs_amount, Decimal("10.00"))
+        self.assertEqual(header.tcs_reason, "TCS computed on taxable sale value.")
+        self.assertEqual((header.legacy_behavior_flags or {}).get("tcs_runtime_result", {}).get("reason_code"), "OK")
+        self.assertEqual({row.taxability for row in summary_rows}, {SalesInvoiceHeader.Taxability.TAXABLE, SalesInvoiceHeader.Taxability.EXEMPT})
+        mocked_sync_tcs.assert_called()
+
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._sync_tcs_computation")
+    @patch("sales.services.sales_invoice_service.SalesWithholdingService.compute_tcs")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService.get_settings")
+    def test_credit_note_creation_preserves_original_tax_scope_and_tcs_reversal_on_reload(
+        self,
+        mocked_get_settings,
+        mocked_compute_tcs,
+        mocked_sync_tcs,
+    ):
+        mocked_get_settings.return_value = self._settings_stub(tcs_credit_note_policy="REVERSE")
+        section = WithholdingSection.objects.create(
+            tax_type=WithholdingTaxType.TCS,
+            section_code="206C(1H)",
+            description="Sale of goods legacy",
+            base_rule=WithholdingBaseRule.INVOICE_VALUE_EXCL_GST,
+            rate_default=Decimal("0.1000"),
+            threshold_default=Decimal("0.00"),
+            effective_from=datetime(2025, 4, 1).date(),
+            is_active=True,
+        )
+        mocked_compute_tcs.return_value = WithholdingResult(
+            enabled=True,
+            section=section,
+            rate=Decimal("0.1000"),
+            base_amount=Decimal("50.00"),
+            amount=Decimal("5.00"),
+            reason="Sales return TCS reversal.",
+            reason_code="OK",
+        )
+
+        original = SalesInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            doc_type=SalesInvoiceHeader.DocType.TAX_INVOICE,
+            status=SalesInvoiceHeader.Status.POSTED,
+            bill_date=datetime(2025, 4, 10).date(),
+            posting_date=datetime(2025, 4, 10).date(),
+            due_date=datetime(2025, 4, 15).date(),
+            doc_code="SI",
+            doc_no=101,
+            invoice_number="SI/101",
+            customer=self.customer,
+            customer_ledger=self.customer.ledger,
+            customer_name="Alpha Retail",
+            customer_gstin="27ABCDE1234F1Z5",
+            customer_state_code="27",
+            seller_gstin="29AAAAA9999A1Z5",
+            seller_state_code="29",
+            place_of_supply_state_code="27",
+            place_of_supply_pincode="400001",
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B,
+            taxability=SalesInvoiceHeader.Taxability.TAXABLE,
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTER_STATE,
+            is_igst=True,
+            total_taxable_value=Decimal("100.00"),
+            total_cgst=Decimal("0.00"),
+            total_sgst=Decimal("0.00"),
+            total_igst=Decimal("18.00"),
+            total_cess=Decimal("0.00"),
+            total_discount=Decimal("0.00"),
+            round_off=Decimal("0.00"),
+            grand_total=Decimal("118.00"),
+        )
+
+        note = SalesInvoiceService.create_with_lines(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            header_data={
+                "doc_type": int(SalesInvoiceHeader.DocType.CREDIT_NOTE),
+                "bill_date": datetime(2025, 4, 12).date(),
+                "credit_days": 0,
+                "doc_code": "SCN",
+                "customer": self.customer,
+                "customer_name": "Alpha Retail",
+                "customer_gstin": "27ABCDE1234F1Z5",
+                "customer_state_code": "27",
+                "seller_gstin": "22WRONG9999A1Z5",
+                "seller_state_code": "22",
+                "place_of_supply_state_code": "22",
+                "place_of_supply_pincode": "400001",
+                "supply_category": int(SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B),
+                "taxability": int(SalesInvoiceHeader.Taxability.TAXABLE),
+                "withholding_enabled": True,
+                "tcs_section": section,
+                "original_invoice": original,
+                "reference": original.invoice_number,
+                "note_reason": SalesInvoiceHeader.NoteReason.QUANTITY_RETURN,
+                "affects_inventory": True,
+            },
+            lines_data=[
+                {
+                    "line_no": 1,
+                    "product": self.product,
+                    "uom": self.uom,
+                    "qty": "1.000",
+                    "free_qty": "0.000",
+                    "rate": "50.0000",
+                    "discount_type": 0,
+                    "discount_percent": "0.0000",
+                    "discount_amount": "0.00",
+                    "hsn_sac_code": "8471",
+                    "taxability": int(SalesInvoiceHeader.Taxability.TAXABLE),
+                    "gst_rate": "18.00",
+                    "cess_percent": "0.00",
+                    "cess_amount": "0.00",
+                }
+            ],
+            charges_data=[],
+            user=self.user,
+        )
+
+        note.refresh_from_db()
+
+        self.assertEqual(note.original_invoice_id, original.id)
+        self.assertEqual(note.seller_gstin, original.seller_gstin)
+        self.assertEqual(note.seller_state_code, original.seller_state_code)
+        self.assertEqual(note.place_of_supply_state_code, original.place_of_supply_state_code)
+        self.assertEqual(int(note.tax_regime), int(SalesInvoiceHeader.TaxRegime.INTER_STATE))
+        self.assertTrue(note.is_igst)
+        self.assertEqual(note.tcs_section_id, section.id)
+        self.assertEqual(note.tcs_base_amount, Decimal("50.00"))
+        self.assertEqual(note.tcs_amount, Decimal("5.00"))
+        self.assertTrue(note.tcs_is_reversal)
+        self.assertEqual((note.legacy_behavior_flags or {}).get("tcs_runtime_result", {}).get("reason_code"), "OK")
+        mocked_sync_tcs.assert_called()
+
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._sync_tcs_computation")
+    @patch("sales.services.sales_invoice_service.SalesWithholdingService.compute_tcs")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService.get_settings")
+    def test_debit_note_creation_preserves_original_tax_scope_mixed_taxability_and_tcs_uplift_on_reload(
+        self,
+        mocked_get_settings,
+        mocked_compute_tcs,
+        mocked_sync_tcs,
+    ):
+        mocked_get_settings.return_value = self._settings_stub()
+        section = WithholdingSection.objects.create(
+            tax_type=WithholdingTaxType.TCS,
+            section_code="206C(1)",
+            description="Sale debit note uplift",
+            base_rule=WithholdingBaseRule.INVOICE_VALUE_INCL_GST,
+            rate_default=Decimal("1.0000"),
+            threshold_default=Decimal("0.00"),
+            effective_from=datetime(2025, 4, 1).date(),
+            is_active=True,
+        )
+        mocked_compute_tcs.return_value = WithholdingResult(
+            enabled=True,
+            section=section,
+            rate=Decimal("1.0000"),
+            base_amount=Decimal("168.00"),
+            amount=Decimal("1.68"),
+            reason="TCS computed on invoice value including GST.",
+            reason_code="OK",
+        )
+
+        exempt_product = Product.objects.create(
+            entity=self.entity,
+            productname="Debit Note Exempt Widget",
+            sku="WIDGET-DN-EX-001",
+            productcategory=self.category,
+            base_uom=self.uom,
+            default_taxability=SalesInvoiceHeader.Taxability.EXEMPT,
+        )
+
+        original = SalesInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            doc_type=SalesInvoiceHeader.DocType.TAX_INVOICE,
+            status=SalesInvoiceHeader.Status.POSTED,
+            bill_date=datetime(2025, 4, 10).date(),
+            posting_date=datetime(2025, 4, 10).date(),
+            due_date=datetime(2025, 4, 15).date(),
+            doc_code="SI",
+            doc_no=102,
+            invoice_number="SI/102",
+            customer=self.customer,
+            customer_ledger=self.customer.ledger,
+            customer_name="Alpha Retail",
+            customer_gstin="27ABCDE1234F1Z5",
+            customer_state_code="27",
+            seller_gstin="29AAAAA9999A1Z5",
+            seller_state_code="29",
+            place_of_supply_state_code="27",
+            place_of_supply_pincode="400001",
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B,
+            taxability=SalesInvoiceHeader.Taxability.TAXABLE,
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTER_STATE,
+            is_igst=True,
+            total_taxable_value=Decimal("150.00"),
+            total_cgst=Decimal("0.00"),
+            total_sgst=Decimal("0.00"),
+            total_igst=Decimal("18.00"),
+            total_cess=Decimal("0.00"),
+            total_discount=Decimal("0.00"),
+            round_off=Decimal("0.00"),
+            grand_total=Decimal("168.00"),
+        )
+
+        note = SalesInvoiceService.create_with_lines(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            header_data={
+                "doc_type": int(SalesInvoiceHeader.DocType.DEBIT_NOTE),
+                "bill_date": datetime(2025, 4, 13).date(),
+                "credit_days": 0,
+                "doc_code": "SDN",
+                "customer": self.customer,
+                "customer_name": "Alpha Retail",
+                "customer_gstin": "27ABCDE1234F1Z5",
+                "customer_state_code": "27",
+                "seller_gstin": "22WRONG9999A1Z5",
+                "seller_state_code": "22",
+                "place_of_supply_state_code": "22",
+                "place_of_supply_pincode": "400001",
+                "supply_category": int(SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B),
+                "taxability": int(SalesInvoiceHeader.Taxability.TAXABLE),
+                "withholding_enabled": True,
+                "tcs_section": section,
+                "original_invoice": original,
+                "reference": original.invoice_number,
+                "note_reason": SalesInvoiceHeader.NoteReason.PRICE_DIFFERENCE,
+                "affects_inventory": False,
+            },
+            lines_data=[
+                {
+                    "line_no": 1,
+                    "product": self.product,
+                    "uom": self.uom,
+                    "qty": "1.000",
+                    "free_qty": "0.000",
+                    "rate": "100.0000",
+                    "discount_type": 0,
+                    "discount_percent": "0.0000",
+                    "discount_amount": "0.00",
+                    "hsn_sac_code": "8471",
+                    "taxability": int(SalesInvoiceHeader.Taxability.TAXABLE),
+                    "gst_rate": "18.00",
+                    "cess_percent": "0.00",
+                    "cess_amount": "0.00",
+                },
+                {
+                    "line_no": 2,
+                    "product": exempt_product,
+                    "uom": self.uom,
+                    "qty": "1.000",
+                    "free_qty": "0.000",
+                    "rate": "50.0000",
+                    "discount_type": 0,
+                    "discount_percent": "0.0000",
+                    "discount_amount": "0.00",
+                    "hsn_sac_code": "0000",
+                    "gst_rate": "0.00",
+                    "cess_percent": "0.00",
+                    "cess_amount": "0.00",
+                },
+            ],
+            charges_data=[],
+            user=self.user,
+        )
+
+        note.refresh_from_db()
+        lines = list(note.lines.order_by("line_no"))
+        summary_rows = list(note.tax_summaries.order_by("taxability", "id"))
+
+        self.assertEqual(note.original_invoice_id, original.id)
+        self.assertEqual(note.seller_gstin, original.seller_gstin)
+        self.assertEqual(note.seller_state_code, original.seller_state_code)
+        self.assertEqual(note.place_of_supply_state_code, original.place_of_supply_state_code)
+        self.assertEqual(int(note.tax_regime), int(SalesInvoiceHeader.TaxRegime.INTER_STATE))
+        self.assertTrue(note.is_igst)
+        self.assertEqual([line.taxability for line in lines], [int(SalesInvoiceHeader.Taxability.TAXABLE), int(SalesInvoiceHeader.Taxability.EXEMPT)])
+        self.assertEqual(lines[1].gst_rate, Decimal("0.0000"))
+        self.assertEqual({row.taxability for row in summary_rows}, {SalesInvoiceHeader.Taxability.TAXABLE, SalesInvoiceHeader.Taxability.EXEMPT})
+        self.assertEqual(note.tcs_section_id, section.id)
+        self.assertEqual(note.tcs_base_amount, Decimal("168.00"))
+        self.assertEqual(note.tcs_amount, Decimal("1.68"))
+        self.assertFalse(note.tcs_is_reversal)
+        self.assertEqual(note.tcs_reason, "TCS computed on invoice value including GST.")
+        self.assertEqual((note.legacy_behavior_flags or {}).get("tcs_runtime_result", {}).get("reason_code"), "OK")
+        mocked_sync_tcs.assert_called()
 
     def test_sales_compute_line_amounts_recomputes_or_preserves_cess_per_backend_rule(self):
         header = SalesInvoiceHeader(is_igst=False)

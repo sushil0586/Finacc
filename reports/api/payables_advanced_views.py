@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+from decimal import Decimal
+
 from rest_framework.response import Response
 
 from reports.api.payables_views import (
@@ -21,6 +24,22 @@ from reports.services.payables_advanced import (
 )
 
 
+NUMERIC_CELL_PATTERN = re.compile(r"^-?\d+(?:,\d{3})*(?:\.\d+)?$")
+INVALID_SHEET_TITLE_PATTERN = re.compile(r"[\\\\/*?:\[\]]")
+
+
+def _is_numeric_cell(value):
+    if value is None or value == "":
+        return False
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float, Decimal)):
+        return True
+    if isinstance(value, str):
+        return bool(NUMERIC_CELL_PATTERN.match(value.strip()))
+    return False
+
+
 def _columns_and_rows(payload):
     meta = payload.get("_meta", {})
     columns = meta.get("available_columns") if isinstance(meta, dict) else []
@@ -31,7 +50,19 @@ def _columns_and_rows(payload):
     headers = [column.get("label", column.get("key")) for column in selected]
     keys = [column.get("key") for column in selected]
     rows = [[row.get(key) for key in keys] for row in payload.get("rows", [])]
-    return headers, rows
+    numeric_columns = {
+        index
+        for index, column_values in enumerate(zip(*rows) if rows else [])
+        if any(_is_numeric_cell(value) for value in column_values)
+        and all(_is_numeric_cell(value) for value in column_values if value not in (None, ""))
+    }
+    return headers, rows, numeric_columns
+
+
+def _sanitize_sheet_title(title):
+    cleaned = INVALID_SHEET_TITLE_PATTERN.sub("-", str(title or "").strip())
+    cleaned = cleaned[:31].strip()
+    return cleaned or "Sheet1"
 
 
 class _BaseAdvancedPayableReportAPIView(_BasePayableAPIView):
@@ -195,8 +226,9 @@ def _build_export_classes(prefix, report_code, title, payload_builder):
             return payload_builder(request, scope)
 
         def render_file(self, request, scope, payload):
-            headers, rows = self._headers_rows(payload)
-            content = _write_excel(title, title, headers, rows)
+            headers, rows, numeric_columns = self._headers_rows(payload)
+            sheet_title = _sanitize_sheet_title(title)
+            content = _write_excel(sheet_title, title, headers, rows, numeric_columns=numeric_columns)
             return self.export_response(filename=f"{prefix}.xlsx", content=content, content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     class CSV(_AdvancedPayableExportMixin):
@@ -204,7 +236,7 @@ def _build_export_classes(prefix, report_code, title, payload_builder):
             return payload_builder(request, scope)
 
         def render_file(self, request, scope, payload):
-            headers, rows = self._headers_rows(payload)
+            headers, rows, _numeric_columns = self._headers_rows(payload)
             content = _write_csv(headers, rows)
             return self.export_response(filename=f"{prefix}.csv", content=content, content_type="text/csv")
 
@@ -213,7 +245,7 @@ def _build_export_classes(prefix, report_code, title, payload_builder):
             return payload_builder(request, scope)
 
         def render_file(self, request, scope, payload):
-            headers, rows = self._headers_rows(payload)
+            headers, rows, _numeric_columns = self._headers_rows(payload)
             content = _write_pdf(title, title, headers, rows)
             return self.export_response(filename=f"{prefix}.pdf", content=content, content_type="application/pdf")
 
@@ -341,4 +373,3 @@ DuplicateAnomalousBillDetectionExcelAPIView = _DuplicateAnomalousBillDetectionEx
 DuplicateAnomalousBillDetectionCSVAPIView = _DuplicateAnomalousBillDetectionCSVAPIView
 DuplicateAnomalousBillDetectionPDFAPIView = _DuplicateAnomalousBillDetectionPDFAPIView
 DuplicateAnomalousBillDetectionPrintAPIView = _DuplicateAnomalousBillDetectionPrintAPIView
-

@@ -39,6 +39,9 @@ from .models import (
     ProductPurchaseBehavior,
 )
 
+_INT32_MAX = 2147483647
+_POSITIVE_SMALL_INT_MAX = 32767
+
 # ----------------------------------------------------------------------
 # Simple master serializers (for dropdowns / lookups)
 # ----------------------------------------------------------------------
@@ -57,6 +60,7 @@ class ProductCategorySerializer(serializers.ModelSerializer):
 
 
 class ProductCategorySerializercreate(serializers.ModelSerializer):
+    pcategoryname = serializers.CharField(max_length=100)
     maincategory_id = serializers.PrimaryKeyRelatedField(
         source="maincategory",
         queryset=ProductCategory.objects.all(),
@@ -115,6 +119,7 @@ class ProductCategorySerializercreate(serializers.ModelSerializer):
 
 
 class BrandSerializer(serializers.ModelSerializer):
+    name = serializers.CharField(max_length=100)
     def validate(self, attrs):
         entity = attrs.get("entity") or getattr(self.instance, "entity", None)
         name = (attrs.get("name") or getattr(self.instance, "name", "") or "").strip()
@@ -146,6 +151,9 @@ class BrandSerializer(serializers.ModelSerializer):
 
 
 class UnitOfMeasureSerializer(serializers.ModelSerializer):
+    code = serializers.CharField(max_length=20)
+    description = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    uqc = serializers.CharField(max_length=10, required=False, allow_null=True, allow_blank=True)
     def validate(self, attrs):
         entity = attrs.get("entity") or getattr(self.instance, "entity", None)
         code = (attrs.get("code") or getattr(self.instance, "code", "") or "").strip()
@@ -187,6 +195,12 @@ class UnitOfMeasureSerializer(serializers.ModelSerializer):
 
 
 class HsnSacSerializer(serializers.ModelSerializer):
+    code = serializers.CharField(max_length=20)
+    description = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    default_sgst = serializers.DecimalField(max_digits=5, decimal_places=2, required=False)
+    default_cgst = serializers.DecimalField(max_digits=5, decimal_places=2, required=False)
+    default_igst = serializers.DecimalField(max_digits=5, decimal_places=2, required=False)
+    default_cess = serializers.DecimalField(max_digits=5, decimal_places=2, required=False)
     def validate(self, attrs):
         entity = attrs.get("entity") or getattr(self.instance, "entity", None)
         code = (attrs.get("code") or getattr(self.instance, "code", "") or "").strip()
@@ -226,6 +240,7 @@ class HsnSacSerializer(serializers.ModelSerializer):
 
 
 class PriceListSerializer(serializers.ModelSerializer):
+    name = serializers.CharField(max_length=100)
     def validate(self, attrs):
         entity = attrs.get("entity") or getattr(self.instance, "entity", None)
         name = (attrs.get("name") or getattr(self.instance, "name", "") or "").strip()
@@ -400,7 +415,10 @@ class ProductGstRateSerializer(EntityScopedValidationMixin, serializers.ModelSer
 
 class ProductBarcodeSerializer(EntityScopedValidationMixin, serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
-    barcode = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    barcode = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=50)
+    pack_size = serializers.IntegerField(required=False, allow_null=True, max_value=_INT32_MAX)
+    mrp = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True)
+    selling_price = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True)
     barcode_source = serializers.CharField(read_only=True)
     barcode_image_url = serializers.SerializerMethodField(read_only=True)
 
@@ -539,6 +557,9 @@ class ProductUomConversionSerializer(EntityScopedValidationMixin, serializers.Mo
 class OpeningStockByLocationSerializer(EntityScopedValidationMixin, serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
     as_of_date = FlexibleDateField(required=False)
+    openingqty = serializers.DecimalField(max_digits=18, decimal_places=2, required=False, allow_null=True)
+    openingrate = serializers.DecimalField(max_digits=18, decimal_places=2, required=False, allow_null=True)
+    openingvalue = serializers.DecimalField(max_digits=18, decimal_places=2, required=False, allow_null=True)
     branch_name = serializers.CharField(source="branch.subentityname", read_only=True)
     godown_name = serializers.CharField(source="godown.name", read_only=True, allow_null=True)
     posting_entry_id = serializers.SerializerMethodField()
@@ -628,6 +649,11 @@ class ProductPriceSerializer(EntityScopedValidationMixin, serializers.ModelSeria
     id = serializers.IntegerField(required=False)
     effective_from = FlexibleDateField(required=True)
     effective_to = FlexibleDateField(required=False, allow_null=True)
+    purchase_rate = serializers.DecimalField(max_digits=18, decimal_places=2, required=False, allow_null=True)
+    purchase_rate_less_percent = serializers.DecimalField(max_digits=5, decimal_places=2, required=False, allow_null=True)
+    mrp = serializers.DecimalField(max_digits=18, decimal_places=2, required=False, allow_null=True)
+    mrp_less_percent = serializers.DecimalField(max_digits=5, decimal_places=2, required=False, allow_null=True)
+    selling_price = serializers.DecimalField(max_digits=18, decimal_places=2, required=True)
 
     class Meta:
         model = ProductPrice
@@ -718,6 +744,11 @@ class ProductPlanningSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
     abc_class = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=10)
     fsn_class = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=10)
+    min_stock = serializers.DecimalField(max_digits=18, decimal_places=2, required=False, allow_null=True)
+    max_stock = serializers.DecimalField(max_digits=18, decimal_places=2, required=False, allow_null=True)
+    reorder_level = serializers.DecimalField(max_digits=18, decimal_places=2, required=False, allow_null=True)
+    reorder_qty = serializers.DecimalField(max_digits=18, decimal_places=2, required=False, allow_null=True)
+    lead_time_days = serializers.IntegerField(required=False, allow_null=True, max_value=_INT32_MAX)
 
     class Meta:
         model = ProductPlanning
@@ -792,6 +823,8 @@ class ProductPlanningSerializer(serializers.ModelSerializer):
 class ProductAttributeValueSerializer(EntityScopedValidationMixin, serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
     value_date = FlexibleDateField(required=False, allow_null=True)
+    value_char = serializers.CharField(required=False, allow_blank=True, max_length=255)
+    value_number = serializers.DecimalField(max_digits=18, decimal_places=2, required=False, allow_null=True)
 
     class Meta:
         model = ProductAttributeValue
@@ -817,6 +850,7 @@ class ProductAttributeValueSerializer(EntityScopedValidationMixin, serializers.M
 
 class ProductImageNestedSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
+    caption = serializers.CharField(required=False, allow_blank=True, max_length=255)
 
     class Meta:
         model = ProductImage
@@ -837,6 +871,11 @@ class ProductImageNestedSerializer(serializers.ModelSerializer):
 # ----------------------------------------------------------------------
 
 class ProductSerializer(EntityScopedValidationMixin, serializers.ModelSerializer):
+    productname = serializers.CharField(max_length=200)
+    sku = serializers.CharField(max_length=100)
+    productdesc = serializers.CharField(required=False, allow_blank=True, max_length=500)
+    shelf_life_days = serializers.IntegerField(required=False, allow_null=True, max_value=_INT32_MAX)
+    expiry_warning_days = serializers.IntegerField(required=False, allow_null=True, max_value=_INT32_MAX)
     gst_rates = ProductGstRateSerializer(many=True, required=False)
 
     barcodes = ProductBarcodeSerializer(
@@ -1385,6 +1424,7 @@ class ProductListSerializer(serializers.ModelSerializer):
 
 
 class ProductAttributeSerializer(serializers.ModelSerializer):
+    name = serializers.CharField(max_length=100)
     def validate(self, attrs):
         entity = attrs.get("entity") or getattr(self.instance, "entity", None)
         name = (attrs.get("name") or getattr(self.instance, "name", "") or "").strip()
@@ -1455,8 +1495,11 @@ class ProductBarcodeManageSerializer(EntityScopedValidationMixin, serializers.Mo
     product_id = serializers.IntegerField(source="product.id", read_only=True)
     product_name = serializers.CharField(source="product.productname", read_only=True)
     sku = serializers.CharField(source="product.sku", read_only=True)
-    barcode = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    barcode = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=50)
     barcode_source = serializers.CharField(read_only=True)
+    pack_size = serializers.IntegerField(required=False, allow_null=True, max_value=_INT32_MAX)
+    mrp = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True)
+    selling_price = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True)
 
     uom_code = serializers.CharField(source="uom.code", read_only=True)
     barcode_image_url = serializers.SerializerMethodField(read_only=True)
@@ -1571,6 +1614,12 @@ class ProductBarcodeManageSerializer(EntityScopedValidationMixin, serializers.Mo
 
 class BarcodeLabelTemplateSerializer(EntityScopedValidationMixin, serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
+    name = serializers.CharField(max_length=100)
+    pdf_layout = serializers.IntegerField(required=False, allow_null=True, max_value=_POSITIVE_SMALL_INT_MAX)
+    label_width_mm = serializers.DecimalField(max_digits=6, decimal_places=2, required=False)
+    label_height_mm = serializers.DecimalField(max_digits=6, decimal_places=2, required=False)
+    padding_mm = serializers.DecimalField(max_digits=6, decimal_places=2, required=False)
+    copies = serializers.IntegerField(required=False, max_value=_INT32_MAX)
     subentity = serializers.PrimaryKeyRelatedField(queryset=SubEntity.objects.all(), required=False, allow_null=True)
 
     class Meta:

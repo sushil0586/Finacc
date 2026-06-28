@@ -294,6 +294,13 @@ class VoucherService(SettlementVoucherRuntimeMixin):
             raise ValueError("Only draft vouchers can be confirmed.")
         header.doc_code = header.doc_code or _default_doc_code(header.voucher_type, header.entity_id, header.subentity_id)
         if not header.doc_no:
+            VoucherSettingsService.ensure_numbering_scope_for_type(
+                entity_id=header.entity_id,
+                entityfinid_id=header.entityfinid_id,
+                subentity_id=header.subentity_id,
+                voucher_type=header.voucher_type,
+                doc_code=header.doc_code,
+            )
             doc_type_id = cls._doc_type_id(header.voucher_type, header.doc_code)
             res = DocumentNumberService.allocate_final(
                 entity_id=header.entity_id,

@@ -4,11 +4,20 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from django.contrib.auth import get_user_model
+from django.core.management import call_command
+from django.test import TestCase
+from django.utils import timezone
+
+from entity.models import Entity, EntityFinancialYear, SubEntity
+from numbering.models import DocumentNumberSeries, DocumentType
+from numbering.seeding import NumberingSeedService
 from django.test import SimpleTestCase
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from vouchers.models import VoucherHeader, VoucherLine
 from vouchers.serializers.voucher import VoucherWriteSerializer
+from vouchers.services.voucher_settings_service import VoucherSettingsService
 from vouchers.services.voucher_service import VoucherResult, VoucherService
 from vouchers.views.voucher import (
     VoucherListCreateAPIView,
@@ -99,6 +108,331 @@ class VoucherServiceUnitTests(SimpleTestCase):
         self.assertEqual(rows[3].narration, "Against Main cash voucher")
         self.assertEqual(rows[0].ledger_id, 501)
         self.assertEqual(mocked_ledger_id.call_count, 2)
+
+
+class VoucherNumberingRecoveryTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            username="voucher-numbering-user",
+            email="voucher-numbering@example.com",
+            password="pass@12345",
+        )
+        self.entity = Entity.objects.create(entityname="Voucher Numbering Entity", createdby=self.user)
+        self.entityfin = EntityFinancialYear.objects.create(
+            entity=self.entity,
+            desc="FY 2026-27",
+            finstartyear=timezone.now(),
+            finendyear=timezone.now(),
+            createdby=self.user,
+        )
+        self.subentity = SubEntity.objects.create(entity=self.entity, subentityname="Branch A", is_head_office=True)
+
+    def test_current_doc_no_auto_seeds_missing_branch_series_from_voucher_scope(self):
+        NumberingSeedService.seed_document(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=None,
+            module="vouchers",
+            doc_key="BANK_VOUCHER",
+            name="Bank Voucher",
+            default_code="BV",
+            prefix="BV",
+            start=4,
+            padding=4,
+        )
+
+        payload = VoucherSettingsService.current_doc_no_for_type(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            voucher_type=VoucherHeader.VoucherType.BANK,
+        )
+
+        self.assertTrue(payload["enabled"])
+        self.assertEqual(payload["current_number"], 1)
+        bank_doc_type = DocumentType.objects.get(module="vouchers", doc_key="BANK_VOUCHER")
+        self.assertTrue(
+            DocumentNumberSeries.objects.filter(
+                entity=self.entity,
+                entityfinid=self.entityfin,
+                subentity=self.subentity,
+                doc_type=bank_doc_type,
+                doc_code="BV",
+            ).exists()
+        )
+
+    def test_confirm_voucher_auto_seeds_missing_branch_series_before_allocating_number(self):
+        NumberingSeedService.seed_document(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=None,
+            module="vouchers",
+            doc_key="JOURNAL_VOUCHER",
+            name="Journal Voucher",
+            default_code="JV",
+            prefix="JV",
+            start=8,
+            padding=4,
+        )
+        header = VoucherHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            voucher_type=VoucherHeader.VoucherType.JOURNAL,
+            doc_code="JV",
+            status=VoucherHeader.Status.DRAFT,
+            total_debit_amount=Decimal("100.00"),
+            total_credit_amount=Decimal("100.00"),
+            created_by=self.user,
+            voucher_date=timezone.localdate(),
+        )
+
+        result = VoucherService.confirm_voucher(header.id, confirmed_by_id=self.user.id)
+
+        self.assertEqual(result.header.status, VoucherHeader.Status.CONFIRMED)
+        self.assertEqual(result.header.doc_no, 1)
+        self.assertTrue(str(result.header.voucher_code).startswith("JV-"))
+        journal_doc_type = DocumentType.objects.get(module="vouchers", doc_key="JOURNAL_VOUCHER")
+        self.assertTrue(
+            DocumentNumberSeries.objects.filter(
+                entity=self.entity,
+                entityfinid=self.entityfin,
+                subentity=self.subentity,
+                doc_type=journal_doc_type,
+                doc_code="JV",
+            ).exists()
+        )
+
+
+class VoucherNumberingSeedCommandTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            username="voucher-seed-user",
+            email="voucher-seed@example.com",
+            password="pass@12345",
+        )
+        self.entity = Entity.objects.create(entityname="Voucher Seed Entity", createdby=self.user)
+        self.entityfin = EntityFinancialYear.objects.create(
+            entity=self.entity,
+            desc="FY 2026-27",
+            finstartyear=timezone.now(),
+            finendyear=timezone.now(),
+            createdby=self.user,
+        )
+        self.subentity = SubEntity.objects.create(entity=self.entity, subentityname="Branch A", is_head_office=True)
+
+    def test_seed_voucher_numbering_without_subentity_seeds_root_and_branch_scopes(self):
+        call_command(
+            "seed_voucher_numbering",
+            entity=self.entity.id,
+            entityfinid=self.entityfin.id,
+        )
+
+        cash_doc_type = DocumentType.objects.get(module="vouchers", doc_key="CASH_VOUCHER")
+        bank_doc_type = DocumentType.objects.get(module="vouchers", doc_key="BANK_VOUCHER")
+        journal_doc_type = DocumentType.objects.get(module="vouchers", doc_key="JOURNAL_VOUCHER")
+
+        self.assertTrue(
+            DocumentNumberSeries.objects.filter(
+                entity=self.entity,
+                entityfinid=self.entityfin,
+                subentity=None,
+                doc_type=cash_doc_type,
+                doc_code="CV",
+            ).exists()
+        )
+        self.assertTrue(
+            DocumentNumberSeries.objects.filter(
+                entity=self.entity,
+                entityfinid=self.entityfin,
+                subentity=self.subentity,
+                doc_type=cash_doc_type,
+                doc_code="CV",
+            ).exists()
+        )
+        self.assertTrue(
+            DocumentNumberSeries.objects.filter(
+                entity=self.entity,
+                entityfinid=self.entityfin,
+                subentity=None,
+                doc_type=bank_doc_type,
+                doc_code="BV",
+            ).exists()
+        )
+        self.assertTrue(
+            DocumentNumberSeries.objects.filter(
+                entity=self.entity,
+                entityfinid=self.entityfin,
+                subentity=self.subentity,
+                doc_type=bank_doc_type,
+                doc_code="BV",
+            ).exists()
+        )
+        self.assertTrue(
+            DocumentNumberSeries.objects.filter(
+                entity=self.entity,
+                entityfinid=self.entityfin,
+                subentity=None,
+                doc_type=journal_doc_type,
+                doc_code="JV",
+            ).exists()
+        )
+
+
+class VoucherWorkflowPolicyTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            username="voucher-policy-user",
+            email="voucher-policy@example.com",
+            password="pass@12345",
+        )
+        self.approver = get_user_model().objects.create_user(
+            username="voucher-policy-approver",
+            email="voucher-policy-approver@example.com",
+            password="pass@12345",
+        )
+        self.entity = Entity.objects.create(entityname="Voucher Policy Entity", createdby=self.user)
+        self.entityfin = EntityFinancialYear.objects.create(
+            entity=self.entity,
+            desc="FY 2026-27",
+            finstartyear=timezone.now(),
+            finendyear=timezone.now(),
+            createdby=self.user,
+        )
+        self.subentity = SubEntity.objects.create(entity=self.entity, subentityname="Head Office", is_head_office=True)
+
+    def _header(self, *, status=VoucherHeader.Status.DRAFT, workflow_payload=None):
+        return VoucherHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            voucher_type=VoucherHeader.VoucherType.JOURNAL,
+            doc_code="JV",
+            status=status,
+            workflow_payload=workflow_payload or {},
+            total_debit_amount=Decimal("100.00"),
+            total_credit_amount=Decimal("100.00"),
+            created_by=self.user,
+            voucher_date=timezone.localdate(),
+        )
+
+    @patch("vouchers.services.voucher_service.VoucherSettingsService.get_policy")
+    def test_update_voucher_blocks_submitted_edit_when_policy_locks_it(self, mocked_get_policy):
+        header = self._header(
+            workflow_payload={
+                "_approval_state": {
+                    "status": "SUBMITTED",
+                    "submitted_by": self.user.id,
+                }
+            }
+        )
+        mocked_get_policy.return_value = SimpleNamespace(controls={"allow_edit_after_submit": "off"})
+
+        with self.assertRaisesMessage(ValueError, "Submitted voucher is locked for edit by policy."):
+            VoucherService.update_voucher(
+                instance=header,
+                data={
+                    "narration": "Edited after submit",
+                    "lines": [],
+                },
+            )
+
+    @patch("vouchers.services.voucher_service.VoucherSettingsService.get_policy")
+    def test_approve_voucher_blocks_same_submitter_when_policy_disallows_it(self, mocked_get_policy):
+        header = self._header(
+            workflow_payload={
+                "_approval_state": {
+                    "status": "SUBMITTED",
+                    "submitted_by": self.user.id,
+                }
+            }
+        )
+        mocked_get_policy.return_value = SimpleNamespace(
+            controls={
+                "require_submit_before_approve": "on",
+                "same_user_submit_approve": "off",
+            }
+        )
+
+        with self.assertRaisesMessage(ValueError, "Approver must be different from submitter."):
+            VoucherService.approve_voucher(header.id, approved_by_id=self.user.id, remarks="Self approval")
+
+    @patch("vouchers.services.voucher_service.VoucherPostingAdapter.post_voucher")
+    @patch("vouchers.services.voucher_service.VoucherSettingsService.get_policy")
+    def test_post_voucher_requires_approved_state_when_maker_checker_is_hard(
+        self,
+        mocked_get_policy,
+        mocked_post_voucher,
+    ):
+        header = self._header(
+            status=VoucherHeader.Status.CONFIRMED,
+            workflow_payload={
+                "_approval_state": {
+                    "status": "SUBMITTED",
+                    "submitted_by": self.user.id,
+                }
+            },
+        )
+        mocked_get_policy.return_value = SimpleNamespace(
+            controls={
+                "require_confirm_before_post": "on",
+                "voucher_maker_checker": "hard",
+            }
+        )
+
+        with self.assertRaisesMessage(ValueError, "Voucher must be approved before posting by policy."):
+            VoucherService.post_voucher(header.id, posted_by_id=self.user.id)
+
+        mocked_post_voucher.assert_not_called()
+
+    @patch("vouchers.services.voucher_service.VoucherPostingAdapter.post_voucher")
+    @patch("vouchers.services.voucher_service.VoucherSettingsService.get_policy")
+    def test_post_voucher_succeeds_after_approval_when_maker_checker_is_hard(
+        self,
+        mocked_get_policy,
+        mocked_post_voucher,
+    ):
+        header = self._header(
+            status=VoucherHeader.Status.CONFIRMED,
+            workflow_payload={
+                "_approval_state": {
+                    "status": "APPROVED",
+                    "submitted_by": self.user.id,
+                    "approved_by": self.approver.id,
+                }
+            },
+        )
+        mocked_get_policy.return_value = SimpleNamespace(
+            controls={
+                "require_confirm_before_post": "on",
+                "voucher_maker_checker": "hard",
+            }
+        )
+
+        result = VoucherService.post_voucher(header.id, posted_by_id=self.approver.id)
+
+        header.refresh_from_db()
+        self.assertEqual(result.header.status, VoucherHeader.Status.POSTED)
+        self.assertEqual(header.status, VoucherHeader.Status.POSTED)
+        mocked_post_voucher.assert_called_once()
+
+    @patch("vouchers.services.voucher_service.VoucherPostingAdapter.unpost_voucher")
+    @patch("vouchers.services.voucher_service.VoucherSettingsService.get_policy")
+    def test_unpost_voucher_returns_to_draft_when_policy_requests_draft(
+        self,
+        mocked_get_policy,
+        mocked_unpost_voucher,
+    ):
+        header = self._header(status=VoucherHeader.Status.POSTED)
+        mocked_get_policy.return_value = SimpleNamespace(controls={"unpost_target_status": "draft"})
+
+        result = VoucherService.unpost_voucher(header.id, unposted_by_id=self.user.id)
+
+        header.refresh_from_db()
+        self.assertEqual(result.header.status, VoucherHeader.Status.DRAFT)
+        self.assertEqual(header.status, VoucherHeader.Status.DRAFT)
+        self.assertEqual(header.workflow_payload["_audit_log"][-1]["action"], "UNPOSTED")
+        mocked_unpost_voucher.assert_called_once()
 
 
 class VoucherWriteSerializerValidationTests(SimpleTestCase):

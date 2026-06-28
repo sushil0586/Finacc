@@ -5,6 +5,7 @@ from decimal import Decimal
 from django.shortcuts import get_object_or_404
 from django.db.models import Sum
 from rest_framework import generics, permissions, status
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -15,6 +16,20 @@ from gst_tds.models import EntityGstTdsConfig, GstTdsContractLedger, GstTdsMaste
 from gst_tds.serializers import (
     EntityGstTdsConfigSerializer,
     GstTdsContractLedgerSerializer,
+)
+from rbac.services import EffectivePermissionService
+
+
+GST_TDS_CONFIG_VIEW_PERMISSIONS = (
+    "gst.tds.config.view",
+    "gst.tds.config.update",
+    "gst.tds.config.edit",
+    "gst.tds.config.create",
+)
+GST_TDS_CONFIG_MANAGE_PERMISSIONS = (
+    "gst.tds.config.update",
+    "gst.tds.config.edit",
+    "gst.tds.config.create",
 )
 
 
@@ -27,6 +42,15 @@ def _to_int(raw, field_name: str, *, required: bool = False):
         return int(raw)
     except (TypeError, ValueError):
         raise ValidationError({field_name: "Must be an integer."})
+
+
+def _require_any_permission(request, entity_id: int, permission_codes: tuple[str, ...]) -> None:
+    if not entity_id:
+        raise PermissionDenied("Entity scope is required for permission check.")
+    available = set(EffectivePermissionService.permission_codes_for_user(request.user, int(entity_id)))
+    if any(code in available for code in permission_codes):
+        return
+    raise PermissionDenied(f"Missing permission: one of {', '.join(permission_codes)}")
 
 
 class GstTdsConfigAPIView(APIView):
@@ -54,6 +78,7 @@ class GstTdsConfigAPIView(APIView):
 
     def get(self, request):
         entity, subentity = self._scope(request)
+        _require_any_permission(request, int(entity.id), GST_TDS_CONFIG_VIEW_PERMISSIONS)
         obj = EntityGstTdsConfig.objects.filter(
             entity_id=entity.id,
             subentity_id=(subentity.id if subentity else None),
@@ -77,6 +102,7 @@ class GstTdsConfigAPIView(APIView):
 
     def put(self, request):
         entity, subentity = self._scope(request)
+        _require_any_permission(request, int(entity.id), GST_TDS_CONFIG_MANAGE_PERMISSIONS)
         obj = EntityGstTdsConfig.objects.filter(
             entity_id=entity.id,
             subentity_id=(subentity.id if subentity else None),
@@ -109,6 +135,7 @@ class GstTdsContractLedgerListAPIView(generics.ListAPIView):
 
     def get_queryset(self):
         entity_id = _to_int(self.request.query_params.get("entity"), "entity", required=True)
+        _require_any_permission(self.request, int(entity_id), GST_TDS_CONFIG_VIEW_PERMISSIONS)
         entityfinid_id = _to_int(self.request.query_params.get("entityfinid"), "entityfinid", required=False)
         subentity_id = _to_int(self.request.query_params.get("subentity"), "subentity", required=False)
         vendor_id = _to_int(self.request.query_params.get("vendor"), "vendor", required=False)
@@ -141,6 +168,7 @@ class GstTdsContractLedgerSummaryAPIView(APIView):
 
     def get(self, request):
         entity_id = _to_int(request.query_params.get("entity"), "entity", required=True)
+        _require_any_permission(request, int(entity_id), GST_TDS_CONFIG_VIEW_PERMISSIONS)
         entityfinid_id = _to_int(request.query_params.get("entityfinid"), "entityfinid", required=False)
         subentity_id = _to_int(request.query_params.get("subentity"), "subentity", required=False)
         vendor_id = _to_int(request.query_params.get("vendor"), "vendor", required=False)

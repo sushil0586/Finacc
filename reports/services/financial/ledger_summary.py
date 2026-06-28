@@ -197,7 +197,7 @@ def build_ledger_summary(
             "basis": "ledger_summary",
             "group_by": resolved_group_by,
             "view_type": resolved_view_type,
-            "sort_by": sort_by or "account_name",
+            "sort_by": resolved_sort_by,
             "sort_order": resolved_sort_order,
             "include_zero_balances": include_zero_balance,
             "include_opening": include_opening,

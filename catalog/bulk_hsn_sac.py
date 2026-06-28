@@ -18,6 +18,37 @@ from .models import HsnSac
 SHEET = "hsn_sac"
 
 
+def _append_max_length_error(errors: list[dict[str, Any]], *, row: int, field: str, value: Any, max_length: int, label: str | None = None):
+    text = "" if value is None else str(value).strip()
+    if text and len(text) > max_length:
+        errors.append(
+            {
+                "sheet": SHEET,
+                "row": row,
+                "field": field,
+                "message": f"{label or field} must be at most {max_length} characters.",
+            }
+        )
+
+
+def _append_decimal_digits_error(errors: list[dict[str, Any]], *, row: int, field: str, value: Any, max_digits: int):
+    if value in (None, "", "-", "--"):
+        return
+    try:
+        digits = len(_to_decimal(value).as_tuple().digits)
+    except Exception:
+        return
+    if digits > max_digits:
+        errors.append(
+            {
+                "sheet": SHEET,
+                "row": row,
+                "field": field,
+                "message": f"{field} must have at most {max_digits} digits in total.",
+            }
+        )
+
+
 def _to_bool(value: Any, default: bool = False) -> bool:
     if value is None or value == "":
         return default
@@ -178,6 +209,8 @@ def validate_payload(payload: dict[str, list[dict[str, Any]]], entity: Entity) -
     seen_codes: set[str] = set()
     for idx, row in enumerate(rows, start=2):
         code = (row.get("code") or "").strip()
+        _append_max_length_error(errors, row=idx, field="code", value=row.get("code"), max_length=20, label="Code")
+        _append_max_length_error(errors, row=idx, field="description", value=row.get("description"), max_length=255, label="Description")
         if not code:
             errors.append({"sheet": SHEET, "row": idx, "field": "code", "message": "Code is required."})
             continue
@@ -185,6 +218,7 @@ def validate_payload(payload: dict[str, list[dict[str, Any]]], entity: Entity) -
             errors.append({"sheet": SHEET, "row": idx, "field": "code", "message": "Duplicate code in upload."})
         seen_codes.add(code.lower())
         for field_name in ("default_sgst", "default_cgst", "default_igst", "default_cess"):
+            _append_decimal_digits_error(errors, row=idx, field=field_name, value=row.get(field_name), max_digits=5)
             try:
                 _to_decimal(row.get(field_name))
             except Exception as exc:

@@ -30,6 +30,7 @@ from sales.serializers.sales_compliance_serializers import (
 )
 from sales.serializers.eway_serializers import GenerateEWayRequestSerializer
 from withholding.services import WithholdingResult
+from withholding.models import WithholdingBaseRule
 from sales.views.sales_invoice_views import (
     SalesInvoiceCancelAPIView,
     SalesInvoiceConfirmAPIView,
@@ -939,6 +940,106 @@ class MasterGSTClientUnitTests(SimpleTestCase):
         self.assertEqual(res.base_amount, Decimal("500.00"))
         self.assertEqual(res.amount, Decimal("0.50"))
         self.assertEqual(res.reason_code, "THRESHOLD_CROSSED_CUMULATIVE")
+
+    @patch("sales.services.sales_withholding_service._apply_section_threshold")
+    @patch("sales.services.sales_withholding_service.WithholdingResolver.resolve_rate")
+    @patch("sales.services.sales_withholding_service.WithholdingResolver.resolve_party_profile")
+    @patch("sales.services.sales_withholding_service.WithholdingResolver.get_entity_config")
+    def test_compute_tcs_uses_gross_total_for_invoice_value_incl_gst_base_rule(
+        self,
+        mocked_get_cfg,
+        mocked_resolve_party_profile,
+        mocked_resolve_rate,
+        mocked_apply_threshold,
+    ):
+        mocked_get_cfg.return_value = SimpleNamespace(enable_tcs=True, apply_tcs_206c1h=True)
+        mocked_resolve_party_profile.return_value = None
+        mocked_resolve_rate.return_value = SimpleNamespace(
+            rate=Decimal("1.0000"),
+            reason=None,
+            reason_code=None,
+            no_pan_applied=False,
+            sec_206ab_applied=False,
+            lower_rate_applied=False,
+        )
+        mocked_apply_threshold.return_value = (Decimal("1180.00"), None, None)
+        header = SimpleNamespace(
+            id=55,
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            tcs_section=SimpleNamespace(
+                id=11,
+                section_code="206C(1)",
+                base_rule=int(WithholdingBaseRule.INVOICE_VALUE_INCL_GST),
+                rate_default=Decimal("1.0000"),
+                threshold_default=Decimal("0.00"),
+                applicability_json={},
+            ),
+        )
+
+        res = SalesWithholdingService.compute_tcs(
+            header=header,
+            customer_account_id=10,
+            invoice_date=date(2026, 4, 1),
+            taxable_total=Decimal("1000.00"),
+            gross_total=Decimal("1180.00"),
+        )
+
+        self.assertTrue(res.enabled)
+        self.assertEqual(res.base_amount, Decimal("1180.00"))
+        self.assertEqual(res.amount, Decimal("11.80"))
+        self.assertEqual(mocked_apply_threshold.call_args.kwargs["base_amount"], Decimal("1180.00"))
+
+    @patch("sales.services.sales_withholding_service._apply_section_threshold")
+    @patch("sales.services.sales_withholding_service.WithholdingResolver.resolve_rate")
+    @patch("sales.services.sales_withholding_service.WithholdingResolver.resolve_party_profile")
+    @patch("sales.services.sales_withholding_service.WithholdingResolver.get_entity_config")
+    def test_compute_tcs_keeps_taxable_total_for_invoice_value_excl_gst_base_rule(
+        self,
+        mocked_get_cfg,
+        mocked_resolve_party_profile,
+        mocked_resolve_rate,
+        mocked_apply_threshold,
+    ):
+        mocked_get_cfg.return_value = SimpleNamespace(enable_tcs=True, apply_tcs_206c1h=True)
+        mocked_resolve_party_profile.return_value = None
+        mocked_resolve_rate.return_value = SimpleNamespace(
+            rate=Decimal("1.0000"),
+            reason=None,
+            reason_code=None,
+            no_pan_applied=False,
+            sec_206ab_applied=False,
+            lower_rate_applied=False,
+        )
+        mocked_apply_threshold.return_value = (Decimal("1000.00"), None, None)
+        header = SimpleNamespace(
+            id=55,
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            tcs_section=SimpleNamespace(
+                id=11,
+                section_code="206C(1)",
+                base_rule=int(WithholdingBaseRule.INVOICE_VALUE_EXCL_GST),
+                rate_default=Decimal("1.0000"),
+                threshold_default=Decimal("0.00"),
+                applicability_json={},
+            ),
+        )
+
+        res = SalesWithholdingService.compute_tcs(
+            header=header,
+            customer_account_id=10,
+            invoice_date=date(2026, 4, 1),
+            taxable_total=Decimal("1000.00"),
+            gross_total=Decimal("1180.00"),
+        )
+
+        self.assertTrue(res.enabled)
+        self.assertEqual(res.base_amount, Decimal("1000.00"))
+        self.assertEqual(res.amount, Decimal("10.00"))
+        self.assertEqual(mocked_apply_threshold.call_args.kwargs["base_amount"], Decimal("1000.00"))
 
     @patch("sales.services.sales_withholding_service.WithholdingResolver.resolve_rate")
     @patch("sales.services.sales_withholding_service.WithholdingResolver.resolve_party_profile")
@@ -2078,6 +2179,113 @@ class SalesInvoiceAdditionalServiceUnitTests(SimpleTestCase):
         self.assertEqual(runtime.get("reason_code"), "DISABLED")
         self.assertEqual(runtime.get("reason"), "TCS disabled in entity config")
         self.assertEqual(runtime.get("collection_status"), "NOT_COLLECTED")
+
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._run_auto_compliance")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._validate_invoice_uniqueness_per_gstin")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService.ensure_doc_number")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._apply_tcs")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._validate_stock_policy_on_post")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._allocate_batches_for_post")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._validate_b2b_gstin_requirements")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._recompute_invoice_state")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._prepare_header_for_persistence")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService.get_settings")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._load_invoice_rows")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService.assert_not_locked")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService.freeze_ship_to_snapshot")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._policy_level")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._policy_controls")
+    def test_confirm_reapplies_tcs_after_doc_number_allocation(
+        self,
+        mocked_policy_controls,
+        mocked_policy_level,
+        mocked_freeze_ship_to_snapshot,
+        mocked_assert_not_locked,
+        mocked_load_invoice_rows,
+        mocked_get_settings,
+        mocked_prepare_header_for_persistence,
+        mocked_recompute_invoice_state,
+        mocked_validate_b2b_gstin_requirements,
+        mocked_allocate_batches_for_post,
+        mocked_validate_stock_policy_on_post,
+        mocked_apply_tcs,
+        mocked_ensure_doc_number,
+        mocked_validate_invoice_uniqueness_per_gstin,
+        mocked_run_auto_compliance,
+    ):
+        mocked_policy_controls.return_value = {}
+        mocked_policy_level.side_effect = lambda controls, key, default="hard": default
+        mocked_load_invoice_rows.return_value = ([SimpleNamespace(id=1)], [])
+        mocked_get_settings.return_value = SimpleNamespace()
+        mocked_recompute_invoice_state.return_value = ([SimpleNamespace(id=1)], [])
+
+        header = SimpleNamespace(
+            id=44,
+            status=SalesInvoiceHeader.Status.DRAFT,
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            bill_date=date(2026, 4, 1),
+            doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+            doc_code="SINV",
+            doc_no=None,
+            invoice_number="",
+            withholding_enabled=True,
+            tcs_section=SimpleNamespace(id=11, section_code="206C(1H)"),
+            tcs_rate=Decimal("0.1000"),
+            tcs_base_amount=Decimal("1000.00"),
+            tcs_amount=Decimal("1.00"),
+            tcs_reason="Threshold crossed",
+            tcs_is_reversal=False,
+            is_eway_applicable=False,
+            posting_date=None,
+            due_date=None,
+            tax_regime="INTRA",
+            is_igst=False,
+            gst_compliance_mode="AUTO",
+            is_einvoice_applicable=False,
+            eway_applicable_manual=False,
+            einvoice_applicable_manual=False,
+            compliance_override_reason="",
+            compliance_override_at=None,
+            compliance_override_by=None,
+            total_taxable_value=Decimal("1000.00"),
+            total_cgst=Decimal("90.00"),
+            total_sgst=Decimal("90.00"),
+            total_igst=Decimal("0.00"),
+            total_cess=Decimal("0.00"),
+            total_discount=Decimal("0.00"),
+            round_off=Decimal("0.00"),
+            grand_total=Decimal("1180.00"),
+            settled_amount=Decimal("0.00"),
+            outstanding_amount=Decimal("1181.00"),
+            settlement_status="OPEN",
+            save=MagicMock(),
+        )
+
+        call_order = []
+
+        def ensure_doc_number_side_effect(*, header, user=None):
+            call_order.append("ensure_doc_number")
+            header.doc_no = 311
+            header.invoice_number = "SI-SINV-311"
+
+        def apply_tcs_side_effect(*, header, user):
+            call_order.append("apply_tcs")
+            self.assertEqual(header.invoice_number, "SI-SINV-311")
+            self.assertEqual(header.doc_no, 311)
+
+        mocked_ensure_doc_number.side_effect = ensure_doc_number_side_effect
+        mocked_apply_tcs.side_effect = apply_tcs_side_effect
+
+        user = SimpleNamespace(id=99)
+        SalesInvoiceService.confirm.__func__.__wrapped__(SalesInvoiceService, header=header, user=user)
+
+        self.assertEqual(call_order, ["ensure_doc_number", "apply_tcs"])
+        self.assertEqual(header.status, SalesInvoiceHeader.Status.CONFIRMED)
+        self.assertEqual(header.invoice_number, "SI-SINV-311")
+        self.assertEqual(header.doc_no, 311)
+        mocked_run_auto_compliance.assert_called_once_with(header=header, user=user, stage="confirm")
 
     @patch("sales.services.sales_invoice_service.SalesInvoiceHeader.objects")
     def test_validate_adjustment_caps_blocks_excess(self, mocked_hdr_objects):

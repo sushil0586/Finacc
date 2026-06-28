@@ -1908,6 +1908,51 @@ class AssetApiScopeTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
         self.assertEqual(response.data["asset_code"], "FA-000008")
 
+    def test_auto_number_retries_when_generated_asset_code_hits_unique_collision(self):
+        AssetSettingsService.upsert_settings(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            updates={"auto_number_assets": True, "default_doc_code_asset": "FA"},
+            user_id=self.owner.id,
+        )
+        FixedAsset.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            category=self.category,
+            ledger=self.asset_ledger,
+            asset_code="FA-000007",
+            asset_name="Existing collision asset",
+            acquisition_date=date(2026, 4, 1),
+            gross_block=Decimal("1000.00"),
+            residual_value=Decimal("0.00"),
+            net_book_value=Decimal("1000.00"),
+            useful_life_months=12,
+            depreciation_method=FixedAsset.DepreciationMethod.SLM,
+        )
+
+        with patch("assets.services.asset_service.AssetService.generate_asset_code", side_effect=["FA-000007", "FA-000008"]):
+            response = self.client.post(
+                reverse("assets_api:fixed-asset-list-create"),
+                {
+                    "entity": self.entity.id,
+                    "entityfinid": self.entityfin.id,
+                    "subentity": self.subentity.id,
+                    "category": self.category.id,
+                    "ledger": self.asset_ledger.id,
+                    "asset_name": "Retry Auto Number Asset",
+                    "acquisition_date": "2026-04-11",
+                    "gross_block": "1200.00",
+                    "residual_value": "0.00",
+                    "depreciation_method": "SLM",
+                    "useful_life_months": 12,
+                },
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(response.data["asset_code"], "FA-000008")
+
     def test_bulk_commit_is_idempotent_for_validation_token(self):
         validate_response = self.client.post(
             reverse("assets_api:fixed-asset-bulk-import-validate"),

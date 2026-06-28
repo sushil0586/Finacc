@@ -14,6 +14,8 @@ from assets.models import AssetCategory
 from catalog.bulk_products import commit_payload as commit_product_bulk_payload
 from catalog.bulk_products import export_payload as export_product_bulk_payload
 from catalog.bulk_products import template_payload as product_bulk_template_payload
+from catalog.bulk_products import validate_payload as validate_product_bulk_payload
+from catalog.bulk_hsn_sac import validate_payload as validate_hsn_bulk_payload
 from catalog.models import BarcodeLabelTemplate, Brand, GstType, HsnSac, OpeningStockByLocation, PriceList, Product, ProductAttribute, ProductAttributeValue, ProductBarcode, ProductCategory, ProductClassification, ProductGstRate, ProductImage, ProductPlanning, ProductPrice, ProductPurchaseBehavior, UnitOfMeasure
 from catalog.serializers import (
     BrandSerializer,
@@ -415,6 +417,154 @@ class CatalogPhase1Tests(TestCase):
         )
         self.assertFalse(attribute_serializer.is_valid())
         self.assertEqual(attribute_serializer.errors["name"][0], "A product attribute with this name already exists.")
+
+    def test_catalog_master_pages_reject_oversized_inputs(self):
+        oversized_cases = (
+            (
+                f"/api/catalog/product-categories/?entity={self.entity.id}",
+                {"pcategoryname": "C" * 101, "maincategory_id": None, "isactive": True},
+                ("pcategoryname",),
+            ),
+            (
+                f"/api/catalog/brands/?entity={self.entity.id}",
+                {"name": "B" * 101, "description": "", "isactive": True},
+                ("name",),
+            ),
+            (
+                f"/api/catalog/uoms/?entity={self.entity.id}",
+                {"code": "U" * 21, "description": "D" * 101, "uqc": "Q" * 11, "isactive": True},
+                ("code", "description", "uqc"),
+            ),
+            (
+                f"/api/catalog/hsn-sac/?entity={self.entity.id}",
+                {
+                    "code": "H" * 21,
+                    "description": "D" * 256,
+                    "is_service": False,
+                    "default_sgst": "9" * 10,
+                    "default_cgst": 0,
+                    "default_igst": 0,
+                    "default_cess": 0,
+                    "is_exempt": False,
+                    "is_nil_rated": False,
+                    "is_non_gst": False,
+                    "isactive": True,
+                },
+                ("code", "description", "default_sgst"),
+            ),
+            (
+                f"/api/catalog/pricelists/?entity={self.entity.id}",
+                {"name": "P" * 101, "description": "", "isdefault": False, "isactive": True},
+                ("name",),
+            ),
+            (
+                f"/api/catalog/product-attributes/?entity={self.entity.id}",
+                {"name": "A" * 101, "data_type": "char", "isactive": True},
+                ("name",),
+            ),
+        )
+
+        for url, payload, expected_keys in oversized_cases:
+            response = self.client.post(url, payload, format="json")
+            self.assertEqual(response.status_code, 400, response.data)
+            for key in expected_keys:
+                self.assertIn(key, response.data)
+
+    def test_product_pages_reject_oversized_top_level_and_nested_inputs(self):
+        price_list = PriceList.objects.create(entity=self.entity, name="Retail Oversize", description="")
+        attribute = ProductAttribute.objects.create(entity=self.entity, name="Color Oversize", data_type="char")
+        branch = SubEntity.objects.create(entity=self.entity, subentityname="Oversize Branch")
+        godown = Godown.objects.create(entity=self.entity, subentity=branch, name="Oversize Godown")
+
+        response = self.client.post(
+            f"/api/catalog/products/?entity={self.entity.id}",
+            self._valid_payload(
+                productname="P" * 201,
+                sku="S" * 101,
+                productdesc="D" * 501,
+                shelf_life_days=int("9" * 20),
+                expiry_warning_days=int("9" * 20),
+                barcodes=[
+                    {
+                        "uom": self.uom.id,
+                        "pack_size": int("9" * 20),
+                        "mrp": "9" * 20,
+                        "selling_price": "9" * 20,
+                        "isprimary": True,
+                        "barcode": "B" * 51,
+                    }
+                ],
+                opening_stocks=[
+                    {
+                        "branch": branch.id,
+                        "godown": godown.id,
+                        "openingqty": "9" * 30,
+                        "openingrate": "9" * 30,
+                        "as_of_date": "2026-04-01",
+                    }
+                ],
+                prices=[
+                    {
+                        "pricelist": price_list.id,
+                        "uom": self.uom.id,
+                        "purchase_rate": "9" * 30,
+                        "purchase_rate_less_percent": "9" * 10,
+                        "mrp": "9" * 30,
+                        "mrp_less_percent": "9" * 10,
+                        "selling_price": "9" * 30,
+                        "effective_from": "2026-04-01",
+                    }
+                ],
+                planning={
+                    "min_stock": "9" * 30,
+                    "max_stock": "9" * 30,
+                    "reorder_level": "9" * 30,
+                    "reorder_qty": "9" * 30,
+                    "lead_time_days": int("9" * 20),
+                    "abc_class": "ABCDEFGHIJK",
+                    "fsn_class": "ABCDEFGHIJK",
+                },
+                attributes=[
+                    {
+                        "attribute": attribute.id,
+                        "value_char": "V" * 256,
+                        "value_number": "9" * 30,
+                    }
+                ],
+                images=[
+                    {
+                        "caption": "I" * 256,
+                    }
+                ],
+            ),
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("productname", response.data)
+
+    def test_barcode_label_template_rejects_oversized_inputs(self):
+        response = self.client.post(
+            f"/api/catalog/barcodes/label-templates/?entity={self.entity.id}",
+            {
+                "name": "T" * 101,
+                "output_mode": "pdf",
+                "pdf_layout": int("9" * 10),
+                "label_width_mm": "9" * 10,
+                "label_height_mm": "9" * 10,
+                "padding_mm": "9" * 10,
+                "special_text": "hello",
+                "print_fields": ["product_name"],
+                "attribute_ids": [],
+                "copies": int("9" * 20),
+                "isdefault": False,
+                "isactive": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("name", response.data)
 
     def test_expiry_warning_cannot_exceed_shelf_life(self):
         serializer = ProductSerializer(
@@ -1848,3 +1998,132 @@ class CatalogBulkProductsCoverageTests(TestCase):
         product = Product.objects.get(entity=self.entity, sku="ASSET-001")
         self.assertEqual(product.purchase_behavior, ProductPurchaseBehavior.ASSET)
         self.assertEqual(product.default_asset_category_id, self.asset_category.id)
+
+    def test_validate_payload_rejects_oversized_bulk_product_rows(self):
+        payload = {
+            "categories_master": [{"pcategoryname": "C" * 101, "maincategory": "", "level": 1, "isactive": True}],
+            "uoms_master": [{"code": "U" * 21, "description": "D" * 101, "uqc": "Q" * 11, "isactive": True}],
+            "products_basic": [
+                {
+                    "sku": "S" * 101,
+                    "productname": "P" * 201,
+                    "productdesc": "D" * 501,
+                    "category": self.category.pcategoryname,
+                    "brand": "",
+                    "base_uom_code": self.uom.code,
+                    "sales_account_code": "",
+                    "purchase_account_code": "",
+                    "is_service": False,
+                    "item_classification": ProductClassification.TRADING,
+                    "purchase_behavior": ProductPurchaseBehavior.INVENTORY,
+                    "default_taxability": "taxable",
+                    "default_asset_category_code": "",
+                    "is_batch_managed": False,
+                    "is_serialized": False,
+                    "is_expiry_tracked": False,
+                    "shelf_life_days": int("9" * 20),
+                    "expiry_warning_days": int("9" * 20),
+                    "is_ecomm_9_5_service": False,
+                    "default_is_rcm": False,
+                    "is_itc_eligible": True,
+                    "product_status": "active",
+                    "launch_date": "2026-04-01",
+                    "discontinue_date": "",
+                    "isactive": True,
+                }
+            ],
+            "gst_rates": [],
+            "prices": [
+                {
+                    "sku": "S" * 101,
+                    "pricelist": "Default",
+                    "uom_code": self.uom.code,
+                    "purchase_rate": "9" * 30,
+                    "purchase_rate_less_percent": "9" * 10,
+                    "mrp": "9" * 30,
+                    "mrp_less_percent": "9" * 10,
+                    "selling_price": "9" * 30,
+                    "effective_from": "2026-04-01",
+                    "effective_to": "",
+                }
+            ],
+            "barcodes": [
+                {
+                    "sku": "S" * 101,
+                    "barcode": "B" * 51,
+                    "uom_code": self.uom.code,
+                    "pack_size": int("9" * 20),
+                    "mrp": "9" * 20,
+                    "selling_price": "9" * 20,
+                    "isprimary": True,
+                }
+            ],
+            "opening_stocks": [],
+            "uom_conversions": [
+                {
+                    "sku": "S" * 101,
+                    "from_uom_code": self.uom.code,
+                    "to_uom_code": self.uom.code,
+                    "factor": "9" * 20,
+                }
+            ],
+        }
+
+        result = validate_product_bulk_payload(payload, self.entity)
+
+        self.assertGreater(result.summary["error_count"], 0)
+        error_fields = {error["field"] for error in result.errors}
+        self.assertIn("pcategoryname", error_fields)
+        self.assertIn("code", error_fields)
+        self.assertIn("sku", error_fields)
+        self.assertIn("productname", error_fields)
+        self.assertIn("productdesc", error_fields)
+        self.assertIn("shelf_life_days", error_fields)
+        self.assertIn("expiry_warning_days", error_fields)
+        self.assertIn("purchase_rate", error_fields)
+        self.assertIn("barcode", error_fields)
+        self.assertIn("pack_size", error_fields)
+        self.assertIn("factor", error_fields)
+
+
+class CatalogBulkHsnCoverageTests(TestCase):
+    def setUp(self):
+        user_model = get_user_model()
+        self.user = user_model.objects.create_user(
+            username="catalog-bulk-hsn-user",
+            email="catalog-bulk-hsn@example.com",
+            password="testpass123",
+        )
+        self.gst_type = GstRegistrationType.objects.create(Name="Regular HSN", Description="Regular")
+        self.entity = Entity.objects.create(
+            entityname="Catalog Bulk HSN Entity",
+            GstRegitrationType=self.gst_type,
+            createdby=self.user,
+        )
+
+    def test_validate_payload_rejects_oversized_hsn_rows(self):
+        payload = {
+            "hsn_sac": [
+                {
+                    "code": "H" * 21,
+                    "description": "D" * 256,
+                    "is_service": False,
+                    "default_sgst": "9" * 10,
+                    "default_cgst": "9" * 10,
+                    "default_igst": "9" * 10,
+                    "default_cess": "9" * 10,
+                    "is_exempt": False,
+                    "is_nil_rated": False,
+                    "is_non_gst": False,
+                    "isactive": True,
+                }
+            ]
+        }
+
+        result = validate_hsn_bulk_payload(payload, self.entity)
+
+        self.assertGreater(result.summary["error_count"], 0)
+        error_fields = {error["field"] for error in result.errors}
+        self.assertIn("code", error_fields)
+        self.assertIn("description", error_fields)
+        self.assertIn("default_sgst", error_fields)

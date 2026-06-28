@@ -24,6 +24,7 @@ from reports.api.financial.export_utils import (
     write_sectioned_excel,
     write_sectioned_pdf,
 )
+from reports.api.report_permissions import assert_any_report_permission
 from reports.services.financial_hub_settings import (
     financial_hub_amount_unit_label,
     get_effective_balance_sheet_settings,
@@ -56,7 +57,20 @@ from reports.selectors.financial import resolve_date_window, resolve_scope_names
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
-class _BaseFinancialReportAPIView(ScopedEntitlementMixin, APIView):
+class FinancialReportPermissionMixin:
+    required_permission_codes: tuple[str, ...] = ()
+    permission_denied_message = "You do not have permission to access this financial report."
+
+    def enforce_report_permission(self, request, *, entity_id: int):
+        assert_any_report_permission(
+            user=request.user,
+            entity_id=entity_id,
+            required_permissions=self.required_permission_codes,
+            message=self.permission_denied_message,
+        )
+
+
+class _BaseFinancialReportAPIView(FinancialReportPermissionMixin, ScopedEntitlementMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = FinancialReportScopeSerializer
     subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
@@ -72,6 +86,7 @@ class _BaseFinancialReportAPIView(ScopedEntitlementMixin, APIView):
             entityfinid_id=scope.get("entityfinid"),
             subentity_id=scope.get("subentity"),
         )
+        self.enforce_report_permission(request, entity_id=scope["entity"])
         return scope
 
     def build_filters(self, scope):
@@ -2270,6 +2285,11 @@ class FinancialReportsMetaAPIView(ScopedEntitlementMixin, APIView):
 
 
 class TrialBalanceAPIView(_BaseFinancialReportAPIView):
+    required_permission_codes = (
+        "reports.financial_hub.trial_balance.view",
+        "reports.trial_balance.view",
+    )
+
     def get(self, request):
         scope = self.get_scope(request)
         data = build_trial_balance(
@@ -2482,6 +2502,10 @@ class TrialBalancePrintAPIView(TrialBalancePDFAPIView):
 
 class LedgerBookAPIView(_BaseFinancialReportAPIView):
     serializer_class = LedgerBookScopeSerializer
+    required_permission_codes = (
+        "reports.financial_hub.ledger_book.view",
+        "reports.ledger_book.view",
+    )
 
     def get(self, request):
         scope = self.get_scope(request)
@@ -2719,6 +2743,12 @@ class LedgerBookPrintAPIView(LedgerBookPDFAPIView):
 
 
 class LedgerSummaryAPIView(_BaseFinancialReportAPIView):
+    required_permission_codes = (
+        "reports.financial_hub.ledger_summary.view",
+        "reports.ledgersummary.view",
+        "reports.ledger_summary.view",
+    )
+
     def get(self, request):
         scope = self.get_scope(request)
         settings_payload = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
@@ -2913,6 +2943,11 @@ class LedgerSummaryPrintAPIView(LedgerSummaryPDFAPIView):
 
 
 class ProfitAndLossAPIView(_BaseFinancialReportAPIView):
+    required_permission_codes = (
+        "reports.financial_hub.profit_loss.view",
+        "reports.income_expenditure.view",
+    )
+
     def get(self, request):
         scope = self.get_scope(request)
         settings_payload = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
@@ -3251,6 +3286,11 @@ class ProfitAndLossPDFPortraitAPIView(ProfitAndLossPDFAPIView):
 
 
 class BalanceSheetAPIView(_BaseFinancialReportAPIView):
+    required_permission_codes = (
+        "reports.financial_hub.balance_sheet.view",
+        "reports.balance_sheet.view",
+    )
+
     def get(self, request):
         scope = self.get_scope(request)
         settings_payload = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
@@ -3619,10 +3659,14 @@ class BalanceSheetPDFPortraitAPIView(BalanceSheetPDFAPIView):
     export_orientation = "portrait"
 
 
-class TradingAccountAPIView(ScopedEntitlementMixin, APIView):
+class TradingAccountAPIView(FinancialReportPermissionMixin, ScopedEntitlementMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
     subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
+    required_permission_codes = (
+        "reports.financial_hub.trading_account.view",
+        "reports.trading_account.view",
+    )
 
     def get(self, request):
         serializer = FinancialReportScopeSerializer(data=request.query_params)
@@ -3643,6 +3687,7 @@ class TradingAccountAPIView(ScopedEntitlementMixin, APIView):
             entityfinid_id=scope.get("entityfinid"),
             subentity_id=scope.get("subentity"),
         )
+        self.enforce_report_permission(request, entity_id=scope["entity"])
 
         from_date = scope.get("from_date")
         to_date = scope.get("to_date")
@@ -3715,12 +3760,16 @@ class TradingAccountAPIView(ScopedEntitlementMixin, APIView):
         }
 
 
-class _BaseTradingAccountExportAPIView(ScopedEntitlementMixin, APIView):
+class _BaseTradingAccountExportAPIView(FinancialReportPermissionMixin, ScopedEntitlementMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
     subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
     export_mode = "attachment"
     export_orientation = "landscape"
+    required_permission_codes = (
+        "reports.financial_hub.trading_account.view",
+        "reports.trading_account.view",
+    )
 
     def export_response(self, *, filename, content, content_type):
         response = HttpResponse(content=content, content_type=content_type)
@@ -3753,6 +3802,7 @@ class _BaseTradingAccountExportAPIView(ScopedEntitlementMixin, APIView):
             entityfinid_id=scope.get("entityfinid"),
             subentity_id=scope.get("subentity"),
         )
+        self.enforce_report_permission(request, entity_id=scope["entity"])
         from_date = scope.get("from_date")
         to_date = scope.get("to_date")
         as_of_date = scope.get("as_of_date") or scope.get("as_on_date")

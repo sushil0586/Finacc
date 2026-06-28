@@ -55,6 +55,15 @@ class Gstr3bSummaryAPIView(ScopedEntitlementMixin, APIView):
                 "enable_drilldown": True,
             },
         )
+        query = request.GET.copy()
+        query.pop("page", None)
+        query.pop("page_size", None)
+        encoded = query.urlencode()
+        response["actions"]["export_urls"] = {
+            "excel": f"/api/reports/gstr3b/export/?format=xlsx&{encoded}",
+            "csv": f"/api/reports/gstr3b/export/?format=csv&{encoded}",
+            "json": f"/api/reports/gstr3b/export/?format=json&{encoded}",
+        }
         response["available_exports"] = ["json", "xlsx", "csv"]
         response["actions"]["can_export_excel"] = True
         response["actions"]["can_export_pdf"] = False

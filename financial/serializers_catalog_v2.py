@@ -3,8 +3,12 @@ from rest_framework import serializers
 from financial.models import accountHead, accounttype
 from financial.services import allocate_next_account_head_code
 
+_INT32_MAX = 2147483647
+
 
 class AccountTypeV2Serializer(serializers.ModelSerializer):
+    accounttypename = serializers.CharField(max_length=255)
+    accounttypecode = serializers.CharField(max_length=255)
     accounttypeid = serializers.IntegerField(source="id", read_only=True)
 
     class Meta:
@@ -51,7 +55,10 @@ class AccountTypeV2Serializer(serializers.ModelSerializer):
 
 
 class AccountHeadV2Serializer(serializers.ModelSerializer):
-    code = serializers.IntegerField(required=False, allow_null=True)
+    name = serializers.CharField(max_length=200)
+    code = serializers.IntegerField(required=False, allow_null=True, max_value=_INT32_MAX)
+    description = serializers.CharField(max_length=200, required=False, allow_null=True, allow_blank=True)
+    detailsingroup = serializers.IntegerField(required=False, allow_null=True, max_value=_INT32_MAX)
     parent_name = serializers.CharField(source="accountheadsr.name", read_only=True)
     accounttype_name = serializers.CharField(source="accounttype.accounttypename", read_only=True)
 

@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional
 
 from numbering.models import DocumentType
 from numbering.services.document_number_service import DocumentNumberService
+from numbering.seeding import NumberingSeedService
 from vouchers.models.voucher_config import VoucherSettings, DEFAULT_VOUCHER_POLICY_CONTROLS
 from vouchers.models.voucher_core import VoucherHeader
 
@@ -41,6 +42,11 @@ class VoucherSettingsService:
         VoucherHeader.VoucherType.CASH: "default_doc_code_cash",
         VoucherHeader.VoucherType.BANK: "default_doc_code_bank",
         VoucherHeader.VoucherType.JOURNAL: "default_doc_code_journal",
+    }
+    DOC_LABEL_BY_TYPE = {
+        VoucherHeader.VoucherType.CASH: "Cash Voucher",
+        VoucherHeader.VoucherType.BANK: "Bank Voucher",
+        VoucherHeader.VoucherType.JOURNAL: "Journal Voucher",
     }
 
     @staticmethod
@@ -141,6 +147,28 @@ class VoucherSettingsService:
         return getattr(settings, cls.DOC_CODE_FIELD_BY_TYPE[voucher_type])
 
     @classmethod
+    def ensure_numbering_scope_for_type(
+        cls,
+        *,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: Optional[int],
+        voucher_type: str,
+        doc_code: str,
+    ) -> dict:
+        doc_key = cls.DOC_KEY_BY_TYPE[voucher_type]
+        return NumberingSeedService.seed_document(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            module="vouchers",
+            doc_key=doc_key,
+            name=cls.DOC_LABEL_BY_TYPE[voucher_type],
+            default_code=doc_code,
+            prefix=doc_code,
+        )
+
+    @classmethod
     def current_doc_no_for_type(cls, *, entity_id: int, entityfinid_id: int, subentity_id: Optional[int], voucher_type: str) -> Dict[str, Any]:
         settings = cls.get_settings(entity_id, subentity_id)
         doc_code = cls.default_doc_code_for_type(settings, voucher_type)
@@ -158,7 +186,24 @@ class VoucherSettingsService:
             )
             current_no = int(res.doc_no)
         except Exception as exc:
-            return {"enabled": False, "reason": str(exc), "doc_type_id": doc_type_row.id, "current_number": None}
+            if subentity_id is not None and "Series not found" in str(exc):
+                cls.ensure_numbering_scope_for_type(
+                    entity_id=entity_id,
+                    entityfinid_id=entityfinid_id,
+                    subentity_id=subentity_id,
+                    voucher_type=voucher_type,
+                    doc_code=doc_code,
+                )
+                res = DocumentNumberService.peek_preview(
+                    entity_id=entity_id,
+                    entityfinid_id=entityfinid_id,
+                    subentity_id=subentity_id,
+                    doc_type_id=doc_type_row.id,
+                    doc_code=doc_code,
+                )
+                current_no = int(res.doc_no)
+            else:
+                return {"enabled": False, "reason": str(exc), "doc_type_id": doc_type_row.id, "current_number": None}
         filters = dict(entity_id=entity_id, entityfinid_id=entityfinid_id, voucher_type=voucher_type)
         if subentity_id is None:
             filters["subentity__isnull"] = True

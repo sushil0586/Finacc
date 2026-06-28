@@ -74,6 +74,11 @@ class GstReconciliationAPITests(APITestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["report_code"], "gstr1-vs-gstr3b-reconciliation")
+        self.assertEqual(payload["report_name"], "GSTR-1 vs GSTR-3B Reconciliation")
+        self.assertEqual(set(payload["available_exports"]), {"excel", "csv", "json"})
+        self.assertIn("excel", payload["actions"]["export_urls"])
+        self.assertIn("csv", payload["actions"]["export_urls"])
+        self.assertIn("json", payload["actions"]["export_urls"])
         self.assertEqual(payload["summary"]["mismatch_count"], 1)
         self.assertEqual(payload["summary"]["actionable_mismatch_count"], 0)
         self.assertEqual(payload["summary"]["advisory_mismatch_count"], 1)
@@ -108,6 +113,10 @@ class GstReconciliationAPITests(APITestCase):
         self.assertIn("attachment; filename=\"GSTR1_vs_GSTR3B_Reconciliation.csv\"", csv_response["Content-Disposition"])
         csv_text = csv_response.content.decode("utf-8")
         self.assertIn("Outward Taxable Supplies", csv_text)
+
+        xlsx_response = self.client.get(self.export_url, {**self.params, "format": "xlsx"})
+        self.assertEqual(xlsx_response.status_code, 200)
+        self.assertIn("attachment; filename=\"GSTR1_vs_GSTR3B_Reconciliation.xlsx\"", xlsx_response["Content-Disposition"])
 
     @patch("reports.api.gst_reconciliation_views.assert_any_report_permission", side_effect=PermissionDenied("forbidden"))
     def test_summary_denies_when_report_permission_is_missing(self, _assert_permission):

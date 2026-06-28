@@ -3,6 +3,7 @@ from __future__ import annotations
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
+from entity.models import SubEntity
 from numbering.models import DocumentType, DocumentNumberSeries
 
 
@@ -45,51 +46,69 @@ class Command(BaseCommand):
             },
         )
 
-        # Keep default_code aligned if doc type already existed with blank/default mismatch.
         updates = []
-        if not doc_type.default_code:
+        if doc_type.name != "Payment Voucher":
+            doc_type.name = "Payment Voucher"
+            updates.append("name")
+        if doc_type.default_code != doc_code:
             doc_type.default_code = doc_code
             updates.append("default_code")
         if not doc_type.is_active:
             doc_type.is_active = True
             updates.append("is_active")
         if updates:
-            doc_type.save(update_fields=updates + ["updated_at"])
+            doc_type.save(update_fields=[*updates, "updated_at"])
 
-        series, created = DocumentNumberSeries.objects.get_or_create(
-            entity_id=entity_id,
-            entityfinid_id=entityfinid_id,
-            subentity_id=subentity_id,
-            doc_type_id=doc_type.id,
-            doc_code=doc_code,
-            defaults={
-                "prefix": prefix,
-                "suffix": "",
-                "starting_number": start,
-                "current_number": start,
-                "number_padding": padding,
-                "include_year": True,
-                "include_month": False,
-                "separator": "-",
-                "reset_frequency": reset,
-                "is_active": True,
-            },
-        )
+        touched = []
+        for scope_subentity_id in self._subentity_scope_ids(entity_id=entity_id, subentity_id=subentity_id):
+            series, created = DocumentNumberSeries.objects.get_or_create(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=scope_subentity_id,
+                doc_type_id=doc_type.id,
+                doc_code=doc_code,
+                defaults={
+                    "prefix": prefix,
+                    "suffix": "",
+                    "starting_number": start,
+                    "current_number": start,
+                    "number_padding": padding,
+                    "include_year": True,
+                    "include_month": False,
+                    "separator": "-",
+                    "reset_frequency": reset,
+                    "is_active": True,
+                },
+            )
 
-        if not created:
             changed = []
             if not series.is_active:
                 series.is_active = True
                 changed.append("is_active")
-            if not series.prefix:
+            if series.prefix != prefix:
                 series.prefix = prefix
                 changed.append("prefix")
+            if series.number_padding != padding:
+                series.number_padding = padding
+                changed.append("number_padding")
+            if series.reset_frequency != reset:
+                series.reset_frequency = reset
+                changed.append("reset_frequency")
             if changed:
-                series.save(update_fields=changed + ["updated_at"])
+                series.save(update_fields=[*changed, "updated_at"])
 
-        self.stdout.write(
-            self.style.SUCCESS(
-                f"PAYMENT_VOUCHER seeded: DocumentType(id={doc_type.id}, created={dt_created}), "
-                f"Series(id={series.id}, created={created})"
+            touched.append(f"{scope_subentity_id if scope_subentity_id is not None else 'root'}")
+            self.stdout.write(
+                self.style.SUCCESS(
+                    f"PAYMENT_VOUCHER seeded: DocumentType(id={doc_type.id}, created={dt_created}), "
+                    f"Series(id={series.id}, created={created}), sub={scope_subentity_id}"
+                )
             )
-        )
+
+        self.stdout.write(self.style.SUCCESS("Payment numbering scopes touched -> " + ", ".join(touched)))
+
+    @staticmethod
+    def _subentity_scope_ids(*, entity_id: int, subentity_id: int | None) -> list[int | None]:
+        if subentity_id is not None:
+            return [subentity_id]
+        return [None, *list(SubEntity.objects.filter(entity_id=entity_id, isactive=True).order_by("id").values_list("id", flat=True))]

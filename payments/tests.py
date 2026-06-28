@@ -1,16 +1,23 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
 from django.test import SimpleTestCase, TestCase
+from django.utils import timezone
 from rest_framework.test import APIRequestFactory, force_authenticate
 
+from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity
+from numbering.models import DocumentNumberSeries, DocumentType
+from numbering.seeding import NumberingSeedService
 from payments.models import PaymentVoucherHeader
 from payments.serializers.payment_voucher import PaymentVoucherHeaderSerializer
 from payments.services.payment_voucher_service import PaymentVoucherService
+from payments.services.payment_settings_service import PaymentSettingsService
 from payments.views.payment_exports import PaymentVoucherPDFAPIView
 from payments.views.payment_meta import PaymentVoucherDetailFormMetaAPIView
 from payments.views.payment_voucher import (
@@ -1360,3 +1367,146 @@ class PaymentVoucherDetailFormMetaAttachmentTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["attachments"], [{"id": 701, "file_name": "payment-proof.pdf"}])
         mocked_attachment_serializer.assert_called_once_with(["attachment-row"], many=True)
+
+
+class PaymentNumberingSeedCommandTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="payment-seed-user",
+            email="payment-seed-user@example.com",
+            password="pass@12345",
+        )
+        self.entity = Entity.objects.create(
+            entityname="Payment Seed Entity",
+            createdby=self.user,
+            GstRegitrationType=GstRegistrationType.objects.create(Name="Regular", Description="Regular"),
+        )
+        self.entityfin = EntityFinancialYear.objects.create(
+            entity=self.entity,
+            desc="FY 2026-27",
+            finstartyear=timezone.make_aware(datetime(2026, 4, 1, 0, 0, 0)),
+            finendyear=timezone.make_aware(datetime(2027, 3, 31, 23, 59, 59)),
+            createdby=self.user,
+        )
+        self.root_scope = SubEntity.objects.create(
+            entity=self.entity,
+            subentityname="Head Office",
+            is_head_office=True,
+        )
+        self.branch_scope = SubEntity.objects.create(
+            entity=self.entity,
+            subentityname="Branch A",
+            branch_type=SubEntity.BranchType.BRANCH,
+        )
+        self.inactive_scope = SubEntity.objects.create(
+            entity=self.entity,
+            subentityname="Inactive Branch",
+            branch_type=SubEntity.BranchType.BRANCH,
+        )
+        self.inactive_scope.isactive = False
+        self.inactive_scope.save(update_fields=["isactive"])
+
+    def test_seed_payment_numbering_without_subentity_seeds_root_and_active_branches(self):
+        call_command(
+            "seed_payment_numbering",
+            entity=self.entity.id,
+            entityfinid=self.entityfin.id,
+            verbosity=0,
+        )
+
+        doc_type = DocumentType.objects.get(module="payments", doc_key="PAYMENT_VOUCHER")
+        self.assertEqual(doc_type.name, "Payment Voucher")
+        self.assertEqual(
+            DocumentNumberSeries.objects.filter(
+                entity_id=self.entity.id,
+                entityfinid_id=self.entityfin.id,
+                doc_type_id=doc_type.id,
+                doc_code="PPV",
+                is_active=True,
+            ).count(),
+            3,
+        )
+        self.assertTrue(
+            DocumentNumberSeries.objects.filter(
+                entity_id=self.entity.id,
+                entityfinid_id=self.entityfin.id,
+                subentity_id=None,
+                doc_type_id=doc_type.id,
+            ).exists()
+        )
+        self.assertTrue(
+            DocumentNumberSeries.objects.filter(
+                entity_id=self.entity.id,
+                entityfinid_id=self.entityfin.id,
+                subentity_id=self.root_scope.id,
+                doc_type_id=doc_type.id,
+            ).exists()
+        )
+        self.assertTrue(
+            DocumentNumberSeries.objects.filter(
+                entity_id=self.entity.id,
+                entityfinid_id=self.entityfin.id,
+                subentity_id=self.branch_scope.id,
+                doc_type_id=doc_type.id,
+            ).exists()
+        )
+        self.assertFalse(
+            DocumentNumberSeries.objects.filter(
+                entity_id=self.entity.id,
+                entityfinid_id=self.entityfin.id,
+                subentity_id=self.inactive_scope.id,
+                doc_type_id=doc_type.id,
+            ).exists()
+        )
+
+
+class PaymentNumberingRecoveryTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="payment-recovery-user",
+            email="payment-recovery-user@example.com",
+            password="pass@12345",
+        )
+        self.entity = Entity.objects.create(entityname="Payment Recovery Entity", createdby=self.user)
+        self.entityfin = EntityFinancialYear.objects.create(
+            entity=self.entity,
+            desc="FY 2026-27",
+            finstartyear=timezone.make_aware(datetime(2026, 4, 1, 0, 0, 0)),
+            finendyear=timezone.make_aware(datetime(2027, 3, 31, 23, 59, 59)),
+            createdby=self.user,
+        )
+        self.root_scope = SubEntity.objects.create(entity=self.entity, subentityname="Head Office", is_head_office=True)
+        self.branch_scope = SubEntity.objects.create(entity=self.entity, subentityname="Branch A", branch_type=SubEntity.BranchType.BRANCH)
+
+    def test_current_doc_no_auto_seeds_missing_branch_scope(self):
+        NumberingSeedService.seed_document(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=None,
+            module="payments",
+            doc_key="PAYMENT_VOUCHER",
+            name="Payment Voucher",
+            default_code="PPV",
+            prefix="PPV",
+            start=5,
+            padding=4,
+        )
+
+        payload = PaymentSettingsService.get_current_doc_no(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.branch_scope.id,
+            doc_key="PAYMENT_VOUCHER",
+            doc_code="PPV",
+        )
+
+        self.assertTrue(payload["enabled"])
+        self.assertEqual(payload["current_number"], 1)
+        self.assertTrue(
+            DocumentNumberSeries.objects.filter(
+                entity=self.entity,
+                entityfinid=self.entityfin,
+                subentity=self.branch_scope,
+                doc_code="PPV",
+            ).exists()
+        )

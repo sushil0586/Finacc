@@ -219,6 +219,114 @@ class FinancialApiContractSmokeTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data["name"][0], "An account head with this name already exists.")
 
+    def test_account_type_oversized_fields_return_validation_errors(self):
+        response = self.client.post(
+            "/api/financial/accounttypes-v2",
+            {
+                "entity": self.entity.id,
+                "accounttypename": "A" * 256,
+                "accounttypecode": "B" * 256,
+                "balanceType": True,
+                "isactive": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("accounttypename", response.data)
+        self.assertIn("accounttypecode", response.data)
+
+    def test_account_head_oversized_fields_return_validation_errors(self):
+        acct_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Expense",
+            accounttypecode="EXP",
+            createdby=self.user,
+        )
+
+        response = self.client.post(
+            "/api/financial/accountheads-v2",
+            {
+                "entity": self.entity.id,
+                "name": "N" * 201,
+                "code": int("9" * 20),
+                "accounttype": acct_type.id,
+                "drcreffect": "Credit",
+                "description": "D" * 201,
+                "detailsingroup": int("9" * 20),
+                "isactive": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("name", response.data)
+        self.assertIn("code", response.data)
+        self.assertIn("description", response.data)
+        self.assertIn("detailsingroup", response.data)
+
+    def test_contact_details_oversized_fields_return_validation_errors(self):
+        acc = account.objects.create(
+            entity=self.entity,
+            accountname="Contact Oversize Account",
+            createdby=self.user,
+        )
+
+        response = self.client.post(
+            "/api/financial/contact-details/",
+            {
+                "account": acc.id,
+                "entity": self.entity.id,
+                "address1": "A" * 256,
+                "address2": "B" * 256,
+                "phoneno": "9" * 51,
+                "full_name": "C" * 256,
+                "emailid": ("d" * 245) + "@example.com",
+                "designation": "E" * 256,
+                "isprimary": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("address1", response.data)
+        self.assertIn("address2", response.data)
+        self.assertIn("phoneno", response.data)
+        self.assertIn("full_name", response.data)
+        self.assertIn("emailid", response.data)
+        self.assertIn("designation", response.data)
+
+    def test_shipping_details_oversized_fields_return_validation_errors(self):
+        acc = account.objects.create(
+            entity=self.entity,
+            accountname="Shipping Oversize Account",
+            createdby=self.user,
+        )
+
+        response = self.client.post(
+            "/api/financial/shipping-details/",
+            {
+                "account": acc.id,
+                "entity": self.entity.id,
+                "gstno": "G" * 51,
+                "address1": "A" * 256,
+                "address2": "B" * 256,
+                "phoneno": "9" * 51,
+                "full_name": "C" * 256,
+                "emailid": ("d" * 245) + "@example.com",
+                "isprimary": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("gstno", response.data)
+        self.assertIn("address1", response.data)
+        self.assertIn("address2", response.data)
+        self.assertIn("phoneno", response.data)
+        self.assertIn("full_name", response.data)
+        self.assertIn("emailid", response.data)
+
     def test_purchase_invoice_form_meta_reflects_new_custom_field_after_definition_create(self):
         initial = self.client.get(
             f"/api/purchase/meta/invoice-form/?entity={self.entity.id}"
@@ -1425,6 +1533,48 @@ class AccountOpeningPostingIntegrationTests(TestCase):
         )
         self.assertFalse(serializer.is_valid())
         self.assertIn("MSME credit days must be between 0 and 45.", str(serializer.errors))
+
+    def test_account_write_serializer_rejects_oversized_profile_fields(self):
+        head = accountHead.objects.create(
+            entity=self.entity_a,
+            name="Oversized Validation",
+            code=20031,
+            drcreffect="Credit",
+            createdby=self.user,
+        )
+        oversized_cases = (
+            ("contactperson", "X" * 256, "contactperson"),
+            ("bankname", "X" * 101, "bankname"),
+            ("banKAcno", "9" * 51, "banKAcno"),
+            ("compliance_profile", {"cin": "C" * 51}, "compliance_profile"),
+            ("compliance_profile", {"tds_threshold": "9" * 20}, "compliance_profile"),
+            ("commercial_profile", {"creditlimit": "9" * 20}, "commercial_profile"),
+            ("commercial_profile", {"creditdays": "9" * 20}, "commercial_profile"),
+            ("commercial_profile", {"reminders": "9" * 20}, "commercial_profile"),
+            ("commercial_profile", {"agent": "A" * 51}, "commercial_profile"),
+            ("withholding_profile", {"tax_identifier": "T" * 65}, "withholding_profile"),
+            ("withholding_profile", {"declaration_reference": "D" * 65}, "withholding_profile"),
+            ("withholding_profile", {"treaty_article": "R" * 65}, "withholding_profile"),
+            ("primary_address", {"line1": "L" * 256}, "primary_address"),
+            ("primary_address", {"line2": "L" * 256}, "primary_address"),
+            ("primary_address", {"floor_no": "F" * 256}, "primary_address"),
+            ("primary_address", {"street": "S" * 256}, "primary_address"),
+            ("primary_contact", {"contactperson": "P" * 256}, "primary_contact"),
+            ("primary_contact", {"emailid": ("a" * 245) + "@example.com"}, "primary_contact"),
+            ("primary_bank", {"bankname": "B" * 101}, "primary_bank"),
+            ("primary_bank", {"banKAcno": "1" * 51}, "primary_bank"),
+        )
+
+        for field_name, field_value, error_key in oversized_cases:
+            payload = {
+                "entity": self.entity_a.id,
+                "accountname": f"Oversized {error_key}",
+                "accounthead": head.id,
+            }
+            payload[field_name] = field_value
+            serializer = AccountProfileV2WriteSerializer(data=payload, context={"request": None})
+            self.assertFalse(serializer.is_valid(), msg=f"{field_name} should fail validation")
+            self.assertIn(error_key, serializer.errors)
 
     def test_account_read_serializer_exposes_structured_msme_fields(self):
         acc = create_account_with_synced_ledger(

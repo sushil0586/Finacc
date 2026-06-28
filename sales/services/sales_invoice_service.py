@@ -2712,6 +2712,15 @@ class SalesInvoiceService:
         # âœ… issue doc_no ONLY NOW
         cls.ensure_doc_number(header=header, user=user)
         cls._validate_invoice_uniqueness_per_gstin(header=header)
+        # Re-run TCS sync after final invoice numbering so statutory search/drilldowns
+        # always persist the same document_no the user sees on the confirmed invoice.
+        if (
+            bool(getattr(header, "withholding_enabled", False))
+            or getattr(header, "tcs_section", None) is not None
+            or q2(getattr(header, "tcs_base_amount", ZERO2) or ZERO2) > ZERO2
+            or q2(getattr(header, "tcs_amount", ZERO2) or ZERO2) > ZERO2
+        ):
+            cls._apply_tcs(header=header, user=user)
 
         header.status = SalesInvoiceHeader.Status.CONFIRMED
         header.confirmed_at = timezone.now()

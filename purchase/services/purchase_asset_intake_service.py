@@ -11,6 +11,10 @@ from catalog.models import ProductPurchaseBehavior
 
 class PurchaseAssetIntakeService:
     @staticmethod
+    def _line_external_reference(line) -> str:
+        return f"purchase-line:{getattr(line, 'id', '')}"
+
+    @staticmethod
     def _line_asset_name(line) -> str:
         product_name = getattr(getattr(line, "product", None), "productname", None)
         fallback = (getattr(line, "product_desc", "") or "").strip()
@@ -33,6 +37,16 @@ class PurchaseAssetIntakeService:
         if getattr(line, "asset_record_id", None):
             return getattr(line, "asset_record", None)
 
+        external_reference = PurchaseAssetIntakeService._line_external_reference(line)
+        existing_asset = FixedAsset.objects.filter(
+            entity=header.entity,
+            external_reference=external_reference,
+        ).first()
+        if existing_asset is not None:
+            line.asset_record = existing_asset
+            line.save(update_fields=["asset_record"])
+            return existing_asset
+
         category = PurchaseAssetIntakeService._line_asset_category(line)
         if category is None:
             raise ValueError(
@@ -53,7 +67,7 @@ class PurchaseAssetIntakeService:
                 "gross_block": getattr(line, "taxable_value", Decimal("0.00")) or Decimal("0.00"),
                 "vendor_account": getattr(header, "vendor", None),
                 "purchase_document_no": getattr(header, "purchase_number", None),
-                "external_reference": f"purchase-line:{getattr(line, 'id', '')}",
+                "external_reference": external_reference,
                 "notes": f"Auto-created from purchase invoice {getattr(header, 'purchase_number', '')} line {getattr(line, 'line_no', '-')}.",
             },
             user_id=user_id,

@@ -46,6 +46,73 @@ WITHHOLDING_PROFILE_FIELDS = (
     "is_active",
 )
 
+_INT32_MAX = 2147483647
+
+_TOP_LEVEL_ACCOUNT_WRITE_FIELDS = {
+    "contactperson": serializers.CharField(max_length=255, required=False, allow_null=True, allow_blank=True),
+    "bankname": serializers.CharField(max_length=100, required=False, allow_null=True, allow_blank=True),
+    "banKAcno": serializers.CharField(max_length=50, required=False, allow_null=True, allow_blank=True),
+}
+
+_ACCOUNT_COMPLIANCE_PROFILE_FIELDS = {
+    "cin": serializers.CharField(max_length=50, required=False, allow_null=True, allow_blank=True),
+    "msme": serializers.CharField(max_length=50, required=False, allow_null=True, allow_blank=True),
+    "udyam_no": serializers.CharField(max_length=30, required=False, allow_null=True, allow_blank=True),
+    "gsttdsno": serializers.CharField(max_length=50, required=False, allow_null=True, allow_blank=True),
+    "tdsno": serializers.CharField(max_length=50, required=False, allow_null=True, allow_blank=True),
+    "tdssection": serializers.CharField(max_length=20, required=False, allow_null=True, allow_blank=True),
+    "tcscode": serializers.CharField(max_length=20, required=False, allow_null=True, allow_blank=True),
+    "tds_threshold": serializers.DecimalField(max_digits=14, decimal_places=2, required=False, allow_null=True),
+}
+
+_ACCOUNT_COMMERCIAL_PROFILE_FIELDS = {
+    "creditlimit": serializers.DecimalField(max_digits=14, decimal_places=2, required=False, allow_null=True),
+    "creditdays": serializers.IntegerField(required=False, allow_null=True, min_value=0, max_value=_INT32_MAX),
+    "reminders": serializers.IntegerField(required=False, allow_null=True, min_value=0, max_value=_INT32_MAX),
+    "agent": serializers.CharField(max_length=50, required=False, allow_null=True, allow_blank=True),
+}
+
+_ACCOUNT_WITHHOLDING_PROFILE_FIELDS = {
+    "tax_identifier": serializers.CharField(max_length=64, required=False, allow_null=True, allow_blank=True),
+    "declaration_reference": serializers.CharField(max_length=64, required=False, allow_null=True, allow_blank=True),
+    "treaty_article": serializers.CharField(max_length=64, required=False, allow_null=True, allow_blank=True),
+}
+
+_ACCOUNT_PRIMARY_ADDRESS_FIELDS = {
+    "line1": serializers.CharField(max_length=255, required=False, allow_null=True, allow_blank=True),
+    "line2": serializers.CharField(max_length=255, required=False, allow_null=True, allow_blank=True),
+    "floor_no": serializers.CharField(max_length=255, required=False, allow_null=True, allow_blank=True),
+    "street": serializers.CharField(max_length=255, required=False, allow_null=True, allow_blank=True),
+}
+
+_ACCOUNT_PRIMARY_CONTACT_FIELDS = {
+    "contactperson": serializers.CharField(max_length=255, required=False, allow_null=True, allow_blank=True),
+    "full_name": serializers.CharField(max_length=255, required=False, allow_null=True, allow_blank=True),
+    "emailid": serializers.EmailField(max_length=254, required=False, allow_null=True, allow_blank=True),
+}
+
+_ACCOUNT_PRIMARY_BANK_FIELDS = {
+    "bankname": serializers.CharField(max_length=100, required=False, allow_null=True, allow_blank=True),
+    "banKAcno": serializers.CharField(max_length=50, required=False, allow_null=True, allow_blank=True),
+}
+
+
+def _validate_payload_fields(*, payload, field_map):
+    if not isinstance(payload, dict):
+        return payload
+    validated = dict(payload)
+    errors = {}
+    for field_name, field in field_map.items():
+        if field_name not in validated:
+            continue
+        try:
+            validated[field_name] = field.run_validation(validated[field_name])
+        except serializers.ValidationError as exc:
+            errors[field_name] = exc.detail
+    if errors:
+        raise serializers.ValidationError(errors)
+    return validated
+
 
 def _account_withholding_subentity_id(serializer) -> int | None:
     request = serializer.context.get("request") if isinstance(serializer.context, dict) else None
@@ -419,7 +486,17 @@ class AccountProfileV2WriteSerializer(serializers.ModelSerializer):
         if unknown_fields:
             raise serializers.ValidationError({field: "This field is not allowed." for field in unknown_fields})
         attrs = super().validate(attrs)
+        top_level_attrs = {field_name: attrs[field_name] for field_name in _TOP_LEVEL_ACCOUNT_WRITE_FIELDS if field_name in attrs}
+        try:
+            top_level_attrs = _validate_payload_fields(payload=top_level_attrs, field_map=_TOP_LEVEL_ACCOUNT_WRITE_FIELDS)
+        except serializers.ValidationError as exc:
+            raise serializers.ValidationError(exc.detail)
+        attrs.update(top_level_attrs)
         compliance = dict(attrs.get("compliance_profile", {}) or {})
+        try:
+            compliance = _validate_payload_fields(payload=compliance, field_map=_ACCOUNT_COMPLIANCE_PROFILE_FIELDS)
+        except serializers.ValidationError as exc:
+            raise serializers.ValidationError({"compliance_profile": exc.detail})
         if "gstno" in compliance:
             try:
                 compliance["gstno"] = validate_financial_gstin(compliance.get("gstno"))
@@ -500,6 +577,51 @@ class AccountProfileV2WriteSerializer(serializers.ModelSerializer):
             compliance["pan"] = compliance_pan
 
         commercial = dict(attrs.get("commercial_profile", {}) or {})
+        try:
+            commercial = _validate_payload_fields(payload=commercial, field_map=_ACCOUNT_COMMERCIAL_PROFILE_FIELDS)
+        except serializers.ValidationError as exc:
+            raise serializers.ValidationError({"commercial_profile": exc.detail})
+        attrs["commercial_profile"] = commercial
+        withholding = dict(attrs.get("withholding_profile", {}) or {})
+        try:
+            attrs["withholding_profile"] = _validate_payload_fields(
+                payload=withholding,
+                field_map=_ACCOUNT_WITHHOLDING_PROFILE_FIELDS,
+            )
+        except serializers.ValidationError as exc:
+            raise serializers.ValidationError({"withholding_profile": exc.detail})
+        primary_address = dict(attrs.get("primary_address", {}) or {})
+        try:
+            attrs["primary_address"] = _validate_payload_fields(
+                payload=primary_address,
+                field_map=_ACCOUNT_PRIMARY_ADDRESS_FIELDS,
+            )
+        except serializers.ValidationError as exc:
+            raise serializers.ValidationError({"primary_address": exc.detail})
+        primary_contact = dict(attrs.get("primary_contact", {}) or {})
+        if "contactperson" in attrs and "contactperson" not in primary_contact:
+            primary_contact["contactperson"] = attrs.get("contactperson")
+        if "emailid" in attrs and "emailid" not in primary_contact:
+            primary_contact["emailid"] = attrs.get("emailid")
+        try:
+            attrs["primary_contact"] = _validate_payload_fields(
+                payload=primary_contact,
+                field_map=_ACCOUNT_PRIMARY_CONTACT_FIELDS,
+            )
+        except serializers.ValidationError as exc:
+            raise serializers.ValidationError({"primary_contact": exc.detail})
+        primary_bank = dict(attrs.get("primary_bank", {}) or {})
+        if "bankname" in attrs and "bankname" not in primary_bank:
+            primary_bank["bankname"] = attrs.get("bankname")
+        if "banKAcno" in attrs and "banKAcno" not in primary_bank:
+            primary_bank["banKAcno"] = attrs.get("banKAcno")
+        try:
+            attrs["primary_bank"] = _validate_payload_fields(
+                payload=primary_bank,
+                field_map=_ACCOUNT_PRIMARY_BANK_FIELDS,
+            )
+        except serializers.ValidationError as exc:
+            raise serializers.ValidationError({"primary_bank": exc.detail})
         defaults = resolve_party_accounting_ids(entity=entity, partytype=commercial.get("partytype"))
         accounttype_value = attrs.get("accounttype")
         nested_accounttype_value = attrs.get("ledger", {}).get("accounttype")

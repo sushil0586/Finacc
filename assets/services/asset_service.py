@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.utils import timezone
 
@@ -391,6 +391,10 @@ def _immutable_posted_asset_field_changes(*, instance: FixedAsset, data: dict) -
 
 class AssetService:
     @staticmethod
+    def _is_asset_code_collision(error: Exception) -> bool:
+        return "uq_fixed_asset_entity_code" in str(error)
+
+    @staticmethod
     def generate_asset_code(*, entity_id: int, settings: AssetSettings) -> str:
         prefix = settings.default_doc_code_asset or "FA"
         prefix_token = f"{prefix}-"
@@ -488,7 +492,8 @@ class AssetService:
         settings = AssetSettingsService.get_settings(entity_id, subentity_id)
         Entity.objects.select_for_update().filter(pk=entity_id).exists()
         payload = dict(data)
-        if not payload.get("asset_code") and settings.auto_number_assets:
+        auto_generated_code = not payload.get("asset_code") and settings.auto_number_assets
+        if auto_generated_code:
             payload["asset_code"] = AssetService.generate_asset_code(entity_id=entity_id, settings=settings)
 
         payload.setdefault("useful_life_months", category.useful_life_months or settings.default_useful_life_months)
@@ -497,7 +502,18 @@ class AssetService:
             residual_percent = q2(category.residual_value_percent or settings.default_residual_value_percent)
             payload["residual_value"] = q2(q2(payload.get("gross_block")) * residual_percent / Decimal("100.00"))
         payload.setdefault("net_book_value", q2(payload.get("gross_block")))
-        asset = FixedAsset.objects.create(created_by_id=user_id, updated_by_id=user_id, **payload)
+        asset = None
+        for _ in range(5):
+            try:
+                with transaction.atomic():
+                    asset = FixedAsset.objects.create(created_by_id=user_id, updated_by_id=user_id, **payload)
+                break
+            except IntegrityError as exc:
+                if not auto_generated_code or not AssetService._is_asset_code_collision(exc):
+                    raise
+                payload["asset_code"] = AssetService.generate_asset_code(entity_id=entity_id, settings=settings)
+        if asset is None:
+            raise ValueError("Unable to generate a unique asset code for this entity. Please retry.")
         _ensure_non_negative_nbv(asset=asset, rule=(AssetSettingsService.resolve_policy_controls(settings).get("negative_nbv_rule") or "block"))
         return asset
 

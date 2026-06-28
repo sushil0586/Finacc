@@ -252,7 +252,8 @@ class EntityOnboardingTests(TestCase):
 
         self.assertEqual(response.status_code, 201)
         entity = Entity.objects.get(id=response.data["entity_id"])
-        self.assertNotIn("gst_username", response.data["entity"])
+        self.assertEqual(response.data["entity_name"], "ABC Enterprises")
+        self.assertEqual(response.data["gstno"], "03APXPB5894F1Z3")
         self.assertEqual(entity.entityname, "ABC Enterprises")
         self.assertEqual(EntityFinancialYear.objects.filter(entity=entity).count(), 1)
         self.assertEqual(BankAccount.objects.filter(entity=entity).count(), 1)
@@ -284,12 +285,37 @@ class EntityOnboardingTests(TestCase):
                 doc_code="BV",
             ).exists()
         )
+        self.assertTrue(
+            DocumentNumberSeries.objects.filter(
+                entity=entity,
+                entityfinid__entity=entity,
+                subentity__isnull=True,
+                doc_type=cash_doc_type,
+                doc_code="CV",
+            ).exists()
+        )
+        self.assertTrue(
+            DocumentNumberSeries.objects.filter(
+                entity=entity,
+                entityfinid__entity=entity,
+                subentity__isnull=True,
+                doc_type=bank_doc_type,
+                doc_code="BV",
+            ).exists()
+        )
         self.assertTrue(Ledger.objects.filter(entity=entity, ledger_code=4000).exists())
         self.assertTrue(UserRoleAssignment.objects.filter(entity=entity, user=self.user).exists())
         self.assertTrue(RbacRole.objects.filter(entity=entity, code="entity.super_admin").exists())
         self.assertIsNotNone(entity.customer_account_id)
         self.assertTrue(CustomerSubscription.objects.filter(customer_account=entity.customer_account).exists())
-        self.assertTrue(UserEntityAccess.objects.filter(entity=entity, user=self.user, is_owner=True).exists())
+        self.assertTrue(
+            UserEntityAccess.objects.filter(
+                customer_account=entity.customer_account,
+                user=self.user,
+                role=UserEntityAccess.Role.OWNER,
+                is_active=True,
+            ).exists()
+        )
         credential = SalesMasterGSTCredential.objects.get(
             entity=entity,
             environment=MasterGSTEnvironment.SANDBOX,
@@ -774,6 +800,124 @@ class EntityOnboardingTests(TestCase):
         self.assertEqual(bank.bank_name, "ICICI Bank")
         self.assertEqual(fy.desc, "FY 2026-27 Updated")
 
+    def test_onboarding_update_seeds_numbering_for_new_financial_year_and_subentity_scopes(self):
+        create_payload = {
+            "entity": {
+                "entityname": "Numbering Scope Entity",
+                "legalname": "Numbering Scope Entity Pvt Ltd",
+                "GstRegitrationType": self.gst_type.id,
+                "gstno": "03APXPB5894F1Z3",
+                "panno": "APXPB5894F",
+                "phoneoffice": "9855966534",
+                "phoneresidence": "9855966534",
+                "email": "scope@example.com",
+                "address": "4369 GT Road",
+                "country": self.country.id,
+                "state": self.state.id,
+                "district": self.district.id,
+                "city": self.city.id,
+                "pincode": "140406",
+                "const": self.constitution.id,
+            },
+            "financial_years": [
+                {
+                    "finstartyear": "2026-04-01T00:00:00Z",
+                    "finendyear": "2027-03-31T00:00:00Z",
+                    "desc": "FY 2026-27",
+                    "isactive": True,
+                }
+            ],
+            "seed_options": {
+                "template_code": "indian_accounting_final",
+                "seed_financial": True,
+                "seed_rbac": True,
+                "seed_default_subentity": True,
+                "seed_default_roles": True,
+            },
+        }
+
+        create_response = self.client.post("/api/entity/onboarding/create/", create_payload, format="json")
+        self.assertEqual(create_response.status_code, 201)
+
+        entity = Entity.objects.get(id=create_response.data["entity_id"])
+        existing_fy = entity.fy.get()
+        existing_subentity = entity.subentity.get()
+
+        update_payload = {
+            "financial_years": [
+                {
+                    "id": existing_fy.id,
+                    "desc": existing_fy.desc,
+                    "finstartyear": existing_fy.finstartyear,
+                    "finendyear": existing_fy.finendyear,
+                    "isactive": existing_fy.isactive,
+                },
+                {
+                    "desc": "FY 2027-28",
+                    "finstartyear": "2027-04-01T00:00:00Z",
+                    "finendyear": "2028-03-31T00:00:00Z",
+                    "isactive": False,
+                },
+            ],
+            "subentities": [
+                {
+                    "id": existing_subentity.id,
+                    "subentityname": existing_subentity.subentityname,
+                },
+                {
+                    "subentityname": "Operations Branch",
+                    "country": self.country.id,
+                    "state": self.state.id,
+                    "district": self.district.id,
+                    "city": self.city.id,
+                    "pincode": "140406",
+                    "phoneoffice": "9855966534",
+                    "phoneresidence": "9855966534",
+                    "email": "ops@example.com",
+                },
+            ],
+        }
+
+        update_response = self.client.patch(
+            f"/api/entity/onboarding/entity/{entity.id}/",
+            update_payload,
+            format="json",
+        )
+        self.assertEqual(update_response.status_code, 200)
+
+        new_fy = EntityFinancialYear.objects.get(entity=entity, desc="FY 2027-28")
+        new_subentity = SubEntity.objects.get(entity=entity, subentityname="Operations Branch")
+        cash_doc_type = DocumentType.objects.get(module="vouchers", doc_key="CASH_VOUCHER")
+        bank_doc_type = DocumentType.objects.get(module="vouchers", doc_key="BANK_VOUCHER")
+
+        self.assertTrue(
+            DocumentNumberSeries.objects.filter(
+                entity=entity,
+                entityfinid=existing_fy,
+                subentity=new_subentity,
+                doc_type=cash_doc_type,
+                doc_code="CV",
+            ).exists()
+        )
+        self.assertTrue(
+            DocumentNumberSeries.objects.filter(
+                entity=entity,
+                entityfinid=new_fy,
+                subentity=existing_subentity,
+                doc_type=bank_doc_type,
+                doc_code="BV",
+            ).exists()
+        )
+        self.assertTrue(
+            DocumentNumberSeries.objects.filter(
+                entity=entity,
+                entityfinid=new_fy,
+                subentity=new_subentity,
+                doc_type=bank_doc_type,
+                doc_code="BV",
+            ).exists()
+        )
+
 
 class RegisterAndEntityOnboardingTests(TestCase):
     def setUp(self):
@@ -855,8 +999,15 @@ class RegisterAndEntityOnboardingTests(TestCase):
         entity = Entity.objects.get(id=response.data["onboarding"]["entity_id"])
         self.assertEqual(entity.createdby, user)
         self.assertTrue(UserRoleAssignment.objects.filter(entity=entity, user=user).exists())
-        self.assertTrue(CustomerAccount.objects.filter(primary_user=user).exists())
-        self.assertTrue(UserEntityAccess.objects.filter(entity=entity, user=user, is_owner=True).exists())
+        self.assertTrue(CustomerAccount.objects.filter(owner=user).exists())
+        self.assertTrue(
+            UserEntityAccess.objects.filter(
+                customer_account=entity.customer_account,
+                user=user,
+                role=UserEntityAccess.Role.OWNER,
+                is_active=True,
+            ).exists()
+        )
 
     def test_register_and_onboard_accepts_trial_intent(self):
         payload = {

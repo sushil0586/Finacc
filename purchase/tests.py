@@ -15,6 +15,7 @@ from rest_framework.response import Response
 from rest_framework.test import APITestCase, APIClient, APIRequestFactory, force_authenticate
 
 from assets.models import AssetCategory, FixedAsset
+from assets.services.settings import AssetSettingsService
 from entity.models import Entity, EntityFinancialYear, Godown, SubEntity
 from catalog.models import Product, ProductCategory, ProductPurchaseBehavior, UnitOfMeasure
 from financial.models import Ledger, account
@@ -3758,6 +3759,95 @@ class PurchasePhase3AssetIntakeTests(TestCase):
         self.line.refresh_from_db()
         self.assertIsNone(self.line.asset_record_id)
         self.assertFalse(FixedAsset.objects.filter(id=asset.id).exists())
+
+    @patch("purchase.services.purchase_invoice_actions.GstTdsService.sync_contract_ledger_for_header")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseApService.sync_open_item_for_header")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseInvoicePostingAdapter.post_purchase_invoice")
+    def test_post_reuses_existing_asset_for_same_purchase_line_external_reference(
+        self,
+        mock_post_adapter,
+        mock_sync_ap,
+        mock_sync_gst,
+    ):
+        existing_asset = FixedAsset.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            category=self.asset_category,
+            ledger=self.asset_ledger,
+            asset_code="CWIP-EXISTING",
+            asset_name="Existing purchase intake asset",
+            status=FixedAsset.AssetStatus.CAPITAL_WIP,
+            acquisition_date=self.header.bill_date,
+            quantity=Decimal("1.0000"),
+            gross_block=Decimal("84745.76"),
+            residual_value=Decimal("0.00"),
+            useful_life_months=60,
+            depreciation_method=FixedAsset.DepreciationMethod.SLM,
+            net_book_value=Decimal("84745.76"),
+            vendor_account=self.vendor,
+            purchase_document_no=self.header.purchase_number,
+            external_reference=f"purchase-line:{self.line.id}",
+        )
+
+        result = PurchaseInvoiceActions.post(self.header.id, posted_by_id=self.user.id)
+
+        self.assertEqual(result.header.status, PurchaseInvoiceHeader.Status.POSTED)
+        self.line.refresh_from_db()
+        self.assertEqual(self.line.asset_record_id, existing_asset.id)
+        self.assertEqual(
+            FixedAsset.objects.filter(entity=self.entity, external_reference=f"purchase-line:{self.line.id}").count(),
+            1,
+        )
+        mock_post_adapter.assert_called_once()
+        mock_sync_ap.assert_called_once()
+        mock_sync_gst.assert_called_once()
+
+    @patch("purchase.services.purchase_invoice_actions.GstTdsService.sync_contract_ledger_for_header")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseApService.sync_open_item_for_header")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseInvoicePostingAdapter.post_purchase_invoice")
+    def test_post_retries_asset_auto_number_collision_when_purchase_intake_creates_cwip_asset(
+        self,
+        mock_post_adapter,
+        mock_sync_ap,
+        mock_sync_gst,
+    ):
+        AssetSettingsService.upsert_settings(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            updates={"auto_number_assets": True, "default_doc_code_asset": "FA"},
+            user_id=self.user.id,
+        )
+        FixedAsset.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            category=self.asset_category,
+            ledger=self.asset_ledger,
+            asset_code="FA-000007",
+            asset_name="Existing collision asset",
+            acquisition_date=self.header.bill_date,
+            quantity=Decimal("1.0000"),
+            gross_block=Decimal("1000.00"),
+            residual_value=Decimal("0.00"),
+            useful_life_months=60,
+            depreciation_method=FixedAsset.DepreciationMethod.SLM,
+            net_book_value=Decimal("1000.00"),
+        )
+
+        with patch(
+            "assets.services.asset_service.AssetService.generate_asset_code",
+            side_effect=["FA-000007", "FA-000008"],
+        ):
+            result = PurchaseInvoiceActions.post(self.header.id, posted_by_id=self.user.id)
+
+        self.assertEqual(result.header.status, PurchaseInvoiceHeader.Status.POSTED)
+        self.line.refresh_from_db()
+        self.assertIsNotNone(self.line.asset_record_id)
+        self.assertEqual(self.line.asset_record.asset_code, "FA-000008")
+        mock_post_adapter.assert_called_once()
+        mock_sync_ap.assert_called_once()
+        mock_sync_gst.assert_called_once()
 
 
 class PurchaseStatutoryServiceTests(TestCase):

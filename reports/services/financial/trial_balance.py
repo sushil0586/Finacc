@@ -179,11 +179,14 @@ def _raw_trial_balance_rows(
             from_date=from_date,
             posted_only=posted_only,
         )
-        relevant_ledger_ids = {
-            int(ledger.id)
-            for ledger in candidate_ledgers
-            if int(ledger.id) in movement_map or opening_map.get(int(ledger.id), Decimal("0.00")) != Decimal("0.00")
-        }
+        if include_zero_balances:
+            relevant_ledger_ids = {int(ledger.id) for ledger in candidate_ledgers}
+        else:
+            relevant_ledger_ids = {
+                int(ledger.id)
+                for ledger in candidate_ledgers
+                if int(ledger.id) in movement_map or opening_map.get(int(ledger.id), Decimal("0.00")) != Decimal("0.00")
+            }
         ledgers = [ledger for ledger in candidate_ledgers if int(ledger.id) in relevant_ledger_ids]
 
     if 'opening_map' not in locals():

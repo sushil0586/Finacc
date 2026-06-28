@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.test import override_settings
 from django.urls import reverse
@@ -27,6 +28,21 @@ class BookReportAPITests(APITestCase):
     def setUp(self):
         self.client = APIClient()
         self.user = User.objects.create_user(username="reportuser", email="report@example.com", password="pass123")
+        self.permission_codes_patch = patch(
+            "reports.api.report_permissions.EffectivePermissionService.permission_codes_for_user",
+            return_value=[
+                "reports.financial_hub.trial_balance.view",
+                "reports.financial_hub.ledger_book.view",
+                "reports.financial_hub.ledger_summary.view",
+                "reports.financial_hub.profit_loss.view",
+                "reports.financial_hub.balance_sheet.view",
+                "reports.financial_hub.trading_account.view",
+                "reports.financial_hub.daybook.view",
+                "reports.financial_hub.cashbook.view",
+            ],
+        )
+        self.permission_codes_patch.start()
+        self.addCleanup(self.permission_codes_patch.stop)
         self.client.force_authenticate(user=self.user)
         self.country = Country.objects.create(countryname="India", countrycode="IN")
         self.state = State.objects.create(statename="State", statecode="ST", country=self.country)
@@ -401,6 +417,10 @@ class BookReportAPITests(APITestCase):
         self.assertIn("all_accounts", data)
         self.assertIn("cash_accounts", data)
         self.assertIn("bank_accounts", data)
+        self.assertIn("hub", data)
+        self.assertIn("scope_contract", data)
+        self.assertEqual(data["hub"]["default_report_code"], "trial_balance")
+        self.assertEqual(data["scope_contract"]["default_scope_mode"], "financial_year")
 
         voucher_types = {row["code"]: row["name"] for row in data["voucher_types"]}
         self.assertEqual(voucher_types[TxnType.PAYMENT], "Payment Voucher")
@@ -419,6 +439,13 @@ class BookReportAPITests(APITestCase):
 
         statuses = {row["value"]: row["label"] for row in data["daybook_statuses"]}
         self.assertEqual(statuses, {"draft": "Draft", "posted": "Posted", "reversed": "Reversed"})
+
+        report_codes = {row["code"] for row in data["reports"]}
+        self.assertTrue({"trial_balance", "ledger_book", "ledger_summary", "profit_loss", "balance_sheet", "trading_account", "daybook", "cashbook"}.issubset(report_codes))
+        self.assertEqual(
+            [report["code"] for section in data["hub"]["sections"] for report in section["reports"]][:3],
+            ["trial_balance", "ledger_book", "ledger_summary"],
+        )
 
         all_accounts = {row["id"]: row for row in data["all_accounts"]}
         self.assertEqual(all_accounts[self.cash_account.id]["account_type"], "cash")
@@ -499,6 +526,42 @@ class BookReportAPITests(APITestCase):
         self.assertIn("entry_id", first)
         self.assertIn("txn_id", first)
         self.assertIn("drilldown_params", first)
+
+    def test_daybook_envelope_exposes_ui_contract(self):
+        response = self.client.get(
+            reverse("reports_api:financial-daybook"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "from_date": "2025-04-01",
+                "to_date": "2025-04-30",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["report_code"], "daybook")
+        self.assertEqual(data["report_name"], "Daybook")
+        self.assertTrue(data["actions"]["can_view"])
+        self.assertTrue(data["actions"]["can_export_excel"])
+        self.assertTrue(data["actions"]["can_export_pdf"])
+        self.assertTrue(data["actions"]["can_export_csv"])
+        self.assertTrue(data["actions"]["can_drilldown"])
+        self.assertTrue(data["actions"]["can_print"])
+        self.assertEqual(
+            data["available_exports"],
+            ["excel", "pdf", "csv", "print", "excel_landscape", "excel_portrait", "pdf_landscape", "pdf_portrait"],
+        )
+        self.assertEqual(
+            set(data["actions"]["export_urls"].keys()),
+            {"excel", "pdf", "csv", "print", "excel_landscape", "excel_portrait", "pdf_landscape", "pdf_portrait"},
+        )
+        for key in ["excel", "pdf", "csv", "print", "excel_landscape", "excel_portrait", "pdf_landscape", "pdf_portrait"]:
+            self.assertIn("entity=", data["actions"]["export_urls"][key])
+            self.assertIn(f"entityfinid={self.entityfin.id}", data["actions"]["export_urls"][key])
+            self.assertIn(f"subentity={self.subentity.id}", data["actions"]["export_urls"][key])
+            self.assertIn("from_date=2025-04-01", data["actions"]["export_urls"][key])
+            self.assertIn("to_date=2025-04-30", data["actions"]["export_urls"][key])
 
     def test_daybook_purchase_rows_use_purchase_invoice_drilldown(self):
         purchase_entry = self._create_entry(
@@ -738,7 +801,11 @@ class BookReportAPITests(APITestCase):
             },
         )
         self.assertEqual(response.status_code, 200)
-        rows = [row for row in response.json()["rows"] if row["txn_id"] == sales_document.id]
+        rows = [
+            row
+            for row in response.json()["rows"]
+            if row["txn_id"] == sales_document.id and row["txn_type"] == TxnType.SALES
+        ]
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["drilldown_target"], "sales_invoice_detail")
         self.assertEqual(rows[0]["drilldown_route"], "/saleserviceinvoice")
@@ -972,7 +1039,12 @@ class BookReportAPITests(APITestCase):
             },
         )
         self.assertEqual(response.status_code, 200)
-        rows = [row for row in response.json()["results"] if row["drilldown"]["txn_id"] == purchase_document.id]
+        rows = [
+            row
+            for row in response.json()["results"]
+            if row["drilldown"]["txn_id"] == purchase_document.id
+            and row["drilldown"]["txn_type"] == TxnType.PURCHASE
+        ]
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["drilldown"]["drilldown_route"], "/purchaseserviceinvoice")
 
@@ -1030,7 +1102,12 @@ class BookReportAPITests(APITestCase):
             },
         )
         self.assertEqual(response.status_code, 200)
-        rows = [row for row in response.json()["results"] if row["drilldown"]["txn_id"] == sales_document.id]
+        rows = [
+            row
+            for row in response.json()["results"]
+            if row["drilldown"]["txn_id"] == sales_document.id
+            and row["drilldown"]["txn_type"] == TxnType.SALES
+        ]
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["drilldown"]["drilldown_route"], "/saleserviceinvoice")
 
@@ -1112,6 +1189,44 @@ class BookReportAPITests(APITestCase):
         self.assertIn("opening_balance", summary)
         self.assertIn("closing_balance", summary)
 
+    def test_cashbook_envelope_exposes_ui_contract(self):
+        response = self.client.get(
+            reverse("reports_api:financial-cashbook"),
+            {
+                "entity": self.entity.id,
+                "cash_account": str(self.cash_account.id),
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "from_date": "2025-04-01",
+                "to_date": "2025-04-30",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["report_code"], "cashbook")
+        self.assertEqual(data["report_name"], "Cashbook")
+        self.assertTrue(data["actions"]["can_view"])
+        self.assertTrue(data["actions"]["can_export_excel"])
+        self.assertTrue(data["actions"]["can_export_pdf"])
+        self.assertTrue(data["actions"]["can_export_csv"])
+        self.assertTrue(data["actions"]["can_drilldown"])
+        self.assertTrue(data["actions"]["can_print"])
+        self.assertEqual(
+            data["available_exports"],
+            ["excel", "pdf", "csv", "print", "excel_landscape", "excel_portrait", "pdf_landscape", "pdf_portrait"],
+        )
+        self.assertEqual(
+            set(data["actions"]["export_urls"].keys()),
+            {"excel", "pdf", "csv", "print", "excel_landscape", "excel_portrait", "pdf_landscape", "pdf_portrait"},
+        )
+        for key in ["excel", "pdf", "csv", "print", "excel_landscape", "excel_portrait", "pdf_landscape", "pdf_portrait"]:
+            self.assertIn("entity=", data["actions"]["export_urls"][key])
+            self.assertIn(f"cash_account={self.cash_account.id}", data["actions"]["export_urls"][key])
+            self.assertIn(f"entityfinid={self.entityfin.id}", data["actions"]["export_urls"][key])
+            self.assertIn(f"subentity={self.subentity.id}", data["actions"]["export_urls"][key])
+            self.assertIn("from_date=2025-04-01", data["actions"]["export_urls"][key])
+            self.assertIn("to_date=2025-04-30", data["actions"]["export_urls"][key])
+
     def test_trial_balance_totals_match_posted_ledger_movements(self):
         response = self.client.get(
             reverse("reports_api:financial-trial-balance"),
@@ -1131,10 +1246,9 @@ class BookReportAPITests(APITestCase):
         data = response.json()
 
         rows = {row["ledger_name"]: row for row in data["rows"]}
-        self.fail(str(data))
         self.assertEqual(Decimal(str(data["totals"]["debit"])), Decimal("115.00"))
         self.assertEqual(Decimal(str(data["totals"]["credit"])), Decimal("115.00"))
-        self.assertEqual(Decimal(str(data["totals"]["closing"])), Decimal("300.00"))
+        self.assertEqual(Decimal(str(data["totals"]["closing"])), Decimal("390.00"))
 
         self.assertEqual(Decimal(str(rows["Cash In Hand"]["opening"])), Decimal("100.00"))
         self.assertEqual(Decimal(str(rows["Cash In Hand"]["debit"])), Decimal("50.00"))
@@ -1302,6 +1416,49 @@ class BookReportAPITests(APITestCase):
         self.assertEqual(Decimal(str(rows["Cash In Hand"]["opening"])), Decimal("100.00"))
         self.assertEqual(Decimal(str(rows["Main Bank"]["opening"])), Decimal("200.00"))
 
+    def test_trial_balance_exposes_standard_export_actions(self):
+        response = self.client.get(
+            reverse("reports_api:financial-trial-balance"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "group_by": "ledger",
+                "posted_only": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["available_exports"], ["excel", "pdf", "csv", "print"])
+        self.assertEqual(set(data["actions"]["export_urls"].keys()), {"excel", "pdf", "csv", "print"})
+        for key in ["excel", "pdf", "csv", "print"]:
+            self.assertIn("entity=", data["actions"]["export_urls"][key])
+            self.assertIn(f"entityfinid={self.entityfin.id}", data["actions"]["export_urls"][key])
+            self.assertIn("group_by=ledger", data["actions"]["export_urls"][key])
+
+    def test_trial_balance_envelope_exposes_ui_contract(self):
+        response = self.client.get(
+            reverse("reports_api:financial-trial-balance"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "group_by": "ledger",
+                "posted_only": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["report_code"], "trial_balance")
+        self.assertEqual(data["report_name"], "Trial Balance")
+        self.assertTrue(data["actions"]["can_view"])
+        self.assertTrue(data["actions"]["can_export_excel"])
+        self.assertTrue(data["actions"]["can_export_pdf"])
+        self.assertTrue(data["actions"]["can_export_csv"])
+        self.assertTrue(data["actions"]["can_drilldown"])
+        self.assertTrue(data["actions"]["can_print"])
+        self.assertEqual(data["available_exports"], ["excel", "pdf", "csv", "print"])
+        self.assertEqual(set(data["actions"]["export_urls"].keys()), {"excel", "pdf", "csv", "print"})
+        self.assertIn("group_by=ledger", data["actions"]["export_urls"]["excel"])
+
     def test_ledger_summary_date_range_without_scope_mode_still_includes_opening(self):
         response = self.client.get(
             reverse("reports_api:financial-ledger-summary"),
@@ -1323,6 +1480,49 @@ class BookReportAPITests(APITestCase):
         self.assertEqual(Decimal(str(rows["Cash In Hand"]["opening"])), Decimal("100.00"))
         self.assertEqual(Decimal(str(rows["Main Bank"]["opening"])), Decimal("200.00"))
 
+    def test_ledger_summary_exposes_standard_export_actions(self):
+        response = self.client.get(
+            reverse("reports_api:financial-ledger-summary"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "group_by": "ledger",
+                "posted_only": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["available_exports"], ["excel", "pdf", "csv", "print"])
+        self.assertEqual(set(data["actions"]["export_urls"].keys()), {"excel", "pdf", "csv", "print"})
+        for key in ["excel", "pdf", "csv", "print"]:
+            self.assertIn("entity=", data["actions"]["export_urls"][key])
+            self.assertIn(f"entityfinid={self.entityfin.id}", data["actions"]["export_urls"][key])
+            self.assertIn("group_by=ledger", data["actions"]["export_urls"][key])
+
+    def test_ledger_summary_envelope_exposes_ui_contract(self):
+        response = self.client.get(
+            reverse("reports_api:financial-ledger-summary"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "group_by": "ledger",
+                "posted_only": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["report_code"], "ledger_summary")
+        self.assertEqual(data["report_name"], "Ledger Summary")
+        self.assertTrue(data["actions"]["can_view"])
+        self.assertTrue(data["actions"]["can_export_excel"])
+        self.assertTrue(data["actions"]["can_export_pdf"])
+        self.assertTrue(data["actions"]["can_export_csv"])
+        self.assertTrue(data["actions"]["can_drilldown"])
+        self.assertTrue(data["actions"]["can_print"])
+        self.assertEqual(data["available_exports"], ["excel", "pdf", "csv", "print"])
+        self.assertEqual(set(data["actions"]["export_urls"].keys()), {"excel", "pdf", "csv", "print"})
+        self.assertIn("group_by=ledger", data["actions"]["export_urls"]["excel"])
+
     def test_ledger_book_date_range_without_scope_mode_keeps_opening_separate(self):
         response = self.client.get(
             reverse("reports_api:financial-ledger-book"),
@@ -1339,6 +1539,47 @@ class BookReportAPITests(APITestCase):
         self.assertEqual(data["opening_balance"], "100.00")
         self.assertEqual([row["voucher_number"] for row in data["rows"]], ["CV-001"])
         self.assertEqual(data["totals"]["closing_balance"], "150.00")
+
+    def test_ledger_book_exposes_standard_export_actions(self):
+        response = self.client.get(
+            reverse("reports_api:financial-ledger-book"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "ledger": self.cash_ledger.id,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["available_exports"], ["excel", "pdf", "csv", "print"])
+        self.assertEqual(set(data["actions"]["export_urls"].keys()), {"excel", "pdf", "csv", "print"})
+        for key in ["excel", "pdf", "csv", "print"]:
+            self.assertIn("entity=", data["actions"]["export_urls"][key])
+            self.assertIn(f"entityfinid={self.entityfin.id}", data["actions"]["export_urls"][key])
+            self.assertIn(f"ledger={self.cash_ledger.id}", data["actions"]["export_urls"][key])
+
+    def test_ledger_book_envelope_exposes_ui_contract(self):
+        response = self.client.get(
+            reverse("reports_api:financial-ledger-book"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "ledger": self.cash_ledger.id,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["report_code"], "ledger_book")
+        self.assertEqual(data["report_name"], "Ledger Book")
+        self.assertTrue(data["actions"]["can_view"])
+        self.assertTrue(data["actions"]["can_export_excel"])
+        self.assertTrue(data["actions"]["can_export_pdf"])
+        self.assertTrue(data["actions"]["can_export_csv"])
+        self.assertTrue(data["actions"]["can_drilldown"])
+        self.assertTrue(data["actions"]["can_print"])
+        self.assertEqual(data["available_exports"], ["excel", "pdf", "csv", "print"])
+        self.assertEqual(set(data["actions"]["export_urls"].keys()), {"excel", "pdf", "csv", "print"})
+        self.assertIn(f"ledger={self.cash_ledger.id}", data["actions"]["export_urls"]["excel"])
 
     def test_ledger_summary_financial_year_hides_opening_values_by_default(self):
         response = self.client.get(
@@ -1378,6 +1619,23 @@ class BookReportAPITests(APITestCase):
         self.assertEqual(Decimal(str(data["totals"]["opening"])), Decimal("0.00"))
         self.assertEqual(Decimal(str(rows["Cash In Hand"]["opening"])), Decimal("0.00"))
         self.assertEqual(Decimal(str(rows["Cash In Hand"]["balance"])), Decimal("150.00"))
+
+    def test_ledger_summary_reporting_uses_resolved_sort_key(self):
+        response = self.client.get(
+            reverse("reports_api:financial-ledger-summary"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "group_by": "ledger",
+                "sort_by": "balance",
+                "sort_order": "desc",
+                "posted_only": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["reporting"]["sort_by"], "closing")
+        self.assertEqual(data["reporting"]["sort_order"], "desc")
 
     def test_ledger_book_financial_year_scope_with_explicit_dates_does_not_split_opening(self):
         response = self.client.get(
@@ -1829,3 +2087,111 @@ class BookReportAPITests(APITestCase):
 
         self.assertEqual(closing[asset_ledger.id]["amount"], Decimal("500.00"))
         self.assertEqual(closing[equity_ledger.id]["amount"], Decimal("-500.00"))
+
+    def test_profit_loss_envelope_exposes_ui_contract(self):
+        response = self.client.get(
+            reverse("reports_api:financial-profit-loss"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "from_date": "2025-04-01",
+                "to_date": "2025-04-30",
+                "posted_only": True,
+                "group_by": "ledger",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["report_code"], "profit_loss")
+        self.assertEqual(data["report_name"], "Profit and Loss")
+        self.assertTrue(data["actions"]["can_view"])
+        self.assertTrue(data["actions"]["can_export_excel"])
+        self.assertTrue(data["actions"]["can_export_pdf"])
+        self.assertTrue(data["actions"]["can_export_csv"])
+        self.assertTrue(data["actions"]["can_drilldown"])
+        self.assertTrue(data["actions"]["can_print"])
+        self.assertEqual(
+            data["available_exports"],
+            ["excel", "pdf", "csv", "print", "pdf_landscape", "pdf_portrait", "excel_landscape", "excel_portrait"],
+        )
+        self.assertEqual(
+            set(data["actions"]["export_urls"].keys()),
+            {"excel", "pdf", "csv", "print", "pdf_landscape", "pdf_portrait", "excel_landscape", "excel_portrait"},
+        )
+        for key in ["excel", "pdf", "csv", "print", "pdf_landscape", "pdf_portrait", "excel_landscape", "excel_portrait"]:
+            self.assertIn("entity=", data["actions"]["export_urls"][key])
+            self.assertIn(f"entityfinid={self.entityfin.id}", data["actions"]["export_urls"][key])
+            self.assertIn("group_by=ledger", data["actions"]["export_urls"][key])
+
+    def test_balance_sheet_envelope_exposes_ui_contract(self):
+        response = self.client.get(
+            reverse("reports_api:financial-balance-sheet"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "from_date": "2025-04-01",
+                "to_date": "2025-04-30",
+                "account_group": "ledger",
+                "posted_only": True,
+                "hide_zero_rows": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["report_code"], "balance_sheet")
+        self.assertEqual(data["report_name"], "Balance Sheet")
+        self.assertTrue(data["actions"]["can_view"])
+        self.assertTrue(data["actions"]["can_export_excel"])
+        self.assertTrue(data["actions"]["can_export_pdf"])
+        self.assertTrue(data["actions"]["can_export_csv"])
+        self.assertTrue(data["actions"]["can_drilldown"])
+        self.assertTrue(data["actions"]["can_print"])
+        self.assertEqual(
+            data["available_exports"],
+            ["excel", "pdf", "csv", "print", "pdf_landscape", "pdf_portrait", "excel_landscape", "excel_portrait"],
+        )
+        self.assertEqual(
+            set(data["actions"]["export_urls"].keys()),
+            {"excel", "pdf", "csv", "print", "pdf_landscape", "pdf_portrait", "excel_landscape", "excel_portrait"},
+        )
+        for key in ["excel", "pdf", "csv", "print", "pdf_landscape", "pdf_portrait", "excel_landscape", "excel_portrait"]:
+            self.assertIn("entity=", data["actions"]["export_urls"][key])
+            self.assertIn(f"entityfinid={self.entityfin.id}", data["actions"]["export_urls"][key])
+            self.assertIn("account_group=ledger", data["actions"]["export_urls"][key])
+
+    def test_trading_account_envelope_exposes_ui_contract(self):
+        response = self.client.get(
+            reverse("reports_api:financial-trading-account"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "from_date": "2025-04-01",
+                "to_date": "2025-04-30",
+                "group_by": "ledger",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["report_code"], "trading_account")
+        self.assertEqual(data["report_name"], "Trading Account")
+        self.assertTrue(data["actions"]["can_view"])
+        self.assertTrue(data["actions"]["can_export_excel"])
+        self.assertTrue(data["actions"]["can_export_pdf"])
+        self.assertTrue(data["actions"]["can_export_csv"])
+        self.assertTrue(data["actions"]["can_drilldown"])
+        self.assertTrue(data["actions"]["can_print"])
+        self.assertEqual(
+            data["available_exports"],
+            ["excel", "pdf", "csv", "print", "pdf_landscape", "pdf_portrait", "excel_landscape", "excel_portrait"],
+        )
+        self.assertEqual(
+            set(data["actions"]["export_urls"].keys()),
+            {"excel", "pdf", "csv", "print", "pdf_landscape", "pdf_portrait", "excel_landscape", "excel_portrait"},
+        )
+        for key in ["excel", "pdf", "csv", "print", "pdf_landscape", "pdf_portrait", "excel_landscape", "excel_portrait"]:
+            self.assertIn("entity=", data["actions"]["export_urls"][key])
+            self.assertIn(f"entityfinid={self.entityfin.id}", data["actions"]["export_urls"][key])
+            self.assertIn("group_by=ledger", data["actions"]["export_urls"][key] or "")

@@ -266,6 +266,27 @@ class Gstr1ReportAPITests(APITestCase):
         self.assertIn("sections", data["summary"])
         self.assertIn("hsn_summary", data["summary"])
 
+    def test_summary_endpoint_exposes_export_actions(self):
+        self._create_sales_document(customer=self.customer_alpha)
+
+        response = self.client.get(self.summary_url, self.base_params)
+        self.assertEqual(response.status_code, 200)
+
+        payload = response.json()
+        self.assertEqual(payload["report_code"], "gstr1-summary")
+        self.assertEqual(payload["report_name"], "GSTR-1 Summary")
+        self.assertTrue(payload["actions"]["can_view"])
+        self.assertTrue(payload["actions"]["can_export_excel"])
+        self.assertTrue(payload["actions"]["can_export_pdf"])
+        self.assertTrue(payload["actions"]["can_export_csv"])
+        self.assertTrue(payload["actions"]["can_drilldown"])
+        self.assertEqual(set(payload["actions"]["export_urls"].keys()), {"excel", "csv", "json", "gstn_json"})
+        self.assertEqual(payload["available_exports"], ["excel", "csv", "json", "gstn_json"])
+        self.assertIn("format=xlsx", payload["actions"]["export_urls"]["excel"])
+        self.assertIn("format=csv", payload["actions"]["export_urls"]["csv"])
+        self.assertIn("format=json", payload["actions"]["export_urls"]["json"])
+        self.assertIn("format=gstn_json", payload["actions"]["export_urls"]["gstn_json"])
+
     def test_invoice_detail_includes_posting_lookup_and_drilldowns(self):
         invoice = self._create_sales_document(customer=self.customer_alpha)
         Entry.objects.create(
@@ -374,6 +395,25 @@ class Gstr1ReportAPITests(APITestCase):
         data = response.json()
         self.assertIsNotNone(data.get("next"))
         self.assertIsNone(data.get("previous"))
+
+    def test_section_envelope_exposes_export_actions(self):
+        self._create_sales_document(customer=self.customer_alpha)
+        response = self.client.get(self.section_url("B2B"), self.base_params)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["report_code"], "gstr1-b2b")
+        self.assertEqual(payload["report_name"], "GSTR-1 B2B")
+        self.assertTrue(payload["actions"]["can_view"])
+        self.assertTrue(payload["actions"]["can_export_excel"])
+        self.assertTrue(payload["actions"]["can_export_pdf"])
+        self.assertTrue(payload["actions"]["can_export_csv"])
+        self.assertTrue(payload["actions"]["can_drilldown"])
+        self.assertEqual(payload["available_exports"], ["excel", "csv", "json"])
+        self.assertEqual(set(payload["actions"]["export_urls"].keys()), {"excel", "csv", "json"})
+        self.assertIn("section=B2B", payload["actions"]["export_urls"]["excel"])
+        self.assertIn("format=xlsx", payload["actions"]["export_urls"]["excel"])
+        self.assertIn("format=csv", payload["actions"]["export_urls"]["csv"])
+        self.assertIn("format=json", payload["actions"]["export_urls"]["json"])
 
     def test_section_smart_filters(self):
         self._create_sales_document(
@@ -632,6 +672,19 @@ class Gstr1ReportAPITests(APITestCase):
         self.assertEqual(payload["table_code"], "TAXPAYER_1_3")
         self.assertEqual(payload["coverage"]["status"], "implemented")
         self.assertEqual(payload["count"], 1)
+
+    def test_table_envelope_exposes_contract_without_drilldown(self):
+        response = self.client.get(self.table_url("TAXPAYER_1_3"), self.base_params)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["report_code"], "gstr1-table-taxpayer_1_3")
+        self.assertEqual(payload["report_name"], "GSTR-1 1/2/3 Taxpayer Details")
+        self.assertTrue(payload["actions"]["can_view"])
+        self.assertTrue(payload["actions"]["can_export_excel"])
+        self.assertTrue(payload["actions"]["can_export_pdf"])
+        self.assertTrue(payload["actions"]["can_export_csv"])
+        self.assertFalse(payload["actions"]["can_drilldown"])
+        self.assertNotIn("available_exports", payload)
 
     def test_table_endpoint_eco_sections(self):
         SalesEcommerceSupply.objects.create(

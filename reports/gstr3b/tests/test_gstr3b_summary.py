@@ -180,7 +180,10 @@ class Gstr3bSummaryAPITests(APITestCase):
         )
 
     def _create_output_tax_mapping(self, code: str, ledger_code: int, account_code: int, name: str):
-        static = StaticAccount.objects.create(code=code, name=code, group="GST_OUTPUT", is_required=False)
+        static, _ = StaticAccount.objects.get_or_create(
+            code=code,
+            defaults={"name": code, "group": "GST_OUTPUT", "is_required": False},
+        )
         ledger = Ledger.objects.create(
             entity=self.entity,
             ledger_code=ledger_code,
@@ -217,6 +220,24 @@ class Gstr3bSummaryAPITests(APITestCase):
     def test_summary_denies_when_report_permission_is_missing(self, _assert_permission):
         response = self.client.get(self.summary_url, self.params)
         self.assertEqual(response.status_code, 403)
+
+    def test_summary_exposes_browser_contract_metadata(self):
+        response = self.client.get(self.summary_url, self.params)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["report_code"], "gstr3b-summary")
+        self.assertEqual(payload["report_name"], "GSTR-3B Summary")
+        self.assertEqual(set(payload["available_exports"]), {"json", "xlsx", "csv"})
+        self.assertTrue(payload["actions"]["can_export_excel"])
+        self.assertFalse(payload["actions"]["can_export_pdf"])
+        self.assertTrue(payload["actions"]["can_export_csv"])
+        self.assertTrue(payload["actions"]["can_drilldown"])
+        self.assertIn("excel", payload["actions"]["export_urls"])
+        self.assertIn("csv", payload["actions"]["export_urls"])
+        self.assertIn("json", payload["actions"]["export_urls"])
+        self.assertIn("format=xlsx", payload["actions"]["export_urls"]["excel"])
+        self.assertIn("format=csv", payload["actions"]["export_urls"]["csv"])
+        self.assertIn("format=json", payload["actions"]["export_urls"]["json"])
 
     def test_summary_computes_phase1_sections(self):
         self._create_sales_doc(
@@ -300,7 +321,14 @@ class Gstr3bSummaryAPITests(APITestCase):
 
         response = self.client.get(self.summary_url, self.params)
         self.assertEqual(response.status_code, 200)
-        data = response.json()["summary"]
+        payload = response.json()
+        self.assertIn("actions", payload)
+        self.assertEqual(set(payload["available_exports"]), {"json", "xlsx", "csv"})
+        self.assertEqual(payload["actions"]["can_export_excel"], True)
+        self.assertEqual(payload["actions"]["can_export_pdf"], False)
+        self.assertEqual(payload["actions"]["can_export_csv"], True)
+        self.assertEqual(payload["actions"]["can_drilldown"], True)
+        data = payload["summary"]
 
         self.assertEqual(self._d(data["section_3_1"]["outward_taxable_supplies"]["taxable_value"]), Decimal("800.00"))
         self.assertEqual(self._d(data["section_3_1"]["outward_taxable_supplies"]["cgst"]), Decimal("72.00"))
@@ -579,17 +607,21 @@ class Gstr3bSummaryAPITests(APITestCase):
 
         workbook = load_workbook(filename=BytesIO(xlsx_response.content), data_only=True)
         warnings = workbook["Warnings"]
-        self.assertEqual(warnings["A1"].value, "Severity")
-        self.assertEqual(warnings["B1"].value, "Code")
-        self.assertEqual(warnings["C1"].value, "Message")
-        self.assertEqual(warnings["D1"].value, "Section Route")
-        self.assertEqual(warnings["E1"].value, "Section")
-        self.assertEqual(warnings["F1"].value, "Related Report Route")
-        self.assertEqual(warnings["A2"].value, "warning")
-        self.assertEqual(warnings["B2"].value, "GSTR3B_POS_MISSING")
-        self.assertEqual(warnings["D2"].value, "/gstr3breport")
-        self.assertEqual(warnings["E2"].value, "3.1")
-        self.assertEqual(warnings["F2"].value, "/gstreport")
+        self.assertEqual(warnings["A1"].value, "Generated On")
+        self.assertTrue(bool(warnings["B1"].value))
+        self.assertEqual(warnings["A2"].value, "Scope")
+        self.assertIn("entity=", str(warnings["B2"].value))
+        self.assertEqual(warnings["A4"].value, "Severity")
+        self.assertEqual(warnings["B4"].value, "Code")
+        self.assertEqual(warnings["C4"].value, "Message")
+        self.assertEqual(warnings["D4"].value, "Section Route")
+        self.assertEqual(warnings["E4"].value, "Section")
+        self.assertEqual(warnings["F4"].value, "Related Report Route")
+        self.assertEqual(warnings["A5"].value, "warning")
+        self.assertEqual(warnings["B5"].value, "GSTR3B_POS_MISSING")
+        self.assertEqual(warnings["D5"].value, "/gstr3breport")
+        self.assertEqual(warnings["E5"].value, "3.1")
+        self.assertEqual(warnings["F5"].value, "/gstreport")
 
     def test_summary_uses_posted_bank_cash_vouchers_for_tax_paid_cash(self):
         self._create_sales_doc(

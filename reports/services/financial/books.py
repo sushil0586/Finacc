@@ -156,6 +156,16 @@ def _invoice_drilldown_route(txn_type: str | None, txn_id: int | None) -> str | 
 def _document_lookup_binding(document_type: str, source_module: str | None):
     document_type = str(document_type or "").strip().lower()
     source_module = str(source_module or "").strip().lower() or None
+
+    # Support the UI's generic invoice / credit-note / debit-note identifiers and
+    # resolve them into module-specific document families using the provided source.
+    if document_type == "invoice" and source_module in {"sales", "purchase"}:
+        document_type = "sales_invoice" if source_module == "sales" else "purchase_invoice"
+    elif document_type == "credit_note" and source_module in {"sales", "purchase"}:
+        document_type = "sales_credit_note" if source_module == "sales" else "purchase_credit_note"
+    elif document_type == "debit_note" and source_module in {"sales", "purchase"}:
+        document_type = "sales_debit_note" if source_module == "sales" else "purchase_debit_note"
+
     allowed_modules = DOCUMENT_TYPE_SOURCE_MODULES.get(document_type)
     if not allowed_modules:
         raise ValueError({"document_type": "Unsupported document type."})
@@ -329,6 +339,7 @@ def _entry_base_queryset(entity_id, entityfin_id=None, subentity_id=None, from_d
     from_date, to_date = resolve_date_window(entityfin_id, from_date, to_date)
     qs = (
         Entry.objects.filter(entity_id=entity_id)
+        .exclude(txn_type=TxnType.OPENING_BALANCE)
         .select_related("created_by", "posted_by", "entity", "entityfin", "subentity")
         .annotate(
             debit_total=Coalesce(
@@ -768,6 +779,7 @@ def _cashbook_line_queryset(entity_id, entityfin_id=None, subentity_id=None, *, 
     """
     qs = (
         JournalLine.objects.filter(entity_id=entity_id, entry__status__in=[EntryStatus.POSTED, EntryStatus.REVERSED])
+        .exclude(entry__txn_type=TxnType.OPENING_BALANCE)
         .annotate(resolved_ledger_id=Coalesce(F("ledger_id"), F("account__ledger_id")))
         .select_related("entry", "account", "ledger", "account__ledger")
     )

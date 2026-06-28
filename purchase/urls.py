@@ -103,6 +103,11 @@ from purchase.views.purchase_gstr2b import (
     PurchaseGstr2bImportBatchMatchAPIView,
     PurchaseGstr2bImportRowReviewAPIView,
 )
+from purchase.views.tds_compliance_center import PurchaseTdsComplianceCenterAPIView, PurchaseTdsComplianceCenterExportAPIView
+from purchase.views.gst_tds_compliance_center import (
+    PurchaseGstTdsComplianceCenterAPIView,
+    PurchaseGstTdsComplianceCenterExportAPIView,
+)
 from invoice_import.views import (
     PurchaseInvoiceImportTemplateAPIView,
     PurchaseInvoiceImportProfileListCreateAPIView,
@@ -210,6 +215,10 @@ urlpatterns = [
     path("statutory/returns/<int:pk>/form16a-certificates/group/<str:deductee_key>/upload/", PurchaseStatutoryReturnForm16ACertificateUploadAPIView.as_view(), name="purchase-statutory-return-form16a-certificate-upload"),
     path("statutory/returns/<int:pk>/form16a-certificates/group/<str:deductee_key>/download/", PurchaseStatutoryReturnForm16ACertificateDownloadAPIView.as_view(), name="purchase-statutory-return-form16a-certificate-download"),
     path("statutory/summary/", PurchaseStatutorySummaryAPIView.as_view(), name="purchase-statutory-summary"),
+    path("statutory/tds-compliance-center/", PurchaseTdsComplianceCenterAPIView.as_view(), name="purchase-tds-compliance-center"),
+    path("statutory/tds-compliance-center/export/", PurchaseTdsComplianceCenterExportAPIView.as_view(), name="purchase-tds-compliance-center-export"),
+    path("statutory/gst-tds-compliance-center/", PurchaseGstTdsComplianceCenterAPIView.as_view(), name="purchase-gst-tds-compliance-center"),
+    path("statutory/gst-tds-compliance-center/export/", PurchaseGstTdsComplianceCenterExportAPIView.as_view(), name="purchase-gst-tds-compliance-center-export"),
     path("statutory/review-note/", PurchaseStatutoryReviewNoteAPIView.as_view(), name="purchase-statutory-review-note"),
     path("statutory/itc-status-register/", PurchaseStatutoryItcStatusRegisterAPIView.as_view(), name="purchase-statutory-itc-status-register"),
     path("statutory/itc-status-register/<int:pk>/review/", PurchaseStatutoryItcStatusRegisterReviewAPIView.as_view(), name="purchase-statutory-itc-status-register-review"),

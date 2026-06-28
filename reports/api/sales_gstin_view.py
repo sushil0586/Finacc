@@ -42,41 +42,45 @@ class SalesGstinAPIView(APIView):
             "summary": SalesGstinSummarySerializer(summary).data,
         }
 
-        return Response(
-            build_report_envelope(
-                report_code="sales-gstin",
-                report_name="Sales GSTIN Report",
-                payload=payload,
-                filters={
-                    "from_date": cleaned_filters.get("from_date"),
-                    "to_date": cleaned_filters.get("to_date"),
-                    "posting_from_date": cleaned_filters.get("posting_from_date"),
-                    "posting_to_date": cleaned_filters.get("posting_to_date"),
-                    "entity": cleaned_filters.get("entity"),
-                    "entityfinid": cleaned_filters.get("entityfinid"),
-                    "subentity": cleaned_filters.get("subentity"),
-                    "customer": cleaned_filters.get("customer"),
-                    "customer_gstin": cleaned_filters.get("customer_gstin"),
-                    "doc_type": request.query_params.get("doc_type"),
-                    "status": request.query_params.get("status"),
-                    "invoice_type": request.query_params.get("invoice_type"),
-                    "supply_classification": request.query_params.get("supply_classification"),
-                    "is_b2b": cleaned_filters.get("is_b2b"),
-                    "is_b2c": cleaned_filters.get("is_b2c"),
-                    "is_export": cleaned_filters.get("is_export"),
-                    "is_sez": cleaned_filters.get("is_sez"),
-                    "is_deemed_export": cleaned_filters.get("is_deemed_export"),
-                    "min_amount": cleaned_filters.get("min_amount"),
-                    "max_amount": cleaned_filters.get("max_amount"),
-                    "search": cleaned_filters.get("search"),
-                    "page": paginator.page.number,
-                    "page_size": paginator.get_page_size(request),
-                },
-                defaults={
-                    "decimal_places": 2,
-                    "show_zero_balances_default": True,
-                    "show_opening_balance_default": False,
-                    "enable_drilldown": False,
-                },
-            )
+        response = build_report_envelope(
+            report_code="sales-gstin",
+            report_name="Sales GSTIN Report",
+            payload=payload,
+            filters={
+                "from_date": cleaned_filters.get("from_date"),
+                "to_date": cleaned_filters.get("to_date"),
+                "posting_from_date": cleaned_filters.get("posting_from_date"),
+                "posting_to_date": cleaned_filters.get("posting_to_date"),
+                "entity": cleaned_filters.get("entity"),
+                "entityfinid": cleaned_filters.get("entityfinid"),
+                "subentity": cleaned_filters.get("subentity"),
+                "customer": cleaned_filters.get("customer"),
+                "customer_gstin": cleaned_filters.get("customer_gstin"),
+                "doc_type": request.query_params.get("doc_type"),
+                "status": request.query_params.get("status"),
+                "invoice_type": request.query_params.get("invoice_type"),
+                "supply_classification": request.query_params.get("supply_classification"),
+                "is_b2b": cleaned_filters.get("is_b2b"),
+                "is_b2c": cleaned_filters.get("is_b2c"),
+                "is_export": cleaned_filters.get("is_export"),
+                "is_sez": cleaned_filters.get("is_sez"),
+                "is_deemed_export": cleaned_filters.get("is_deemed_export"),
+                "min_amount": cleaned_filters.get("min_amount"),
+                "max_amount": cleaned_filters.get("max_amount"),
+                "search": cleaned_filters.get("search"),
+                "page": paginator.page.number,
+                "page_size": paginator.get_page_size(request),
+            },
+            defaults={
+                "decimal_places": 2,
+                "show_zero_balances_default": True,
+                "show_opening_balance_default": False,
+                "enable_drilldown": False,
+            },
         )
+        response["actions"]["can_export_excel"] = False
+        response["actions"]["can_export_pdf"] = False
+        response["actions"]["can_export_csv"] = False
+        response["actions"]["export_urls"] = {}
+        response["available_exports"] = []
+        return Response(response)

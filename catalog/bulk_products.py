@@ -41,6 +41,57 @@ SHEETS = [
     "uom_conversions",
 ]
 
+_INT32_MAX = 2147483647
+
+
+def _append_max_length_error(errors: list[dict[str, Any]], *, sheet: str, row: int, field: str, value: Any, max_length: int, label: str | None = None):
+    text = "" if value is None else str(value).strip()
+    if text and len(text) > max_length:
+        errors.append(
+            {
+                "sheet": sheet,
+                "row": row,
+                "field": field,
+                "message": f"{label or field} must be at most {max_length} characters.",
+            }
+        )
+
+
+def _append_decimal_digits_error(errors: list[dict[str, Any]], *, sheet: str, row: int, field: str, value: Any, max_digits: int):
+    if value in (None, "", "-", "--"):
+        return
+    try:
+        digits = len(_to_decimal(value).as_tuple().digits)
+    except Exception:
+        return
+    if digits > max_digits:
+        errors.append(
+            {
+                "sheet": sheet,
+                "row": row,
+                "field": field,
+                "message": f"{field} must have at most {max_digits} digits in total.",
+            }
+        )
+
+
+def _append_int_max_error(errors: list[dict[str, Any]], *, sheet: str, row: int, field: str, value: Any, max_value: int = _INT32_MAX):
+    if value in (None, "", "-", "--"):
+        return
+    try:
+        parsed = _to_int(value)
+    except Exception:
+        return
+    if parsed is not None and parsed > max_value:
+        errors.append(
+            {
+                "sheet": sheet,
+                "row": row,
+                "field": field,
+                "message": f"{field} must be less than or equal to {max_value}.",
+            }
+        )
+
 
 def _parse_date(value: Any):
     if value in (None, "", "-", "--"):
@@ -499,6 +550,9 @@ def validate_payload(payload: dict[str, list[dict[str, Any]]], entity: Entity) -
     for idx, row in enumerate(payload.get("products_basic", []), start=2):
         sku = (row.get("sku") or "").strip()
         name = (row.get("productname") or "").strip()
+        _append_max_length_error(errors, sheet="products_basic", row=idx, field="sku", value=row.get("sku"), max_length=100, label="SKU")
+        _append_max_length_error(errors, sheet="products_basic", row=idx, field="productname", value=row.get("productname"), max_length=200, label="Product name")
+        _append_max_length_error(errors, sheet="products_basic", row=idx, field="productdesc", value=row.get("productdesc"), max_length=500, label="Product description")
         if not sku:
             errors.append({"sheet": "products_basic", "row": idx, "field": "sku", "message": "SKU is required."})
             continue
@@ -517,6 +571,8 @@ def validate_payload(payload: dict[str, list[dict[str, Any]]], entity: Entity) -
         try:
             shelf_life_days = _to_int(row.get("shelf_life_days"), default=None)
             expiry_warning_days = _to_int(row.get("expiry_warning_days"), default=None)
+            _append_int_max_error(errors, sheet="products_basic", row=idx, field="shelf_life_days", value=row.get("shelf_life_days"))
+            _append_int_max_error(errors, sheet="products_basic", row=idx, field="expiry_warning_days", value=row.get("expiry_warning_days"))
             if shelf_life_days is not None and shelf_life_days <= 0:
                 raise ValueError("Shelf life days must be greater than 0.")
             if expiry_warning_days is not None and expiry_warning_days < 0:
@@ -593,6 +649,7 @@ def validate_payload(payload: dict[str, list[dict[str, Any]]], entity: Entity) -
 
     for idx, row in enumerate(payload.get("categories_master", []), start=2):
         name = (row.get("pcategoryname") or "").strip()
+        _append_max_length_error(errors, sheet="categories_master", row=idx, field="pcategoryname", value=row.get("pcategoryname"), max_length=100, label="Category name")
         if not name:
             errors.append({"sheet": "categories_master", "row": idx, "field": "pcategoryname", "message": "Category name is required."})
             continue
@@ -608,6 +665,9 @@ def validate_payload(payload: dict[str, list[dict[str, Any]]], entity: Entity) -
             )
 
     for idx, row in enumerate(payload.get("uoms_master", []), start=2):
+        _append_max_length_error(errors, sheet="uoms_master", row=idx, field="code", value=row.get("code"), max_length=20, label="UOM code")
+        _append_max_length_error(errors, sheet="uoms_master", row=idx, field="description", value=row.get("description"), max_length=100, label="UOM description")
+        _append_max_length_error(errors, sheet="uoms_master", row=idx, field="uqc", value=row.get("uqc"), max_length=10, label="UQC")
         if not (row.get("code") or "").strip():
             errors.append({"sheet": "uoms_master", "row": idx, "field": "code", "message": "UOM code is required."})
 
@@ -620,8 +680,24 @@ def validate_payload(payload: dict[str, list[dict[str, Any]]], entity: Entity) -
                 continue
             if sku not in skus_in_file:
                 errors.append({"sheet": sheet, "row": idx, "field": "sku", "message": f"SKU '{sku}' not found."})
+            if sheet == "prices":
+                _append_decimal_digits_error(errors, sheet="prices", row=idx, field="purchase_rate", value=row.get("purchase_rate"), max_digits=18)
+                _append_decimal_digits_error(errors, sheet="prices", row=idx, field="purchase_rate_less_percent", value=row.get("purchase_rate_less_percent"), max_digits=5)
+                _append_decimal_digits_error(errors, sheet="prices", row=idx, field="mrp", value=row.get("mrp"), max_digits=18)
+                _append_decimal_digits_error(errors, sheet="prices", row=idx, field="mrp_less_percent", value=row.get("mrp_less_percent"), max_digits=5)
+                _append_decimal_digits_error(errors, sheet="prices", row=idx, field="selling_price", value=row.get("selling_price"), max_digits=18)
+            if sheet == "barcodes":
+                _append_max_length_error(errors, sheet="barcodes", row=idx, field="barcode", value=row.get("barcode"), max_length=50, label="Barcode")
+                _append_int_max_error(errors, sheet="barcodes", row=idx, field="pack_size", value=row.get("pack_size"))
+                _append_decimal_digits_error(errors, sheet="barcodes", row=idx, field="mrp", value=row.get("mrp"), max_digits=12)
+                _append_decimal_digits_error(errors, sheet="barcodes", row=idx, field="selling_price", value=row.get("selling_price"), max_digits=12)
+            if sheet == "uom_conversions":
+                _append_decimal_digits_error(errors, sheet="uom_conversions", row=idx, field="factor", value=row.get("factor"), max_digits=12)
             if sheet == "opening_stocks":
                 try:
+                    _append_decimal_digits_error(errors, sheet="opening_stocks", row=idx, field="openingqty", value=row.get("openingqty"), max_digits=18)
+                    _append_decimal_digits_error(errors, sheet="opening_stocks", row=idx, field="openingrate", value=row.get("openingrate"), max_digits=18)
+                    _append_decimal_digits_error(errors, sheet="opening_stocks", row=idx, field="openingvalue", value=row.get("openingvalue"), max_digits=18)
                     branch_code = _norm_text(row.get("branch_code") or row.get("location_code"))
                     godown_code = _norm_text(row.get("godown_code"))
                     qty = _to_decimal(row.get("openingqty"), default=Decimal("-1"))

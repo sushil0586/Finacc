@@ -163,6 +163,13 @@ class Gstr9ScaffoldAPITests(APITestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertIn("summary", payload)
+        self.assertIn("actions", payload)
+        self.assertIn("available_exports", payload)
+        self.assertEqual(set(payload["available_exports"]), {"excel", "csv", "json"})
+        self.assertIn("export_urls", payload["actions"])
+        self.assertIn("excel", payload["actions"]["export_urls"])
+        self.assertIn("csv", payload["actions"]["export_urls"])
+        self.assertIn("json", payload["actions"]["export_urls"])
         self.assertEqual(payload["summary"]["phase"], 1)
         self.assertEqual(payload["summary"]["status"], "phase1_complete")
         table_status = {row["code"]: row["status"] for row in payload["summary"]["tables"]}
@@ -513,7 +520,31 @@ class Gstr9ScaffoldAPITests(APITestCase):
             self.entityfin.id,
         )
 
+    def test_validation_contract_with_freeze_metadata(self):
+        freeze = self.client.post(self.freeze_url, self.params, format="json")
+        self.assertEqual(freeze.status_code, 201)
+        freeze_version = freeze.json()["version"]
+
+        response = self.client.get(self.validation_url, {**self.params, "freeze_version": freeze_version})
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("freeze", payload)
+        self.assertEqual(payload["freeze"]["version"], freeze_version)
+        self.assertIn("warnings", payload)
+        self.assertGreaterEqual(payload["warning_count"], 0)
+
     def test_export_contract(self):
+        summary_response = self.client.get(self.summary_url, self.params)
+        self.assertEqual(summary_response.status_code, 200)
+        summary_payload = summary_response.json()
+        self.assertIn("actions", summary_payload)
+        self.assertIn("available_exports", summary_payload)
+        self.assertEqual(set(summary_payload["available_exports"]), {"excel", "csv", "json"})
+        self.assertIn("export_urls", summary_payload["actions"])
+        self.assertIn("excel", summary_payload["actions"]["export_urls"])
+        self.assertIn("csv", summary_payload["actions"]["export_urls"])
+        self.assertIn("json", summary_payload["actions"]["export_urls"])
+
         response = self.client.get(self.export_url, {**self.params, "format": "json"})
         self.assertEqual(response.status_code, 200)
         self.assertIn("summary", response.json())

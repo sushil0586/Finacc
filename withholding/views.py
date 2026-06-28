@@ -184,6 +184,13 @@ def _non_negative_q2(raw) -> Decimal:
     return value if value > Decimal("0.00") else Decimal("0.00")
 
 
+def _tcs_search_match(*values, search: str) -> bool:
+    token = str(search or "").strip().lower()
+    if not token:
+        return True
+    return any(token in str(value or "").strip().lower() for value in values)
+
+
 def _request_data(request):
     data = getattr(request, "data", None)
     return data if hasattr(data, "get") else {}
@@ -1728,6 +1735,7 @@ class TcsWorkspaceTransactionsAPIView(APIView):
         section_code = (request.query_params.get("section") or "").strip().upper()
         customer_id = _safe_int(request.query_params.get("customer_id"))
         customer_q = (request.query_params.get("customer_q") or "").strip()
+        search = (request.query_params.get("search") or "").strip()
         include_reversed = _safe_bool(request.query_params.get("include_reversed"))
         include_draft = _safe_bool(request.query_params.get("include_draft"))
         include_cancelled = _safe_bool(request.query_params.get("include_cancelled"))
@@ -1839,6 +1847,17 @@ class TcsWorkspaceTransactionsAPIView(APIView):
         section_summary = {}
 
         for comp in qs:
+            if not _tcs_search_match(
+                comp.document_no,
+                getattr(comp.party_account, "legalname", None),
+                getattr(comp.party_account, "accountname", None),
+                account_pan(comp.party_account),
+                getattr(comp.section, "section_code", None),
+                comp.document_type,
+                getattr(comp, "trigger_basis", None),
+                search=search,
+            ):
+                continue
             comp_base = q2(comp.tcs_base_amount or Decimal("0.00"))
             comp_tcs = q2(comp.tcs_amount or Decimal("0.00"))
             comp_collected = Decimal("0.00")
@@ -2134,6 +2153,7 @@ class TcsWorkspaceTransactionsAPIView(APIView):
                     "section": section_code or None,
                     "customer_id": customer_id,
                     "customer_q": customer_q or None,
+                    "search": search or None,
                     "include_reversed": include_reversed,
                     "include_draft": include_draft,
                     "include_cancelled": include_cancelled,
@@ -2201,6 +2221,7 @@ class TcsReportFilingPackAPIView(APIView):
         section_code = (request.query_params.get("section") or "").strip().upper()
         customer_id = _safe_int(request.query_params.get("customer_id"))
         customer_q = (request.query_params.get("customer_q") or "").strip()
+        search = (request.query_params.get("search") or "").strip()
 
         fy_candidates = _expand_fy_values(fy)
         computations = (
@@ -2255,6 +2276,17 @@ class TcsReportFilingPackAPIView(APIView):
         total_collected = Decimal("0.00")
 
         for comp in computations:
+            if not _tcs_search_match(
+                comp.document_no,
+                getattr(comp.party_account, "legalname", None),
+                getattr(comp.party_account, "accountname", None),
+                account_pan(comp.party_account),
+                getattr(comp.section, "section_code", None),
+                comp.document_type,
+                getattr(comp, "trigger_basis", None),
+                search=search,
+            ):
+                continue
             party = comp.party_account
             section = comp.section
             party_name = (getattr(party, "legalname", None) or getattr(party, "accountname", None) or "").strip()

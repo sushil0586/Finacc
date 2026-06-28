@@ -1594,6 +1594,132 @@ class WithholdingTcsReportingExportTests(TestCase):
         self.assertFalse(by_doc["SCN-1"]["exceptions"]["not_collected"])
         self.assertFalse(by_doc["SCN-1"]["exceptions"]["deposit_mismatch"])
 
+    @patch("withholding.views.account_pan")
+    @patch("withholding.views.TcsQuarterlyReturn.objects.filter")
+    @patch("withholding.views.TcsDeposit.objects.filter")
+    @patch("withholding.views.PurchaseInvoiceHeader.objects.filter")
+    @patch("withholding.views.SalesInvoiceHeader.objects.filter")
+    @patch("withholding.views._exclude_cancelled_documents", side_effect=lambda qs: qs)
+    @patch("withholding.views._require_tcs_scope_permission")
+    @patch("withholding.views.TcsComputation.objects.select_related")
+    def test_filing_pack_view_preserves_sales_invoice_credit_note_and_debit_note_rollup(
+        self,
+        mocked_select_related,
+        _mocked_scope_permission,
+        _mocked_exclude_cancelled,
+        mocked_sales_filter,
+        mocked_purchase_filter,
+        mocked_deposit_filter,
+        mocked_return_filter,
+        mocked_account_pan,
+    ):
+        mocked_account_pan.side_effect = lambda party: getattr(party, "pan", "")
+        mocked_sales_filter.return_value.values.return_value = [
+            {"id": 1001, "status": 3},
+            {"id": 1002, "status": 3},
+            {"id": 1003, "status": 3},
+        ]
+        mocked_purchase_filter.return_value.values.return_value = []
+        mocked_deposit_filter.return_value.order_by.return_value = []
+        mocked_return_filter.return_value.order_by.return_value.first.return_value = None
+
+        section = SimpleNamespace(id=11, section_code="206C(1H)", description="Sale of goods")
+        party = SimpleNamespace(legalname="Buyer One", accountname="Buyer One", pan="ABCDE1234F")
+        invoice_comp = SimpleNamespace(
+            id=1,
+            module_name="sales",
+            document_type="invoice",
+            document_id=1001,
+            document_no="SINV-1",
+            doc_date=date(2026, 4, 10),
+            party_account_id=7,
+            party_account=party,
+            section_id=11,
+            section=section,
+            tcs_base_amount=Decimal("1000.00"),
+            rate=Decimal("0.1000"),
+            tcs_amount=Decimal("10.00"),
+            applicability_status="APPLICABLE",
+            override_reason="",
+            status="CONFIRMED",
+            fiscal_year="2026-27",
+            quarter="Q1",
+            trigger_basis="INVOICE",
+            computation_json={"reason_code": "APPLICABLE"},
+            rule_snapshot_json={},
+            collections=SimpleNamespace(all=lambda: _ChainableListQuerySet()),
+        )
+        credit_comp = SimpleNamespace(
+            id=2,
+            module_name="sales",
+            document_type="credit_note",
+            document_id=1002,
+            document_no="SCN-1",
+            doc_date=date(2026, 4, 18),
+            party_account_id=7,
+            party_account=party,
+            section_id=11,
+            section=section,
+            tcs_base_amount=Decimal("-500.00"),
+            rate=Decimal("0.1000"),
+            tcs_amount=Decimal("-5.00"),
+            applicability_status="APPLICABLE",
+            override_reason="Return adjustment",
+            status="REVERSED",
+            fiscal_year="2026-27",
+            quarter="Q1",
+            trigger_basis="INVOICE",
+            computation_json={"reason_code": "THRESHOLD_ALREADY_CROSSED"},
+            rule_snapshot_json={},
+            collections=SimpleNamespace(all=lambda: _ChainableListQuerySet()),
+        )
+        debit_comp = SimpleNamespace(
+            id=3,
+            module_name="sales",
+            document_type="debit_note",
+            document_id=1003,
+            document_no="SDN-1",
+            doc_date=date(2026, 4, 22),
+            party_account_id=7,
+            party_account=party,
+            section_id=11,
+            section=section,
+            tcs_base_amount=Decimal("300.00"),
+            rate=Decimal("0.1000"),
+            tcs_amount=Decimal("3.00"),
+            applicability_status="APPLICABLE",
+            override_reason="Price escalation",
+            status="CONFIRMED",
+            fiscal_year="2026-27",
+            quarter="Q1",
+            trigger_basis="INVOICE",
+            computation_json={"reason_code": "APPLICABLE"},
+            rule_snapshot_json={},
+            collections=SimpleNamespace(all=lambda: _ChainableListQuerySet()),
+        )
+
+        computations = _ChainableListQuerySet([invoice_comp, credit_comp, debit_comp])
+        mocked_select_related.return_value.prefetch_related.return_value.filter.return_value.order_by.return_value = computations
+
+        request = APIRequestFactory().get("/tcs/reports/filing-pack/?entity_id=1&fy=2026-27&quarter=Q1")
+        force_authenticate(request, user=self.user)
+        response = TcsReportFilingPackAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["header"]["row_count"], 3)
+        self.assertEqual(response.data["header"]["total_tcs"], Decimal("8.00"))
+
+        by_doc = {row["document_no"]: row for row in response.data["rows"]}
+        self.assertEqual(by_doc["SINV-1"]["doc_impact_type"], "Invoice")
+        self.assertEqual(by_doc["SCN-1"]["doc_impact_type"], "Credit Note")
+        self.assertEqual(by_doc["SDN-1"]["doc_impact_type"], "Debit Note")
+        self.assertTrue(by_doc["SCN-1"]["is_reversal"])
+        self.assertFalse(by_doc["SDN-1"]["is_reversal"])
+
+        section_summary = {row["section_code"]: row for row in response.data["section_summary"]}
+        self.assertEqual(section_summary["206C(1H)"]["total_base"], Decimal("800.00"))
+        self.assertEqual(section_summary["206C(1H)"]["total_tcs"], Decimal("8.00"))
+
     @patch("withholding.views.TcsQuarterlyReturn.objects.filter")
     @patch("withholding.views.TcsDeposit.objects.filter")
     @patch("withholding.views.PurchaseInvoiceHeader.objects.filter")
@@ -1633,6 +1759,95 @@ class WithholdingTcsReportingExportTests(TestCase):
             call.kwargs.get("section__section_code__iexact") == "206C(1)"
             for call in qs.filter.call_args_list
         ))
+
+    @patch("withholding.views.account_pan")
+    @patch("withholding.views.TcsQuarterlyReturn.objects.filter")
+    @patch("withholding.views.TcsDeposit.objects.filter")
+    @patch("withholding.views.PurchaseInvoiceHeader.objects.filter")
+    @patch("withholding.views.SalesInvoiceHeader.objects.filter")
+    @patch("withholding.views._exclude_cancelled_documents", side_effect=lambda qs: qs)
+    @patch("withholding.views._require_tcs_scope_permission")
+    @patch("withholding.views.TcsComputation.objects.select_related")
+    def test_filing_pack_applies_document_search_scope(
+        self,
+        mocked_select_related,
+        _mocked_scope_permission,
+        _mocked_exclude_cancelled,
+        mocked_sales_filter,
+        mocked_purchase_filter,
+        mocked_deposit_filter,
+        mocked_return_filter,
+        mocked_account_pan,
+    ):
+        mocked_account_pan.side_effect = lambda party: getattr(party, "pan", "")
+        mocked_sales_filter.return_value.values.return_value = [{"id": 1001, "status": 3}, {"id": 1002, "status": 3}]
+        mocked_purchase_filter.return_value.values.return_value = []
+        mocked_deposit_filter.return_value.order_by.return_value = []
+        mocked_return_filter.return_value.order_by.return_value.first.return_value = None
+
+        section = SimpleNamespace(id=11, section_code="206C(1H)", description="Sale of goods")
+        party = SimpleNamespace(legalname="Buyer One", accountname="Buyer One", pan="ABCDE1234F")
+        matching = SimpleNamespace(
+            id=1,
+            module_name="sales",
+            document_type="invoice",
+            document_id=1001,
+            document_no="SINV-TRACE-001",
+            doc_date=date(2026, 4, 10),
+            party_account_id=7,
+            party_account=party,
+            section_id=11,
+            section=section,
+            tcs_base_amount=Decimal("1000.00"),
+            rate=Decimal("0.1000"),
+            tcs_amount=Decimal("10.00"),
+            applicability_status="APPLICABLE",
+            override_reason="",
+            status="CONFIRMED",
+            fiscal_year="2026-27",
+            quarter="Q1",
+            trigger_basis="INVOICE",
+            computation_json={"reason_code": "APPLICABLE"},
+            rule_snapshot_json={},
+            collections=SimpleNamespace(all=lambda: _ChainableListQuerySet()),
+        )
+        other = SimpleNamespace(
+            id=2,
+            module_name="sales",
+            document_type="invoice",
+            document_id=1002,
+            document_no="SINV-OTHER-002",
+            doc_date=date(2026, 4, 12),
+            party_account_id=7,
+            party_account=party,
+            section_id=11,
+            section=section,
+            tcs_base_amount=Decimal("500.00"),
+            rate=Decimal("0.1000"),
+            tcs_amount=Decimal("5.00"),
+            applicability_status="APPLICABLE",
+            override_reason="",
+            status="CONFIRMED",
+            fiscal_year="2026-27",
+            quarter="Q1",
+            trigger_basis="INVOICE",
+            computation_json={"reason_code": "APPLICABLE"},
+            rule_snapshot_json={},
+            collections=SimpleNamespace(all=lambda: _ChainableListQuerySet()),
+        )
+        computations = _ChainableListQuerySet([matching, other])
+        mocked_select_related.return_value.prefetch_related.return_value.filter.return_value.order_by.return_value = computations
+
+        request = APIRequestFactory().get(
+            "/tcs/reports/filing-pack/?entity_id=1&fy=2026-27&quarter=Q1&search=SINV-TRACE-001"
+        )
+        force_authenticate(request, user=self.user)
+        response = TcsReportFilingPackAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data["rows"]), 1)
+        self.assertEqual(response.data["rows"][0]["document_no"], "SINV-TRACE-001")
+        self.assertEqual(response.data["header"]["row_count"], 1)
 
     @patch.object(TcsReportFilingPackAPIView, "get")
     def test_filing_pack_export_includes_management_and_tracker_sheets(self, mocked_get):
@@ -1950,6 +2165,76 @@ class WithholdingTcsLedgerReportTests(SimpleTestCase):
         mocked_entity.assert_called_once_with(self.user, 1)
         mocked_codes.assert_called_once_with(self.user, 1)
         mocked_subscription.assert_called_once()
+
+    @patch("withholding.views._require_tcs_scope_permission")
+    @patch("withholding.views._exclude_cancelled_documents", side_effect=lambda qs: qs)
+    @patch("withholding.views.EntityPartyTaxProfile.objects.filter", return_value=_ChainableListQuerySet())
+    @patch("withholding.views.PurchaseInvoiceHeader.objects.filter", return_value=_ChainableListQuerySet())
+    @patch("withholding.views.SalesInvoiceHeader.objects.filter", return_value=_ChainableListQuerySet())
+    @patch("withholding.views.TcsComputation.objects.select_related")
+    def test_tcs_workspace_applies_document_search_scope(
+        self,
+        mocked_select_related,
+        _mocked_sales_filter,
+        _mocked_purchase_filter,
+        _mocked_profile_filter,
+        _mocked_exclude_cancelled,
+        _mocked_permission,
+    ):
+        section = SimpleNamespace(section_code="206C(1H)", applicability_json={})
+        party = SimpleNamespace(accountname="Buyer One", legalname="Buyer One", pan="ABCDE1234F")
+        matching = SimpleNamespace(
+            id=1,
+            module_name="sales",
+            document_type="invoice",
+            document_id=1001,
+            document_no="SINV-TRACE-001",
+            doc_date=date(2026, 4, 10),
+            party_account_id=7,
+            party_account=party,
+            section_id=11,
+            section=section,
+            tcs_base_amount=Decimal("1000.00"),
+            rate=Decimal("0.1000"),
+            tcs_amount=Decimal("10.00"),
+            collections=SimpleNamespace(all=lambda: _ChainableListQuerySet()),
+            status="CONFIRMED",
+            trigger_basis="INVOICE",
+            computation_json={"reason_code": "APPLICABLE"},
+            rule_snapshot_json={},
+        )
+        other = SimpleNamespace(
+            id=2,
+            module_name="sales",
+            document_type="invoice",
+            document_id=1002,
+            document_no="SINV-OTHER-002",
+            doc_date=date(2026, 4, 12),
+            party_account_id=7,
+            party_account=party,
+            section_id=11,
+            section=section,
+            tcs_base_amount=Decimal("500.00"),
+            rate=Decimal("0.1000"),
+            tcs_amount=Decimal("5.00"),
+            collections=SimpleNamespace(all=lambda: _ChainableListQuerySet()),
+            status="CONFIRMED",
+            trigger_basis="INVOICE",
+            computation_json={"reason_code": "APPLICABLE"},
+            rule_snapshot_json={},
+        )
+        computations = _ChainableListQuerySet([matching, other])
+        mocked_select_related.return_value.prefetch_related.return_value.filter.return_value.order_by.return_value = computations
+
+        request = self.factory.get("/tcs/workspace/transactions/?entity_id=1&search=SINV-TRACE-001")
+        force_authenticate(request, user=self.user)
+        response = TcsWorkspaceTransactionsAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data["rows"]), 1)
+        self.assertEqual(response.data["rows"][0]["voucher_no"], "SINV-TRACE-001")
+        self.assertEqual(response.data["summary"]["total_transactions"], 1)
+        self.assertEqual(response.data["filters"]["search"], "SINV-TRACE-001")
 
     @patch("withholding.views.SubscriptionService.assert_entity_access")
     @patch("withholding.views.EffectivePermissionService.permission_codes_for_user", return_value=[])

@@ -40,11 +40,32 @@ def posted_opening_map_for_ledgers(
             credit=Sum("amount", filter=Q(drcr=False), default=ZERO),
         )
     )
-    return {
-        int(row["resolved_ledger_id"]): (row.get("debit") or ZERO) - (row.get("credit") or ZERO)
-        for row in rows
-        if row.get("resolved_ledger_id") is not None
-    }
+    # Account-opening postings should be unique per txn_id, but if duplicate entries
+    # exist for the same txn_id we prefer the latest posted entry instead of summing
+    # them, otherwise opening balances get doubled in reports.
+    rows = (
+        qs.values("txn_id", "entry_id", "resolved_ledger_id")
+        .annotate(
+            debit=Sum("amount", filter=Q(drcr=True), default=ZERO),
+            credit=Sum("amount", filter=Q(drcr=False), default=ZERO),
+        )
+        .order_by("txn_id", "resolved_ledger_id", "-entry_id")
+    )
+    deduped: dict[tuple[int, int], Decimal] = {}
+    for row in rows:
+        ledger_id = row.get("resolved_ledger_id")
+        txn_id = row.get("txn_id")
+        if ledger_id is None or txn_id is None:
+            continue
+        key = (int(txn_id), int(ledger_id))
+        if key in deduped:
+            continue
+        deduped[key] = (row.get("debit") or ZERO) - (row.get("credit") or ZERO)
+
+    opening_map: dict[int, Decimal] = {}
+    for (_txn_id, ledger_id), amount in deduped.items():
+        opening_map[ledger_id] = opening_map.get(ledger_id, ZERO) + amount
+    return opening_map
 
 
 def effective_opening_map_for_ledgers(

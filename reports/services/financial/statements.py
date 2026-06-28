@@ -1526,6 +1526,7 @@ def _build_snapshot(
         )
         if excluded_not_bs_rows:
             excluded_total = _sum_rows(excluded_not_bs_rows)
+            excluded_gap_impact = min(abs(final_difference), excluded_total)
             reason_cards.append(
                 _build_reason(
                     code="excluded_balance_sheet_rows",
@@ -1535,7 +1536,7 @@ def _build_snapshot(
                         "were classified outside the balance sheet."
                     ),
                     severity="warning",
-                    amount=excluded_total,
+                    amount=excluded_gap_impact,
                     count=len(excluded_not_bs_rows),
                     action="Review the excluded ledgers and fix account head/account type mapping where the balance should appear on the balance sheet.",
                     rows=excluded_not_bs_rows,

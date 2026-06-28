@@ -713,8 +713,9 @@ class EntityOnboardingService:
 
         numbering_summary = []
         if seed_options.get("seed_numbering", True) and fy_ids:
-            # Seed numbering for each financial year + each subentity (or None)
-            target_subentities = subentity_ids or [None]
+            # Keep create/update flows aligned by seeding both entity-wide and
+            # branch-scoped series for every active numbering spec.
+            target_subentities = [None, *subentity_ids] if subentity_ids else [None]
             for fy_id in fy_ids:
                 for sub_id in target_subentities:
                     numbering_summary.extend(
@@ -970,6 +971,31 @@ class EntityOnboardingService:
                 obj.delete()
 
     @classmethod
+    def _ensure_numbering_for_current_scopes(cls, *, entity):
+        fy_ids = list(
+            EntityFinancialYear.objects.filter(entity=entity).order_by("id").values_list("id", flat=True)
+        )
+        if not fy_ids:
+            return []
+
+        subentity_ids = list(
+            SubEntity.objects.filter(entity=entity).order_by("id").values_list("id", flat=True)
+        )
+        target_subentities = [None, *subentity_ids] if subentity_ids else [None]
+        numbering_rows = []
+        for fy_id in fy_ids:
+            for subentity_id in target_subentities:
+                numbering_rows.extend(
+                    NumberingSeedService.seed_documents(
+                        entity_id=entity.id,
+                        entityfinid_id=fy_id,
+                        subentity_id=subentity_id,
+                        specs=DEFAULT_NUMBERING_SPECS,
+                    )
+                )
+        return numbering_rows
+
+    @classmethod
     @transaction.atomic
     def update_entity(cls, *, actor, entity, payload):
         if not cls.can_manage_entity(user=actor, entity=entity):
@@ -994,6 +1020,7 @@ class EntityOnboardingService:
             )
 
         fy_rows = payload.get("financial_years")
+        touched_numbering_scopes = False
         if fy_rows is not None:
             fy_rows = [dict(row) for row in fy_rows]
             if fy_rows and not any(row.get("isactive") for row in fy_rows):
@@ -1006,6 +1033,7 @@ class EntityOnboardingService:
                 items=fy_rows,
                 actor=actor,
             )
+            touched_numbering_scopes = True
 
         cls._upsert_nested(
             model=EntityBankAccountV2,
@@ -1045,6 +1073,10 @@ class EntityOnboardingService:
             for obj_id, obj in existing.items():
                 if obj_id not in keep_ids:
                     obj.delete()
+            touched_numbering_scopes = True
+
+        if touched_numbering_scopes:
+            cls._ensure_numbering_for_current_scopes(entity=entity)
 
         constitution_payload = payload.get("constitution_details")
         ownership_payload = payload.get("ownership_details")

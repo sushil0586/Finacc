@@ -7,6 +7,7 @@ from receipts.models.receipt_config import ReceiptSettings, DEFAULT_RECEIPT_POLI
 from receipts.models.receipt_core import ReceiptVoucherHeader
 from numbering.models import DocumentType
 from numbering.services.document_number_service import DocumentNumberService
+from numbering.seeding import NumberingSeedService
 
 ENFORCEMENT_LEVELS = {"off", "warn", "hard"}
 ON_OFF = {"on", "off"}
@@ -203,17 +204,42 @@ class ReceiptSettingsService:
             )
             current_no = int(res.doc_no)
         except Exception as e:
-            return {
-                "enabled": False,
-                "reason": str(e),
-                "doc_type_id": doc_type_row.id,
-                "current_number": None,
-                "previous_number": None,
-                "previous_voucher_id": None,
-                "previous_voucher_code": None,
-                "previous_status": None,
-                "previous_voucher_date": None,
-            }
+            if subentity_id is not None and "Series not found" in str(e):
+                NumberingSeedService.seed_document(
+                    entity_id=entity_id,
+                    entityfinid_id=entityfinid_id,
+                    subentity_id=subentity_id,
+                    module="receipts",
+                    doc_key="RECEIPT_VOUCHER",
+                    name="Receipt Voucher",
+                    default_code=doc_code,
+                    prefix=doc_code,
+                )
+                res = DocumentNumberService.peek_preview(
+                    entity_id=entity_id,
+                    entityfinid_id=entityfinid_id,
+                    subentity_id=subentity_id,
+                    doc_type_id=doc_type_row.id,
+                    doc_code=doc_code,
+                )
+                current_no = int(res.doc_no)
+            else:
+                reason = str(e)
+                if subentity_id is None and "Series not found" in reason:
+                    reason = (
+                        f"{reason}. Seed the root receipt voucher numbering scope for entity={entity_id}, fin={entityfinid_id}."
+                    )
+                return {
+                    "enabled": False,
+                    "reason": reason,
+                    "doc_type_id": doc_type_row.id,
+                    "current_number": None,
+                    "previous_number": None,
+                    "previous_voucher_id": None,
+                    "previous_voucher_code": None,
+                    "previous_status": None,
+                    "previous_voucher_date": None,
+                }
 
         voucher_filters = dict(entity_id=entity_id, entityfinid_id=entityfinid_id)
         if subentity_id is None:
