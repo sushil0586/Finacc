@@ -112,12 +112,15 @@ class AssetSettingsAPIView(AssetScopedAPIView):
     def put(self, request):
         if not isinstance(request.data, dict):
             raise ValidationError({"detail": "Expected an object payload."})
+        entity_id, _, subentity_id = self._scope_from_payload(request, request.data)
+        settings_obj = AssetSettingsService.get_settings(entity_id, subentity_id)
+        serializer = AssetSettingsSerializer(instance=settings_obj, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
         try:
-            entity_id, _, subentity_id = self._scope_from_payload(request, request.data)
             updated = AssetSettingsService.upsert_settings(
                 entity_id=entity_id,
                 subentity_id=subentity_id,
-                updates=request.data,
+                updates=serializer.validated_data,
                 user_id=request.user.id,
             )
         except ValueError as exc:

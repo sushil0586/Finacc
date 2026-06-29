@@ -206,6 +206,58 @@ class BankRecoImportAPITests(APITestCase):
         self.assertEqual(workspace["imports_count"], 1)
         self.assertEqual(len(workspace["recent_imports"]), 1)
 
+    def test_import_create_rejects_oversized_request_fields(self):
+        response = self.client.post(
+            reverse("bank_reco_api:bank-reco-import-create"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "bank_account": self.bank_account.id,
+                "source_file_type": "csv",
+                "parser_key": "P" * 51,
+                "delimiter": "DELIMX",
+                "file": self._csv_file(
+                    "statement.csv",
+                    "\n".join(
+                        [
+                            "transaction_date,description,reference_number,debit_amount,credit_amount,balance_amount",
+                            "2026-04-01,Salary credit,REF001,0,500,1500",
+                        ]
+                    ),
+                ),
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        payload = response.json()
+        self.assertIn("parser_key", payload)
+        self.assertIn("delimiter", payload)
+
+    def test_import_create_rejects_oversized_statement_line_values(self):
+        response = self.client.post(
+            reverse("bank_reco_api:bank-reco-import-create"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "bank_account": self.bank_account.id,
+                "source_file_type": "csv",
+                "file": self._csv_file(
+                    "statement.csv",
+                    "\n".join(
+                        [
+                            "transaction_date,description,reference_number,cheque_no,debit_amount,credit_amount,balance_amount,currency",
+                            f"2026-04-01,{('N' * 501)},{('R' * 121)},{('C' * 81)},0,500,1500,{('I' * 11)}",
+                        ]
+                    ),
+                ),
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("rows", response.json())
+
     def test_workspace_summary_scopes_kpis_selected_bank_and_recent_activity(self):
         scoped_import = self._create_import(
             name="scope-statement.csv",

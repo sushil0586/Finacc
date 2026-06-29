@@ -318,6 +318,34 @@ class ManufacturingPhaseOneTests(APITestCase):
         self.assertEqual(update.status_code, 200)
         self.assertEqual(update.json()["name"], "Sugar 1kg Packing BOM Updated")
 
+    def test_route_create_rejects_oversized_fields(self):
+        payload = self._route_payload()
+        payload["code"] = "C" * 51
+        payload["name"] = "N" * 151
+        payload["description"] = "D" * 501
+        payload["steps"][0]["description"] = "S" * 301
+
+        response = self.client.post(reverse("manufacturing:manufacturing-routes"), payload, format="json")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("code", response.json())
+        self.assertIn("name", response.json())
+        self.assertIn("description", response.json())
+
+    def test_bom_create_rejects_oversized_fields(self):
+        payload = self._bom_payload()
+        payload["code"] = "C" * 51
+        payload["name"] = "N" * 151
+        payload["description"] = "D" * 501
+        payload["materials"][0]["note"] = "M" * 201
+
+        response = self.client.post(reverse("manufacturing:manufacturing-boms"), payload, format="json")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("code", response.json())
+        self.assertIn("name", response.json())
+        self.assertIn("description", response.json())
+
     def test_settings_patch_requires_update_permission(self):
         read_resp = self.client.get(
             reverse("manufacturing:manufacturing-settings"),
@@ -350,6 +378,22 @@ class ManufacturingPhaseOneTests(APITestCase):
         )
         self.assertEqual(patch_resp.status_code, 200)
         self.assertEqual(patch_resp.json()["settings"]["default_doc_code_work_order"], "NEWMWO")
+
+    def test_settings_patch_rejects_oversized_doc_code(self):
+        self._grant_permission("manufacturing.settings.update")
+        patch_resp = self.client.patch(
+            reverse("manufacturing:manufacturing-settings"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "settings": {"default_doc_code_work_order": "W" * 11},
+            },
+            format="json",
+        )
+
+        self.assertEqual(patch_resp.status_code, 400)
+        self.assertIn("default_doc_code_work_order", patch_resp.json())
 
     def test_work_order_create_post_unpost_cancel_flow(self):
         route = self.client.post(reverse("manufacturing:manufacturing-routes"), self._route_payload(), format="json").json()
@@ -459,6 +503,30 @@ class ManufacturingPhaseOneTests(APITestCase):
         self.assertEqual(cancelled["cancelled_by_name"], self.user.username)
         self.assertEqual(cancelled["cancel_reason"], "Superseded by fresh batch")
         self.assertIsNotNone(cancelled["cancelled_at"])
+
+    def test_work_order_create_rejects_oversized_fields(self):
+        bom = self.client.post(reverse("manufacturing:manufacturing-boms"), self._bom_payload(), format="json").json()
+        payload = self._work_order_payload(bom["id"])
+        payload["reference_no"] = "R" * 101
+        payload["narration"] = "N" * 501
+        payload["materials"] = [
+            {
+                "material_product": self.bulk_sugar.id,
+                "required_qty": "10.0000",
+                "actual_qty": "10.0000",
+                "batch_number": "B" * 81,
+                "note": "M" * 201,
+            }
+        ]
+        payload["outputs"][0]["batch_number"] = "O" * 81
+        payload["outputs"][0]["note"] = "P" * 201
+        payload["additional_costs"] = [{"cost_type": "OTHER", "amount": "25.0000", "note": "A" * 201}]
+
+        response = self.client.post(reverse("manufacturing:manufacturing-work-orders"), payload, format="json")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("reference_no", response.json())
+        self.assertIn("narration", response.json())
 
     def test_unpost_and_cancel_require_reason(self):
         route = self.client.post(reverse("manufacturing:manufacturing-routes"), self._route_payload(), format="json").json()

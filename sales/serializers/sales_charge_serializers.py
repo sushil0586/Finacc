@@ -11,9 +11,11 @@ ZERO2 = Decimal("0.00")
 
 
 class SalesChargeLineSerializer(serializers.ModelSerializer):
-    charge_type = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    charge_type = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=20)
     charge_type_id = serializers.IntegerField(required=False, allow_null=True, write_only=True)
     taxability = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    description = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=200)
+    hsn_sac_code = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=20)
     charge_type_name = serializers.CharField(source="get_charge_type_display", read_only=True)
     taxability_name = serializers.CharField(source="get_taxability_display", read_only=True)
 
@@ -93,6 +95,10 @@ class SalesChargeLineSerializer(serializers.ModelSerializer):
 
 
 class SalesChargeTypeSerializer(serializers.ModelSerializer):
+    code = serializers.CharField(max_length=30)
+    name = serializers.CharField(max_length=80)
+    hsn_sac_code_default = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=20)
+    description = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=200)
     base_category_name = serializers.CharField(source="get_base_category_display", read_only=True)
 
     class Meta:

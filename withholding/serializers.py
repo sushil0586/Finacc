@@ -351,7 +351,7 @@ class PartyTaxProfileSerializer(serializers.ModelSerializer):
 
 
 class EntityPartyTaxProfileSerializer(serializers.ModelSerializer):
-    pan = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    pan = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=16)
     is_pan_available = serializers.BooleanField(required=False)
 
     class Meta:
@@ -682,15 +682,15 @@ class TcsComputeRequestSerializer(serializers.Serializer):
     party_account_id = serializers.IntegerField(required=False, allow_null=True)
     tax_type = serializers.ChoiceField(choices=WithholdingTaxType.choices, default=WithholdingTaxType.TCS)
     section_id = serializers.IntegerField(required=False, allow_null=True)
-    document_type = serializers.CharField(required=False, allow_blank=True, default="invoice")
+    document_type = serializers.CharField(required=False, allow_blank=True, default="invoice", max_length=30)
     document_id = serializers.IntegerField(required=False, allow_null=True)
-    document_no = serializers.CharField(required=False, allow_blank=True, default="")
-    module_name = serializers.CharField(required=False, allow_blank=True, default="sales")
+    document_no = serializers.CharField(required=False, allow_blank=True, default="", max_length=60)
+    module_name = serializers.CharField(required=False, allow_blank=True, default="sales", max_length=30)
     doc_date = serializers.DateField()
     taxable_total = serializers.DecimalField(max_digits=18, decimal_places=2, required=False, default=Decimal("0.00"))
     gross_total = serializers.DecimalField(max_digits=18, decimal_places=2, required=False, default=Decimal("0.00"))
-    trigger_basis = serializers.CharField(required=False, allow_blank=True, default="INVOICE")
-    override_reason = serializers.CharField(required=False, allow_blank=True, default="")
+    trigger_basis = serializers.CharField(required=False, allow_blank=True, default="INVOICE", max_length=20)
+    override_reason = serializers.CharField(required=False, allow_blank=True, default="", max_length=255)
 
 
 class TcsComputeConfirmSerializer(TcsComputeRequestSerializer):
@@ -868,6 +868,11 @@ class TcsDepositAllocationSerializer(serializers.ModelSerializer):
         model = TcsDepositAllocation
         fields = ["id", "deposit", "collection", "allocated_amount", "created_at"]
         read_only_fields = ["created_at"]
+
+
+class TcsDepositAllocationRequestSerializer(serializers.Serializer):
+    collection_id = serializers.IntegerField()
+    allocated_amount = serializers.DecimalField(max_digits=18, decimal_places=2)
 
 
 class TcsQuarterlyReturnSerializer(serializers.ModelSerializer):
@@ -1052,9 +1057,9 @@ class GstTcsComputeRequestSerializer(serializers.Serializer):
     eco_profile_id = serializers.IntegerField()
     supplier_account_id = serializers.IntegerField()
     doc_date = serializers.DateField()
-    document_type = serializers.CharField(required=False, allow_blank=True, default="invoice")
+    document_type = serializers.CharField(required=False, allow_blank=True, default="invoice", max_length=20)
     document_id = serializers.IntegerField(required=False, allow_null=True)
-    document_no = serializers.CharField(required=False, allow_blank=True, default="")
+    document_no = serializers.CharField(required=False, allow_blank=True, default="", max_length=60)
     taxable_value = serializers.DecimalField(max_digits=18, decimal_places=2, min_value=ZERO2)
     gst_tcs_rate = serializers.DecimalField(max_digits=7, decimal_places=4, required=False, allow_null=True)
     status = serializers.ChoiceField(choices=GstTcsComputation.Status.choices, required=False, default=GstTcsComputation.Status.DRAFT)

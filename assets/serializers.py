@@ -42,12 +42,18 @@ class AssetScopeValidationMixin:
 
 
 class AssetSettingsSerializer(serializers.ModelSerializer):
+    default_doc_code_asset = serializers.CharField(max_length=10, required=False)
+    default_doc_code_disposal = serializers.CharField(max_length=10, required=False)
+
     class Meta:
         model = AssetSettings
         exclude = ("created_at", "updated_at", "created_by", "updated_by", "is_active")
 
 
 class AssetCategorySerializer(AssetScopeValidationMixin, serializers.ModelSerializer):
+    code = serializers.CharField(max_length=30)
+    name = serializers.CharField(max_length=255)
+
     class Meta:
         model = AssetCategory
         exclude = ("created_at", "updated_at", "created_by", "updated_by", "is_active")
@@ -158,7 +164,18 @@ class FixedAssetListSerializer(serializers.ModelSerializer):
 
 
 class FixedAssetWriteSerializer(AssetScopeValidationMixin, serializers.ModelSerializer):
-    asset_code = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    asset_code = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=50)
+    asset_name = serializers.CharField(max_length=255)
+    asset_tag = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=100)
+    serial_number = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=100)
+    manufacturer = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
+    model_number = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=100)
+    location_name = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
+    department_name = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
+    custodian_name = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
+    purchase_document_no = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=100)
+    external_reference = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=100)
+    notes = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=500)
     MANUALLY_SETTABLE_STATUSES = {
         FixedAsset.AssetStatus.DRAFT,
         FixedAsset.AssetStatus.CAPITAL_WIP,
@@ -272,36 +289,36 @@ class FixedAssetWriteSerializer(AssetScopeValidationMixin, serializers.ModelSeri
 class AssetCapitalizeSerializer(serializers.Serializer):
     counter_ledger_id = serializers.IntegerField()
     capitalization_date = serializers.DateField()
-    narration = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    location_name = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    department_name = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    custodian_name = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    notes = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    narration = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=500)
+    location_name = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
+    department_name = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
+    custodian_name = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
+    notes = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=500)
 
 
 class AssetImpairSerializer(serializers.Serializer):
     impairment_amount = serializers.DecimalField(max_digits=14, decimal_places=2)
     posting_date = serializers.DateField()
-    narration = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    narration = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=500)
 
 
 class AssetTransferSerializer(serializers.Serializer):
     subentity_id = serializers.IntegerField(required=False, allow_null=True)
-    location_name = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    department_name = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    custodian_name = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    notes = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    location_name = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
+    department_name = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
+    custodian_name = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
+    notes = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=500)
 
 
 class AssetDisposalSerializer(serializers.Serializer):
     proceeds_ledger_id = serializers.IntegerField()
     disposal_date = serializers.DateField()
     sale_proceeds = serializers.DecimalField(max_digits=14, decimal_places=2)
-    narration = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    narration = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=500)
 
 
 class AssetReverseLifecycleSerializer(serializers.Serializer):
-    reason = serializers.CharField()
+    reason = serializers.CharField(max_length=500)
 
 
 class DepreciationRunLineSerializer(serializers.ModelSerializer):

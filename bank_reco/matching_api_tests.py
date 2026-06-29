@@ -770,6 +770,37 @@ class BankRecoMatchingAPITests(APITestCase):
             )
             self.assertEqual(response.status_code, 201, response.json())
 
+    def test_create_voucher_from_bank_line_rejects_oversized_fields(self):
+        statement_import, run = self._create_import_and_run(
+            ["2026-04-26,Bank charges oversized,BC001,,50.00,0,950"],
+            closing="950.00",
+        )
+        line = statement_import.lines.first()
+        response = self.client.post(
+            reverse("bank_reco_api:bank-reco-create-voucher-from-bank-line"),
+            {
+                "run_id": run.id,
+                "bank_line_id": line.id,
+                "voucher_kind": "bank_charges",
+                "counterpart_account_id": self.bank_charges_account.id,
+                "reference_number": "R" * 101,
+                "instrument_no": "I" * 51,
+                "allocations": [
+                    {
+                        "counterpart_account_id": self.bank_charges_account.id,
+                        "amount": "50.00",
+                        "narration": "N" * 256,
+                    }
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        payload = response.json()
+        self.assertIn("reference_number", payload)
+        self.assertIn("instrument_no", payload)
+        self.assertIn("allocations", payload)
+
     def test_duplicate_voucher_creation_prevention(self):
         statement_import, run = self._create_import_and_run(["2026-04-26,Bank charges duplicate,BC002,,50.00,0,950"], closing="950.00")
         line = statement_import.lines.first()

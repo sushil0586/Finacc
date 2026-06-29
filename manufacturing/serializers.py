@@ -24,7 +24,7 @@ class ManufacturingRouteStepWriteSerializer(serializers.Serializer):
     sequence_no = serializers.IntegerField(required=False, min_value=1)
     step_code = serializers.CharField(max_length=40, required=False, allow_blank=True, allow_null=True)
     step_name = serializers.CharField(max_length=150)
-    description = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    description = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=300)
     default_duration_mins = serializers.IntegerField(required=False, allow_null=True, min_value=0)
     requires_qc = serializers.BooleanField(required=False, default=False)
     is_mandatory = serializers.BooleanField(required=False, default=True)
@@ -35,7 +35,7 @@ class ManufacturingRouteWriteSerializer(serializers.Serializer):
     subentity = serializers.IntegerField(required=False, allow_null=True)
     code = serializers.CharField(max_length=50)
     name = serializers.CharField(max_length=150)
-    description = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    description = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=500)
     is_active = serializers.BooleanField(required=False, default=True)
     steps = ManufacturingRouteStepWriteSerializer(many=True)
 
@@ -107,7 +107,7 @@ class ManufacturingBOMMaterialWriteSerializer(serializers.Serializer):
     material_product = serializers.IntegerField()
     qty = serializers.DecimalField(max_digits=18, decimal_places=4)
     waste_percent = serializers.DecimalField(max_digits=7, decimal_places=4, required=False, allow_null=True)
-    note = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    note = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=200)
 
     def validate_qty(self, value):
         if value <= 0:
@@ -120,7 +120,7 @@ class ManufacturingBOMWriteSerializer(serializers.Serializer):
     subentity = serializers.IntegerField(required=False, allow_null=True)
     code = serializers.CharField(max_length=50)
     name = serializers.CharField(max_length=150)
-    description = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    description = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=500)
     finished_product = serializers.IntegerField()
     route = serializers.IntegerField(required=False, allow_null=True)
     output_qty = serializers.DecimalField(max_digits=18, decimal_places=4)
@@ -221,11 +221,11 @@ class ManufacturingWorkOrderMaterialWriteSerializer(serializers.Serializer):
     required_qty = serializers.DecimalField(max_digits=18, decimal_places=4, required=False, allow_null=True)
     actual_qty = serializers.DecimalField(max_digits=18, decimal_places=4, required=False, allow_null=True)
     unit_cost = serializers.DecimalField(max_digits=14, decimal_places=4, required=False, allow_null=True)
-    batch_number = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    batch_number = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=80)
     manufacture_date = serializers.DateField(required=False, allow_null=True)
     expiry_date = serializers.DateField(required=False, allow_null=True)
     waste_qty = serializers.DecimalField(max_digits=18, decimal_places=4, required=False, allow_null=True)
-    note = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    note = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=200)
 
 
 class ManufacturingWorkOrderOutputWriteSerializer(serializers.Serializer):
@@ -238,10 +238,10 @@ class ManufacturingWorkOrderOutputWriteSerializer(serializers.Serializer):
     planned_qty = serializers.DecimalField(max_digits=18, decimal_places=4, required=False, allow_null=True)
     actual_qty = serializers.DecimalField(max_digits=18, decimal_places=4, required=False, allow_null=True)
     estimated_recovery_unit_value = serializers.DecimalField(max_digits=14, decimal_places=4, required=False, allow_null=True)
-    batch_number = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    batch_number = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=80)
     manufacture_date = serializers.DateField(required=False, allow_null=True)
     expiry_date = serializers.DateField(required=False, allow_null=True)
-    note = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    note = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=200)
 
 
 class ManufacturingWorkOrderAdditionalCostWriteSerializer(serializers.Serializer):
@@ -251,7 +251,7 @@ class ManufacturingWorkOrderAdditionalCostWriteSerializer(serializers.Serializer
         default=ManufacturingWorkOrderAdditionalCost.CostType.OTHER,
     )
     amount = serializers.DecimalField(max_digits=18, decimal_places=4)
-    note = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    note = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=200)
 
 
 class ManufacturingWorkOrderWriteSerializer(serializers.Serializer):
@@ -262,8 +262,8 @@ class ManufacturingWorkOrderWriteSerializer(serializers.Serializer):
     bom = serializers.IntegerField(required=False, allow_null=True)
     source_location = serializers.IntegerField(required=False, allow_null=True)
     destination_location = serializers.IntegerField(required=False, allow_null=True)
-    reference_no = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    narration = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    reference_no = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=100)
+    narration = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=500)
     planned_output_qty = serializers.DecimalField(max_digits=18, decimal_places=4, required=False, allow_null=True)
     materials = ManufacturingWorkOrderMaterialWriteSerializer(many=True, required=False)
     outputs = ManufacturingWorkOrderOutputWriteSerializer(many=True, required=False)
@@ -314,7 +314,7 @@ class ManufacturingOperationActionSerializer(serializers.Serializer):
     input_qty = serializers.DecimalField(max_digits=18, decimal_places=4, required=False, allow_null=True)
     output_qty = serializers.DecimalField(max_digits=18, decimal_places=4, required=False, allow_null=True)
     scrap_qty = serializers.DecimalField(max_digits=18, decimal_places=4, required=False, allow_null=True)
-    remarks = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    remarks = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=300)
 
     def validate(self, attrs):
         for key in ("input_qty", "output_qty", "scrap_qty"):

@@ -21,6 +21,8 @@ from catalog.models import Product, ProductCategory, ProductPurchaseBehavior, Un
 from financial.models import Ledger, account
 from purchase.models.purchase_core import PurchaseInvoiceHeader, PurchaseInvoiceLine
 from purchase.serializers.purchase_invoice import PurchaseInvoiceHeaderSerializer, PurchaseInvoiceLineSerializer
+from purchase.serializers.purchase_ap import VendorSettlementCreateInputSerializer
+from purchase.serializers.purchase_charge import PurchaseChargeLineSerializer, PurchaseChargeTypeSerializer
 from purchase.serializers.purchase_statutory import (
     PurchaseStatutoryChallanCreateInputSerializer,
     PurchaseStatutoryReturnCreateInputSerializer,
@@ -32,6 +34,7 @@ from purchase.services.purchase_invoice_service import PurchaseInvoiceService
 from purchase.services.purchase_settings_service import PurchaseSettingsService
 from purchase.services.purchase_statutory_service import PurchaseStatutoryService
 from purchase.views.purchase_invoice import PurchaseInvoiceListCreateAPIView
+from purchase.views.purchase_ap import VendorSettlementListCreateAPIView
 from purchase.views.purchase_invoice_compliance import PurchaseInvoiceComplianceStatusAPIView
 from purchase.views.purchase_meta import PurchaseInvoiceDetailFormMetaAPIView
 from posting.adapters.purchase_invoice import (
@@ -118,6 +121,28 @@ class PurchaseTdsApplyTests(SimpleTestCase):
 
 
 class PurchaseDetailMetaContractTests(TestCase):
+    def _make_header(self, **overrides):
+        defaults = {
+            "withholding_enabled": True,
+            "tds_is_manual": False,
+            "tds_section_id": None,
+            "tds_section": None,
+            "tds_rate": Decimal("0.0000"),
+            "tds_base_amount": Decimal("0.00"),
+            "tds_amount": Decimal("0.00"),
+            "tds_reason": None,
+            "entity_id": 1,
+            "entityfinid_id": 1,
+            "subentity_id": None,
+            "vendor_id": 1,
+            "bill_date": None,
+            "total_taxable": Decimal("1000.00"),
+            "grand_total": Decimal("1180.00"),
+            "match_notes": {},
+        }
+        defaults.update(overrides)
+        return SimpleNamespace(**defaults)
+
     def setUp(self):
         self.factory = APIRequestFactory()
         self.user = get_user_model().objects.create_user(
@@ -1368,13 +1393,29 @@ class PurchaseSpecialTaxTreatmentPolicyTests(SimpleTestCase):
             PurchaseInvoiceService.apply_special_tax_treatment_defaults(attrs)
 
 
-class PurchaseLineTaxabilityValidationTests(SimpleTestCase):
+class PurchaseLineTaxabilityValidationTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            username="purchase_line_taxability_user",
+            email="purchase_line_taxability_user@example.com",
+            password="pass123",
+        )
+        self.entity = Entity.objects.create(entityname="Purchase Line Taxability Entity", createdby=self.user)
+        self.expense_account = account.objects.create(
+            accountname="Expense Account",
+            entity=self.entity,
+            createdby=self.user,
+        )
+
     def test_non_taxable_line_rejects_positive_gst_rate(self):
         serializer = PurchaseInvoiceLineSerializer(
             data={
                 "taxability": int(PurchaseInvoiceHeader.Taxability.EXEMPT),
                 "is_itc_eligible": False,
                 "gst_rate": "18.00",
+                "qty": "1.00",
+                "purchase_account": self.expense_account.id,
+                "product_desc": "Service line",
             },
             partial=True,
         )
@@ -1388,6 +1429,9 @@ class PurchaseLineTaxabilityValidationTests(SimpleTestCase):
                 "taxability": int(PurchaseInvoiceHeader.Taxability.NON_GST),
                 "is_itc_eligible": False,
                 "igst_amount": "10.00",
+                "qty": "1.00",
+                "purchase_account": self.expense_account.id,
+                "product_desc": "Service line",
             },
             partial=True,
         )
@@ -5390,6 +5434,166 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
         )
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
+        self.entity = Entity.objects.create(entityname="Purchase Oversized Entity", createdby=self.user)
+        self.entityfin = EntityFinancialYear.objects.create(
+            entity=self.entity,
+            desc="FY 2026-27",
+            year_code="2026-27",
+            finstartyear=timezone.make_aware(datetime(2026, 4, 1, 0, 0, 0)),
+            finendyear=timezone.make_aware(datetime(2027, 3, 31, 0, 0, 0)),
+            isactive=True,
+            createdby=self.user,
+        )
+        self.vendor = account.objects.create(
+            entity=self.entity,
+            accountname="Oversized Vendor",
+            createdby=self.user,
+        )
+        self.purchase_account = account.objects.create(
+            entity=self.entity,
+            accountname="Oversized Expense Account",
+            createdby=self.user,
+        )
+
+    def test_purchase_invoice_serializer_rejects_oversized_header_and_line_fields(self):
+        serializer = PurchaseInvoiceHeaderSerializer(
+            data={
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "doc_type": PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+                "bill_date": "2026-04-01",
+                "vendor": self.vendor.id,
+                "credit_days": int("9" * 10),
+                "doc_code": "D" * 11,
+                "purchase_number": "P" * 51,
+                "supplier_invoice_number": "S" * 51,
+                "po_reference_no": "R" * 51,
+                "grn_reference_no": "G" * 51,
+                "vendor_name": "V" * 201,
+                "vendor_gstin": "1" * 16,
+                "currency_code": "INRX",
+                "base_currency_code": "INRX",
+                "itc_claim_period": "2026-040",
+                "itc_block_reason": "I" * 201,
+                "cancel_reason": "C" * 256,
+                "tds_reason": "T" * 256,
+                "vendor_tds_notes": "N" * 256,
+                "gst_tds_contract_ref": "R" * 65,
+                "gst_tds_reason": "G" * 256,
+                "vendor_gst_tds_notes": "V" * 256,
+                "legacy_source_system": "L" * 101,
+                "legacy_source_key": "K" * 256,
+                "legacy_import_mode": "M" * 31,
+                "lines": [
+                    {
+                        "line_no": 1,
+                        "purchase_account": self.purchase_account.id,
+                        "product_desc": "D" * 501,
+                        "is_service": True,
+                        "hsn_sac": "H" * 11,
+                        "batch_number": "B" * 81,
+                        "qty": "1.0000",
+                        "rate": "1.00",
+                        "taxability": PurchaseInvoiceHeader.Taxability.TAXABLE,
+                        "itc_block_reason": "I" * 201,
+                    }
+                ],
+            }
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("credit_days", serializer.errors)
+        self.assertIn("doc_code", serializer.errors)
+        self.assertIn("purchase_number", serializer.errors)
+        self.assertIn("supplier_invoice_number", serializer.errors)
+        self.assertIn("po_reference_no", serializer.errors)
+        self.assertIn("grn_reference_no", serializer.errors)
+        self.assertIn("vendor_name", serializer.errors)
+        self.assertIn("vendor_gstin", serializer.errors)
+        self.assertIn("currency_code", serializer.errors)
+        self.assertIn("base_currency_code", serializer.errors)
+        self.assertIn("itc_claim_period", serializer.errors)
+        self.assertIn("itc_block_reason", serializer.errors)
+        self.assertIn("cancel_reason", serializer.errors)
+        self.assertIn("tds_reason", serializer.errors)
+        self.assertIn("vendor_tds_notes", serializer.errors)
+        self.assertIn("gst_tds_contract_ref", serializer.errors)
+        self.assertIn("gst_tds_reason", serializer.errors)
+        self.assertIn("vendor_gst_tds_notes", serializer.errors)
+        self.assertIn("legacy_source_system", serializer.errors)
+        self.assertIn("legacy_source_key", serializer.errors)
+        self.assertIn("legacy_import_mode", serializer.errors)
+        self.assertIn("lines", serializer.errors)
+        self.assertIn("product_desc", serializer.errors["lines"][0])
+        self.assertIn("hsn_sac", serializer.errors["lines"][0])
+        self.assertIn("batch_number", serializer.errors["lines"][0])
+        self.assertIn("itc_block_reason", serializer.errors["lines"][0])
+
+    def test_purchase_charge_type_serializer_rejects_oversized_fields(self):
+        serializer = PurchaseChargeTypeSerializer(
+            data={
+                "entity": self.entity.id,
+                "code": "C" * 31,
+                "name": "N" * 81,
+                "base_category": "OTHER",
+                "is_active": True,
+                "is_service": True,
+                "hsn_sac_code_default": "H" * 17,
+                "gst_rate_default": "18.00",
+                "itc_eligible_default": True,
+                "description": "D" * 201,
+            }
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("code", serializer.errors)
+        self.assertIn("name", serializer.errors)
+        self.assertIn("hsn_sac_code_default", serializer.errors)
+        self.assertIn("description", serializer.errors)
+
+    def test_purchase_charge_line_serializer_rejects_oversized_charge_type(self):
+        serializer = PurchaseChargeLineSerializer(
+            data={
+                "line_no": 1,
+                "charge_type": "C" * 21,
+                "description": "Freight",
+                "is_service": True,
+                "hsn_sac_code": "",
+                "taxable_value": "100.00",
+                "gst_rate": "0.00",
+            }
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("charge_type", serializer.errors)
+
+    def test_vendor_settlement_create_input_rejects_oversized_fields(self):
+        serializer = VendorSettlementCreateInputSerializer(
+            data={
+                "entity": 1,
+                "entityfinid": 1,
+                "vendor": 1,
+                "settlement_type": "payment",
+                "settlement_date": "2026-04-01",
+                "reference_no": "R" * 51,
+                "external_voucher_no": "E" * 51,
+                "remarks": "M" * 256,
+                "lines": [
+                    {
+                        "open_item_id": 1,
+                        "amount": "10.00",
+                        "note": "N" * 256,
+                    }
+                ],
+            }
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("reference_no", serializer.errors)
+        self.assertIn("external_voucher_no", serializer.errors)
+        self.assertIn("remarks", serializer.errors)
+        self.assertIn("lines", serializer.errors)
+        self.assertIn("note", serializer.errors["lines"][0])
 
     @patch("purchase.views.purchase_ap.PurchaseApService.cancel_settlement")
     def test_ap_settlement_cancel_endpoint_returns_200(self, mock_cancel):
@@ -5407,8 +5611,8 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
                 external_voucher_no=None,
                 remarks=None,
                 total_amount=Decimal("0.00"),
-                status=9,
-                posted_at=None,
+            status=9,
+            posted_at=None,
                 posted_by_id=None,
                 lines=[],
                 created_at=None,
@@ -7746,3 +7950,43 @@ class PurchaseApiPermissionTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
         mock_cancel.assert_not_called()
+
+
+class VendorSettlementValidationViewTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.user = SimpleNamespace(id=11, is_authenticated=True)
+
+    @patch("purchase.views.purchase_ap.PurchaseApService.create_settlement")
+    def test_create_view_rejects_oversized_settlement_fields_before_service(self, mock_create_settlement):
+        request = self.factory.post(
+            "/api/purchase/ap/settlements/",
+            {
+                "entity": 10,
+                "entityfinid": 20,
+                "vendor": 30,
+                "settlement_type": "payment",
+                "settlement_date": "2026-04-01",
+                "reference_no": "R" * 51,
+                "external_voucher_no": "E" * 51,
+                "remarks": "M" * 256,
+                "lines": [
+                    {
+                        "open_item_id": 1,
+                        "amount": "10.00",
+                        "note": "N" * 256,
+                    }
+                ],
+            },
+            format="json",
+        )
+        force_authenticate(request, user=self.user)
+
+        response = VendorSettlementListCreateAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("reference_no", response.data)
+        self.assertIn("external_voucher_no", response.data)
+        self.assertIn("remarks", response.data)
+        self.assertIn("lines", response.data)
+        mock_create_settlement.assert_not_called()

@@ -271,3 +271,138 @@ class HrmsApiTests(APITestCase):
         snapshot = ContractLeaveBalanceSnapshot.objects.get(contract=self.contract, leave_type=self.leave_type)
         self.assertEqual(str(snapshot.closing_balance), "1.50")
         self.assertEqual(snapshot.snapshot_source, ContractLeaveBalanceSnapshot.SnapshotSource.ACCRUAL)
+
+    def test_create_organization_unit_rejects_oversized_fields(self):
+        response = self.client.post(
+            "/api/hrms/organization-units/",
+            {
+                "entity": self.entity.id,
+                "code": "C" * 41,
+                "name": "N" * 151,
+                "short_name": "S" * 81,
+                "unit_type": HrOrganizationUnit.UnitType.DEPARTMENT,
+                "description": "D" * 256,
+                "external_ref": "E" * 81,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("code", response.data)
+        self.assertIn("name", response.data)
+        self.assertIn("short_name", response.data)
+        self.assertIn("description", response.data)
+        self.assertIn("external_ref", response.data)
+
+    def test_create_employee_rejects_oversized_fields(self):
+        response = self.client.post(
+            "/api/hrms/employees/",
+            {
+                "entity": self.entity.id,
+                "employee_number": "E" * 41,
+                "legal_first_name": "F" * 81,
+                "legal_last_name": "L" * 81,
+                "preferred_name": "P" * 81,
+                "display_name": "D" * 181,
+                "work_email": ("a" * 245) + "@example.com",
+                "personal_email": ("b" * 245) + "@example.com",
+                "mobile_number": "9" * 21,
+                "external_ref": "R" * 81,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("employee_number", response.data)
+        self.assertIn("legal_first_name", response.data)
+        self.assertIn("legal_last_name", response.data)
+        self.assertIn("preferred_name", response.data)
+        self.assertIn("display_name", response.data)
+        self.assertIn("work_email", response.data)
+        self.assertIn("personal_email", response.data)
+        self.assertIn("mobile_number", response.data)
+        self.assertIn("external_ref", response.data)
+
+    def test_create_contract_rejects_oversized_fields(self):
+        response = self.client.post(
+            "/api/hrms/contracts/",
+            {
+                "entity": self.entity.id,
+                "employee": self.employee.id,
+                "contract_code": "C" * 41,
+                "start_date": "2026-04-01",
+                "payroll_effective_from": "2026-04-01",
+                "notice_period_days": 366,
+                "pay_group_code": "P" * 41,
+                "vendor_reference": "V" * 81,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("contract_code", response.data)
+        self.assertIn("notice_period_days", response.data)
+        self.assertIn("pay_group_code", response.data)
+        self.assertIn("vendor_reference", response.data)
+
+    def test_create_shift_rejects_oversized_fields(self):
+        response = self.client.post(
+            "/api/hrms/shifts/",
+            {
+                "entity": self.entity.id,
+                "code": "S" * 41,
+                "name": "N" * 121,
+                "shift_type": "open",
+                "timezone": "T" * 51,
+                "break_minutes": 1441,
+                "grace_in_minutes": 241,
+                "grace_out_minutes": 241,
+                "minimum_full_day_minutes": 1441,
+                "description": "D" * 256,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("code", response.data)
+        self.assertIn("name", response.data)
+        self.assertIn("timezone", response.data)
+        self.assertIn("break_minutes", response.data)
+        self.assertIn("grace_in_minutes", response.data)
+        self.assertIn("grace_out_minutes", response.data)
+        self.assertIn("minimum_full_day_minutes", response.data)
+        self.assertIn("description", response.data)
+
+    def test_create_holiday_calendar_rejects_oversized_fields(self):
+        response = self.client.post(
+            "/api/hrms/holiday-calendars/",
+            {
+                "entity": self.entity.id,
+                "code": "H" * 41,
+                "name": "N" * 151,
+                "calendar_year": 2101,
+                "description": "D" * 256,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("code", response.data)
+        self.assertIn("name", response.data)
+        self.assertIn("calendar_year", response.data)
+        self.assertIn("description", response.data)
+
+    def test_create_holiday_rejects_oversized_fields(self):
+        response = self.client.post(
+            f"/api/hrms/holiday-calendars/{self.holiday_calendar.id}/holidays/",
+            {
+                "holiday_date": "2026-11-01",
+                "name": "N" * 151,
+                "description": "D" * 256,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("name", response.data)
+        self.assertIn("description", response.data)

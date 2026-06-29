@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.utils import timezone
+from rest_framework.exceptions import ValidationError as DRFValidationError
 
 from Authentication.models import User
 from entity.approval_workflow_service import ApprovalWorkflowService
@@ -15,6 +17,10 @@ ZERO2 = Decimal("0.00")
 
 
 class LeaveApprovalService:
+    @staticmethod
+    def _raise_drf_validation(err: DjangoValidationError):
+        raise DRFValidationError(getattr(err, "message_dict", {"detail": err.messages}))
+
     @staticmethod
     def _notification_users_for_application(application: LeaveApplication, *extra_user_ids: int | None):
         user_ids: set[int] = set()
@@ -60,7 +66,10 @@ class LeaveApprovalService:
             **(application.application_trace_json or {}),
             "approval_trace": impact,
         }
-        application.save()
+        try:
+            application.save()
+        except DjangoValidationError as err:
+            cls._raise_drf_validation(err)
         NotificationService.emit(
             instance=application,
             workflow_key="leave_application",
@@ -88,7 +97,10 @@ class LeaveApprovalService:
         application.rejected_by = approver
         application.rejected_at = timezone.now()
         application.manager_note = manager_note or application.manager_note
-        application.save()
+        try:
+            application.save()
+        except DjangoValidationError as err:
+            cls._raise_drf_validation(err)
         NotificationService.emit(
             instance=application,
             workflow_key="leave_application",

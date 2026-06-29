@@ -50,16 +50,6 @@ class EntityContextV2Tests(TestCase):
             entitydesc="Demo",
             legalname="Demo Entity Pvt Ltd",
             GstRegitrationType=self.gst_type,
-            address="Address",
-            ownername="Owner",
-            country=self.country,
-            state=self.state,
-            district=self.district,
-            city=self.city,
-            bank=self.bank,
-            phoneoffice="1234567890",
-            phoneresidence="1234567890",
-            const=self.constitution,
             createdby=self.user,
         )
         self.rbac_role = RbacRole.objects.create(
@@ -84,6 +74,7 @@ class EntityContextV2Tests(TestCase):
 
 
 class EntityGstinValidationTests(TestCase):
+    @override_settings(MASTERGST_ENV="PRODUCTION", SALES_MASTERGST_ENV="PRODUCTION", ALLOW_RELAXED_GSTIN_FOR_SANDBOX=False)
     def test_strict_gstin_validator_rejects_sandbox_suffix_in_normal_mode(self):
         with self.assertRaises(ValidationError):
             gstin_validator("29AAGCB1286Q000")
@@ -124,6 +115,14 @@ class EntityGstinValidationTests(TestCase):
                         "state": punjab.id,
                         "district": district.id,
                         "city": city.id,
+                    }
+                ],
+                "financial_years": [
+                    {
+                        "finstartyear": "2026-04-01T00:00:00Z",
+                        "finendyear": "2027-03-31T00:00:00Z",
+                        "desc": "FY 2026-27",
+                        "isactive": True,
                     }
                 ],
             }
@@ -337,6 +336,99 @@ class EntityOnboardingTests(TestCase):
         self.assertEqual(ownership.agreement_reference, "Deed-001")
         self.assertTrue(ownership.is_primary)
 
+    def test_onboarding_rejects_oversized_nested_fields(self):
+        payload = {
+            "entity": {
+                "entityname": "E" * 101,
+                "legalname": "L" * 101,
+                "entity_code": "C" * 31,
+                "trade_name": "T" * 151,
+                "short_name": "S" * 51,
+                "phoneoffice": "9" * 21,
+                "phoneresidence": "9" * 21,
+                "address": "A" * 101,
+                "address2": "B" * 101,
+                "addressfloorno": "F" * 51,
+                "addressstreet": "S" * 101,
+                "country": self.country.id,
+                "state": self.state.id,
+                "district": self.district.id,
+                "city": self.city.id,
+                "pincode": "1" * 51,
+                "panno": "P" * 21,
+                "tds": "T" * 21,
+                "tdscircle": "C" * 21,
+                "tan_no": "T" * 21,
+                "cin_no": "C" * 22,
+                "llpin_no": "L" * 9,
+                "udyam_no": "U" * 31,
+                "iec_code": "I" * 11,
+                "gstno": "G" * 21,
+                "gstintype": "R" * 21,
+                "nature_of_business": "N" * 151,
+                "blockstatus": "B" * 11,
+            },
+            "financial_years": [
+                {
+                    "finstartyear": "2026-04-01T00:00:00Z",
+                    "finendyear": "2027-03-31T00:00:00Z",
+                    "desc": "FY 2026-27",
+                    "isactive": True,
+                }
+            ],
+            "subentities": [
+                {
+                    "subentityname": "S" * 256,
+                    "subentity_code": "C" * 31,
+                    "address": "A" * 256,
+                    "address2": "B" * 256,
+                    "addressfloorno": "F" * 51,
+                    "addressstreet": "S" * 101,
+                    "pincode": "1" * 256,
+                    "phoneoffice": "9" * 256,
+                    "phoneresidence": "9" * 256,
+                    "mobile_primary": "9" * 21,
+                    "mobile_secondary": "9" * 21,
+                    "contact_person_name": "P" * 101,
+                    "contact_person_designation": "D" * 101,
+                    "gstno": "G" * 21,
+                    "country": self.country.id,
+                    "state": self.state.id,
+                    "district": self.district.id,
+                    "city": self.city.id,
+                }
+            ],
+            "ownership_details": [
+                {
+                    "name": "N" * 101,
+                    "mobile": "9" * 21,
+                    "pan_number": "P" * 11,
+                    "agreement_reference": "A" * 256,
+                    "designation": "D" * 101,
+                    "remarks": "R" * 2000,
+                }
+            ],
+            "compliance_credentials": [
+                {
+                    "environment": int(MasterGSTEnvironment.SANDBOX),
+                    "service_scope": int(MasterGSTServiceScope.EINVOICE),
+                    "client_id": "C" * 129,
+                    "client_secret": "S" * 257,
+                    "email": "cred@example.com",
+                    "gst_username": "U" * 129,
+                    "gst_password": "P" * 257,
+                }
+            ],
+        }
+
+        response = self.client.post("/api/entity/onboarding/create/", payload, format="json")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("entity", response.data)
+        self.assertIn("subentities", response.data)
+        self.assertIn("ownership_details", response.data)
+        self.assertIn("compliance_credentials", response.data)
+
     def test_new_onboarding_derives_constitution_rows_from_ownership_rows(self):
         payload = {
             "entity": {
@@ -455,8 +547,11 @@ class EntityOnboardingTests(TestCase):
         credential = SalesMasterGSTCredential.objects.get(entity=entity)
         self.assertEqual(credential.gstin, "29AAGCB1286Q000")
 
+    @override_settings(MASTERGST_ENV="PRODUCTION", SALES_MASTERGST_ENV="PRODUCTION", ALLOW_RELAXED_GSTIN_FOR_SANDBOX=False)
     def test_new_onboarding_rejects_gst_state_code_mismatch(self):
         other_state = State.objects.create(statename="Haryana", statecode="06", country=self.country)
+        other_district = District.objects.create(districtname="Ambala", districtcode="AMB", state=other_state)
+        other_city = City.objects.create(cityname="Ambala", citycode="AMB", pincode="133001", distt=other_district)
         payload = {
             "entity": {
                 "entityname": "Mismatch GST Entity",
@@ -471,8 +566,8 @@ class EntityOnboardingTests(TestCase):
                 "address2": "Sirhind",
                 "country": self.country.id,
                 "state": other_state.id,
-                "district": self.district.id,
-                "city": self.city.id,
+                "district": other_district.id,
+                "city": other_city.id,
                 "pincode": "140406",
                 "const": self.constitution.id,
             },
@@ -632,76 +727,88 @@ class EntityOnboardingTests(TestCase):
         self.assertGreaterEqual(Constitution.objects.count(), first["constitution_count"])
 
     def test_onboarding_detail_returns_bootstrap_payload_for_edit(self):
-        entity = Entity.objects.create(
-            entityname="Existing Entity",
-            legalname="Existing Entity Pvt Ltd",
-            GstRegitrationType=self.gst_type,
-            gstno="03APXPB5894F1Z3",
-            panno="APXPB5894F",
-            phoneoffice="9855966534",
-            phoneresidence="9855966534",
-            email="existing@example.com",
-            address="Main Road",
-            country=self.country,
-            state=self.state,
-            district=self.district,
-            city=self.city,
-            pincode="140406",
-            const=self.constitution,
-            createdby=self.user,
+        create_result = EntityOnboardingService.create_entity(
+            actor=self.user,
+            payload={
+                "entity": {
+                    "entityname": "Existing Entity",
+                    "legalname": "Existing Entity Pvt Ltd",
+                    "GstRegitrationType": self.gst_type,
+                    "gstno": "03APXPB5894F1Z3",
+                    "panno": "APXPB5894F",
+                    "phoneoffice": "9855966534",
+                    "phoneresidence": "9855966534",
+                    "email": "existing@example.com",
+                    "address": "Main Road",
+                    "country": self.country,
+                    "state": self.state,
+                    "district": self.district,
+                    "city": self.city,
+                    "pincode": "140406",
+                    "const": self.constitution,
+                },
+                "financial_years": [
+                    {
+                        "finstartyear": "2026-04-01T00:00:00Z",
+                        "finendyear": "2027-03-31T00:00:00Z",
+                        "desc": "FY 2026-27",
+                        "isactive": True,
+                    }
+                ],
+                "bank_accounts": [
+                    {
+                        "bank_name": "HDFC Bank",
+                        "branch": "Sirhind",
+                        "account_number": "1234567890",
+                        "ifsc_code": "HDFC0001234",
+                        "account_type": "current",
+                        "is_primary": True,
+                    }
+                ],
+                "subentities": [
+                    {
+                        "subentityname": "Main Branch",
+                        "address": "Main Road",
+                        "country": self.country,
+                        "state": self.state,
+                        "district": self.district,
+                        "city": self.city,
+                        "pincode": "140406",
+                        "phoneoffice": "9855966534",
+                        "phoneresidence": "9855966534",
+                        "email": "branch@example.com",
+                        "is_head_office": True,
+                    }
+                ],
+                "constitution_details": [
+                    {
+                        "shareholder": "Owner",
+                        "pan": "APXPB5894F",
+                        "sharepercentage": "100.00",
+                        "account_preference": "capital",
+                        "agreement_reference": "Deed-002",
+                    }
+                ],
+                "ownership_details": [
+                    {
+                        "ownership_type": "proprietor",
+                        "name": "Owner",
+                        "pan_number": "APXPB5894F",
+                        "sharepercentage": "100.00",
+                        "capital_contribution": "100000.00",
+                        "account_preference": "capital",
+                        "agreement_reference": "Deed-002",
+                        "is_primary": True,
+                    }
+                ],
+            },
         )
-        fy = EntityFinancialYear.objects.create(
-            entity=entity,
-            createdby=self.user,
-            desc="FY 2026-27",
-            finstartyear="2026-04-01T00:00:00Z",
-            finendyear="2027-03-31T00:00:00Z",
-            isactive=True,
-        )
-        bank = BankAccount.objects.create(
-            entity=entity,
-            bank_name="HDFC Bank",
-            branch="Sirhind",
-            account_number="1234567890",
-            ifsc_code="HDFC0001234",
-            account_type="current",
-            is_primary=True,
-        )
-        subentity = SubEntity.objects.create(
-            entity=entity,
-            subentityname="Main Branch",
-            address="Main Road",
-            country=self.country,
-            state=self.state,
-            district=self.district,
-            city=self.city,
-            pincode="140406",
-            phoneoffice="9855966534",
-            phoneresidence="9855966534",
-            email="branch@example.com",
-            ismainentity=True,
-        )
-        constitution = EntityConstitutionV2.objects.create(
-            entity=entity,
-            createdby=self.user,
-            shareholder="Owner",
-            pan="APXPB5894F",
-            share_percentage="100.00",
-            account_preference="capital",
-            agreement_reference="Deed-002",
-        )
-        ownership = EntityOwnershipV2.objects.create(
-            entity=entity,
-            createdby=self.user,
-            ownership_type="proprietor",
-            name="Owner",
-            pan_number="APXPB5894F",
-            share_percentage="100.00",
-            capital_contribution="100000.00",
-            account_preference="capital",
-            agreement_reference="Deed-002",
-            is_primary=True,
-        )
+        entity = create_result["entity"]
+        fy = entity.fy.first()
+        bank = entity.bank_accounts_v2.first()
+        subentity = entity.subentity.first()
+        constitution = entity.constitutions_v2.first()
+        ownership = entity.ownerships_v2.first()
 
         response = self.client.get(f"/api/entity/onboarding/entity/{entity.id}/")
 
@@ -718,39 +825,47 @@ class EntityOnboardingTests(TestCase):
         self.assertEqual(response.data["ownership_details"][0]["agreement_reference"], "Deed-002")
 
     def test_onboarding_detail_can_update_nested_entity_payload(self):
-        entity = Entity.objects.create(
-            entityname="Existing Entity",
-            legalname="Existing Entity Pvt Ltd",
-            GstRegitrationType=self.gst_type,
-            phoneoffice="9855966534",
-            phoneresidence="9855966534",
-            email="existing@example.com",
-            address="Main Road",
-            country=self.country,
-            state=self.state,
-            district=self.district,
-            city=self.city,
-            pincode="140406",
-            const=self.constitution,
-            createdby=self.user,
+        create_result = EntityOnboardingService.create_entity(
+            actor=self.user,
+            payload={
+                "entity": {
+                    "entityname": "Existing Entity",
+                    "legalname": "Existing Entity Pvt Ltd",
+                    "GstRegitrationType": self.gst_type,
+                    "phoneoffice": "9855966534",
+                    "phoneresidence": "9855966534",
+                    "email": "existing@example.com",
+                    "address": "Main Road",
+                    "country": self.country,
+                    "state": self.state,
+                    "district": self.district,
+                    "city": self.city,
+                    "pincode": "140406",
+                    "const": self.constitution,
+                },
+                "financial_years": [
+                    {
+                        "finstartyear": "2026-04-01T00:00:00Z",
+                        "finendyear": "2027-03-31T00:00:00Z",
+                        "desc": "FY 2026-27",
+                        "isactive": True,
+                    }
+                ],
+                "bank_accounts": [
+                    {
+                        "bank_name": "HDFC Bank",
+                        "branch": "Sirhind",
+                        "account_number": "1234567890",
+                        "ifsc_code": "HDFC0001234",
+                        "account_type": "current",
+                        "is_primary": True,
+                    }
+                ],
+            },
         )
-        fy = EntityFinancialYear.objects.create(
-            entity=entity,
-            createdby=self.user,
-            desc="FY 2026-27",
-            finstartyear="2026-04-01T00:00:00Z",
-            finendyear="2027-03-31T00:00:00Z",
-            isactive=True,
-        )
-        bank = BankAccount.objects.create(
-            entity=entity,
-            bank_name="HDFC Bank",
-            branch="Sirhind",
-            account_number="1234567890",
-            ifsc_code="HDFC0001234",
-            account_type="current",
-            is_primary=True,
-        )
+        entity = create_result["entity"]
+        fy = entity.fy.first()
+        bank = entity.bank_accounts_v2.first()
 
         payload = {
             "entity": {
@@ -1052,7 +1167,7 @@ class RegisterAndEntityOnboardingTests(TestCase):
 
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.data["intent"], "trial")
-        self.assertEqual(response.data["subscription"]["subscription"]["status"], "trial")
+        self.assertEqual(response.data["subscription"]["subscription"]["status"], "trialing")
 
     def test_register_and_onboard_accepts_flat_public_payload_shape(self):
         payload = {

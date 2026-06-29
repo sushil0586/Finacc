@@ -13,7 +13,9 @@ from .serializers import (
     RetailCloseBatchDetailSerializer,
     RetailCloseBatchReadSerializer,
     RetailConfigReadSerializer,
+    RetailSessionCloseWriteSerializer,
     RetailSessionReadSerializer,
+    RetailSessionOpenWriteSerializer,
     RetailTicketReadSerializer,
     RetailTicketWriteSerializer,
 )
@@ -123,19 +125,16 @@ class RetailSessionOpenAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
-        entity_id = int(request.data.get("entity"))
-        entityfin_id = request.data.get("entityfinid")
-        subentity_id = request.data.get("subentity")
-        location_id = request.data.get("location")
-        session_date = request.data.get("session_date")
-        opening_note = request.data.get("opening_note", "")
+        serializer = RetailSessionOpenWriteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
         session = RetailSessionService.open_session(
-            entity_id=entity_id,
-            entityfin_id=entityfin_id,
-            subentity_id=subentity_id,
-            location_id=location_id,
-            session_date=session_date,
-            opening_note=opening_note,
+            entity_id=payload["entity"],
+            entityfin_id=payload.get("entityfinid"),
+            subentity_id=payload.get("subentity"),
+            location_id=payload.get("location"),
+            session_date=payload["session_date"],
+            opening_note=payload.get("opening_note", ""),
             user=request.user,
         )
         return Response(RetailSessionReadSerializer(session).data, status=201)
@@ -145,13 +144,15 @@ class RetailSessionCloseAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
+        serializer = RetailSessionCloseWriteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
         session = get_object_or_404(
             RetailSession.objects.select_related("location", "close_batch").prefetch_related("tickets"),
             pk=pk,
         )
         closed = RetailSessionService.close_session(
             session,
-            closing_note=request.data.get("closing_note", ""),
+            closing_note=serializer.validated_data.get("closing_note", ""),
             user=request.user,
         )
         closed = RetailSession.objects.select_related("location", "close_batch").prefetch_related("tickets").get(pk=closed.pk)

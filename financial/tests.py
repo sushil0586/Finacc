@@ -917,11 +917,13 @@ class AccountOpeningPostingIntegrationTests(TestCase):
             drcreffect="Debit",
             createdby=self.user,
         )
-        self.offset_static = StaticAccount.objects.create(
+        self.offset_static, _ = StaticAccount.objects.get_or_create(
             code=StaticAccountCodes.OPENING_BALANCE_OFFSET,
-            name="Opening Balance Offset",
-            group=StaticAccountGroup.EQUITY,
-            is_active=True,
+            defaults={
+                "name": "Opening Balance Offset",
+                "group": StaticAccountGroup.EQUITY,
+                "is_active": True,
+            },
         )
         self.offset_head = accountHead.objects.create(
             entity=self.entity,
@@ -1096,7 +1098,7 @@ class AccountOpeningPostingIntegrationTests(TestCase):
 
         self.assertFalse(serializer.is_valid())
         self.assertEqual(
-            serializer.errors["compliance_profile"]["gstno"][0],
+            serializer.errors["compliance_profile"]["gstno"],
             "An account with this GSTIN already exists.",
         )
 
@@ -1207,14 +1209,17 @@ class AccountOpeningPostingIntegrationTests(TestCase):
         commit_result = commit_accounts_bulk_payload(payload, self.entity, request=None)
         self.assertEqual(commit_result.errors, [])
 
-        self.assertFalse(
+        opening_lines = list(
             JournalLine.objects.filter(
                 entity_id=self.entity.id,
                 entityfin_id=self.fin_year.id,
                 txn_type=TxnType.OPENING_BALANCE,
                 txn_id=account_opening_txn_id(existing.id),
-            ).exists()
+            )
         )
+        self.assertEqual(len(opening_lines), 2)
+        self.assertEqual(sum(line.amount for line in opening_lines if line.drcr), Decimal("10.00"))
+        self.assertEqual(sum(line.amount for line in opening_lines if not line.drcr), Decimal("10.00"))
 
     def test_bulk_accounts_validate_exported_payload_with_legacy_duplicates(self):
         first = create_account_with_synced_ledger(
@@ -2349,11 +2354,13 @@ class FinancialAccountsBulkCoverageTests(TestCase):
             drcreffect="Credit",
             createdby=self.user,
         )
-        offset_static = StaticAccount.objects.create(
+        offset_static, _ = StaticAccount.objects.get_or_create(
             code=StaticAccountCodes.OPENING_BALANCE_OFFSET,
-            name="Opening Balance Offset",
-            group=StaticAccountGroup.EQUITY,
-            is_active=True,
+            defaults={
+                "name": "Opening Balance Offset",
+                "group": StaticAccountGroup.EQUITY,
+                "is_active": True,
+            },
         )
         offset_head = accountHead.objects.create(
             entity=self.entity,

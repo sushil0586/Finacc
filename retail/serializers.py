@@ -314,6 +314,19 @@ class RetailConfigReadSerializer(serializers.ModelSerializer):
         ]
 
 
+class RetailSessionOpenWriteSerializer(serializers.Serializer):
+    entity = serializers.IntegerField()
+    entityfinid = serializers.IntegerField(required=False, allow_null=True)
+    subentity = serializers.IntegerField(required=False, allow_null=True)
+    location = serializers.IntegerField(required=False, allow_null=True)
+    session_date = serializers.DateField()
+    opening_note = serializers.CharField(required=False, allow_blank=True, max_length=200)
+
+
+class RetailSessionCloseWriteSerializer(serializers.Serializer):
+    closing_note = serializers.CharField(required=False, allow_blank=True, max_length=200)
+
+
 class RetailSessionReadSerializer(serializers.ModelSerializer):
     location_name = serializers.CharField(source="location.display_name", read_only=True)
     summary = serializers.SerializerMethodField()

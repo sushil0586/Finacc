@@ -22,6 +22,7 @@ from .serializers import (
     BankReconciliationMatchRequestSerializer,
     BankReconciliationScopeSerializer,
     BankReconciliationSessionCreateSerializer,
+    BankReconciliationSessionUpdateSerializer,
     BankReconciliationSessionLockSerializer,
     BankReconciliationUnmatchRequestSerializer,
     BankReconciliationExceptionResolveRequestSerializer,
@@ -202,12 +203,13 @@ class BankReconciliationSessionDetailAPIView(ScopedEntitlementMixin, BankReconci
         )
         self.require_permission(request, session.entity, WRITE_PERMISSION_CODES)
         self.ensure_not_locked(session)
-        notes = request.data.get("notes")
-        if notes is not None:
-            session.notes = str(notes).strip()
-        status_value = request.data.get("status")
-        if status_value:
-            session.status = str(status_value).strip().lower()
+        serializer = BankReconciliationSessionUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        scope = serializer.validated_data
+        if "notes" in scope:
+            session.notes = scope.get("notes") or ""
+        if scope.get("status"):
+            session.status = scope["status"]
         session.save(update_fields=["notes", "status", "updated_at"])
         recalculate_session_metrics(session)
         return Response(build_session_payload(session))
@@ -308,6 +310,15 @@ class BankReconciliationUploadAPIView(ScopedEntitlementMixin, BankReconciliation
         metadata_raw = request.data.get("metadata")
         metadata = _first_scalar(metadata_raw, metadata_raw)
 
+        try:
+            column_mapping = (
+                json.loads(column_mapping_raw or "{}")
+                if isinstance(column_mapping_raw, str)
+                else column_mapping_raw or {}
+            )
+        except json.JSONDecodeError:
+            return Response({"column_mapping": ["Enter valid JSON."]}, status=status.HTTP_400_BAD_REQUEST)
+
         serializer = self.serializer_class(
             data={
                 "entity": session.entity_id,
@@ -319,11 +330,7 @@ class BankReconciliationUploadAPIView(ScopedEntitlementMixin, BankReconciliation
                 "delimiter": delimiter,
                 "profile_id": profile_id,
                 "file": request.FILES.get("file"),
-                "column_mapping": (
-                    json.loads(column_mapping_raw or "{}")
-                    if isinstance(column_mapping_raw, str)
-                    else column_mapping_raw or {}
-                ),
+                "column_mapping": column_mapping,
                 "statement_opening_balance": statement_opening_balance,
                 "statement_closing_balance": statement_closing_balance,
                 "book_opening_balance": book_opening_balance,

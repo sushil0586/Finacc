@@ -308,6 +308,22 @@ def _normalize_row(row: dict[str, object], *, column_map: dict[str, str] | None 
     return normalized
 
 
+def _validate_normalized_row_lengths(normalized: dict[str, object], *, line_no: int) -> None:
+    field_limits = {
+        "narration": 500,
+        "reference_no": 120,
+        "cheque_no": 80,
+        "currency": 10,
+    }
+    errors: list[str] = []
+    for field, limit in field_limits.items():
+        value = str(normalized.get(field) or "").strip()
+        if len(value) > limit:
+            errors.append(f"Line {line_no}: {field} may not exceed {limit} characters.")
+    if errors:
+        raise ValidationError({"rows": errors})
+
+
 def _statement_opening_from_line(line: BankStatementLine) -> Decimal | None:
     if line.balance is None:
         return None
@@ -381,16 +397,19 @@ def import_statement_upload(
         uploaded_by=uploaded_by,
     )
 
-    BankStatementLine.objects.bulk_create(
-        [
+    normalized_lines: list[BankStatementLine] = []
+    for index, row in enumerate(rows, start=1):
+        normalized_row = _normalize_row(row, column_map=preview["suggested_column_map"])
+        _validate_normalized_row_lengths(normalized_row, line_no=index)
+        normalized_lines.append(
             BankStatementLine(
                 statement_import=statement_import,
                 line_no=index,
-                **_normalize_row(row, column_map=preview["suggested_column_map"]),
+                **normalized_row,
             )
-            for index, row in enumerate(rows, start=1)
-        ]
-    )
+        )
+
+    BankStatementLine.objects.bulk_create(normalized_lines)
 
     BankReconciliationAuditLog.objects.create(
         run=None,

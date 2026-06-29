@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from django.db.models import Prefetch
-from rest_framework import generics, permissions, status
+from rest_framework import generics, permissions, serializers, status
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -73,6 +73,15 @@ def _attach_reference_feedback(response: Response, voucher: ReceiptVoucherHeader
     response.data["notice"] = "Saved with review warnings."
     response.data["warnings"] = warnings
     return response
+
+
+class ReceiptVoucherApprovalActionSerializer(serializers.Serializer):
+    action = serializers.ChoiceField(choices=("submit", "approve", "reject"))
+    remarks = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
+
+
+class ReceiptVoucherCancelActionSerializer(serializers.Serializer):
+    reason = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
 
 
 def _receipt_permission_code(action: str) -> str:
@@ -278,8 +287,10 @@ class ReceiptVoucherApprovalAPIView(APIView):
 
     def post(self, request, pk: int):
         header = ReceiptVoucherHeader.objects.only("id", "entity_id").get(pk=pk)
-        action = (request.data.get("action") or "").strip().lower()
-        remarks = (request.data.get("remarks") or "").strip() or None
+        serializer = ReceiptVoucherApprovalActionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        action = serializer.validated_data["action"]
+        remarks = serializer.validated_data.get("remarks") or None
         try:
             if action == "submit":
                 _require_receipt_permission(request.user, entity_id=header.entity_id, action="submit")
@@ -290,8 +301,6 @@ class ReceiptVoucherApprovalAPIView(APIView):
             elif action == "reject":
                 _require_receipt_permission(request.user, entity_id=header.entity_id, action="reject")
                 result = ReceiptVoucherService.reject_voucher(pk, rejected_by_id=request.user.id, remarks=remarks)
-            else:
-                raise ValidationError({"action": "Use submit, approve, or reject."})
         except ValueError as e:
             _raise_validation_error(e)
         out = ReceiptVoucherHeaderSerializer(result.header).data
@@ -310,7 +319,9 @@ class ReceiptVoucherCancelAPIView(APIView):
     def post(self, request, pk: int):
         header = ReceiptVoucherHeader.objects.only("id", "entity_id").get(pk=pk)
         _require_receipt_permission(request.user, entity_id=header.entity_id, action="cancel")
-        reason = (request.data.get("reason") or "").strip() or None
+        serializer = ReceiptVoucherCancelActionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        reason = serializer.validated_data.get("reason") or None
         try:
             result = ReceiptVoucherService.cancel_voucher(pk, reason=reason, cancelled_by_id=request.user.id)
         except ValueError as e:

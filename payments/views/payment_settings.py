@@ -161,7 +161,10 @@ class PaymentSettingsAPIView(ScopedEntitlementMixin, APIView):
         for row in rows:
             if not isinstance(row, dict) or not row.get("lock_date"):
                 raise ValidationError({"lock_periods": "Each lock period must include lock_date."})
-            PaymentLockPeriod.objects.create(entity_id=entity_id, subentity_id=subentity_id, lock_date=row["lock_date"], reason=row.get("reason") or "")
+            reason = str(row.get("reason") or "").strip()
+            if len(reason) > 200:
+                raise ValidationError({"lock_periods": "Each reason must be at most 200 characters."})
+            PaymentLockPeriod.objects.create(entity_id=entity_id, subentity_id=subentity_id, lock_date=row["lock_date"], reason=reason)
 
     def _list_choice_overrides(self, *, entity_id: int, subentity_id: Optional[int]) -> list[dict]:
         catalog = PaymentChoiceService.compile_choices(entity_id=entity_id, subentity_id=subentity_id)
@@ -193,13 +196,16 @@ class PaymentSettingsAPIView(ScopedEntitlementMixin, APIView):
                 continue
             if group not in valid_keys or key not in valid_keys[group]:
                 raise ValidationError({"choice_overrides": f"Invalid override {group}:{key}."})
+            override_label = str(row.get("override_label") or "").strip()
+            if len(override_label) > 200:
+                raise ValidationError({"choice_overrides": "Each override_label must be at most 200 characters."})
             PaymentChoiceOverride.objects.create(
                 entity_id=entity_id,
                 subentity_id=subentity_id,
                 choice_group=group,
                 choice_key=key,
                 is_enabled=bool(row.get("is_enabled", True)),
-                override_label=row.get("override_label") or "",
+                override_label=override_label,
             )
 
     @staticmethod

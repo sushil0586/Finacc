@@ -22,10 +22,12 @@ from receipts.views.receipt_exports import ReceiptVoucherPDFAPIView
 from receipts.views.receipt_meta import ReceiptVoucherDetailFormMetaAPIView
 from receipts.views.receipt_voucher import (
     ReceiptVoucherApprovalAPIView,
+    ReceiptVoucherCancelAPIView,
     ReceiptVoucherListCreateAPIView,
     ReceiptVoucherPostAPIView,
     _duplicate_reference_warnings,
 )
+from receipts.views.receipt_settings import ReceiptSettingsAPIView
 from posting.adapters.receipt_voucher import ReceiptVoucherPostingAdapter
 from withholding.models import WithholdingBaseRule
 
@@ -1095,6 +1097,42 @@ class ReceiptVoucherViewValidationTests(SimpleTestCase):
         self.assertEqual(str(response.data["action"]), "Use submit, approve, or reject.")
         mocked_error_log.assert_called_once()
 
+    @patch("errorlogger.drf_exception_handler.ErrorLog.objects.create")
+    @patch("receipts.views.receipt_voucher.ReceiptVoucherHeader.objects")
+    def test_approval_view_rejects_oversized_remarks(self, mocked_header_objects, mocked_error_log):
+        mocked_header_objects.only.return_value.get.return_value = SimpleNamespace(id=9, entity_id=1)
+        request = self._request(
+            "/api/receipts/receipt-vouchers/9/approval/",
+            {"action": "submit", "remarks": "R" * 256},
+        )
+
+        response = ReceiptVoucherApprovalAPIView.as_view()(request, pk=9)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("remarks", response.data)
+        mocked_error_log.assert_called_once()
+
+    @patch("errorlogger.drf_exception_handler.ErrorLog.objects.create")
+    @patch("receipts.views.receipt_voucher._require_receipt_permission")
+    @patch("receipts.views.receipt_voucher.ReceiptVoucherHeader.objects")
+    def test_cancel_view_rejects_oversized_reason(
+        self,
+        mocked_header_objects,
+        _mocked_require_permission,
+        mocked_error_log,
+    ):
+        mocked_header_objects.only.return_value.get.return_value = SimpleNamespace(id=9, entity_id=1)
+        request = self._request(
+            "/api/receipts/receipt-vouchers/9/cancel/",
+            {"reason": "C" * 256},
+        )
+
+        response = ReceiptVoucherCancelAPIView.as_view()(request, pk=9)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("reason", response.data)
+        mocked_error_log.assert_called_once()
+
     @patch("receipts.views.receipt_voucher._require_receipt_permission")
     @patch("receipts.views.receipt_voucher.ReceiptVoucherService.post_voucher")
     @patch("receipts.views.receipt_voucher.ReceiptVoucherHeaderSerializer")
@@ -1123,6 +1161,76 @@ class ReceiptVoucherViewValidationTests(SimpleTestCase):
             "Static fallback used",
         ])
 
+
+
+class ReceiptSettingsValidationTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.user = SimpleNamespace(is_authenticated=True, id=7)
+
+    def _request(self, path: str, data=None):
+        request = self.factory.patch(path, data or {}, format="json")
+        force_authenticate(request, user=self.user)
+        return request
+
+    @patch("errorlogger.drf_exception_handler.ErrorLog.objects.create")
+    @patch.object(ReceiptSettingsAPIView, "_payload", return_value={"ok": True})
+    @patch.object(ReceiptSettingsAPIView, "_scope", return_value=(1, None, 2))
+    @patch("receipts.views.receipt_settings.ReceiptSettingsService.upsert_settings")
+    def test_settings_patch_rejects_oversized_lock_period_reason(
+        self,
+        mocked_upsert,
+        _mocked_scope,
+        _mocked_payload,
+        mocked_error_log,
+    ):
+        mocked_upsert.return_value = SimpleNamespace(default_doc_code_receipt="RV")
+        request = self._request(
+            "/api/receipts/settings/?entity=1&entityfinid=2",
+            {"lock_periods": [{"lock_date": "2026-04-01", "reason": "R" * 201}]},
+        )
+
+        response = ReceiptSettingsAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("lock_periods", response.data)
+        mocked_error_log.assert_called_once()
+
+    @patch("errorlogger.drf_exception_handler.ErrorLog.objects.create")
+    @patch.object(ReceiptSettingsAPIView, "_payload", return_value={"ok": True})
+    @patch.object(ReceiptSettingsAPIView, "_scope", return_value=(1, None, 2))
+    @patch.object(ReceiptSettingsAPIView, "_valid_override_keys", return_value={"receipt_modes": {"NEFT"}})
+    @patch("receipts.views.receipt_settings.ReceiptChoiceService.compile_choices", return_value={"receipt_modes": [{"key": "NEFT"}]})
+    @patch("receipts.views.receipt_settings.ReceiptSettingsService.upsert_settings")
+    def test_settings_patch_rejects_oversized_choice_override_label(
+        self,
+        mocked_upsert,
+        _mocked_compile_choices,
+        _mocked_valid_override_keys,
+        _mocked_scope,
+        _mocked_payload,
+        mocked_error_log,
+    ):
+        mocked_upsert.return_value = SimpleNamespace(default_doc_code_receipt="RV")
+        request = self._request(
+            "/api/receipts/settings/?entity=1&entityfinid=2",
+            {
+                "choice_overrides": [
+                    {
+                        "choice_group": "receipt_modes",
+                        "choice_key": "NEFT",
+                        "is_enabled": True,
+                        "override_label": "L" * 201,
+                    }
+                ]
+            },
+        )
+
+        response = ReceiptSettingsAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("choice_overrides", response.data)
+        mocked_error_log.assert_called_once()
 
 
 class ReceiptRuntimeWithholdingTests(SimpleTestCase):

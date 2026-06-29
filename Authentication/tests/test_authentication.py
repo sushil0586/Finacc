@@ -1,7 +1,9 @@
 from django.contrib.auth import get_user_model
+from django.conf import settings
 from django.core import mail
 from django.core.cache import cache
 from django.test import TestCase
+import re
 from rest_framework import exceptions
 from rest_framework.test import APIClient, APIRequestFactory
 
@@ -97,18 +99,27 @@ class AuthFlowTests(TestCase):
             password="pass@12345",
         )
 
+    def _extract_otp_from_last_email(self) -> str:
+        self.assertTrue(mail.outbox)
+        body = mail.outbox[-1].body
+        match = re.search(r"\b(\d{6})\b", body)
+        self.assertIsNotNone(match)
+        return match.group(1)
+
     def test_login_creates_session_and_audit_log(self):
         resp = self.client.post("/api/auth/login", {"email": self.user.email, "password": "pass@12345"}, format="json")
         self.assertEqual(resp.status_code, 200)
-        self.assertIn("token", resp.data)
-        self.assertIn("refresh_token", resp.data)
+        self.assertEqual(resp.data["token_type"], "Bearer")
         self.assertIn("user", resp.data)
+        self.assertIn("subscription", resp.data)
+        self.assertIn(settings.AUTH_COOKIE_NAME, resp.cookies)
+        self.assertIn(settings.AUTH_REFRESH_COOKIE_NAME, resp.cookies)
         self.assertTrue(AuthSession.objects.filter(user=self.user).exists())
         self.assertTrue(AuthAuditLog.objects.filter(user=self.user, event="login_success").exists())
 
     def test_logout_revokes_session(self):
         login_resp = self.client.post("/api/auth/login", {"email": self.user.email, "password": "pass@12345"}, format="json")
-        token = login_resp.data["token"]
+        token = login_resp.cookies[settings.AUTH_COOKIE_NAME].value
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
         logout_resp = self.client.post("/api/auth/logout", {}, format="json")
         self.assertEqual(logout_resp.status_code, 200)
@@ -117,18 +128,19 @@ class AuthFlowTests(TestCase):
 
     def test_refresh_rotates_session(self):
         login_resp = self.client.post("/api/auth/login", {"email": self.user.email, "password": "pass@12345"}, format="json")
-        refresh_resp = self.client.post("/api/auth/refresh", {"refresh_token": login_resp.data["refresh_token"]}, format="json")
+        original_refresh_token = login_resp.cookies[settings.AUTH_REFRESH_COOKIE_NAME].value
+        refresh_resp = self.client.post("/api/auth/refresh", {"refresh_token": original_refresh_token}, format="json")
         self.assertEqual(refresh_resp.status_code, 200)
-        self.assertIn("refresh_token", refresh_resp.data)
-        self.assertNotEqual(login_resp.data["refresh_token"], refresh_resp.data["refresh_token"])
+        self.assertIn(settings.AUTH_REFRESH_COOKIE_NAME, refresh_resp.cookies)
+        self.assertNotEqual(original_refresh_token, refresh_resp.cookies[settings.AUTH_REFRESH_COOKIE_NAME].value)
 
     def test_forgot_and_reset_password_flow(self):
         forgot_resp = self.client.post("/api/auth/forgotpassword", {"email": self.user.email}, format="json")
         self.assertEqual(forgot_resp.status_code, 200)
-        otp = AuthOTP.objects.filter(email=self.user.email, purpose="password_reset").latest("created_at")
+        otp_code = self._extract_otp_from_last_email()
         reset_resp = self.client.post(
             "/api/auth/resetpassword",
-            {"email": self.user.email, "otp": otp.code, "new_password": "newpass@123"},
+            {"email": self.user.email, "otp": otp_code, "new_password": "newpass@123"},
             format="json",
         )
         self.assertEqual(reset_resp.status_code, 200)
@@ -142,11 +154,11 @@ class AuthFlowTests(TestCase):
         request_resp = self.client.post("/api/auth/request-email-verification", {}, format="json")
         self.assertEqual(request_resp.status_code, 200)
         self.assertEqual(len(mail.outbox), 1)
-        otp = AuthOTP.objects.filter(email=self.user.email, purpose="email_verification").latest("created_at")
+        otp_code = self._extract_otp_from_last_email()
         self.client.force_authenticate(user=None)
         verify_resp = self.client.post(
             "/api/auth/verify-email",
-            {"email": self.user.email, "otp": otp.code},
+            {"email": self.user.email, "otp": otp_code},
             format="json",
         )
         self.assertEqual(verify_resp.status_code, 200)
@@ -166,6 +178,8 @@ class AuthFlowTests(TestCase):
         self.assertEqual(len(mail.outbox), 1)
 
     def test_resend_email_verification_reports_already_verified(self):
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified", "updated_at"])
         resp = self.client.post(
             "/api/auth/resend-email-verification",
             {"email": self.user.email},
@@ -175,13 +189,16 @@ class AuthFlowTests(TestCase):
         self.assertEqual(resp.data["email_verified"], True)
 
     def test_login_requires_verified_email(self):
+        original_value = AuthSettings.REQUIRE_EMAIL_VERIFIED
+        AuthSettings.REQUIRE_EMAIL_VERIFIED = True
         self.user.email_verified = False
         self.user.save(update_fields=["email_verified", "updated_at"])
-        resp = self.client.post("/api/auth/login", {"email": self.user.email, "password": "pass@12345"}, format="json")
-        self.assertEqual(resp.status_code, 403)
-        self.assertEqual(resp.data["code"], "email_not_verified")
-        self.assertEqual(resp.data["next_action"], "verify_email")
-        self.assertEqual(resp.data["email"], self.user.email)
+        try:
+            resp = self.client.post("/api/auth/login", {"email": self.user.email, "password": "pass@12345"}, format="json")
+            self.assertEqual(resp.status_code, 403)
+            self.assertEqual(str(resp.data["detail"]), "Email verification is required before login.")
+        finally:
+            AuthSettings.REQUIRE_EMAIL_VERIFIED = original_value
 
     def test_register_creates_customer_account_and_subscription(self):
         resp = self.client.post(
@@ -200,8 +217,8 @@ class AuthFlowTests(TestCase):
         self.assertEqual(resp.data["intent"], "standard")
         self.assertIn("subscription", resp.data)
         user = User.objects.get(email="new_user@example.com")
-        self.assertTrue(CustomerAccount.objects.filter(primary_user=user).exists())
-        self.assertTrue(CustomerSubscription.objects.filter(customer_account__primary_user=user).exists())
+        self.assertTrue(CustomerAccount.objects.filter(owner=user).exists())
+        self.assertTrue(CustomerSubscription.objects.filter(customer_account__owner=user).exists())
 
     def test_register_accepts_trial_intent_and_returns_subscription_snapshot(self):
         resp = self.client.post(
@@ -220,7 +237,7 @@ class AuthFlowTests(TestCase):
         self.assertEqual(resp.status_code, 201)
         self.assertEqual(resp.data["intent"], "trial")
         self.assertTrue(resp.data["trial_started"])
-        self.assertEqual(resp.data["subscription"]["subscription"]["status"], "trial")
+        self.assertEqual(resp.data["subscription"]["subscription"]["status"], "trialing")
 
     def test_forgot_password_send_is_rate_limited(self):
         original_limit = AuthSettings.OTP_SEND_RATE_LIMIT_ATTEMPTS

@@ -4,9 +4,13 @@ import logging
 
 from rest_framework.views import exception_handler
 from rest_framework import exceptions
+from django.contrib.auth import get_user_model
+from django.test.testcases import DatabaseOperationForbidden
 
 from .models import ErrorLog
 from django.utils.timezone import now
+
+User = get_user_model()
 
 
 def _normalize_auth_error(exc, request):
@@ -47,7 +51,8 @@ def custom_exception_handler(exc, context):
     response = exception_handler(exc, context)
 
     request = context.get('request')
-    user = request.user if request and request.user.is_authenticated else None
+    raw_user = request.user if request and getattr(request, "user", None) is not None else None
+    user = raw_user if isinstance(raw_user, User) and getattr(raw_user, "is_authenticated", False) else None
 
     try:
         ErrorLog.objects.create(
@@ -58,6 +63,10 @@ def custom_exception_handler(exc, context):
             message=str(exc),
             stacktrace=traceback.format_exc(),
         )
+    except DatabaseOperationForbidden:
+        # SimpleTestCase-based API tests intentionally block DB access.
+        # Swallow logger writes there so validation-path tests stay quiet.
+        pass
     except Exception as log_error:
         logging.getLogger('error').exception("Failed to log DRF exception")
 

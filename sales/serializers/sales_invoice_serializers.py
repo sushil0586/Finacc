@@ -28,6 +28,9 @@ from sales.serializers.sales_compliance_serializers import (
 
 
 class SalesInvoiceLineSerializer(serializers.ModelSerializer):
+    productDesc = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=200)
+    batch_number = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=80)
+    hsn_sac_code = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=20)
     product_name = serializers.SerializerMethodField()
     uom_code = serializers.CharField(source="uom.code", read_only=True)
     taxability_name = serializers.CharField(source="get_taxability_display", read_only=True)
@@ -263,9 +266,27 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
         required=False,
         allow_null=True,
     )
+    credit_days = serializers.IntegerField(required=False, allow_null=True, max_value=2147483647)
+    doc_code = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=20)
+    customer_name = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
+    customer_gstin = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=15)
+    customer_state_code = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=2)
+    bill_to_address1 = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
+    bill_to_address2 = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
+    bill_to_city = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=100)
+    bill_to_state_code = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=2)
+    bill_to_pincode = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=10)
+    seller_gstin = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=15)
+    ecm_gstin = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=15)
+    seller_state_code = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=2)
     location = serializers.PrimaryKeyRelatedField(queryset=Godown.objects.all(), required=False, allow_null=True)
     place_of_supply_state_code = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=2)
     place_of_supply_pincode = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=8)
+    compliance_override_reason = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
+    reference = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
+    legacy_source_system = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=100)
+    legacy_source_key = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
+    legacy_import_mode = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=30)
 
     # display fields
     doc_type_name = serializers.CharField(source="get_doc_type_display", read_only=True)
@@ -485,6 +506,18 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             include_rebuild_tax_summary=True,
             extra={"can_post": is_draft or is_confirmed},
         )
+
+    def get_validators(self):
+        validators = super().get_validators()
+        # The legacy-source unique constraint is conditional at the DB layer and
+        # should only apply when both optional fields are actually provided.
+        # DRF's generated UniqueTogetherValidator makes those fields required on
+        # every normal invoice create/update, which breaks non-legacy flows.
+        return [
+            validator
+            for validator in validators
+            if getattr(validator, "fields", ()) != ("entity", "legacy_source_system", "legacy_source_key")
+        ]
 
     def validate(self, attrs):
         # Normalize nullable char inputs sent by frontend as null so model-level

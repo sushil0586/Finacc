@@ -37,8 +37,8 @@ class BankReconciliationSessionCreateSerializer(serializers.Serializer):
     entityfinid = serializers.IntegerField(required=False, allow_null=True)
     subentity = serializers.IntegerField(required=False, allow_null=True)
     bank_account = serializers.IntegerField()
-    statement_label = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    source_name = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    statement_label = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
+    source_name = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
     source_format = serializers.ChoiceField(choices=("manual", "csv", "excel", "json"), required=False, default="manual")
     date_from = serializers.DateField(required=False, allow_null=True)
     date_to = serializers.DateField(required=False, allow_null=True)
@@ -50,19 +50,27 @@ class BankReconciliationSessionCreateSerializer(serializers.Serializer):
     metadata = serializers.JSONField(required=False, default=dict)
 
 
+class BankReconciliationSessionUpdateSerializer(serializers.Serializer):
+    notes = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    status = serializers.ChoiceField(
+        choices=("draft", "imported", "matching", "needs_review", "reconciled", "locked"),
+        required=False,
+    )
+
+
 class BankStatementRowSerializer(serializers.Serializer):
     transaction_date = serializers.DateField(required=False, allow_null=True)
     value_date = serializers.DateField(required=False, allow_null=True)
-    description = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    reference_number = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    counterparty = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    description = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
+    reference_number = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=120)
+    counterparty = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
     amount = serializers.DecimalField(required=False, allow_null=True, max_digits=14, decimal_places=2)
     debit_amount = serializers.DecimalField(required=False, allow_null=True, max_digits=14, decimal_places=2)
     credit_amount = serializers.DecimalField(required=False, allow_null=True, max_digits=14, decimal_places=2)
     balance_amount = serializers.DecimalField(required=False, allow_null=True, max_digits=14, decimal_places=2)
-    currency = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    external_id = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    match_status = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    currency = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=10)
+    external_id = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=120)
+    match_status = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=20)
     suggested_match_score = serializers.DecimalField(required=False, allow_null=True, max_digits=5, decimal_places=2)
     metadata = serializers.JSONField(required=False, default=dict)
 
@@ -72,7 +80,7 @@ class BankStatementImportSerializer(serializers.Serializer):
     entityfinid = serializers.IntegerField(required=False, allow_null=True)
     subentity = serializers.IntegerField(required=False, allow_null=True)
     bank_account = serializers.IntegerField()
-    source_name = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    source_name = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
     source_format = serializers.ChoiceField(choices=("manual", "csv", "excel", "json"), required=False, default="json")
     rows = BankStatementRowSerializer(many=True)
     statement_opening_balance = serializers.DecimalField(required=False, allow_null=True, max_digits=14, decimal_places=2)
@@ -88,10 +96,10 @@ class BankStatementUploadSerializer(serializers.Serializer):
     entityfinid = serializers.IntegerField(required=False, allow_null=True)
     subentity = serializers.IntegerField(required=False, allow_null=True)
     bank_account = serializers.IntegerField()
-    source_name = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    source_name = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
     source_format = serializers.ChoiceField(choices=("csv", "excel"), required=False, default="csv")
     file = serializers.FileField()
-    delimiter = serializers.CharField(required=False, allow_blank=True, allow_null=True, default=",")
+    delimiter = serializers.CharField(required=False, allow_blank=True, allow_null=True, default=",", max_length=5)
     profile_id = serializers.IntegerField(required=False, allow_null=True)
     column_mapping = serializers.JSONField(required=False, default=dict)
     statement_opening_balance = serializers.DecimalField(required=False, allow_null=True, max_digits=14, decimal_places=2)
@@ -116,7 +124,7 @@ class BankStatementPreviewSerializer(serializers.Serializer):
     bank_account = serializers.IntegerField()
     source_format = serializers.ChoiceField(choices=("csv", "excel"), required=False, default="csv")
     file = serializers.FileField()
-    delimiter = serializers.CharField(required=False, allow_blank=True, allow_null=True, default=",")
+    delimiter = serializers.CharField(required=False, allow_blank=True, allow_null=True, default=",", max_length=5)
 
     def validate_source_format(self, value):
         return _coerce_scalar(value)
@@ -136,12 +144,12 @@ class BankStatementImportProfileQuerySerializer(serializers.Serializer):
 
 class BankStatementImportProfileSerializer(serializers.Serializer):
     id = serializers.IntegerField(required=False)
-    name = serializers.CharField()
+    name = serializers.CharField(max_length=255)
     entity_id = serializers.IntegerField(required=False)
     bank_account_id = serializers.IntegerField(required=False, allow_null=True)
     source_format = serializers.ChoiceField(choices=("csv", "excel"), required=False, default="csv")
-    delimiter = serializers.CharField(required=False, allow_blank=True, allow_null=True, default=",")
-    date_format = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    delimiter = serializers.CharField(required=False, allow_blank=True, allow_null=True, default=",", max_length=5)
+    date_format = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=40)
     column_mapping = serializers.JSONField(required=False, default=dict)
     is_active = serializers.BooleanField(required=False, default=True)
 

@@ -673,7 +673,8 @@ class SalesApiEndToEndTests(APITestCase):
         self.assertEqual(patch_resp.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("Confirmed invoice editing is disabled by sales policy.", str(patch_resp.json()))
 
-    def test_post_requires_confirmed_invoice(self):
+    @patch("sales.services.sales_invoice_service.SalesInvoicePostingAdapter.post_sales_invoice")
+    def test_post_requires_confirmed_invoice(self, _mocked_post_adapter):
         created = self._create_invoice(reference="SO-POST-BLOCK")
         invoice_id = created["id"]
 

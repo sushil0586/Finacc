@@ -49,6 +49,7 @@ from withholding.serializers import (
     TcsComputeConfirmSerializer,
     TcsComputeRequestSerializer,
     TcsDepositAllocationSerializer,
+    TcsDepositAllocationRequestSerializer,
     TcsDepositSerializer,
     TcsQuarterlyReturnSerializer,
     WithholdingSectionPolicyAuditSerializer,
@@ -1327,17 +1328,14 @@ class TcsDepositAllocateAPIView(APIView):
             message="Missing permission to allocate TCS deposits.",
         )
 
-        collection_id = request.data.get("collection_id")
-        allocated_amount = request.data.get("allocated_amount")
-        if not collection_id or allocated_amount in (None, ""):
-            return Response(
-                {"detail": "collection_id and allocated_amount are required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        request_serializer = TcsDepositAllocationRequestSerializer(data=request.data)
+        request_serializer.is_valid(raise_exception=True)
+        collection_id = request_serializer.validated_data["collection_id"]
+        allocated_amount = request_serializer.validated_data["allocated_amount"]
 
         try:
-            collection = TcsCollection.objects.get(pk=int(collection_id))
-        except (TcsCollection.DoesNotExist, ValueError, TypeError):
+            collection = TcsCollection.objects.get(pk=collection_id)
+        except TcsCollection.DoesNotExist:
             return Response({"detail": "Invalid collection_id."}, status=status.HTTP_400_BAD_REQUEST)
 
         if not _tcs_deposit_status_allows_allocation(deposit.status):
@@ -1350,7 +1348,7 @@ class TcsDepositAllocateAPIView(APIView):
             if str(collection.computation.fiscal_year).strip() != str(deposit.financial_year).strip():
                 return Response({"detail": "Collection and deposit financial year mismatch."}, status=status.HTTP_400_BAD_REQUEST)
 
-        alloc_amount = q2(Decimal(allocated_amount))
+        alloc_amount = q2(allocated_amount)
         if alloc_amount <= Decimal("0.00"):
             return Response({"detail": "allocated_amount must be > 0."}, status=status.HTTP_400_BAD_REQUEST)
 

@@ -102,3 +102,27 @@ class EntityOrgUnitApiTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data["code"], "tenant_membership_required")
+
+    def test_create_org_unit_rejects_oversized_fields(self):
+        response = self.client.post(
+            "/api/entity/org-units/",
+            {
+                "entity": self.entity.id,
+                "subentity": self.city_branch.id,
+                "unit_type": "work_location",
+                "code": "C" * 41,
+                "name": "N" * 151,
+                "short_name": "S" * 81,
+                "description": "D" * 256,
+                "manager_title": "M" * 101,
+                "status": "active",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("code", response.data)
+        self.assertIn("name", response.data)
+        self.assertIn("short_name", response.data)
+        self.assertIn("description", response.data)
+        self.assertIn("manager_title", response.data)

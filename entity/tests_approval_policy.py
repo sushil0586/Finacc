@@ -117,3 +117,24 @@ class EntityApprovalPolicyApiTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data["code"], "tenant_membership_required")
+
+    def test_create_policy_rejects_oversized_fields(self):
+        response = self.client.post(
+            "/api/entity/approval-policies/",
+            {
+                "entity": self.entity.id,
+                "subentity": self.subentity.id,
+                "policy_key": "employment_change",
+                "code": "C" * 51,
+                "name": "N" * 151,
+                "approval_mode": "fixed_users",
+                "min_approvers": 2,
+                "approver_roles": ["hr_manager"],
+                "approver_permissions": ["employee.change.approve"],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("code", response.data)
+        self.assertIn("name", response.data)

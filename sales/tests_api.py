@@ -1,10 +1,18 @@
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
 
+from entity.models import Entity, EntityFinancialYear, SubEntity
+from financial.models import account
+from sales.models import SalesInvoiceHeader
+from sales.serializers.sales_ar import CustomerSettlementCreateInputSerializer
+from sales.serializers.sales_charge_serializers import SalesChargeLineSerializer, SalesChargeTypeSerializer
+from sales.serializers.sales_invoice_serializers import SalesInvoiceHeaderSerializer
 from sales.services.sales_choices_service import SalesChoicesService
 
 
@@ -25,7 +33,9 @@ class SalesApiTestBase(TestCase):
 class SalesChoicesApiTests(SalesApiTestBase):
     def setUp(self):
         super().setUp()
-        self.permission_entity = SimpleNamespace(id=11)
+        self.entity = Entity.objects.create(entityname="Sales Choices Entity", createdby=self.user)
+        self.subentity = SubEntity.objects.create(entity=self.entity, subentityname="Main")
+        self.permission_entity = SimpleNamespace(id=self.entity.id)
         self.mock_entity_for_user = patch("sales.views.rbac.EffectivePermissionService.entity_for_user", return_value=self.permission_entity)
         self.mock_permission_codes = patch(
             "sales.views.rbac.EffectivePermissionService.permission_codes_for_user",
@@ -49,11 +59,11 @@ class SalesChoicesApiTests(SalesApiTestBase):
     def test_choices_returns_data(self, mocked_get_choices):
         mocked_get_choices.return_value = {"doc_types": [{"id": 1, "label": "Tax Invoice"}]}
 
-        resp = self.client.get("/api/sales/choices/?entity_id=11&subentity_id=3")
+        resp = self.client.get(f"/api/sales/choices/?entity_id={self.entity.id}&subentity_id={self.subentity.id}")
 
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.data, {"doc_types": [{"id": 1, "label": "Tax Invoice"}]})
-        mocked_get_choices.assert_called_once_with(entity_id=11, subentity_id=3)
+        mocked_get_choices.assert_called_once_with(entity_id=self.entity.id, subentity_id=self.subentity.id)
 
 
 class SalesSettingsApiTests(SalesApiTestBase):
@@ -188,6 +198,7 @@ class SalesSettingsApiTests(SalesApiTestBase):
         self.assertEqual(resp.data["settings"]["enable_einvoice"], False)
         self.assertEqual(resp.data["settings"]["default_doc_code_invoice"], "NSI")
 
+
     @patch("sales.views.sales_settings_views.SalesLockPeriod.objects.create")
     @patch("sales.views.sales_settings_views.SalesLockPeriod.objects.filter")
     @patch("sales.views.sales_settings_views.SalesChoicesService.get_choices")
@@ -275,3 +286,166 @@ class SalesChoicesServiceTests(TestCase):
 
         for rows in payload.values():
             self.assertFalse(any((row.get("key") or "").startswith("_") for row in rows))
+
+
+class SalesOversizedValidationTests(SalesApiTestBase):
+    def setUp(self):
+        super().setUp()
+        self.entity = Entity.objects.create(entityname="Sales Oversized Entity", createdby=self.user)
+        self.entityfin = EntityFinancialYear.objects.create(
+            entity=self.entity,
+            desc="FY 2026-27",
+            year_code="2026-27",
+            finstartyear=timezone.make_aware(datetime(2026, 4, 1, 0, 0, 0)),
+            finendyear=timezone.make_aware(datetime(2027, 3, 31, 0, 0, 0)),
+            isactive=True,
+            createdby=self.user,
+        )
+        self.customer = account.objects.create(
+            entity=self.entity,
+            accountname="Oversized Customer",
+            createdby=self.user,
+        )
+        self.sales_account = account.objects.create(
+            entity=self.entity,
+            accountname="Oversized Revenue Account",
+            createdby=self.user,
+        )
+
+    def test_sales_invoice_serializer_rejects_oversized_header_and_line_fields(self):
+        serializer = SalesInvoiceHeaderSerializer(
+            data={
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "doc_type": SalesInvoiceHeader.DocType.TAX_INVOICE,
+                "bill_date": "2026-04-01",
+                "customer": self.customer.id,
+                "credit_days": int("9" * 20),
+                "doc_code": "D" * 21,
+                "customer_name": "C" * 256,
+                "customer_gstin": "1" * 16,
+                "customer_state_code": "123",
+                "bill_to_address1": "A" * 256,
+                "bill_to_address2": "B" * 256,
+                "bill_to_city": "C" * 101,
+                "bill_to_state_code": "123",
+                "bill_to_pincode": "9" * 11,
+                "seller_gstin": "2" * 16,
+                "ecm_gstin": "3" * 16,
+                "seller_state_code": "123",
+                "place_of_supply_state_code": "123",
+                "place_of_supply_pincode": "9" * 9,
+                "einvoice_applicable_manual": True,
+                "compliance_override_reason": "R" * 256,
+                "reference": "R" * 256,
+                "legacy_source_system": "L" * 101,
+                "legacy_source_key": "K" * 256,
+                "legacy_import_mode": "M" * 31,
+                "lines": [
+                    {
+                        "line_no": 1,
+                        "sales_account": self.sales_account.id,
+                        "productDesc": "D" * 201,
+                        "batch_number": "B" * 81,
+                        "hsn_sac_code": "H" * 21,
+                        "is_service": True,
+                        "qty": "1.000",
+                        "rate": "1.0000",
+                        "taxability": SalesInvoiceHeader.Taxability.TAXABLE,
+                    }
+                ],
+            }
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("credit_days", serializer.errors)
+        self.assertIn("doc_code", serializer.errors)
+        self.assertIn("customer_name", serializer.errors)
+        self.assertIn("customer_gstin", serializer.errors)
+        self.assertIn("customer_state_code", serializer.errors)
+        self.assertIn("bill_to_address1", serializer.errors)
+        self.assertIn("bill_to_address2", serializer.errors)
+        self.assertIn("bill_to_city", serializer.errors)
+        self.assertIn("bill_to_state_code", serializer.errors)
+        self.assertIn("bill_to_pincode", serializer.errors)
+        self.assertIn("seller_gstin", serializer.errors)
+        self.assertIn("ecm_gstin", serializer.errors)
+        self.assertIn("seller_state_code", serializer.errors)
+        self.assertIn("place_of_supply_state_code", serializer.errors)
+        self.assertIn("place_of_supply_pincode", serializer.errors)
+        self.assertIn("compliance_override_reason", serializer.errors)
+        self.assertIn("reference", serializer.errors)
+        self.assertIn("legacy_source_system", serializer.errors)
+        self.assertIn("legacy_source_key", serializer.errors)
+        self.assertIn("legacy_import_mode", serializer.errors)
+        self.assertIn("lines", serializer.errors)
+        self.assertIn("productDesc", serializer.errors["lines"][0])
+        self.assertIn("batch_number", serializer.errors["lines"][0])
+        self.assertIn("hsn_sac_code", serializer.errors["lines"][0])
+
+    def test_sales_charge_type_serializer_rejects_oversized_fields(self):
+        serializer = SalesChargeTypeSerializer(
+            data={
+                "entity": self.entity.id,
+                "code": "C" * 31,
+                "name": "N" * 81,
+                "base_category": "OTHER",
+                "is_active": True,
+                "is_service": True,
+                "hsn_sac_code_default": "H" * 21,
+                "gst_rate_default": "18.00",
+                "description": "D" * 201,
+                "revenue_account": self.sales_account.id,
+            }
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("code", serializer.errors)
+        self.assertIn("name", serializer.errors)
+        self.assertIn("hsn_sac_code_default", serializer.errors)
+        self.assertIn("description", serializer.errors)
+
+    def test_sales_charge_line_serializer_rejects_oversized_charge_type(self):
+        serializer = SalesChargeLineSerializer(
+            data={
+                "line_no": 1,
+                "charge_type": "C" * 21,
+                "description": "Freight",
+                "taxability": SalesInvoiceHeader.Taxability.EXEMPT,
+                "is_service": True,
+                "hsn_sac_code": "",
+                "taxable_value": "100.00",
+                "gst_rate": "0.00",
+            }
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("charge_type", serializer.errors)
+
+    def test_customer_settlement_create_input_rejects_oversized_fields(self):
+        serializer = CustomerSettlementCreateInputSerializer(
+            data={
+                "entity": 1,
+                "entityfinid": 1,
+                "customer": 1,
+                "settlement_type": "receipt",
+                "settlement_date": "2026-04-01",
+                "reference_no": "R" * 51,
+                "external_voucher_no": "E" * 51,
+                "remarks": "M" * 256,
+                "lines": [
+                    {
+                        "open_item_id": 1,
+                        "amount": "10.00",
+                        "note": "N" * 256,
+                    }
+                ],
+            }
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("reference_no", serializer.errors)
+        self.assertIn("external_voucher_no", serializer.errors)
+        self.assertIn("remarks", serializer.errors)
+        self.assertIn("lines", serializer.errors)
+        self.assertIn("note", serializer.errors["lines"][0])

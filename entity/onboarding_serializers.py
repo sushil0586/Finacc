@@ -522,6 +522,11 @@ class RegisterAndOnboardSerializer(serializers.Serializer):
                 "seed_options": mutable.get("seed_options"),
             }
             onboarding_payload["entity"] = entity_payload
+            onboarding_payload = {
+                key: value
+                for key, value in onboarding_payload.items()
+                if value is not None
+            }
             mutable["onboarding"] = onboarding_payload
         return super().to_internal_value(mutable)
 

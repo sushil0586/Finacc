@@ -63,6 +63,7 @@ from sales.views.eway_views import (
     SalesInvoiceGetEWayBillsForTransporterByGSTINAPIView,
     SalesInvoiceGenerateConsolidatedEWayAPIView,
 )
+from sales.views.sales_ar import CustomerSettlementListCreateAPIView
 from sales.views.sales_ar_exports import CustomerStatementExcelAPIView
 from posting.adapters.sales_invoice import SalesInvoicePostingAdapter, SalesInvoicePostingConfig
 from posting.common.static_accounts import StaticAccountCodes
@@ -2496,7 +2497,11 @@ class SalesInvoiceViewUnitTests(SimpleTestCase):
     def setUp(self):
         self.factory = APIRequestFactory()
         self.user = SimpleNamespace(is_authenticated=True, id=7)
-        self.header = SimpleNamespace(entity_id=1, doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE))
+        self.header = SimpleNamespace(
+            entity_id=1,
+            doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+            status=int(SalesInvoiceHeader.Status.CONFIRMED),
+        )
 
     def _build_request(self, path: str, payload: dict | None = None):
         request = self.factory.post(path, payload or {}, format="json")
@@ -4202,6 +4207,7 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
         save_spy.assert_called()
         mocked_log_action.assert_called_once()
 
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._get_mastergst_cred_for_entity", return_value=object())
     @patch("sales.services.sales_compliance_service.ComplianceAuditService.resolve_exception")
     @patch("sales.services.sales_compliance_service.ComplianceAuditService.log_action")
     @patch("sales.services.sales_compliance_service.ProviderRegistry.get_eway")
@@ -4214,6 +4220,7 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
         mocked_get_provider,
         mocked_log_action,
         mocked_resolve_exception,
+        _mocked_cred,
     ):
         invoice = SimpleNamespace(id=10, entity=SimpleNamespace(id=1), einvoice_artifact=None)
         user = SimpleNamespace(id=7)
@@ -4620,6 +4627,7 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
         self.assertEqual(called_payload["transDocDate"], "18/06/2026")
         mocked_log_action.assert_called_once()
 
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._get_mastergst_cred_for_entity", return_value=object())
     @patch("sales.services.sales_compliance_service.ComplianceAuditService.resolve_exception")
     @patch("sales.services.sales_compliance_service.ComplianceAuditService.log_action")
     @patch("sales.services.sales_compliance_service.ProviderRegistry.get_einvoice")
@@ -4632,6 +4640,7 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
         mocked_get_provider,
         mocked_log_action,
         mocked_resolve_exception,
+        _mocked_cred,
     ):
         invoice = SimpleNamespace(
             id=10,
@@ -4687,6 +4696,7 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
         )
         save_spy.assert_called()
 
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._get_mastergst_cred_for_entity", return_value=object())
     @patch("sales.services.sales_compliance_service.ComplianceAuditService.resolve_exception")
     @patch("sales.services.sales_compliance_service.ComplianceAuditService.log_action")
     @patch("sales.services.sales_compliance_service.ProviderRegistry.get_einvoice")
@@ -4701,6 +4711,7 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
         mocked_get_provider,
         mocked_log_action,
         mocked_resolve_exception,
+        _mocked_cred,
     ):
         invoice = SimpleNamespace(id=10, entity=SimpleNamespace(id=1))
         user = SimpleNamespace(id=7)
@@ -4795,7 +4806,7 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
         self.assertEqual(response.data, [{"id": 10, "invoice_number": "INV-10"}])
 
     @patch("sales.views.sales_invoice_views.require_sales_request_permission")
-    @patch("rest_framework.generics.RetrieveUpdateAPIView.update")
+    @patch("rest_framework.generics.RetrieveUpdateDestroyAPIView.update")
     @patch.object(SalesInvoiceRetrieveUpdateAPIView, "get_object")
     def test_update_view_returns_structured_validation_error_payload(
         self,
@@ -4818,7 +4829,7 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
         mocked_require_permission.assert_called_once()
 
     @patch("sales.views.sales_invoice_views.require_sales_request_permission")
-    @patch("rest_framework.generics.RetrieveUpdateAPIView.partial_update")
+    @patch("rest_framework.generics.RetrieveUpdateDestroyAPIView.partial_update")
     @patch.object(SalesInvoiceRetrieveUpdateAPIView, "get_object")
     def test_partial_update_view_returns_structured_validation_error_payload(
         self,
@@ -5778,3 +5789,48 @@ class CustomerStatementExportViewTests(SimpleTestCase):
         )
         self.assertIn("attachment;", response["Content-Disposition"])
         self.assertIn("CustomerLedger_", response["Content-Disposition"])
+
+
+class CustomerSettlementValidationViewTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.user = SimpleNamespace(id=11, is_authenticated=True)
+
+    @patch("sales.views.sales_ar.SalesArService.create_settlement")
+    @patch("sales.views.sales_ar._require_ar_manage_permission")
+    def test_create_view_rejects_oversized_settlement_fields_before_service(
+        self,
+        mocked_require_permission,
+        mocked_create_settlement,
+    ):
+        request = self.factory.post(
+            "/api/sales/ar/settlements/",
+            {
+                "entity": 10,
+                "entityfinid": 20,
+                "customer": 30,
+                "settlement_type": "receipt",
+                "settlement_date": "2026-04-01",
+                "reference_no": "R" * 51,
+                "external_voucher_no": "E" * 51,
+                "remarks": "M" * 256,
+                "lines": [
+                    {
+                        "open_item_id": 1,
+                        "amount": "10.00",
+                        "note": "N" * 256,
+                    }
+                ],
+            },
+            format="json",
+        )
+        force_authenticate(request, user=self.user)
+
+        response = CustomerSettlementListCreateAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("reference_no", response.data)
+        self.assertIn("external_voucher_no", response.data)
+        self.assertIn("remarks", response.data)
+        self.assertIn("lines", response.data)
+        mocked_create_settlement.assert_not_called()

@@ -331,6 +331,33 @@ class InventoryOpsTests(APITestCase):
         delete_resp = self.client.delete(reverse('inventory_ops:inventory-godown-master-detail', kwargs={'pk': godown_id}))
         self.assertEqual(delete_resp.status_code, 204)
 
+    def test_godown_create_rejects_oversized_fields(self):
+        response = self.client.post(
+            reverse('inventory_ops:inventory-godown-master'),
+            {
+                'entity': self.entity.id,
+                'subentity': self.subentity.id,
+                'name': 'N' * 151,
+                'code': 'C' * 51,
+                'address': 'A' * 256,
+                'city': 'Y' * 256,
+                'state': 'S' * 256,
+                'pincode': '1' * 21,
+                'capacity': '100.00',
+                'is_active': True,
+                'is_default': False,
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('name', response.json())
+        self.assertIn('code', response.json())
+        self.assertIn('address', response.json())
+        self.assertIn('city', response.json())
+        self.assertIn('state', response.json())
+        self.assertIn('pincode', response.json())
+
     def test_create_transfer_saves_draft_without_posting_moves(self):
         response = self.client.post(reverse('inventory_ops:inventory-transfers'), self._transfer_payload(), format='json')
         self.assertEqual(response.status_code, 201)
@@ -347,6 +374,19 @@ class InventoryOpsTests(APITestCase):
         transfer_id = body['transfer']['id']
         self.assertTrue(body['transfer']['transfer_no'].startswith('ITF-'))
         self.assertEqual(InventoryMove.objects.filter(txn_id=transfer_id, txn_type='IT').count(), 0)
+
+    def test_create_transfer_rejects_oversized_fields(self):
+        payload = self._transfer_payload()
+        payload['reference_no'] = 'R' * 101
+        payload['narration'] = 'N' * 501
+        payload['lines'][0]['batch_number'] = 'B' * 81
+        payload['lines'][0]['note'] = 'T' * 201
+
+        response = self.client.post(reverse('inventory_ops:inventory-transfers'), payload, format='json')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('reference_no', response.json())
+        self.assertIn('narration', response.json())
 
     def test_transfer_post_unpost_and_cancel_flow(self):
         created = self.client.post(reverse('inventory_ops:inventory-transfers'), self._transfer_payload(), format='json')
@@ -532,6 +572,19 @@ class InventoryOpsTests(APITestCase):
         self.assertAlmostEqual(float(body['adjustment']['total_value']), 50000.0)
         adjustment_id = body['adjustment']['id']
         self.assertEqual(InventoryMove.objects.filter(txn_id=adjustment_id, txn_type='IA').count(), 0)
+
+    def test_create_adjustment_rejects_oversized_fields(self):
+        payload = self._adjustment_payload()
+        payload['reference_no'] = 'R' * 101
+        payload['narration'] = 'N' * 501
+        payload['lines'][0]['batch_number'] = 'B' * 81
+        payload['lines'][0]['note'] = 'T' * 201
+
+        response = self.client.post(reverse('inventory_ops:inventory-adjustments'), payload, format='json')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('reference_no', response.json())
+        self.assertIn('narration', response.json())
 
     def test_adjustment_post_unpost_and_cancel_flow(self):
         created = self.client.post(reverse('inventory_ops:inventory-adjustments'), self._adjustment_payload(), format='json')

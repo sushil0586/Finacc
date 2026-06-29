@@ -51,8 +51,8 @@ class BankStatementImportCreateSerializer(serializers.Serializer):
     bank_account = serializers.IntegerField()
     file = serializers.FileField()
     source_file_type = serializers.ChoiceField(choices=((BankStatementImport.FileType.CSV, "CSV"), (BankStatementImport.FileType.XLSX, "XLSX")))
-    parser_key = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    delimiter = serializers.CharField(required=False, allow_blank=True, allow_null=True, default=",")
+    parser_key = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=50)
+    delimiter = serializers.CharField(required=False, allow_blank=True, allow_null=True, default=",", max_length=5)
     statement_from = serializers.DateField(required=False, allow_null=True)
     statement_to = serializers.DateField(required=False, allow_null=True)
     opening_balance = serializers.DecimalField(required=False, allow_null=True, max_digits=14, decimal_places=2)
@@ -68,7 +68,7 @@ class BankStatementImportPreviewSerializer(serializers.Serializer):
     bank_account = serializers.IntegerField()
     file = serializers.FileField()
     source_file_type = serializers.ChoiceField(choices=((BankStatementImport.FileType.CSV, "CSV"), (BankStatementImport.FileType.XLSX, "XLSX")))
-    delimiter = serializers.CharField(required=False, allow_blank=True, allow_null=True, default=",")
+    delimiter = serializers.CharField(required=False, allow_blank=True, allow_null=True, default=",", max_length=5)
     column_map = serializers.JSONField(required=False, default=dict)
 
 
@@ -159,7 +159,7 @@ class BankStatementImportUpdateSerializer(serializers.Serializer):
     statement_to = serializers.DateField(required=False, allow_null=True)
     opening_balance = serializers.DecimalField(required=False, allow_null=True, max_digits=14, decimal_places=2)
     closing_balance = serializers.DecimalField(required=False, allow_null=True, max_digits=14, decimal_places=2)
-    declared_account_number = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    declared_account_number = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=32)
 
 
 class BankStatementImportArchiveSerializer(serializers.Serializer):
@@ -232,7 +232,7 @@ class UnmatchRequestSerializer(serializers.Serializer):
 class VoucherAllocationSerializer(serializers.Serializer):
     counterpart_account_id = serializers.IntegerField()
     amount = serializers.DecimalField(max_digits=14, decimal_places=2)
-    narration = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    narration = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
 
 
 class VoucherCreationRequestSerializer(serializers.Serializer):
@@ -256,9 +256,9 @@ class VoucherCreationRequestSerializer(serializers.Serializer):
     counterpart_account_id = serializers.IntegerField()
     allocations = VoucherAllocationSerializer(many=True, required=False)
     voucher_date = serializers.DateField(required=False, allow_null=True)
-    reference_number = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    reference_number = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=100)
     narration = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    instrument_no = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    instrument_no = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=50)
     instrument_date = serializers.DateField(required=False, allow_null=True)
 
 

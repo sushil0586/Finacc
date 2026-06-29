@@ -28,7 +28,9 @@ from withholding.serializers import WithholdingSectionSerializer
 from withholding.serializers import (
     EntityPartyTaxProfileSerializer,
     EntityWithholdingConfigSerializer,
+    GstTcsComputeRequestSerializer,
     EntityWithholdingSectionPostingMapSerializer,
+    TcsComputeRequestSerializer,
     TcsCollectionSerializer,
     TcsDepositSerializer,
     TcsQuarterlyReturnSerializer,
@@ -846,6 +848,29 @@ class WithholdingTcsDepositStateTests(SimpleTestCase):
 
         self.assertEqual(_tcs_computation_total_deposited(computation, deposited_only=True), Decimal("60.00"))
         self.assertEqual(_tcs_computation_total_deposited(computation, deposited_only=False), Decimal("100.00"))
+
+    @patch("withholding.views._require_tcs_scope_permission")
+    @patch("withholding.views.TcsCollection.objects.get")
+    @patch("withholding.views.TcsDeposit.objects.get")
+    def test_allocate_api_rejects_oversized_amount_before_collection_lookup(
+        self,
+        mocked_deposit_get,
+        mocked_collection_get,
+        mocked_scope_permission,
+    ):
+        mocked_deposit_get.return_value = SimpleNamespace(id=10, entity_id=1, status="CONFIRMED")
+
+        request = APIRequestFactory().post(
+            "/tcs/deposits/10/allocate/",
+            {"collection_id": 20, "allocated_amount": "9" * 40},
+            format="json",
+        )
+        force_authenticate(request, user=SimpleNamespace(is_authenticated=True))
+        response = TcsDepositAllocateAPIView.as_view()(request, pk=10)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("allocated_amount", response.data)
+        mocked_collection_get.assert_not_called()
 
     @patch("withholding.views._require_tcs_scope_permission")
     @patch("withholding.views.TcsCollection.objects.get")
@@ -2848,6 +2873,59 @@ class WithholdingSerializerGuardTests(SimpleTestCase):
                 }
             )
         self.assertIn("payable_account", str(exc.exception))
+
+    def test_entity_party_profile_rejects_oversized_text_fields(self):
+        serializer = EntityPartyTaxProfileSerializer(
+            data={
+                "entity": 1,
+                "party_account": 1,
+                "pan": "A" * 17,
+                "tax_identifier": "T" * 65,
+                "declaration_reference": "D" * 65,
+                "treaty_article": "R" * 65,
+            }
+        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("pan", serializer.errors)
+        self.assertIn("tax_identifier", serializer.errors)
+        self.assertIn("declaration_reference", serializer.errors)
+        self.assertIn("treaty_article", serializer.errors)
+
+    def test_tcs_compute_request_rejects_oversized_text_fields(self):
+        serializer = TcsComputeRequestSerializer(
+            data={
+                "entity_id": 1,
+                "entityfin_id": 1,
+                "doc_date": "2026-04-01",
+                "document_type": "D" * 31,
+                "document_no": "N" * 61,
+                "module_name": "M" * 31,
+                "trigger_basis": "T" * 21,
+                "override_reason": "R" * 256,
+            }
+        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("document_type", serializer.errors)
+        self.assertIn("document_no", serializer.errors)
+        self.assertIn("module_name", serializer.errors)
+        self.assertIn("trigger_basis", serializer.errors)
+        self.assertIn("override_reason", serializer.errors)
+
+    def test_gst_tcs_compute_request_rejects_oversized_text_fields(self):
+        serializer = GstTcsComputeRequestSerializer(
+            data={
+                "entity_id": 1,
+                "eco_profile_id": 1,
+                "supplier_account_id": 1,
+                "doc_date": "2026-04-01",
+                "document_type": "D" * 21,
+                "document_no": "N" * 61,
+                "taxable_value": "100.00",
+            }
+        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("document_type", serializer.errors)
+        self.assertIn("document_no", serializer.errors)
 
 
 class WithholdingDeleteProtectionTests(SimpleTestCase):

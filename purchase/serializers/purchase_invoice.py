@@ -58,6 +58,10 @@ def _norm_text(value) -> str:
 class PurchaseInvoiceLineSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False, allow_null=True)
     is_gst_manual = serializers.BooleanField(required=False, default=False, write_only=True)
+    product_desc = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=500)
+    hsn_sac = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=10)
+    batch_number = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=80)
+    itc_block_reason = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=200)
     purchase_behavior = serializers.ChoiceField(
         choices=ProductPurchaseBehavior.choices,
         required=False,
@@ -329,6 +333,27 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
     lines = PurchaseInvoiceLineSerializer(many=True, required=False)
     charges = PurchaseChargeLineSerializer(many=True, required=False)
     custom_fields = serializers.JSONField(source="custom_fields_json", required=False)
+    credit_days = serializers.IntegerField(required=False, allow_null=True, max_value=32767)
+    doc_code = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=10)
+    purchase_number = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=50)
+    supplier_invoice_number = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=50)
+    po_reference_no = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=50)
+    grn_reference_no = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=50)
+    vendor_name = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=200)
+    vendor_gstin = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=15)
+    currency_code = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=3)
+    base_currency_code = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=3)
+    itc_claim_period = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=7)
+    itc_block_reason = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=200)
+    cancel_reason = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
+    tds_reason = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
+    vendor_tds_notes = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
+    gst_tds_contract_ref = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=64)
+    gst_tds_reason = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
+    vendor_gst_tds_notes = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
+    legacy_source_system = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=100)
+    legacy_source_key = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
+    legacy_import_mode = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=30)
     location = serializers.PrimaryKeyRelatedField(queryset=Godown.objects.all(), required=False, allow_null=True)
     vendor_display_name = serializers.CharField(source="vendor.effective_accounting_name", read_only=True)
     vendor_accountcode = serializers.IntegerField(source="vendor.effective_accounting_code", read_only=True)
@@ -417,6 +442,19 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
                 line_mode=self.context.get("line_mode"),
             )
         return data
+
+    def get_validators(self):
+        validators = super().get_validators()
+        filtered_fields = {
+            ("entity", "entityfinid", "subentity", "doc_type", "doc_code", "doc_no"),
+            ("entity", "entityfinid", "doc_type", "doc_code", "doc_no"),
+            ("entity", "legacy_source_system", "legacy_source_key"),
+        }
+        return [
+            validator
+            for validator in validators
+            if getattr(validator, "fields", ()) not in filtered_fields
+        ]
 
     class Meta:
         model = PurchaseInvoiceHeader
@@ -640,6 +678,14 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
         except Exception:
             return None
 
+    @staticmethod
+    def _default_doc_code_for_type(doc_type: int, settings_obj) -> str:
+        if int(doc_type) == int(PurchaseInvoiceHeader.DocType.CREDIT_NOTE):
+            return str(getattr(settings_obj, "default_doc_code_cn", "") or "PCN").strip()
+        if int(doc_type) == int(PurchaseInvoiceHeader.DocType.DEBIT_NOTE):
+            return str(getattr(settings_obj, "default_doc_code_dn", "") or "PDN").strip()
+        return str(getattr(settings_obj, "default_doc_code_invoice", "") or "PINV").strip()
+
     # ----------------------------
     # Header-level validations
     # ----------------------------
@@ -650,6 +696,13 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
         entity = attrs.get("entity") or getattr(inst, "entity_id", None)
         entityfinid = attrs.get("entityfinid") or getattr(inst, "entityfinid", None)
         subentity = attrs.get("subentity") or getattr(inst, "subentity_id", None)
+        entity_id = int(getattr(entity, "id", entity)) if entity else None
+        subentity_id = int(getattr(subentity, "id", subentity)) if subentity is not None else None
+        doc_type = int(attrs.get("doc_type") or getattr(inst, "doc_type", PurchaseInvoiceHeader.DocType.TAX_INVOICE))
+        doc_code = str(attrs.get("doc_code", getattr(inst, "doc_code", "")) or "").strip()
+        if not doc_code and entity_id is not None:
+            settings_obj = PurchaseSettingsService.get_settings(entity_id=entity_id, subentity_id=subentity_id)
+            attrs["doc_code"] = self._default_doc_code_for_type(doc_type, settings_obj)
         bill_date = attrs.get("bill_date") or getattr(inst, "bill_date", None)
         posting_date = attrs.get("posting_date") or getattr(inst, "posting_date", None)
         credit_days = attrs.get("credit_days") if "credit_days" in attrs else getattr(inst, "credit_days", None)

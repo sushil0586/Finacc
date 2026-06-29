@@ -22,10 +22,12 @@ from payments.views.payment_exports import PaymentVoucherPDFAPIView
 from payments.views.payment_meta import PaymentVoucherDetailFormMetaAPIView
 from payments.views.payment_voucher import (
     PaymentVoucherApprovalAPIView,
+    PaymentVoucherCancelAPIView,
     PaymentVoucherListCreateAPIView,
     PaymentVoucherPostAPIView,
     _duplicate_reference_warnings,
 )
+from payments.views.payment_settings import PaymentSettingsAPIView
 from posting.adapters.payment_voucher import PaymentVoucherPostingAdapter
 from withholding.models import WithholdingBaseRule
 
@@ -885,6 +887,8 @@ class PaymentVoucherPDFEndpointTests(SimpleTestCase):
 
 
 class PaymentVoucherViewValidationTests(SimpleTestCase):
+    databases = {"default"}
+
     def setUp(self):
         self.factory = APIRequestFactory()
         self.user = SimpleNamespace(is_authenticated=True, id=7)
@@ -917,7 +921,43 @@ class PaymentVoucherViewValidationTests(SimpleTestCase):
         response = PaymentVoucherApprovalAPIView.as_view()(request, pk=9)
 
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(str(response.data["action"]), "Use submit, approve, or reject.")
+        self.assertIn("not a valid choice", str(response.data["action"]))
+        mocked_error_log.assert_called_once()
+
+    @patch("errorlogger.drf_exception_handler.ErrorLog.objects.create")
+    @patch("payments.views.payment_voucher.PaymentVoucherHeader.objects")
+    def test_approval_view_rejects_oversized_remarks(self, mocked_header_objects, mocked_error_log):
+        mocked_header_objects.only.return_value.get.return_value = SimpleNamespace(id=9, entity_id=1)
+        request = self._request(
+            "/api/payments/payment-vouchers/9/approval/",
+            {"action": "submit", "remarks": "R" * 256},
+        )
+
+        response = PaymentVoucherApprovalAPIView.as_view()(request, pk=9)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("remarks", response.data)
+        mocked_error_log.assert_called_once()
+
+    @patch("errorlogger.drf_exception_handler.ErrorLog.objects.create")
+    @patch("payments.views.payment_voucher._require_payment_permission")
+    @patch("payments.views.payment_voucher.PaymentVoucherHeader.objects")
+    def test_cancel_view_rejects_oversized_reason(
+        self,
+        mocked_header_objects,
+        _mocked_require_permission,
+        mocked_error_log,
+    ):
+        mocked_header_objects.only.return_value.get.return_value = SimpleNamespace(id=9, entity_id=1)
+        request = self._request(
+            "/api/payments/payment-vouchers/9/cancel/",
+            {"reason": "C" * 256},
+        )
+
+        response = PaymentVoucherCancelAPIView.as_view()(request, pk=9)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("reason", response.data)
         mocked_error_log.assert_called_once()
 
     @patch("payments.views.payment_voucher._require_payment_permission")
@@ -947,6 +987,78 @@ class PaymentVoucherViewValidationTests(SimpleTestCase):
             "Advance settlement synced later",
             "Static fallback used",
         ])
+
+
+class PaymentSettingsValidationTests(SimpleTestCase):
+    databases = {"default"}
+
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.user = SimpleNamespace(is_authenticated=True, id=7)
+
+    def _request(self, path: str, data=None):
+        request = self.factory.patch(path, data or {}, format="json")
+        force_authenticate(request, user=self.user)
+        return request
+
+    @patch("errorlogger.drf_exception_handler.ErrorLog.objects.create")
+    @patch.object(PaymentSettingsAPIView, "_payload", return_value={"ok": True})
+    @patch.object(PaymentSettingsAPIView, "_scope", return_value=(1, None, 2))
+    @patch("payments.views.payment_settings.PaymentSettingsService.upsert_settings")
+    def test_settings_patch_rejects_oversized_lock_period_reason(
+        self,
+        mocked_upsert,
+        _mocked_scope,
+        _mocked_payload,
+        mocked_error_log,
+    ):
+        mocked_upsert.return_value = SimpleNamespace(default_doc_code_payment="PPV")
+        request = self._request(
+            "/api/payments/settings/?entity=1&entityfinid=2",
+            {"lock_periods": [{"lock_date": "2026-04-01", "reason": "R" * 201}]},
+        )
+
+        response = PaymentSettingsAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("lock_periods", response.data)
+        mocked_error_log.assert_called_once()
+
+    @patch("errorlogger.drf_exception_handler.ErrorLog.objects.create")
+    @patch.object(PaymentSettingsAPIView, "_payload", return_value={"ok": True})
+    @patch.object(PaymentSettingsAPIView, "_scope", return_value=(1, None, 2))
+    @patch.object(PaymentSettingsAPIView, "_valid_override_keys", return_value={"payment_modes": {"NEFT"}})
+    @patch("payments.views.payment_settings.PaymentChoiceService.compile_choices", return_value={"payment_modes": [{"key": "NEFT"}]})
+    @patch("payments.views.payment_settings.PaymentSettingsService.upsert_settings")
+    def test_settings_patch_rejects_oversized_choice_override_label(
+        self,
+        mocked_upsert,
+        _mocked_compile_choices,
+        _mocked_valid_override_keys,
+        _mocked_scope,
+        _mocked_payload,
+        mocked_error_log,
+    ):
+        mocked_upsert.return_value = SimpleNamespace(default_doc_code_payment="PPV")
+        request = self._request(
+            "/api/payments/settings/?entity=1&entityfinid=2",
+            {
+                "choice_overrides": [
+                    {
+                        "choice_group": "payment_modes",
+                        "choice_key": "NEFT",
+                        "is_enabled": True,
+                        "override_label": "L" * 201,
+                    }
+                ]
+            },
+        )
+
+        response = PaymentSettingsAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("choice_overrides", response.data)
+        mocked_error_log.assert_called_once()
 
 
 class PaymentVoucherCashGuardTests(SimpleTestCase):

@@ -139,4 +139,4 @@ class ApprovalRequestSerializer(serializers.ModelSerializer):
 
 
 class ApprovalRequestActionSerializer(serializers.Serializer):
-    remarks = serializers.CharField(required=False, allow_blank=True, default="")
+    remarks = serializers.CharField(required=False, allow_blank=True, default="", max_length=255)

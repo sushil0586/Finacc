@@ -377,6 +377,27 @@ class AssetApiScopeTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("asset_ledger", response.data)
 
+    def test_category_create_rejects_oversized_fields(self):
+        response = self.client.post(
+            reverse("assets_api:asset-category-list-create"),
+            {
+                "entity": self.entity.id,
+                "subentity": self.subentity.id,
+                "code": "C" * 31,
+                "name": "N" * 256,
+                "nature": "TANGIBLE",
+                "depreciation_method": "SLM",
+                "useful_life_months": 60,
+                "traceability_controls": {"serial_number_rule": "inherit"},
+                "accounting_controls": {"asset_ledger_rule": "inherit"},
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("code", response.data)
+        self.assertIn("name", response.data)
+
     def test_detail_blocks_asset_from_unrelated_entity(self):
         response = self.client.get(reverse("assets_api:fixed-asset-detail", args=[self.foreign_asset.id]))
 
@@ -560,6 +581,62 @@ class AssetApiScopeTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("accumulated_depreciation", response.data)
         self.assertIn("net_book_value", response.data)
+
+    def test_asset_settings_reject_oversized_doc_codes(self):
+        response = self.client.put(
+            reverse("assets_api:asset-settings"),
+            {
+                "entity": self.entity.id,
+                "subentity": self.subentity.id,
+                "default_doc_code_asset": "A" * 11,
+                "default_doc_code_disposal": "D" * 11,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("default_doc_code_asset", response.data)
+        self.assertIn("default_doc_code_disposal", response.data)
+
+    def test_create_asset_rejects_oversized_fields(self):
+        payload = {
+            "entity": self.entity.id,
+            "subentity": self.subentity.id,
+            "entityfinid": self.entityfin.id,
+            "category": self.category.id,
+            "ledger": self.asset_ledger.id,
+            "asset_code": "A" * 51,
+            "asset_name": "N" * 256,
+            "asset_tag": "T" * 101,
+            "serial_number": "S" * 101,
+            "manufacturer": "M" * 256,
+            "model_number": "D" * 101,
+            "acquisition_date": "2026-04-01",
+            "gross_block": "1000.00",
+            "residual_value": "0.00",
+            "location_name": "L" * 256,
+            "department_name": "P" * 256,
+            "custodian_name": "C" * 256,
+            "purchase_document_no": "Q" * 101,
+            "external_reference": "E" * 101,
+            "notes": "X" * 501,
+        }
+
+        response = self.client.post(reverse("assets_api:fixed-asset-list-create"), payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("asset_code", response.data)
+        self.assertIn("asset_name", response.data)
+        self.assertIn("asset_tag", response.data)
+        self.assertIn("serial_number", response.data)
+        self.assertIn("manufacturer", response.data)
+        self.assertIn("model_number", response.data)
+        self.assertIn("location_name", response.data)
+        self.assertIn("department_name", response.data)
+        self.assertIn("custodian_name", response.data)
+        self.assertIn("purchase_document_no", response.data)
+        self.assertIn("external_reference", response.data)
+        self.assertIn("notes", response.data)
 
     def test_update_rejects_manual_active_status_change(self):
         response = self.client.put(

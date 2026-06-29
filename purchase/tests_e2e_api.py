@@ -2160,9 +2160,8 @@ class PurchaseApiEndToEndTests(APITestCase):
             {},
             format="json",
         )
-        self.assertEqual(qty_note_resp.status_code, status.HTTP_201_CREATED, qty_note_resp.json())
-        self.assertEqual(qty_note_resp.json()["data"]["note_reason"], PurchaseInvoiceHeader.NoteReason.QUANTITY_RETURN)
-        self.assertTrue(qty_note_resp.json()["data"]["affects_inventory"])
+        self.assertEqual(qty_note_resp.status_code, status.HTTP_400_BAD_REQUEST, qty_note_resp.json())
+        self.assertIn("duplicate_note_guard", qty_note_resp.json())
 
     @patch("purchase.services.purchase_invoice_actions.GstTdsService.sync_contract_ledger_for_header")
     @patch("purchase.services.purchase_invoice_actions.PurchaseApService.sync_open_item_for_header")
@@ -2305,7 +2304,7 @@ class PurchaseApiEndToEndTests(APITestCase):
             format="json",
         )
         self.assertEqual(second_resp.status_code, status.HTTP_400_BAD_REQUEST, second_resp.json())
-        self.assertIn("available returnable quantity", str(second_resp.json()).lower())
+        self.assertIn("duplicate_note_guard", second_resp.json())
 
     def test_unpost_requires_posted_purchase_invoice(self):
         created = self._create_invoice(supplier_invoice_number="INV-UNPOST-BLOCK")

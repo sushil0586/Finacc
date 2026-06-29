@@ -215,3 +215,33 @@ class EntityEmploymentApiTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data["code"], "tenant_membership_required")
+
+    def test_create_employment_profile_rejects_oversized_fields(self):
+        response = self.client.post(
+            "/api/entity/employment/",
+            {
+                "entity": self.entity.id,
+                "subentity": self.subentity.id,
+                "employee_user": self.employee.id,
+                "employee_code": "E" * 41,
+                "full_name": "N" * 201,
+                "work_email": ("a" * 245) + "@example.com",
+                "department": self.department.id,
+                "designation": self.designation.id,
+                "work_location": self.location.id,
+                "manager_user": self.manager.id,
+                "employment_type": "full_time",
+                "work_type": "hybrid",
+                "status": "active",
+                "effective_from": "2025-04-01",
+                "date_of_joining": "2025-04-01",
+                "separation_reason": "S" * 256,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("employee_code", response.data)
+        self.assertIn("full_name", response.data)
+        self.assertIn("work_email", response.data)
+        self.assertIn("separation_reason", response.data)

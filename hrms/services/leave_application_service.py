@@ -4,9 +4,11 @@ from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
+from rest_framework.exceptions import ValidationError as DRFValidationError
 
 from entity.approval_workflow_service import ApprovalWorkflowService
 from entity.notification_service import NotificationService
@@ -26,6 +28,10 @@ def _decimal(value: Any, default: Decimal = ZERO2) -> Decimal:
 
 
 class LeaveApplicationService:
+    @staticmethod
+    def _raise_drf_validation(err: DjangoValidationError):
+        raise DRFValidationError(getattr(err, "message_dict", {"detail": err.messages}))
+
     @staticmethod
     def _notification_users_for_application(application: LeaveApplication, *extra_user_ids: int | None):
         user_ids: set[int] = set()
@@ -108,7 +114,10 @@ class LeaveApplicationService:
                 "created_via": attrs.get("created_via", "service"),
             },
         )
-        application.save()
+        try:
+            application.save()
+        except DjangoValidationError as err:
+            cls._raise_drf_validation(err)
         ApprovalWorkflowService.submit_for_approval(
             instance=application,
             workflow_key="leave_application",
@@ -144,5 +153,8 @@ class LeaveApplicationService:
         application.cancelled_by_id = actor_id
         application.cancelled_at = timezone.now()
         application.manager_note = manager_note or application.manager_note
-        application.save(update_fields=["status", "cancelled_by", "cancelled_at", "manager_note", "updated_at"])
+        try:
+            application.save(update_fields=["status", "cancelled_by", "cancelled_at", "manager_note", "updated_at"])
+        except DjangoValidationError as err:
+            cls._raise_drf_validation(err)
         return application

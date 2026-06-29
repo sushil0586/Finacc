@@ -245,7 +245,7 @@ class CustomerAdvanceBalanceSerializer(serializers.ModelSerializer):
 class CustomerSettlementCreateLineInputSerializer(serializers.Serializer):
     open_item_id = serializers.IntegerField(min_value=1)
     amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0.01"))
-    note = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    note = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
 
 
 class CustomerSettlementCreateInputSerializer(serializers.Serializer):
@@ -256,9 +256,9 @@ class CustomerSettlementCreateInputSerializer(serializers.Serializer):
 
     settlement_type = serializers.ChoiceField(choices=CustomerSettlement.SettlementType.choices, default=CustomerSettlement.SettlementType.RECEIPT)
     settlement_date = serializers.DateField()
-    reference_no = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    external_voucher_no = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    remarks = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    reference_no = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=50)
+    external_voucher_no = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=50)
+    remarks = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=255)
 
     amount = serializers.DecimalField(max_digits=14, decimal_places=2, required=False, allow_null=True, min_value=Decimal("0.01"))
     advance_balance = serializers.IntegerField(min_value=1, required=False, allow_null=True)

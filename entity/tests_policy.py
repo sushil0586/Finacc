@@ -1,5 +1,5 @@
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework.exceptions import ValidationError
 
 from Authentication.models import User
@@ -8,6 +8,7 @@ from entity.onboarding_services import EntityOnboardingService
 from geography.models import City, Country, District, State
 
 
+@override_settings(MASTERGST_ENV="PRODUCTION", SALES_MASTERGST_ENV="PRODUCTION", ALLOW_RELAXED_GSTIN_FOR_SANDBOX=False)
 class EntityPolicyTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(
@@ -174,6 +175,8 @@ class EntityPolicyTests(TestCase):
 
     def test_hard_policy_rejects_subentity_gstin_state_mismatch(self):
         other_state = State.objects.create(statename="Haryana", statecode="06", country=self.country)
+        other_district = District.objects.create(districtname="Ambala", districtcode="AMB", state=other_state)
+        other_city = City.objects.create(cityname="Ambala", citycode="AMB", pincode="133001", distt=other_district)
         payload = self._payload()
         payload["subentities"] = [
             {
@@ -181,8 +184,8 @@ class EntityPolicyTests(TestCase):
                 "is_head_office": True,
                 "country": self.country,
                 "state": other_state,
-                "district": self.district,
-                "city": self.city,
+                "district": other_district,
+                "city": other_city,
                 "gstno": "03APXPB5894F1Z3",
                 "GstRegitrationType": self.gst_type,
             }
@@ -191,10 +194,12 @@ class EntityPolicyTests(TestCase):
         with self.assertRaises(ValidationError) as exc:
             EntityOnboardingService.create_entity(actor=self.user, payload=payload)
 
-        self.assertIn("does not match state code", str(exc.exception))
+        self.assertIn("must match state code 06", str(exc.exception))
 
     def test_soft_policy_returns_warning_for_subentity_gstin_state_mismatch(self):
         other_state = State.objects.create(statename="Haryana", statecode="06", country=self.country)
+        other_district = District.objects.create(districtname="Ambala", districtcode="AMB", state=other_state)
+        other_city = City.objects.create(cityname="Ambala", citycode="AMB", pincode="133001", distt=other_district)
         payload = self._payload()
         payload["policy"] = {
             "subentity_gstin_state_match_mode": "soft",
@@ -205,8 +210,8 @@ class EntityPolicyTests(TestCase):
                 "is_head_office": True,
                 "country": self.country,
                 "state": other_state,
-                "district": self.district,
-                "city": self.city,
+                "district": other_district,
+                "city": other_city,
                 "gstno": "03APXPB5894F1Z3",
                 "GstRegitrationType": self.gst_type,
             }

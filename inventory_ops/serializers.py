@@ -128,10 +128,10 @@ class GodownWriteSerializer(serializers.Serializer):
     subentity = serializers.IntegerField(required=False, allow_null=True)
     name = serializers.CharField(max_length=150)
     code = serializers.CharField(max_length=50)
-    address = serializers.CharField(allow_blank=True, required=False)
-    city = serializers.CharField(allow_blank=True, required=False)
-    state = serializers.CharField(allow_blank=True, required=False)
-    pincode = serializers.CharField(allow_blank=True, required=False)
+    address = serializers.CharField(allow_blank=True, required=False, max_length=255)
+    city = serializers.CharField(allow_blank=True, required=False, max_length=255)
+    state = serializers.CharField(allow_blank=True, required=False, max_length=255)
+    pincode = serializers.CharField(allow_blank=True, required=False, max_length=20)
     capacity = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, allow_null=True)
     is_active = serializers.BooleanField(required=False, default=True)
     is_default = serializers.BooleanField(required=False, default=False)
@@ -174,10 +174,10 @@ class InventoryTransferLineSerializer(serializers.Serializer):
     uom_id = serializers.IntegerField(required=False, allow_null=True)
     qty = serializers.DecimalField(max_digits=18, decimal_places=4)
     unit_cost = serializers.DecimalField(max_digits=14, decimal_places=4, required=False, allow_null=True)
-    batch_number = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    batch_number = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=80)
     manufacture_date = serializers.DateField(required=False, allow_null=True)
     expiry_date = serializers.DateField(required=False, allow_null=True)
-    note = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    note = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=200)
 
     def validate_qty(self, value):
         if value <= 0:
@@ -199,8 +199,8 @@ class InventoryTransferCreateSerializer(serializers.Serializer):
     transfer_date = serializers.DateField()
     source_location = serializers.IntegerField(required=False, allow_null=True)
     destination_location = serializers.IntegerField(required=False, allow_null=True)
-    reference_no = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    narration = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    reference_no = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=100)
+    narration = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=500)
     lines = InventoryTransferLineSerializer(many=True)
 
     def validate(self, attrs):
@@ -339,10 +339,10 @@ class InventoryAdjustmentLineSerializer(serializers.Serializer):
     direction = serializers.ChoiceField(choices=[choice[0] for choice in InventoryAdjustmentLine.Direction.choices])
     qty = serializers.DecimalField(max_digits=18, decimal_places=4)
     unit_cost = serializers.DecimalField(max_digits=14, decimal_places=4, required=False, allow_null=True)
-    batch_number = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    batch_number = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=80)
     manufacture_date = serializers.DateField(required=False, allow_null=True)
     expiry_date = serializers.DateField(required=False, allow_null=True)
-    note = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    note = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=200)
 
     def validate_qty(self, value):
         if value <= 0:
@@ -363,8 +363,8 @@ class InventoryAdjustmentCreateSerializer(serializers.Serializer):
     subentity = serializers.IntegerField(required=False, allow_null=True)
     adjustment_date = serializers.DateField()
     location = serializers.IntegerField(required=False, allow_null=True)
-    reference_no = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    narration = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    reference_no = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=100)
+    narration = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=500)
     lines = InventoryAdjustmentLineSerializer(many=True)
 
     def validate(self, attrs):
