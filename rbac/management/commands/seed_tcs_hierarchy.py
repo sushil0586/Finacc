@@ -6,6 +6,7 @@ from rbac.models import Menu, MenuPermission, Permission, Role, RolePermission
 
 TCS_PERMISSIONS = [
     ("tcs.menu.access", "TCS Menu Access", "tcs", "menu", "access"),
+    ("reports.financial_hub.tcs_compliance_center.view", "View TCS Compliance Center", "reports", "financial_hub_tcs_compliance_center", "view"),
     ("tcs.config.view", "View TCS Configuration", "tcs", "config", "view"),
     ("tcs.sections.view", "View TCS Sections", "tcs", "sections", "view"),
     ("tcs.rules.view", "View TCS Rules", "tcs", "rules", "view"),
@@ -204,6 +205,10 @@ class Command(BaseCommand):
             )
 
         if replace_role_permissions:
+            RolePermission.objects.filter(
+                role=role,
+                permission__code__in=["reports.financial_hub.tcs_compliance_center.view"],
+            ).delete()
             RolePermission.objects.filter(
                 role=role,
                 permission__code__startswith="tcs.",

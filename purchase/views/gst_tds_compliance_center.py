@@ -911,3 +911,9 @@ class PurchaseGstTdsComplianceCenterExportAPIView(PurchaseTdsComplianceCenterExp
         from reports.api.receivables_views import _safe_filename
 
         return _safe_filename(f"gst_tds_compliance_{tab_token}_{quarter}")
+
+    def _ca_pack_prefix(self) -> str:
+        return "gst_tds_compliance"
+
+    def _ca_pack_title(self) -> str:
+        return "GST-TDS Compliance Center CA Pack"

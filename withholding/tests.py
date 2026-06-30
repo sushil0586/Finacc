@@ -8,12 +8,15 @@ import zipfile
 from django.db.models import Q
 from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase
+from openpyxl import load_workbook
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from entity.models import Entity
 from financial.models import AccountComplianceProfile, account
 from financial.services import create_account_with_synced_ledger
 from payments.models.payment_core import PaymentVoucherHeader
+from purchase.models.purchase_core import PurchaseInvoiceHeader
+from sales.models.sales_core import SalesInvoiceHeader
 from withholding.models import (
     EntityPartyTaxProfile,
     EntityTcsThresholdOpening,
@@ -49,6 +52,7 @@ from withholding.views import (
     TcsSectionListCreateAPIView,
     TcsWorkspaceTransactionsAPIView,
     TcsWorkspaceTransactionsExportAPIView,
+    TcsComplianceCenterCaPackExportAPIView,
     WithholdingReadinessDashboardAPIView,
     _filing_readiness_errors,
     _row_readiness_status,
@@ -1667,8 +1671,6 @@ class WithholdingTcsReportingExportTests(TestCase):
             applicability_status="APPLICABLE",
             override_reason="",
             status="CONFIRMED",
-            fiscal_year="2026-27",
-            quarter="Q1",
             trigger_basis="INVOICE",
             computation_json={"reason_code": "APPLICABLE"},
             rule_snapshot_json={},
@@ -1819,6 +1821,8 @@ class WithholdingTcsReportingExportTests(TestCase):
             document_id=1001,
             document_no="SINV-TRACE-001",
             doc_date=date(2026, 4, 10),
+            fiscal_year="2026-27",
+            quarter="Q1",
             party_account_id=7,
             party_account=party,
             section_id=11,
@@ -1829,8 +1833,6 @@ class WithholdingTcsReportingExportTests(TestCase):
             applicability_status="APPLICABLE",
             override_reason="",
             status="CONFIRMED",
-            fiscal_year="2026-27",
-            quarter="Q1",
             trigger_basis="INVOICE",
             computation_json={"reason_code": "APPLICABLE"},
             rule_snapshot_json={},
@@ -1843,6 +1845,8 @@ class WithholdingTcsReportingExportTests(TestCase):
             document_id=1002,
             document_no="SINV-OTHER-002",
             doc_date=date(2026, 4, 12),
+            fiscal_year="2026-27",
+            quarter="Q1",
             party_account_id=7,
             party_account=party,
             section_id=11,
@@ -1853,8 +1857,6 @@ class WithholdingTcsReportingExportTests(TestCase):
             applicability_status="APPLICABLE",
             override_reason="",
             status="CONFIRMED",
-            fiscal_year="2026-27",
-            quarter="Q1",
             trigger_basis="INVOICE",
             computation_json={"reason_code": "APPLICABLE"},
             rule_snapshot_json={},
@@ -2093,7 +2095,149 @@ class WithholdingTcsWorkspaceExportTests(TestCase):
         self.assertIn("cumulative", transactions_csv)
 
 
+class WithholdingTcsComplianceCenterCaPackExportTests(TestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.user = get_user_model().objects.create_user(
+            username="tcs-ca-pack-tests",
+            email="tcs-ca-pack-tests@example.com",
+            password="testpass123",
+        )
+
+    @patch("withholding.views._require_tcs_scope_permission")
+    @patch("withholding.views.TcsQuarterlyReturn.objects.filter")
+    @patch.object(TcsReportLedgerAPIView, "get")
+    @patch.object(TcsReportFilingPackAPIView, "get")
+    @patch.object(TcsWorkspaceTransactionsAPIView, "get")
+    def test_ca_pack_export_builds_reviewer_workbook(
+        self,
+        mocked_workspace_get,
+        mocked_filing_get,
+        mocked_ledger_get,
+        mocked_return_filter,
+        _mocked_permission,
+    ):
+        mocked_workspace_get.return_value = SimpleNamespace(
+            data={
+                "filters": {"section": None, "customer_q": "Arnika G"},
+                "summary": {
+                    "total_transactions": 2,
+                    "total_computed_tcs": "120.00",
+                    "pending_collection": "20.00",
+                    "pending_deposit": "10.00",
+                },
+                "rows": [
+                    {
+                        "voucher_date": "2026-04-12",
+                        "voucher_no": "SI-1001",
+                        "customer_name": "Arnika G",
+                        "pan": "ABCDE1234F",
+                        "section_code": "206C(1H)",
+                        "base_amount": "1000.00",
+                        "computed_tcs": "10.00",
+                        "collected_tcs": "10.00",
+                        "deposited_tcs": "0.00",
+                        "pending_collection": "0.00",
+                        "pending_deposit": "10.00",
+                        "lifecycle_status": "COLLECTED_PENDING_DEPOSIT",
+                        "readiness_status": "FOLLOW_UP",
+                    }
+                ],
+                "section_summary": [
+                    {
+                        "section_code": "206C(1H)",
+                        "document_count": 1,
+                        "total_base": "1000.00",
+                        "total_computed_tcs": "10.00",
+                        "total_collected_tcs": "10.00",
+                        "total_deposited_tcs": "0.00",
+                        "pending_collection": "0.00",
+                        "pending_deposit": "10.00",
+                    }
+                ],
+                "unallocated_deposits": [
+                    {
+                        "challan_no": "CH-01",
+                        "challan_date": "2026-04-30",
+                        "status": "CONFIRMED",
+                        "total_deposit_amount": "50.00",
+                        "allocated_amount": "25.00",
+                        "unallocated_amount": "25.00",
+                    }
+                ],
+            }
+        )
+        mocked_filing_get.return_value = SimpleNamespace(
+            data={
+                "header": {
+                    "row_count": 1,
+                    "exception_row_count": 0,
+                    "return_status": "DRAFT",
+                },
+                "rows": [
+                    {
+                        "doc_date": "2026-04-12",
+                        "document_no": "SI-1001",
+                        "party_name": "Arnika G",
+                        "pan": "ABCDE1234F",
+                        "section_code": "206C(1H)",
+                        "taxable_base": "1000.00",
+                        "tcs_amount": "10.00",
+                        "collection_status": "COLLECTED",
+                        "deposit_status": "PENDING",
+                        "return_status": "DRAFT",
+                    }
+                ],
+                "section_summary": [],
+            }
+        )
+        mocked_ledger_get.return_value = SimpleNamespace(
+            data=[
+                {
+                    "section_code_norm": "206C(1H)",
+                    "doc_count": 1,
+                    "total_base": "1000.00",
+                    "total_tcs": "10.00",
+                }
+            ]
+        )
+        mocked_return_filter.return_value.order_by.return_value = [
+            SimpleNamespace(
+                fy="2026-27",
+                quarter="Q1",
+                return_type="ORIGINAL",
+                status="DRAFT",
+                ack_no="",
+                filed_on=None,
+                original_return_id=None,
+                notes="Ready for CA review",
+            )
+        ]
+
+        request = self.factory.get(
+            "/tcs/compliance-center/export/ca-pack/?entity_id=1&fy=2026-27&quarter=Q1"
+        )
+        force_authenticate(request, user=self.user)
+
+        response = TcsComplianceCenterCaPackExportAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        self.assertIn('attachment; filename="tcs_compliance_ca_pack_Q1.xlsx"', response["Content-Disposition"])
+
+        workbook = load_workbook(filename=io.BytesIO(response.content), data_only=True)
+        self.assertIn("00_Cover", workbook.sheetnames)
+        self.assertIn("02_Workspace_Transactions", workbook.sheetnames)
+        self.assertIn("07_Return_27EQ", workbook.sheetnames)
+        self.assertEqual(workbook["00_Cover"]["A1"].value, "TCS Compliance Center CA Pack")
+        self.assertEqual(workbook["07_Return_27EQ"]["A2"].value, "2026-27")
+
+
 class WithholdingTcsLedgerReportTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.user = SimpleNamespace(is_authenticated=True)
+
     @patch("withholding.views._require_tcs_permission_from_request", return_value=1)
     @patch("withholding.views._exclude_cancelled_documents", side_effect=lambda qs: qs)
     @patch("withholding.views.TcsComputation.objects.all")
@@ -2191,21 +2335,26 @@ class WithholdingTcsLedgerReportTests(SimpleTestCase):
         mocked_codes.assert_called_once_with(self.user, 1)
         mocked_subscription.assert_called_once()
 
+    @patch("withholding.views.SalesInvoiceLine.objects.filter")
     @patch("withholding.views._require_tcs_scope_permission")
     @patch("withholding.views._exclude_cancelled_documents", side_effect=lambda qs: qs)
     @patch("withholding.views.EntityPartyTaxProfile.objects.filter", return_value=_ChainableListQuerySet())
     @patch("withholding.views.PurchaseInvoiceHeader.objects.filter", return_value=_ChainableListQuerySet())
     @patch("withholding.views.SalesInvoiceHeader.objects.filter", return_value=_ChainableListQuerySet())
+    @patch("withholding.views.TcsDeposit.objects.filter", return_value=_ChainableListQuerySet())
     @patch("withholding.views.TcsComputation.objects.select_related")
     def test_tcs_workspace_applies_document_search_scope(
         self,
         mocked_select_related,
+        _mocked_deposit_filter,
         _mocked_sales_filter,
         _mocked_purchase_filter,
         _mocked_profile_filter,
         _mocked_exclude_cancelled,
         _mocked_permission,
+        mocked_sales_line_filter,
     ):
+        mocked_sales_line_filter.return_value.exists.return_value = False
         section = SimpleNamespace(section_code="206C(1H)", applicability_json={})
         party = SimpleNamespace(accountname="Buyer One", legalname="Buyer One", pan="ABCDE1234F")
         matching = SimpleNamespace(
@@ -2215,6 +2364,8 @@ class WithholdingTcsLedgerReportTests(SimpleTestCase):
             document_id=1001,
             document_no="SINV-TRACE-001",
             doc_date=date(2026, 4, 10),
+            fiscal_year="2026-27",
+            quarter="Q1",
             party_account_id=7,
             party_account=party,
             section_id=11,
@@ -2235,6 +2386,8 @@ class WithholdingTcsLedgerReportTests(SimpleTestCase):
             document_id=1002,
             document_no="SINV-OTHER-002",
             doc_date=date(2026, 4, 12),
+            fiscal_year="2026-27",
+            quarter="Q1",
             party_account_id=7,
             party_account=party,
             section_id=11,
@@ -2260,6 +2413,198 @@ class WithholdingTcsLedgerReportTests(SimpleTestCase):
         self.assertEqual(response.data["rows"][0]["voucher_no"], "SINV-TRACE-001")
         self.assertEqual(response.data["summary"]["total_transactions"], 1)
         self.assertEqual(response.data["filters"]["search"], "SINV-TRACE-001")
+
+    @patch("withholding.views.SalesInvoiceLine.objects.filter")
+    @patch("withholding.views._require_tcs_scope_permission")
+    @patch("withholding.views._exclude_cancelled_documents", side_effect=lambda qs: qs)
+    @patch("withholding.views.EntityPartyTaxProfile.objects.filter", return_value=_ChainableListQuerySet())
+    @patch("withholding.views.PurchaseInvoiceHeader.objects.filter", return_value=_ChainableListQuerySet())
+    @patch("withholding.views.SalesInvoiceHeader.objects.filter")
+    @patch("withholding.views.TcsDeposit.objects.filter")
+    @patch("withholding.views.TcsComputation.objects.select_related")
+    def test_tcs_workspace_rows_include_drilldowns_for_source_document_and_posting_lookup(
+        self,
+        mocked_select_related,
+        mocked_deposit_filter,
+        mocked_sales_filter,
+        _mocked_purchase_filter,
+        _mocked_profile_filter,
+        _mocked_exclude_cancelled,
+        _mocked_permission,
+        mocked_sales_line_filter,
+    ):
+        mocked_sales_line_filter.return_value.exists.return_value = False
+        mocked_deposit_filter.return_value = _ChainableListQuerySet()
+        mocked_sales_filter.return_value = _ChainableListQuerySet([
+            SimpleNamespace(id=1001, status=SalesInvoiceHeader.Status.POSTED),
+            SimpleNamespace(id=1002, status=SalesInvoiceHeader.Status.DRAFT),
+        ])
+
+        section = SimpleNamespace(section_code="206C(1H)", applicability_json={})
+        party = SimpleNamespace(accountname="Buyer One", legalname="Buyer One", pan="ABCDE1234F")
+        posted = SimpleNamespace(
+            id=1,
+            module_name="sales",
+            document_type="invoice",
+            document_id=1001,
+            document_no="SINV-POSTED-001",
+            doc_date=date(2026, 4, 10),
+            fiscal_year="2026-27",
+            quarter="Q1",
+            party_account_id=7,
+            party_account=party,
+            section_id=11,
+            section=section,
+            tcs_base_amount=Decimal("1000.00"),
+            rate=Decimal("0.1000"),
+            tcs_amount=Decimal("10.00"),
+            collections=SimpleNamespace(all=lambda: _ChainableListQuerySet()),
+            status="CONFIRMED",
+            trigger_basis="INVOICE",
+            computation_json={"reason_code": "APPLICABLE"},
+            rule_snapshot_json={},
+        )
+        unposted = SimpleNamespace(
+            id=2,
+            module_name="sales",
+            document_type="invoice",
+            document_id=1002,
+            document_no="SINV-DRAFT-002",
+            doc_date=date(2026, 4, 12),
+            fiscal_year="2026-27",
+            quarter="Q1",
+            party_account_id=7,
+            party_account=party,
+            section_id=11,
+            section=section,
+            tcs_base_amount=Decimal("500.00"),
+            rate=Decimal("0.1000"),
+            tcs_amount=Decimal("5.00"),
+            collections=SimpleNamespace(all=lambda: _ChainableListQuerySet()),
+            status="CONFIRMED",
+            trigger_basis="INVOICE",
+            computation_json={"reason_code": "APPLICABLE"},
+            rule_snapshot_json={},
+        )
+        mocked_select_related.return_value.prefetch_related.return_value.filter.return_value.order_by.return_value = _ChainableListQuerySet([posted, unposted])
+
+        request = self.factory.get("/tcs/workspace/transactions/?entity_id=1&fy=2026-27&quarter=Q1")
+        force_authenticate(request, user=self.user)
+        response = TcsWorkspaceTransactionsAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        rows = {row["voucher_no"]: row for row in response.data["rows"]}
+
+        self.assertEqual(rows["SINV-POSTED-001"]["drilldowns"]["source_document"]["route"], "/saleinvoice")
+        self.assertEqual(rows["SINV-POSTED-001"]["drilldowns"]["source_document"]["params"]["transactionid"], 1001)
+        self.assertEqual(rows["SINV-POSTED-001"]["posting_state"], "posted")
+        self.assertEqual(rows["SINV-POSTED-001"]["drilldowns"]["posting_lookup"]["lookup"]["document_type"], "sales_invoice")
+        self.assertEqual(rows["SINV-POSTED-001"]["drilldowns"]["posting_lookup"]["lookup"]["document_id"], 1001)
+
+        self.assertEqual(rows["SINV-DRAFT-002"]["drilldowns"]["source_document"]["route"], "/saleinvoice")
+        self.assertEqual(rows["SINV-DRAFT-002"]["drilldowns"]["source_document"]["params"]["transactionid"], 1002)
+        self.assertEqual(rows["SINV-DRAFT-002"]["posting_state"], "not_posted")
+        self.assertIsNone(rows["SINV-DRAFT-002"]["drilldowns"]["posting_lookup"])
+
+    @patch("withholding.views.SalesInvoiceLine.objects.filter")
+    @patch("withholding.views.account_pan")
+    @patch("withholding.views.TcsQuarterlyReturn.objects.filter")
+    @patch("withholding.views.TcsDeposit.objects.filter")
+    @patch("withholding.views.PurchaseInvoiceHeader.objects.filter")
+    @patch("withholding.views.SalesInvoiceHeader.objects.filter")
+    @patch("withholding.views._exclude_cancelled_documents", side_effect=lambda qs: qs)
+    @patch("withholding.views._require_tcs_scope_permission")
+    @patch("withholding.views.TcsComputation.objects.select_related")
+    def test_tcs_filing_pack_rows_include_drilldowns_for_row_actions(
+        self,
+        mocked_select_related,
+        _mocked_scope_permission,
+        _mocked_exclude_cancelled,
+        mocked_sales_filter,
+        mocked_purchase_filter,
+        mocked_deposit_filter,
+        mocked_return_filter,
+        mocked_account_pan,
+        mocked_sales_line_filter,
+    ):
+        mocked_account_pan.side_effect = lambda party: getattr(party, "pan", "")
+        mocked_sales_line_filter.return_value.exists.return_value = False
+        mocked_sales_filter.return_value.values.return_value = [
+            {"id": 1001, "status": int(SalesInvoiceHeader.Status.POSTED)},
+            {"id": 1002, "status": int(SalesInvoiceHeader.Status.DRAFT)},
+        ]
+        mocked_purchase_filter.return_value.values.return_value = []
+        mocked_deposit_filter.return_value.order_by.return_value = []
+        mocked_return_filter.return_value.order_by.return_value.first.return_value = None
+
+        section = SimpleNamespace(id=11, section_code="206C(1H)", description="Sale of goods")
+        party = SimpleNamespace(legalname="Buyer One", accountname="Buyer One", pan="ABCDE1234F")
+        posted = SimpleNamespace(
+            id=1,
+            module_name="sales",
+            document_type="invoice",
+            document_id=1001,
+            document_no="SINV-POSTED-001",
+            doc_date=date(2026, 4, 10),
+            party_account_id=7,
+            party_account=party,
+            section_id=11,
+            section=section,
+            tcs_base_amount=Decimal("1000.00"),
+            rate=Decimal("0.1000"),
+            tcs_amount=Decimal("10.00"),
+            applicability_status="APPLICABLE",
+            override_reason="",
+            status="CONFIRMED",
+            fiscal_year="2026-27",
+            quarter="Q1",
+            trigger_basis="INVOICE",
+            computation_json={"reason_code": "APPLICABLE"},
+            rule_snapshot_json={},
+            collections=SimpleNamespace(all=lambda: _ChainableListQuerySet()),
+        )
+        unposted = SimpleNamespace(
+            id=2,
+            module_name="sales",
+            document_type="invoice",
+            document_id=1002,
+            document_no="SINV-DRAFT-002",
+            doc_date=date(2026, 4, 12),
+            fiscal_year="2026-27",
+            quarter="Q1",
+            party_account_id=7,
+            party_account=party,
+            section_id=11,
+            section=section,
+            tcs_base_amount=Decimal("500.00"),
+            rate=Decimal("0.1000"),
+            tcs_amount=Decimal("5.00"),
+            applicability_status="APPLICABLE",
+            override_reason="",
+            status="CONFIRMED",
+            trigger_basis="INVOICE",
+            computation_json={"reason_code": "APPLICABLE"},
+            rule_snapshot_json={},
+            collections=SimpleNamespace(all=lambda: _ChainableListQuerySet()),
+        )
+        mocked_select_related.return_value.prefetch_related.return_value.filter.return_value.order_by.return_value = _ChainableListQuerySet([posted, unposted])
+
+        request = APIRequestFactory().get("/tcs/reports/filing-pack/?entity_id=1&fy=2026-27&quarter=Q1")
+        force_authenticate(request, user=self.user)
+        response = TcsReportFilingPackAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        rows = {row["document_no"]: row for row in response.data["rows"]}
+
+        self.assertEqual(rows["SINV-POSTED-001"]["drilldowns"]["source_document"]["route"], "/saleinvoice")
+        self.assertEqual(rows["SINV-POSTED-001"]["drilldowns"]["source_document"]["params"]["transactionid"], 1001)
+        self.assertEqual(rows["SINV-POSTED-001"]["posting_state"], "posted")
+        self.assertEqual(rows["SINV-POSTED-001"]["drilldowns"]["posting_lookup"]["lookup"]["document_type"], "sales_invoice")
+        self.assertEqual(rows["SINV-POSTED-001"]["drilldowns"]["party_master"]["params"]["source"], "tcs_filing_pack")
+
+        self.assertEqual(rows["SINV-DRAFT-002"]["drilldowns"]["source_document"]["route"], "/saleinvoice")
+        self.assertEqual(rows["SINV-DRAFT-002"]["posting_state"], "not_posted")
+        self.assertNotIn("posting_lookup", rows["SINV-DRAFT-002"]["drilldowns"])
 
     @patch("withholding.views.SubscriptionService.assert_entity_access")
     @patch("withholding.views.EffectivePermissionService.permission_codes_for_user", return_value=[])

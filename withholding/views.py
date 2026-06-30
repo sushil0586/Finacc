@@ -11,7 +11,11 @@ from django.db.models import Count, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from django.db import transaction
 from django.utils.dateparse import parse_date
+from django.utils import timezone
 from django.http import HttpResponse
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
@@ -61,6 +65,7 @@ from financial.profile_access import account_pan
 from payments.models.payment_core import PaymentVoucherHeader
 from purchase.models import PurchaseInvoiceHeader, PurchaseInvoiceLine
 from sales.models import SalesInvoiceHeader, SalesInvoiceLine
+from reports.api.receivables_views import _safe_filename
 
 
 TCS_FEATURE_CODE = SubscriptionLimitCodes.FEATURE_FINANCIAL
@@ -100,11 +105,11 @@ TCS_PARTY_PROFILE_DELETE_PERMISSIONS = (
     "tcs.party_profile.delete",
     "tcs.partyprofile.delete",
 )
-TCS_WORKSPACE_VIEW_PERMISSIONS = ("compliance.tcs_statutory.view", "tcs.menu.access", "tcs.return_27eq.view")
-TCS_RETURN_VIEW_PERMISSIONS = ("compliance.tcs_return_27eq.view", "tcs.return_27eq.view", "compliance.tcs_statutory.view")
+TCS_WORKSPACE_VIEW_PERMISSIONS = ("reports.financial_hub.tcs_compliance_center.view", "compliance.tcs_statutory.view", "tcs.menu.access", "tcs.return_27eq.view")
+TCS_RETURN_VIEW_PERMISSIONS = ("reports.financial_hub.tcs_compliance_center.view", "compliance.tcs_return_27eq.view", "tcs.return_27eq.view", "compliance.tcs_statutory.view")
 TCS_RETURN_FILE_PERMISSIONS = ("compliance.tcs_return_27eq.file", "tcs.return_27eq.view", "compliance.tcs_statutory.view")
-TCS_LEDGER_REPORT_VIEW_PERMISSIONS = ("reports.tcsledgerreport.view", "tcs.ledger_report.view")
-TCS_FILING_PACK_VIEW_PERMISSIONS = ("reports.tcsfilingpack.view", "tcs.filing_pack.view")
+TCS_LEDGER_REPORT_VIEW_PERMISSIONS = ("reports.financial_hub.tcs_compliance_center.view", "reports.tcsledgerreport.view", "tcs.ledger_report.view")
+TCS_FILING_PACK_VIEW_PERMISSIONS = ("reports.financial_hub.tcs_compliance_center.view", "reports.tcsfilingpack.view", "tcs.filing_pack.view")
 WITHHOLDING_READINESS_VIEW_PERMISSIONS = ("purchase.statutory.view", "reports.tds.view")
 
 
@@ -2637,6 +2642,232 @@ class TcsReportFilingPackExportAPIView(APIView):
         resp = HttpResponse(zip_bytes, content_type="application/zip")
         resp["Content-Disposition"] = "attachment; filename=tcs_filing_pack_export.zip"
         return resp
+
+
+class TcsComplianceCenterCaPackExportAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        entity_id = _safe_int(request.query_params.get("entity_id") or request.query_params.get("entity"))
+        fy = (request.query_params.get("fy") or "").strip()
+        quarter = (request.query_params.get("quarter") or "").strip().upper()
+        if entity_id is None:
+            raise ValidationError({"entity_id": ["This query param is required."]})
+        if not fy:
+            raise ValidationError({"fy": ["This query param is required."]})
+        if quarter not in {"Q1", "Q2", "Q3", "Q4"}:
+            raise ValidationError({"quarter": ["quarter must be one of Q1/Q2/Q3/Q4 for CA Pack export."]})
+
+        _require_tcs_scope_permission(
+            request=request,
+            entity_id=entity_id,
+            permission_codes=TCS_WORKSPACE_VIEW_PERMISSIONS,
+            message="Missing permission to export the TCS compliance center CA Pack.",
+        )
+
+        workspace_payload = TcsWorkspaceTransactionsAPIView().get(request).data
+        filing_payload = TcsReportFilingPackAPIView().get(request).data
+        ledger_payload = TcsReportLedgerAPIView().get(request).data
+        returns_rows = list(
+            TcsQuarterlyReturn.objects.filter(
+                entity_id=entity_id,
+                fy__in=_expand_fy_values(fy),
+                quarter=quarter,
+                form_name="27EQ",
+            ).order_by("-id")
+        )
+
+        wb = Workbook()
+        wb.remove(wb.active)
+
+        def create_sheet(title: str):
+            return wb.create_sheet(title=title[:31])
+
+        def autosize_sheet(ws):
+            for col_idx in range(1, ws.max_column + 1):
+                col_letter = get_column_letter(col_idx)
+                max_len = 12
+                for row in ws.iter_rows(min_col=col_idx, max_col=col_idx):
+                    value = row[0].value
+                    if value is None:
+                        continue
+                    max_len = max(max_len, len(str(value)))
+                ws.column_dimensions[col_letter].width = min(max_len + 2, 44)
+
+        def decorate_table(ws, header_row: int = 1):
+            header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+            header_font = Font(color="FFFFFF", bold=True)
+            thin_border = Border(
+                left=Side(style="thin", color="D0D0D0"),
+                right=Side(style="thin", color="D0D0D0"),
+                top=Side(style="thin", color="D0D0D0"),
+                bottom=Side(style="thin", color="D0D0D0"),
+            )
+            for cell in ws[header_row]:
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                cell.border = thin_border
+            for row_idx in range(header_row + 1, ws.max_row + 1):
+                for cell in ws[row_idx]:
+                    cell.border = thin_border
+                    cell.alignment = Alignment(vertical="top")
+            ws.freeze_panes = f"A{header_row + 1}"
+            ws.auto_filter.ref = f"A{header_row}:{get_column_letter(ws.max_column)}{ws.max_row}"
+            autosize_sheet(ws)
+
+        def write_rows_sheet(title: str, headers: list[str], rows: list[dict[str, object] | tuple | list]):
+            ws = create_sheet(title)
+            for index, header in enumerate(headers, start=1):
+                ws.cell(row=1, column=index, value=header)
+            if rows:
+                for row_index, row in enumerate(rows, start=2):
+                    if isinstance(row, dict):
+                        values = [row.get(header_key) for header_key in headers]
+                    else:
+                        values = list(row)
+                    for col_index, value in enumerate(values, start=1):
+                        ws.cell(row=row_index, column=col_index, value=value)
+            else:
+                ws.cell(row=2, column=1, value="No rows available in the selected scope.")
+            decorate_table(ws)
+
+        ws = create_sheet("00_Cover")
+        ws["A1"] = "TCS Compliance Center CA Pack"
+        ws["A2"] = "Entity ID"
+        ws["B2"] = entity_id
+        ws["A3"] = "Financial Year"
+        ws["B3"] = fy
+        ws["A4"] = "Quarter"
+        ws["B4"] = quarter
+        ws["A5"] = "Section Filter"
+        ws["B5"] = workspace_payload.get("filters", {}).get("section") or "All Sections"  # type: ignore[union-attr]
+        ws["A6"] = "Customer Filter"
+        ws["B6"] = workspace_payload.get("filters", {}).get("customer_q") or "All Customers"  # type: ignore[union-attr]
+        ws["A7"] = "Generated At"
+        ws["B7"] = timezone.localtime().strftime("%Y-%m-%d %H:%M:%S")
+        ws["A8"] = "Generated By"
+        ws["B8"] = getattr(request.user, "username", "") or getattr(request.user, "email", "") or getattr(request.user, "id", "")
+        ws["A10"] = "Included Sheets"
+        for row_idx, name in enumerate([
+            "01_Management_Summary",
+            "02_Workspace_Transactions",
+            "03_Workspace_Section_Summary",
+            "04_Filing_Pack",
+            "05_Filing_Section_Summary",
+            "06_Ledger_Summary",
+            "07_Return_27EQ",
+            "08_Unallocated_Deposits",
+        ], start=11):
+            ws[f"A{row_idx}"] = name
+        ws["A1"].font = Font(size=16, bold=True, color="1F4E78")
+        for row_idx in range(2, 9):
+            ws[f"A{row_idx}"].font = Font(bold=True)
+        ws.column_dimensions["A"].width = 28
+        ws.column_dimensions["B"].width = 42
+
+        management_summary = [
+            {"Metric": "Total Transactions", "Value": workspace_payload.get("summary", {}).get("total_transactions")},  # type: ignore[union-attr]
+            {"Metric": "Total Computed TCS", "Value": workspace_payload.get("summary", {}).get("total_computed_tcs")},  # type: ignore[union-attr]
+            {"Metric": "Pending Collection", "Value": workspace_payload.get("summary", {}).get("pending_collection")},  # type: ignore[union-attr]
+            {"Metric": "Pending Deposit", "Value": workspace_payload.get("summary", {}).get("pending_deposit")},  # type: ignore[union-attr]
+            {"Metric": "Filing Pack Rows", "Value": filing_payload.get("header", {}).get("row_count")},  # type: ignore[union-attr]
+            {"Metric": "Filing Exceptions", "Value": filing_payload.get("header", {}).get("exception_row_count")},  # type: ignore[union-attr]
+            {"Metric": "Return Status", "Value": filing_payload.get("header", {}).get("return_status")},  # type: ignore[union-attr]
+            {"Metric": "Ledger Buckets", "Value": len(list(ledger_payload or []))},
+            {"Metric": "27EQ Returns", "Value": len(returns_rows)},
+        ]
+        write_rows_sheet("01_Management_Summary", ["Metric", "Value"], management_summary)
+
+        workspace_rows = [
+            {
+                "voucher_date": row.get("voucher_date"),
+                "voucher_no": row.get("voucher_no"),
+                "customer_name": row.get("customer_name"),
+                "pan": row.get("pan"),
+                "section_code": row.get("section_code"),
+                "base_amount": row.get("base_amount"),
+                "computed_tcs": row.get("computed_tcs"),
+                "collected_tcs": row.get("collected_tcs"),
+                "deposited_tcs": row.get("deposited_tcs"),
+                "pending_collection": row.get("pending_collection"),
+                "pending_deposit": row.get("pending_deposit"),
+                "lifecycle_status": row.get("lifecycle_status"),
+                "readiness_status": row.get("readiness_status"),
+            }
+            for row in list(workspace_payload.get("rows") or [])  # type: ignore[union-attr]
+        ]
+        write_rows_sheet(
+            "02_Workspace_Transactions",
+            ["voucher_date", "voucher_no", "customer_name", "pan", "section_code", "base_amount", "computed_tcs", "collected_tcs", "deposited_tcs", "pending_collection", "pending_deposit", "lifecycle_status", "readiness_status"],
+            workspace_rows,
+        )
+        write_rows_sheet(
+            "03_Workspace_Section_Summary",
+            ["section_code", "document_count", "total_base", "total_computed_tcs", "total_collected_tcs", "total_deposited_tcs", "pending_collection", "pending_deposit"],
+            list(workspace_payload.get("section_summary") or []),  # type: ignore[union-attr]
+        )
+        write_rows_sheet(
+            "04_Filing_Pack",
+            ["doc_date", "document_no", "party_name", "pan", "section_code", "taxable_base", "tcs_amount", "collection_status", "deposit_status", "return_status"],
+            [
+                {
+                    "doc_date": row.get("doc_date"),
+                    "document_no": row.get("document_no"),
+                    "party_name": row.get("party_name"),
+                    "pan": row.get("pan"),
+                    "section_code": row.get("section_code"),
+                    "taxable_base": row.get("taxable_base"),
+                    "tcs_amount": row.get("tcs_amount"),
+                    "collection_status": row.get("collection_status"),
+                    "deposit_status": row.get("deposit_status"),
+                    "return_status": row.get("return_status"),
+                }
+                for row in list(filing_payload.get("rows") or [])  # type: ignore[union-attr]
+            ],
+        )
+        write_rows_sheet(
+            "05_Filing_Section_Summary",
+            ["section_code", "document_count", "total_base", "total_tcs", "collected_amount", "allocated_amount", "pending_collection", "pending_deposit"],
+            list(filing_payload.get("section_summary") or []),  # type: ignore[union-attr]
+        )
+        write_rows_sheet(
+            "06_Ledger_Summary",
+            ["section_code_norm", "doc_count", "total_base", "total_tcs"],
+            list(ledger_payload or []),
+        )
+        write_rows_sheet(
+            "07_Return_27EQ",
+            ["fy", "quarter", "return_type", "status", "ack_no", "filed_on", "original_return", "notes"],
+            [
+                {
+                    "fy": row.fy,
+                    "quarter": row.quarter,
+                    "return_type": row.return_type,
+                    "status": row.status,
+                    "ack_no": row.ack_no,
+                    "filed_on": row.filed_on,
+                    "original_return": row.original_return_id,
+                    "notes": row.notes,
+                }
+                for row in returns_rows
+            ],
+        )
+        write_rows_sheet(
+            "08_Unallocated_Deposits",
+            ["challan_no", "challan_date", "status", "total_deposit_amount", "allocated_amount", "unallocated_amount"],
+            list(workspace_payload.get("unallocated_deposits") or []),  # type: ignore[union-attr]
+        )
+
+        out = io.BytesIO()
+        wb.save(out)
+        out.seek(0)
+        response = HttpResponse(
+            out.getvalue(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        response["Content-Disposition"] = f'attachment; filename="{_safe_filename(f"tcs_compliance_ca_pack_{quarter}")}.xlsx"'
+        return response
 
 
 class WithholdingReadinessDashboardAPIView(APIView):

@@ -421,6 +421,7 @@ class RoleTemplateService:
             "name": "Compliance User",
             "description": "TCS and TDS compliance access.",
             "permission_prefixes": ["tcs.", "tds.", "compliance.", "reports.compliance."],
+            "exact_codes": ["reports.financial_hub.tcs_compliance_center.view"],
         },
     }
 
@@ -535,5 +536,4 @@ class RoleCloneService:
             changes={"source_role_id": source_role.id},
         )
         return clone
-
 

@@ -9,6 +9,7 @@ from rest_framework.test import APIRequestFactory, force_authenticate
 
 from purchase.views.tds_compliance_center import PurchaseTdsComplianceCenterExportAPIView
 from purchase.views.tds_compliance_center import PurchaseTdsComplianceCenterAPIView
+from purchase.views.gst_tds_compliance_center import PurchaseGstTdsComplianceCenterExportAPIView
 
 
 MOCK_TDS_EXPORT_PAYLOAD = {
@@ -151,6 +152,61 @@ class PurchaseTdsComplianceCenterExportTests(SimpleTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["Content-Type"], "application/pdf")
         self.assertIn('attachment; filename="tds_compliance_return-filing-26q_Q1.pdf"', response["Content-Disposition"])
+
+    @patch("purchase.views.tds_compliance_center.PurchaseTdsComplianceCenterAPIView.get")
+    def test_ca_pack_export_includes_cover_and_tab_sheets(self, mock_workspace_get):
+        mock_workspace_get.return_value = Response(MOCK_TDS_EXPORT_PAYLOAD)
+        request = self.factory.get(
+            "/api/purchase/statutory/tds-compliance-center/export/",
+            {
+                "entity": 1,
+                "entityfinid": 1,
+                "format": "ca-pack",
+            },
+        )
+        force_authenticate(request, user=self.user)
+
+        response = PurchaseTdsComplianceCenterExportAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        self.assertIn('attachment; filename="tds_compliance_ca_pack_Q1.xlsx"', response["Content-Disposition"])
+
+        workbook = load_workbook(filename=BytesIO(response.content), data_only=True)
+        self.assertIn("00_Cover", workbook.sheetnames)
+        self.assertIn("01_KPI_Summary", workbook.sheetnames)
+        self.assertIn("02_Warnings", workbook.sheetnames)
+        self.assertIn("04_Deduction_Register", workbook.sheetnames)
+        self.assertEqual(workbook["00_Cover"]["A1"].value, "TDS Compliance Center CA Pack")
+        self.assertEqual(workbook["04_Deduction_Register"]["A1"].value, "TDS Compliance Center - Deduction Register")
+
+
+class PurchaseGstTdsComplianceCenterExportTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.user = SimpleNamespace(is_authenticated=True, id=1)
+
+    @patch("purchase.views.tds_compliance_center.PurchaseTdsComplianceCenterAPIView.get")
+    def test_ca_pack_export_uses_gst_tds_naming(self, mock_workspace_get):
+        gst_payload = dict(MOCK_TDS_EXPORT_PAYLOAD)
+        gst_payload["pageTitle"] = "GST-TDS Compliance Center"
+        mock_workspace_get.return_value = Response(gst_payload)
+        request = self.factory.get(
+            "/api/purchase/statutory/gst-tds-compliance-center/export/",
+            {
+                "entity": 1,
+                "entityfinid": 1,
+                "format": "ca-pack",
+            },
+        )
+        force_authenticate(request, user=self.user)
+
+        response = PurchaseGstTdsComplianceCenterExportAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('attachment; filename="gst_tds_compliance_ca_pack_Q1.xlsx"', response["Content-Disposition"])
+        workbook = load_workbook(filename=BytesIO(response.content), data_only=True)
+        self.assertEqual(workbook["00_Cover"]["A1"].value, "GST-TDS Compliance Center CA Pack")
 
 
 class PurchaseTdsComplianceCenterStatusTests(SimpleTestCase):
