@@ -52,6 +52,18 @@ from withholding.models import WithholdingSection, WithholdingTaxType, Withholdi
 
 
 class PurchaseTdsApplyTests(SimpleTestCase):
+    def setUp(self):
+        super().setUp()
+        self.get_policy_patcher = patch(
+            "purchase.services.purchase_invoice_service.PurchaseSettingsService.get_policy",
+            return_value=SimpleNamespace(post_gst_tds_on_invoice=True),
+        )
+        self.get_policy_patcher.start()
+
+    def tearDown(self):
+        self.get_policy_patcher.stop()
+        super().tearDown()
+
     def _make_header(self, **overrides):
         defaults = {
             "withholding_enabled": True,
@@ -73,6 +85,28 @@ class PurchaseTdsApplyTests(SimpleTestCase):
         }
         defaults.update(overrides)
         return SimpleNamespace(**defaults)
+
+    @patch("purchase.services.purchase_invoice_service.PurchaseSettingsService.get_policy")
+    def test_policy_disabled_clears_tds(self, mock_get_policy):
+        mock_get_policy.return_value = SimpleNamespace(post_gst_tds_on_invoice=False)
+        header = self._make_header(
+            withholding_enabled=True,
+            tds_is_manual=True,
+            tds_section_id=10,
+            tds_rate=Decimal("1.0000"),
+            tds_base_amount=Decimal("1000.00"),
+            tds_amount=Decimal("10.00"),
+            tds_reason="manual",
+            match_notes={"withholding_runtime_result": {"enabled": True}},
+        )
+
+        PurchaseInvoiceService._apply_tds(header=header)
+
+        self.assertFalse(header.withholding_enabled)
+        self.assertFalse(header.tds_is_manual)
+        self.assertIsNone(header.tds_section)
+        self.assertEqual(header.tds_amount, Decimal("0.00"))
+        self.assertEqual(header.match_notes, {})
 
     def test_withholding_disabled_clears_tds(self):
         header = self._make_header(
@@ -701,6 +735,18 @@ class PurchaseFiledPeriodAmendmentTests(TestCase):
 
 
 class PurchaseGstTdsApplyTests(SimpleTestCase):
+    def setUp(self):
+        super().setUp()
+        self.get_policy_patcher = patch(
+            "purchase.services.purchase_invoice_service.PurchaseSettingsService.get_policy",
+            return_value=SimpleNamespace(post_gst_tds_on_invoice=True),
+        )
+        self.get_policy_patcher.start()
+
+    def tearDown(self):
+        self.get_policy_patcher.stop()
+        super().tearDown()
+
     def _make_header(self, **overrides):
         defaults = {
             "gst_tds_enabled": True,
@@ -727,6 +773,29 @@ class PurchaseGstTdsApplyTests(SimpleTestCase):
         }
         defaults.update(overrides)
         return SimpleNamespace(**defaults)
+
+    @patch("purchase.services.purchase_invoice_service.PurchaseSettingsService.get_policy")
+    def test_policy_disabled_clears_gst_tds(self, mock_get_policy):
+        mock_get_policy.return_value = SimpleNamespace(post_gst_tds_on_invoice=False)
+        header = self._make_header(
+            gst_tds_enabled=True,
+            gst_tds_is_manual=True,
+            gst_tds_contract_ref="CNT-001",
+            gst_tds_rate=Decimal("2.0000"),
+            gst_tds_base_amount=Decimal("1000.00"),
+            gst_tds_cgst_amount=Decimal("10.00"),
+            gst_tds_sgst_amount=Decimal("10.00"),
+            gst_tds_amount=Decimal("20.00"),
+            match_notes={"gst_tds_runtime_result": {"enabled": True}},
+        )
+
+        PurchaseInvoiceService._apply_gst_tds(header=header)
+
+        self.assertFalse(header.gst_tds_enabled)
+        self.assertFalse(header.gst_tds_is_manual)
+        self.assertIsNone(header.gst_tds_contract_ref)
+        self.assertEqual(header.gst_tds_amount, Decimal("0.00"))
+        self.assertEqual(header.match_notes, {})
 
     def test_gst_tds_disabled_clears_runtime_snapshot(self):
         header = self._make_header(
@@ -1041,6 +1110,18 @@ class PurchaseInvoiceViewUnitTests(SimpleTestCase):
 
 
 class PurchaseGstTdsTests(SimpleTestCase):
+    def setUp(self):
+        super().setUp()
+        self.get_policy_patcher = patch(
+            "purchase.services.purchase_invoice_service.PurchaseSettingsService.get_policy",
+            return_value=SimpleNamespace(post_gst_tds_on_invoice=True),
+        )
+        self.get_policy_patcher.start()
+
+    def tearDown(self):
+        self.get_policy_patcher.stop()
+        super().tearDown()
+
     @patch("purchase.services.purchase_invoice_service.GstTdsService.apply_to_header")
     def test_gst_tds_auto_mode_uses_gst_tds_service(self, mock_apply):
         header = SimpleNamespace(

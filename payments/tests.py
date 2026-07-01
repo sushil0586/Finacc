@@ -749,7 +749,18 @@ class PaymentVoucherSerializerContractTests(SimpleTestCase):
     def test_detail_serializer_exposes_navigation_and_advance_totals(self):
         allocation_row = SimpleNamespace(
             id=1,
-            open_item=SimpleNamespace(pk=55, id=55, purchase_number="PI-PINV-1010", supplier_invoice_number="VEN-1"),
+            open_item=SimpleNamespace(
+                pk=55,
+                id=55,
+                purchase_number="PI-PINV-1010",
+                supplier_invoice_number="VEN-1",
+                bill_date="2026-03-01",
+                due_date="2026-03-31",
+                gross_amount=Decimal("1428000.00"),
+                net_payable_amount=Decimal("1141140.00"),
+                tds_deducted=Decimal("20020.00"),
+                gst_tds_deducted=Decimal("20020.00"),
+            ),
             settled_amount=Decimal("116000.00"),
             is_full_settlement=True,
             is_advance_adjustment=False,
@@ -844,6 +855,12 @@ class PaymentVoucherSerializerContractTests(SimpleTestCase):
         self.assertEqual(data["navigation"]["previous"]["id"], 5)
         self.assertEqual(data["number_navigation"]["current_number"], 11)
         self.assertEqual(data["advance_adjustments"][0]["advance_balance_id"], 14)
+        self.assertEqual(data["allocations"][0]["bill_date"], "2026-03-01")
+        self.assertEqual(data["allocations"][0]["due_date"], "2026-03-31")
+        self.assertEqual(str(data["allocations"][0]["gross_amount"]), "1428000.00")
+        self.assertEqual(str(data["allocations"][0]["net_payable_amount"]), "1141140.00")
+        self.assertEqual(str(data["allocations"][0]["tds_deducted"]), "20020.00")
+        self.assertEqual(str(data["allocations"][0]["gst_tds_deducted"]), "20020.00")
 
 
 class PaymentVoucherPDFEndpointTests(SimpleTestCase):

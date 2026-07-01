@@ -15,6 +15,7 @@ from entity.models import Entity, EntityFinancialYear, GstRegistrationType, Godo
 from rbac.models import Permission, Role, RolePermission, UserRoleAssignment
 from posting.models import Entry, EntryStatus, InventoryMove, PostingBatch, TxnType
 from reports.services.inventory.stock_summary import build_inventory_stock_summary
+from reports.api.inventory_views import _format_scope_date
 
 
 @override_settings(ROOT_URLCONF='FA.urls', AUTH_PASSWORD_VALIDATORS=[])
@@ -127,6 +128,7 @@ class InventoryReportAPITests(APITestCase):
             narration='Purchase of laptops',
             created_by=self.user,
         )
+
         InventoryMove.objects.create(
             entry=self.entry,
             posting_batch=self.batch,
@@ -165,6 +167,12 @@ class InventoryReportAPITests(APITestCase):
         self._grant_inventory_permission('reports.inventory.location_stock.view')
         self._grant_inventory_permission('reports.inventory.non_moving_stock.view')
         self._grant_inventory_permission('reports.inventory.reorder_status.view')
+
+    def test_inventory_export_dates_use_dd_mmm_yyyy_format(self):
+        self.assertEqual(_format_scope_date(date(2025, 4, 30)), "30-Apr-2025")
+        self.assertEqual(_format_scope_date(datetime(2025, 4, 30, 10, 15, 0)), "30-Apr-2025")
+        self.assertEqual(_format_scope_date("2025-04-30"), "30-Apr-2025")
+        self.assertEqual(_format_scope_date("2025-04-30T12:45:00"), "30-Apr-2025")
 
     def _scope(self, **extra):
         params = {

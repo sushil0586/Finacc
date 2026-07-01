@@ -23,6 +23,12 @@ class PaymentVoucherAllocationSerializer(serializers.ModelSerializer):
     open_item_label = serializers.SerializerMethodField(read_only=True)
     purchase_number = serializers.CharField(source="open_item.purchase_number", read_only=True)
     supplier_invoice_number = serializers.CharField(source="open_item.supplier_invoice_number", read_only=True)
+    bill_date = serializers.DateField(source="open_item.bill_date", format="%Y-%m-%d", read_only=True)
+    due_date = serializers.DateField(source="open_item.due_date", format="%Y-%m-%d", read_only=True)
+    gross_amount = serializers.DecimalField(source="open_item.gross_amount", max_digits=14, decimal_places=2, read_only=True)
+    net_payable_amount = serializers.DecimalField(source="open_item.net_payable_amount", max_digits=14, decimal_places=2, read_only=True)
+    tds_deducted = serializers.DecimalField(source="open_item.tds_deducted", max_digits=14, decimal_places=2, read_only=True)
+    gst_tds_deducted = serializers.DecimalField(source="open_item.gst_tds_deducted", max_digits=14, decimal_places=2, read_only=True)
 
     class Meta:
         model = PaymentVoucherAllocation
@@ -32,6 +38,12 @@ class PaymentVoucherAllocationSerializer(serializers.ModelSerializer):
             "open_item_label",
             "purchase_number",
             "supplier_invoice_number",
+            "bill_date",
+            "due_date",
+            "gross_amount",
+            "net_payable_amount",
+            "tds_deducted",
+            "gst_tds_deducted",
             "settled_amount",
             "is_full_settlement",
             "is_advance_adjustment",

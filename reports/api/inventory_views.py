@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from datetime import date, datetime
 from io import BytesIO, StringIO
 
 from django.http import HttpResponse
@@ -43,9 +44,20 @@ from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 def _format_scope_date(value):
     if not value:
         return "-"
-    if hasattr(value, "strftime"):
-        return value.strftime("%d %b %Y")
-    return str(value)
+    if isinstance(value, datetime):
+        return value.strftime("%d-%b-%Y")
+    if isinstance(value, date):
+        return value.strftime("%d-%b-%Y")
+    text = str(value).strip()
+    if not text:
+        return "-"
+    try:
+        normalized = text.replace("Z", "+00:00")
+        if "T" in normalized or "+" in normalized[10:]:
+            return datetime.fromisoformat(normalized).strftime("%d-%b-%Y")
+        return date.fromisoformat(normalized).strftime("%d-%b-%Y")
+    except ValueError:
+        return text
 
 
 def _safe_filename(value):

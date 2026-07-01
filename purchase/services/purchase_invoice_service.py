@@ -459,6 +459,48 @@ class PurchaseInvoiceService:
             - If gst_tds_is_manual = True -> accept user values (validated)
             - Else -> compute from totals + tax_regime/is_igst (existing logic)
         """
+        policy = PurchaseSettingsService.get_policy(
+            getattr(header, "entity_id", 0),
+            getattr(header, "subentity_id", None),
+        )
+
+        if not bool(getattr(policy, "post_gst_tds_on_invoice", False)):
+            header.gst_tds_enabled = False
+            header.gst_tds_is_manual = False
+            header.gst_tds_contract_ref = None
+            header.gst_tds_reason = None
+            header.gst_tds_rate = q4(Decimal("0.0000"))
+            header.gst_tds_base_amount = q2(ZERO2)
+            header.gst_tds_cgst_amount = q2(ZERO2)
+            header.gst_tds_sgst_amount = q2(ZERO2)
+            header.gst_tds_igst_amount = q2(ZERO2)
+            header.gst_tds_amount = q2(ZERO2)
+            header.gst_tds_status = getattr(header.GstTdsStatus, "NA", 0)
+            if hasattr(header, "vendor_gst_tds_declared"):
+                header.vendor_gst_tds_declared = False
+            if hasattr(header, "vendor_gst_tds_rate"):
+                header.vendor_gst_tds_rate = q4(Decimal("0.0000"))
+            if hasattr(header, "vendor_gst_tds_base_amount"):
+                header.vendor_gst_tds_base_amount = q2(ZERO2)
+            if hasattr(header, "vendor_gst_tds_cgst_amount"):
+                header.vendor_gst_tds_cgst_amount = q2(ZERO2)
+            if hasattr(header, "vendor_gst_tds_sgst_amount"):
+                header.vendor_gst_tds_sgst_amount = q2(ZERO2)
+            if hasattr(header, "vendor_gst_tds_igst_amount"):
+                header.vendor_gst_tds_igst_amount = q2(ZERO2)
+            if hasattr(header, "vendor_gst_tds_amount"):
+                header.vendor_gst_tds_amount = q2(ZERO2)
+            if hasattr(header, "vendor_gst_tds_notes"):
+                header.vendor_gst_tds_notes = None
+            PurchaseInvoiceService._set_gst_tds_runtime_snapshot(
+                header=header,
+                mode="AUTO",
+                enabled=False,
+                reason=None,
+                reason_code=None,
+            )
+            return
+
         if not getattr(header, "gst_tds_enabled", False):
             header.gst_tds_is_manual = False
             header.gst_tds_contract_ref = normalize_contract_ref(getattr(header, "gst_tds_contract_ref", ""))
@@ -1937,6 +1979,27 @@ class PurchaseInvoiceService:
             - Else -> compute from PurchaseWithholdingService.
         Note: TDS does NOT reduce GST and should NOT reduce vendor payable at invoice stage.
         """
+        policy = PurchaseSettingsService.get_policy(
+            getattr(header, "entity_id", 0),
+            getattr(header, "subentity_id", None),
+        )
+        if not bool(getattr(policy, "post_gst_tds_on_invoice", False)):
+            header.withholding_enabled = False
+            header.tds_is_manual = False
+            header.tds_section = None
+            header.tds_rate = Decimal("0.0000")
+            header.tds_base_amount = ZERO2
+            header.tds_amount = ZERO2
+            header.tds_reason = None
+            PurchaseInvoiceService._set_tds_runtime_snapshot(
+                header=header,
+                mode="AUTO",
+                enabled=False,
+                reason=None,
+                reason_code=None,
+            )
+            return
+
         if not getattr(header, "withholding_enabled", False):
             header.tds_is_manual = False
             header.tds_section = None
