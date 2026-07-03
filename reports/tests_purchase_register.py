@@ -201,6 +201,8 @@ class PurchaseRegisterAPITests(APITestCase):
         cess="0.00",
         round_off="0.00",
         grand_total="118.00",
+        tds_amount="0.00",
+        gst_tds_amount="0.00",
         reverse_charge=False,
         ref_document=None,
         discount_amounts=None,
@@ -249,6 +251,8 @@ class PurchaseRegisterAPITests(APITestCase):
             total_gst=Decimal(cgst) + Decimal(sgst) + Decimal(igst) + Decimal(cess),
             round_off=Decimal(round_off),
             grand_total=Decimal(grand_total),
+            tds_amount=Decimal(tds_amount),
+            gst_tds_amount=Decimal(gst_tds_amount),
             ref_document=ref_document,
             created_by=self.user,
         )
@@ -708,6 +712,32 @@ class PurchaseRegisterAPITests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self._money(response.data["results"][0]["outstanding_amount"]), Decimal("55.00"))
         self.assertEqual(self._money(response.data["totals"]["outstanding_amount"]), Decimal("55.00"))
+
+    def test_outstanding_amount_respects_gst_tds_even_when_open_item_snapshot_is_stale(self):
+        header = self._create_purchase_document(
+            purchase_number="OPEN-ITEM-GSTTDS-001",
+            grand_total="118.00",
+            gst_tds_amount="10.00",
+        )
+        self._create_open_item(header, amount="118.00")
+
+        response = self._get(search="OPEN-ITEM-GSTTDS-001", include_outstanding="true")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self._money(response.data["results"][0]["outstanding_amount"]), Decimal("108.00"))
+        self.assertEqual(self._money(response.data["totals"]["outstanding_amount"]), Decimal("108.00"))
+
+    def test_outstanding_amount_respects_income_tax_tds_even_when_open_item_snapshot_is_stale(self):
+        header = self._create_purchase_document(
+            purchase_number="OPEN-ITEM-ITTDS-001",
+            grand_total="118.00",
+            tds_amount="10.00",
+        )
+        self._create_open_item(header, amount="118.00")
+
+        response = self._get(search="OPEN-ITEM-ITTDS-001", include_outstanding="true")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self._money(response.data["results"][0]["outstanding_amount"]), Decimal("108.00"))
+        self.assertEqual(self._money(response.data["totals"]["outstanding_amount"]), Decimal("108.00"))
 
     def test_posting_summary_block_is_optional(self):
         self._create_purchase_document(status=PurchaseInvoiceHeader.Status.POSTED, purchase_number="POSTSUM-001", grand_total="100.00")

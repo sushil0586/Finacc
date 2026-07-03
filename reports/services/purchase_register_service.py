@@ -173,16 +173,48 @@ class PurchaseRegisterService:
         )
 
         if include_outstanding:
-            outstanding_subquery = (
+            open_item_original_amount_subquery = (
+                VendorBillOpenItem.objects.filter(header_id=OuterRef("pk"))
+                .values("header_id")
+                .values("original_amount")[:1]
+            )
+            open_item_settled_amount_subquery = (
+                VendorBillOpenItem.objects.filter(header_id=OuterRef("pk"))
+                .values("header_id")
+                .values("settled_amount")[:1]
+            )
+            open_item_outstanding_amount_subquery = (
                 VendorBillOpenItem.objects.filter(header_id=OuterRef("pk"))
                 .values("header_id")
                 .values("outstanding_amount")[:1]
             )
             queryset = queryset.annotate(
-                outstanding_amount=Coalesce(
-                    Subquery(outstanding_subquery, output_field=DecimalField(max_digits=14, decimal_places=2)),
+                open_item_original_amount=Subquery(
+                    open_item_original_amount_subquery,
+                    output_field=DecimalField(max_digits=14, decimal_places=2),
+                ),
+                open_item_settled_amount=Coalesce(
+                    Subquery(open_item_settled_amount_subquery, output_field=DecimalField(max_digits=14, decimal_places=2)),
                     ZERO,
+                ),
+                open_item_outstanding_amount=Subquery(
+                    open_item_outstanding_amount_subquery,
+                    output_field=DecimalField(max_digits=14, decimal_places=2),
+                ),
+                expected_net_payable=(
+                    F("signed_grand_total")
+                    - (F("tds_amount") * sign_multiplier)
+                    - (F("gst_tds_amount") * sign_multiplier)
                 )
+            ).annotate(
+                outstanding_amount=Case(
+                    When(open_item_outstanding_amount__isnull=True, then=F("expected_net_payable")),
+                    When(open_item_settled_amount__gt=ZERO, then=F("expected_net_payable") - F("open_item_settled_amount")),
+                    When(Q(tds_amount=ZERO) & Q(gst_tds_amount=ZERO), then=F("open_item_outstanding_amount")),
+                    When(open_item_outstanding_amount=F("open_item_original_amount"), then=F("expected_net_payable")),
+                    default=F("open_item_outstanding_amount"),
+                    output_field=DecimalField(max_digits=14, decimal_places=2),
+                ),
             )
         return queryset
 
