@@ -1,11 +1,12 @@
 from decimal import Decimal
 from datetime import date
 from datetime import datetime
-from io import BytesIO
+from io import BytesIO, StringIO
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
 from django.db.models import Sum
 from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
@@ -18,7 +19,7 @@ from assets.models import AssetCategory, FixedAsset
 from assets.services.settings import AssetSettingsService
 from entity.models import Entity, EntityFinancialYear, Godown, SubEntity
 from catalog.models import Product, ProductCategory, ProductPurchaseBehavior, UnitOfMeasure
-from financial.models import Ledger, account
+from financial.models import Ledger, account, accountHead, accounttype
 from purchase.models.purchase_core import PurchaseInvoiceHeader, PurchaseInvoiceLine
 from purchase.serializers.purchase_invoice import PurchaseInvoiceHeaderSerializer, PurchaseInvoiceLineSerializer
 from purchase.serializers.purchase_ap import VendorSettlementCreateInputSerializer
@@ -41,7 +42,7 @@ from posting.adapters.purchase_invoice import (
     PurchaseInvoicePostingAdapter,
     PurchaseInvoicePostingConfig,
 )
-from posting.models import Entry, InventoryMove, PostingBatch, TxnType
+from posting.models import Entry, EntryStatus, InventoryMove, JournalLine, PostingBatch, TxnType
 from posting.common.static_accounts import StaticAccountCodes
 from withholding.services import WithholdingResult
 from purchase.services.purchase_withholding_service import PurchaseWithholdingService
@@ -3049,6 +3050,7 @@ class PurchasePostingAdapterTests(SimpleTestCase):
         )
 
     @patch("posting.adapters.purchase_invoice.PostingService")
+    @patch("posting.adapters.purchase_invoice.Ledger.objects")
     @patch("posting.adapters.purchase_invoice.Product.objects")
     @patch("posting.adapters.purchase_invoice.ProductAccountResolver")
     @patch("posting.adapters.purchase_invoice.StaticAccountResolver")
@@ -3057,6 +3059,7 @@ class PurchasePostingAdapterTests(SimpleTestCase):
         mock_static_resolver_cls,
         mock_product_resolver_cls,
         mock_product_objects,
+        mock_ledger_objects,
         mock_posting_service_cls,
     ):
         code_map = {
@@ -3078,8 +3081,18 @@ class PurchasePostingAdapterTests(SimpleTestCase):
             base_uom_id=1,
             base_uom=SimpleNamespace(id=1, code="GMS"),
             uom_conversions=[],
+            default_asset_category=SimpleNamespace(
+                id=501,
+                name="Computer CWIP",
+                cwip_ledger_id=9301,
+                asset_ledger_id=9302,
+            ),
         )
         mock_product_objects.filter.return_value.select_related.return_value.prefetch_related.return_value = [product]
+        mock_ledger_objects.filter.return_value.only.return_value.first.return_value = SimpleNamespace(
+            id=9301,
+            accounthead_id=8801,
+        )
 
         posting_instance = mock_posting_service_cls.return_value
         posting_instance.post.return_value = SimpleNamespace(id=1002)
@@ -3102,6 +3115,12 @@ class PurchasePostingAdapterTests(SimpleTestCase):
         )
 
         kwargs = posting_instance.post.call_args.kwargs
+        jl_inputs = kwargs["jl_inputs"]
+        asset_base_lines = [x for x in jl_inputs if x.detail_id == 201]
+        self.assertTrue(asset_base_lines, "Expected an asset base journal line for the purchase detail.")
+        self.assertEqual(asset_base_lines[0].ledger_id, 9301)
+        self.assertEqual(asset_base_lines[0].accounthead_id, 8801)
+        self.assertIsNone(asset_base_lines[0].account_id)
         self.assertEqual(kwargs["im_inputs"], [])
 
     @patch("posting.adapters.purchase_invoice.resolve_posting_location_id", return_value=5)
@@ -3973,6 +3992,235 @@ class PurchasePhase3AssetIntakeTests(TestCase):
         mock_post_adapter.assert_called_once()
         mock_sync_ap.assert_called_once()
         mock_sync_gst.assert_called_once()
+
+
+class PurchaseAssetPostingRepairCommandTests(TestCase):
+    def setUp(self):
+        user_model = get_user_model()
+        self.user = user_model.objects.create_user(
+            username="purchase-repair",
+            email="purchase-repair@example.com",
+            password="testpass123",
+        )
+        self.entity = Entity.objects.create(entityname="Purchase Repair Entity")
+        self.entityfin = EntityFinancialYear.objects.create(
+            entity=self.entity,
+            desc="FY 2026-27",
+            year_code="FY2026-27",
+            finstartyear=timezone.now(),
+            finendyear=timezone.now(),
+            createdby=self.user,
+        )
+        self.subentity = SubEntity.objects.create(
+            entity=self.entity,
+            subentityname="Head Office",
+            branch_type=SubEntity.BranchType.HEAD_OFFICE,
+            is_head_office=True,
+        )
+        self.vendor = account.objects.create(entity=self.entity, accountname="Vendor A")
+        self.uom = UnitOfMeasure.objects.create(entity=self.entity, code="PCS", description="Pieces")
+        self.category = ProductCategory.objects.create(entity=self.entity, pcategoryname="Asset Items")
+        self.asset_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Fixed Assets",
+            accounttypecode="FIXED-ASSET",
+            createdby=self.user,
+        )
+        self.purchase_head = accountHead.objects.create(
+            entity=self.entity,
+            name="Purchase",
+            code=4100,
+            drcreffect="Debit",
+            balanceType="Debit",
+            accounttype=self.asset_type,
+            createdby=self.user,
+        )
+        self.cwip_head = accountHead.objects.create(
+            entity=self.entity,
+            name="Capital Work In Progress",
+            code=1501,
+            drcreffect="Debit",
+            balanceType="Debit",
+            accounttype=self.asset_type,
+            createdby=self.user,
+        )
+        self.purchase_ledger = Ledger.objects.create(
+            entity=self.entity,
+            name="Purchase",
+            accounthead=self.purchase_head,
+            accounttype=self.asset_type,
+            createdby=self.user,
+        )
+        self.cwip_ledger = Ledger.objects.create(
+            entity=self.entity,
+            name="CWIP Ledger",
+            accounthead=self.cwip_head,
+            accounttype=self.asset_type,
+            createdby=self.user,
+        )
+        self.purchase_account = account.objects.create(
+            entity=self.entity,
+            accountname="Purchase Account",
+            ledger=self.purchase_ledger,
+            createdby=self.user,
+        )
+        self.asset_category = AssetCategory.objects.create(
+            entity=self.entity,
+            code="CWIP-COMP",
+            name="Computer CWIP",
+            nature=AssetCategory.AssetNature.CAPITAL_WIP,
+            asset_ledger=self.purchase_ledger,
+            cwip_ledger=self.cwip_ledger,
+        )
+        self.product = Product.objects.create(
+            entity=self.entity,
+            productname="Office Computer",
+            sku="COMP-REPAIR-001",
+            productcategory=self.category,
+            base_uom=self.uom,
+            purchase_behavior=ProductPurchaseBehavior.ASSET,
+            default_asset_category=self.asset_category,
+        )
+        self.header = PurchaseInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            vendor=self.vendor,
+            bill_date=timezone.now().date(),
+            posting_date=timezone.now().date(),
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            doc_code="PINV",
+            doc_no=2001,
+            purchase_number="PI/PINV/2026/2001",
+            status=PurchaseInvoiceHeader.Status.POSTED,
+            default_taxability=PurchaseInvoiceHeader.Taxability.TAXABLE,
+            tax_regime=PurchaseInvoiceHeader.TaxRegime.INTRA,
+            grand_total=Decimal("100000.00"),
+        )
+        self.line = self.header.lines.create(
+            line_no=1,
+            product=self.product,
+            product_desc="Office Computer",
+            is_service=False,
+            purchase_behavior=ProductPurchaseBehavior.ASSET,
+            uom=self.uom,
+            qty=Decimal("1.0000"),
+            rate=Decimal("100000.00"),
+            taxable_value=Decimal("100000.00"),
+            line_total=Decimal("100000.00"),
+        )
+        self.asset = FixedAsset.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            category=self.asset_category,
+            ledger=self.purchase_ledger,
+            asset_code="CWIP-REPAIR-001",
+            asset_name="Office Computer",
+            status=FixedAsset.AssetStatus.CAPITAL_WIP,
+            acquisition_date=self.header.bill_date,
+            quantity=Decimal("1.0000"),
+            gross_block=Decimal("100000.00"),
+            residual_value=Decimal("0.00"),
+            useful_life_months=60,
+            depreciation_method=FixedAsset.DepreciationMethod.SLM,
+            net_book_value=Decimal("100000.00"),
+            vendor_account=self.vendor,
+            purchase_document_no=self.header.purchase_number,
+            external_reference=f"purchase-line:{self.line.id}",
+        )
+        self.line.asset_record = self.asset
+        self.line.save(update_fields=["asset_record"])
+        self.posting_batch = PostingBatch.objects.create(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.PURCHASE,
+            txn_id=self.header.id,
+            voucher_no=self.header.purchase_number,
+            created_by=self.user,
+        )
+        self.entry = Entry.objects.create(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.PURCHASE,
+            txn_id=self.header.id,
+            voucher_no=self.header.purchase_number,
+            voucher_date=self.header.bill_date,
+            posting_date=self.header.posting_date,
+            status=EntryStatus.POSTED,
+            posted_at=timezone.now(),
+            posted_by=self.user,
+            posting_batch=self.posting_batch,
+            narration="Historical asset purchase posting",
+            created_by=self.user,
+        )
+        self.journal_line = JournalLine.objects.create(
+            entry=self.entry,
+            posting_batch=self.posting_batch,
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.PURCHASE,
+            txn_id=self.header.id,
+            detail_id=self.line.id,
+            voucher_no=self.header.purchase_number,
+            account=self.purchase_account,
+            ledger=self.purchase_ledger,
+            drcr=True,
+            amount=Decimal("100000.00"),
+            description="Asset purchase posted to purchase ledger",
+            posting_date=self.header.posting_date,
+            posted_at=timezone.now(),
+            created_by=self.user,
+        )
+
+    def test_command_dry_run_reports_repairs_without_mutating_rows(self):
+        out = StringIO()
+
+        call_command(
+            "repair_asset_purchase_postings",
+            "--entity-id",
+            str(self.entity.id),
+            stdout=out,
+        )
+
+        output = out.getvalue()
+        self.assertIn("Asset purchase posting repair (DRY RUN)", output)
+        self.assertIn("flagged_lines: 1", output)
+        self.assertIn("journal_fix=True", output)
+        self.assertIn("asset_fix=True", output)
+        self.assertIn(self.header.purchase_number, output)
+
+        self.journal_line.refresh_from_db()
+        self.asset.refresh_from_db()
+        self.assertEqual(self.journal_line.ledger_id, self.purchase_ledger.id)
+        self.assertEqual(self.journal_line.account_id, self.purchase_account.id)
+        self.assertEqual(self.asset.ledger_id, self.purchase_ledger.id)
+
+    def test_command_apply_repairs_historical_asset_posting_targets(self):
+        out = StringIO()
+
+        call_command(
+            "repair_asset_purchase_postings",
+            "--entity-id",
+            str(self.entity.id),
+            "--apply",
+            stdout=out,
+        )
+
+        output = out.getvalue()
+        self.assertIn("Asset purchase posting repair (APPLY)", output)
+        self.assertIn("journal_repairs: 1", output)
+        self.assertIn("asset_repairs: 1", output)
+
+        self.journal_line.refresh_from_db()
+        self.asset.refresh_from_db()
+        self.assertEqual(self.journal_line.ledger_id, self.cwip_ledger.id)
+        self.assertEqual(self.journal_line.accounthead_id, self.cwip_head.id)
+        self.assertIsNone(self.journal_line.account_id)
+        self.assertEqual(self.asset.ledger_id, self.cwip_ledger.id)
 
 
 class PurchaseStatutoryServiceTests(TestCase):

@@ -34,6 +34,7 @@ from assets.views import (
     FixedAssetReverseImpairmentAPIView,
     FixedAssetRetrieveUpdateAPIView,
     FixedAssetTransferAPIView,
+    FixedAssetTransferPrecheckAPIView,
 )
 
 app_name = "assets_api"
@@ -58,6 +59,7 @@ urlpatterns = [
     path("fixed-assets/<int:pk>/impair/precheck/", FixedAssetImpairPrecheckAPIView.as_view(), name="fixed-asset-impair-precheck"),
     path("fixed-assets/<int:pk>/impair/", FixedAssetImpairAPIView.as_view(), name="fixed-asset-impair"),
     path("fixed-assets/<int:pk>/reverse-impairment/", FixedAssetReverseImpairmentAPIView.as_view(), name="fixed-asset-reverse-impairment"),
+    path("fixed-assets/<int:pk>/transfer/precheck/", FixedAssetTransferPrecheckAPIView.as_view(), name="fixed-asset-transfer-precheck"),
     path("fixed-assets/<int:pk>/transfer/", FixedAssetTransferAPIView.as_view(), name="fixed-asset-transfer"),
     path("fixed-assets/<int:pk>/dispose/precheck/", FixedAssetDisposePrecheckAPIView.as_view(), name="fixed-asset-dispose-precheck"),
     path("fixed-assets/<int:pk>/dispose/", FixedAssetDisposeAPIView.as_view(), name="fixed-asset-dispose"),

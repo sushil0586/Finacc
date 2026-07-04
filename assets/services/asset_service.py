@@ -1059,6 +1059,90 @@ class AssetService:
         return asset
 
     @staticmethod
+    def transfer_asset_precheck(
+        *,
+        asset: FixedAsset,
+        subentity_id: int | None = None,
+        location_name: str | None = None,
+        department_name: str | None = None,
+        custodian_name: str | None = None,
+        notes: str | None = None,
+    ) -> dict:
+        del notes
+        blocking_reasons: list[str] = []
+        warnings: list[str] = []
+        impact = [
+            "Transfer will update the operational ownership fields on the asset record without creating a posting batch.",
+            "Capitalization, impairment, disposal, and depreciation history will remain unchanged.",
+            "The updated scope values will flow into downstream reporting, searches, and asset work queues.",
+        ]
+
+        if asset.status not in {FixedAsset.AssetStatus.ACTIVE, FixedAsset.AssetStatus.HELD_FOR_SALE, FixedAsset.AssetStatus.CAPITAL_WIP}:
+            blocking_reasons.append("Only active, held-for-sale, or capital-WIP assets can be transferred.")
+
+        if subentity_id is not None:
+            subentity = SubEntity.objects.filter(id=subentity_id, entity_id=asset.entity_id, isactive=True).only("id", "entity_id").first()
+            if subentity is None:
+                blocking_reasons.append("Selected subentity belongs to a different entity or is inactive.")
+
+        if (
+            subentity_id == asset.subentity_id
+            and location_name == asset.location_name
+            and department_name == asset.department_name
+            and custodian_name == asset.custodian_name
+        ):
+            warnings.append("Transfer request matches the current asset scope, so no operational fields will change.")
+
+        if location_name is not None and not str(location_name).strip():
+            warnings.append("Location is blank; asset-by-location reporting may become less useful.")
+        if department_name is not None and not str(department_name).strip():
+            warnings.append("Department is blank; department-wise asset analysis may become less useful.")
+        if custodian_name is not None and not str(custodian_name).strip():
+            warnings.append("Custodian is blank; handoff accountability may be harder to track.")
+
+        settings = AssetSettingsService.get_settings(asset.entity_id, asset.subentity_id)
+        return _precheck_payload(
+            action="transfer",
+            asset=asset,
+            posting_date=None,
+            posting_batch_id=None,
+            allowed=not blocking_reasons,
+            blocking_reasons=blocking_reasons,
+            warnings=warnings,
+            impact=impact,
+            policy_profile=_category_accounting_policy_profile(asset=asset, settings=settings),
+        )
+
+    @staticmethod
+    def transfer_asset(
+        *,
+        asset: FixedAsset,
+        subentity_id: int | None = None,
+        location_name: str | None = None,
+        department_name: str | None = None,
+        custodian_name: str | None = None,
+        notes: str | None = None,
+        user_id: int | None = None,
+    ) -> FixedAsset:
+        if asset.status not in {FixedAsset.AssetStatus.ACTIVE, FixedAsset.AssetStatus.HELD_FOR_SALE, FixedAsset.AssetStatus.CAPITAL_WIP}:
+            raise ValueError("Only active, held-for-sale, or capital-WIP assets can be transferred.")
+        if subentity_id is not None:
+            subentity = SubEntity.objects.filter(id=subentity_id, entity_id=asset.entity_id, isactive=True).only("id", "entity_id").first()
+            if subentity is None:
+                raise ValueError("Selected subentity belongs to a different entity or is inactive.")
+            asset.subentity_id = subentity.id
+        else:
+            asset.subentity_id = None
+        asset.location_name = location_name
+        asset.department_name = department_name
+        asset.custodian_name = custodian_name
+        if notes is not None:
+            asset.notes = notes
+        asset.updated_by_id = user_id
+        asset.save(update_fields=["subentity", "location_name", "department_name", "custodian_name", "notes", "updated_by", "updated_at"])
+        return asset
+
+    @staticmethod
     def dispose_asset_precheck(
         *,
         asset: FixedAsset,
@@ -1184,6 +1268,7 @@ class AssetService:
             raise ValueError("Asset and accumulated depreciation ledgers are required for disposal.")
         _validate_asset_scope(
             entity_id=asset.entity_id,
+            subentity=asset.subentity,
             category=category,
             ledger=asset.ledger or category.asset_ledger,
         )

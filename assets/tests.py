@@ -780,6 +780,59 @@ class AssetApiScopeTests(APITestCase):
         self.asset.refresh_from_db()
         self.assertEqual(self.asset.notes, "")
 
+    def test_transfer_precheck_returns_allowed_payload_for_valid_transfer(self):
+        self.asset.status = FixedAsset.AssetStatus.ACTIVE
+        self.asset.save(update_fields=["status", "updated_at"])
+
+        response = self.client.post(
+            reverse("assets_api:fixed-asset-transfer-precheck", args=[self.asset.id]),
+            {
+                "subentity_id": self.subentity.id,
+                "location_name": "Main Branch",
+                "department_name": "Admin",
+                "custodian_name": "A. Kumar",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data["action"], "transfer")
+        self.assertTrue(response.data["allowed"])
+        self.assertEqual(response.data["snapshot"]["posting_batch_id"], None)
+        self.assertEqual(response.data["snapshot"]["posting_date"], None)
+
+    def test_transfer_precheck_blocks_invalid_status(self):
+        self.asset.status = FixedAsset.AssetStatus.DISPOSED
+        self.asset.save(update_fields=["status", "updated_at"])
+
+        response = self.client.post(
+            reverse("assets_api:fixed-asset-transfer-precheck", args=[self.asset.id]),
+            {
+                "subentity_id": self.subentity.id,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertFalse(response.data["allowed"])
+        self.assertIn("Only active, held-for-sale, or capital-WIP assets can be transferred.", response.data["blocking_reasons"])
+
+    def test_transfer_precheck_blocks_invalid_subentity(self):
+        self.asset.status = FixedAsset.AssetStatus.ACTIVE
+        self.asset.save(update_fields=["status", "updated_at"])
+
+        response = self.client.post(
+            reverse("assets_api:fixed-asset-transfer-precheck", args=[self.asset.id]),
+            {
+                "subentity_id": self.foreign_subentity.id,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertFalse(response.data["allowed"])
+        self.assertIn("Selected subentity belongs to a different entity or is inactive.", response.data["blocking_reasons"])
+
     def test_capitalize_blocks_below_threshold_when_policy_is_hard(self):
         self._set_asset_policy(
             entity_id=self.entity.id,

@@ -20,6 +20,7 @@ from posting.common.product_accounts import ProductAccountResolver
 from catalog.models import Product, ProductPurchaseBehavior
 from catalog.lot_tracking import resolve_tracked_lot_number
 from catalog.uom_helpers import resolve_product_uom
+from financial.models import Ledger
 from withholding.models import EntityWithholdingSectionPostingMap
 
 
@@ -81,6 +82,44 @@ def _aggregate_rcm_summary_taxes(header) -> tuple[dict, dict, dict]:
             blocked_tax[key] = q2(blocked_tax[key] + q2(amount * blocked_ratio))
 
     return rcm_tax, eligible_tax, blocked_tax
+
+
+def _resolve_asset_purchase_posting_target(
+    *,
+    entity_id: int,
+    line,
+    products_by_id: dict[int, Product],
+    ledger_head_cache: dict[int, int],
+) -> tuple[int, int]:
+    product_id = getattr(line, "product_id", None)
+    product = products_by_id.get(int(product_id)) if product_id else getattr(line, "product", None)
+    category = getattr(product, "default_asset_category", None)
+    if category is None:
+        raise ValueError(
+            f"Purchase line {getattr(line, 'line_no', '-')}: asset purchase behavior requires a default asset category."
+        )
+
+    ledger_id = getattr(category, "cwip_ledger_id", None) or getattr(category, "asset_ledger_id", None)
+    if not ledger_id:
+        raise ValueError(
+            f"Purchase line {getattr(line, 'line_no', '-')}: asset category '{getattr(category, 'name', '')}' is missing CWIP/asset ledger mapping."
+        )
+
+    accounthead_id = ledger_head_cache.get(int(ledger_id))
+    if accounthead_id is None:
+        ledger = (
+            Ledger.objects.filter(id=ledger_id, entity_id=entity_id)
+            .only("id", "accounthead_id")
+            .first()
+        )
+        if not ledger or not ledger.accounthead_id:
+            raise ValueError(
+                f"Purchase line {getattr(line, 'line_no', '-')}: posting ledger {ledger_id} must be linked to an account head."
+            )
+        accounthead_id = int(ledger.accounthead_id)
+        ledger_head_cache[int(ledger_id)] = accounthead_id
+
+    return accounthead_id, int(ledger_id)
 
 
 # =========================
@@ -304,9 +343,15 @@ class PurchaseInvoicePostingAdapter:
             products_by_id = {
                 product.id: product
                 for product in Product.objects.filter(id__in=product_ids)
-                .select_related("base_uom")
+                .select_related(
+                    "base_uom",
+                    "default_asset_category",
+                    "default_asset_category__cwip_ledger",
+                    "default_asset_category__asset_ledger",
+                )
                 .prefetch_related("uom_conversions__from_uom", "uom_conversions__to_uom")
             }
+        asset_ledger_head_cache: Dict[int, int] = {}
 
         # =========================
         # 1) Build Journal Lines
@@ -346,10 +391,27 @@ class PurchaseInvoicePostingAdapter:
 
             # base polarity: invoice/DN Dr, CN Cr
             base_is_debit = (sign > 0)
+            posting_kwargs: Dict[str, Optional[int]] = {
+                "account_id": purchase_ac,
+                "ledger_id": int(getattr(getattr(ln, "product_purchase_account", None), "ledger_id", 0) or 0) or None,
+            }
+            if purchase_behavior == ProductPurchaseBehavior.ASSET:
+                accounthead_id, ledger_id = _resolve_asset_purchase_posting_target(
+                    entity_id=entity_id,
+                    line=ln,
+                    products_by_id=products_by_id,
+                    ledger_head_cache=asset_ledger_head_cache,
+                )
+                posting_kwargs = {
+                    "account_id": None,
+                    "accounthead_id": accounthead_id,
+                    "ledger_id": ledger_id,
+                }
 
             jl.append(JLInput(
-                account_id=purchase_ac,
-                ledger_id=int(getattr(getattr(ln, "product_purchase_account", None), "ledger_id", 0) or 0) or None,
+                account_id=posting_kwargs.get("account_id"),
+                accounthead_id=posting_kwargs.get("accounthead_id"),
+                ledger_id=posting_kwargs.get("ledger_id"),
                 drcr=base_is_debit,
                 amount=q2(base.copy_abs()),
                 description=purchase_line_description(header, ln),

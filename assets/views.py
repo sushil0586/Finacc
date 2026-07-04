@@ -349,6 +349,19 @@ class FixedAssetTransferAPIView(AssetScopedAPIView):
         return Response(FixedAssetListSerializer(asset).data)
 
 
+class FixedAssetTransferPrecheckAPIView(AssetScopedAPIView):
+
+    def post(self, request, pk: int):
+        asset = self._scoped_asset(request, pk)
+        serializer = AssetTransferSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            payload = AssetService.transfer_asset_precheck(asset=asset, **serializer.validated_data)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(payload)
+
+
 class FixedAssetDisposePrecheckAPIView(AssetScopedAPIView):
 
     def post(self, request, pk: int):
