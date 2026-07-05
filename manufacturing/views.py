@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from django.db import transaction
-from django.db.models import Count, DecimalField, ExpressionWrapper, F, Sum
+from django.db.models import Count, DecimalField, ExpressionWrapper, F, Q, Sum
 from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_date
 from rest_framework import generics, permissions, status
@@ -15,7 +15,7 @@ from catalog.models import Product
 from core.entitlements import ScopedEntitlementMixin
 from entity.models import Godown
 from numbering.models import DocumentNumberSeries
-from numbering.services import ensure_document_type, ensure_series
+from numbering.services import ensure_document_type, ensure_series, validate_unique_series_pattern
 from posting.models import EntityStaticAccountMap
 from rbac.services import EffectivePermissionService
 
@@ -25,6 +25,7 @@ from .models import (
     ManufacturingRoute,
     ManufacturingSettings,
     ManufacturingWorkOrder,
+    ManufacturingWorkOrderStatus,
     ManufacturingWorkOrderAdditionalCost,
     ManufacturingWorkOrderMaterial,
     ManufacturingWorkOrderOperation,
@@ -62,6 +63,21 @@ MANUFACTURING_SETTINGS_SCHEMA = [
     {"name": "capitalized_additional_cost_types", "label": "Capitalized Additional Cost Types", "type": "multi_choice", "group": "accounting_controls", "choices": _choice_payload([(value, value.title()) for value in DEFAULT_MANUFACTURING_ADDITIONAL_COST_TYPES])},
 ]
 
+NUMBERING_SERIES_SCHEMA = [
+    {"name": "doc_code", "label": "Series Code", "type": "string"},
+    {"name": "prefix", "label": "Prefix", "type": "string"},
+    {"name": "suffix", "label": "Suffix", "type": "string"},
+    {"name": "starting_number", "label": "Starting Number", "type": "integer"},
+    {"name": "current_number", "label": "Next Number", "type": "integer"},
+    {"name": "number_padding", "label": "Padding", "type": "integer"},
+    {"name": "separator", "label": "Separator", "type": "string"},
+    {"name": "reset_frequency", "label": "Reset Frequency", "type": "choice", "choices": _choice_payload(DocumentNumberSeries.RESET_CHOICES)},
+    {"name": "include_year", "label": "Include Year", "type": "boolean"},
+    {"name": "include_month", "label": "Include Month", "type": "boolean"},
+    {"name": "custom_format", "label": "Custom Format", "type": "string"},
+    {"name": "is_active", "label": "Active", "type": "boolean"},
+]
+
 
 def _parse_optional_date(raw_value: Any, field_name: str):
     if raw_value in (None, "", "null", "None"):
@@ -72,6 +88,20 @@ def _parse_optional_date(raw_value: Any, field_name: str):
     if parsed is None:
         raise ValidationError({field_name: f"{field_name} must use YYYY-MM-DD format."})
     return parsed
+
+
+def _parse_positive_int(raw_value: Any, field_name: str, *, default: int, minimum: int = 1, maximum: Optional[int] = None) -> int:
+    if raw_value in (None, "", "null", "None"):
+        return default
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError):
+        raise ValidationError({field_name: f"{field_name} must be an integer."})
+    if value < minimum:
+        raise ValidationError({field_name: f"{field_name} must be at least {minimum}."})
+    if maximum is not None and value > maximum:
+        raise ValidationError({field_name: f"{field_name} must be at most {maximum}."})
+    return value
 
 
 def _yield_variance_value_from_row(row: dict[str, Any]) -> float:
@@ -116,6 +146,53 @@ def _manufacturing_work_orders_queryset(
         qs = qs.filter(production_date__lte=to_date)
     return qs
 
+
+def _subentity_scope_q(
+    subentity_id: Optional[int],
+    *,
+    include_shared_when_scoped: bool = False,
+) -> Q:
+    if subentity_id is None:
+        return Q(subentity_id__isnull=True)
+    if include_shared_when_scoped:
+        return Q(subentity_id=subentity_id) | Q(subentity_id__isnull=True)
+    return Q(subentity_id=subentity_id)
+
+
+def _assert_field_is_unchanged(*, field_name: str, current_value: Any, payload_value: Any, label: str) -> None:
+    if current_value != payload_value:
+        raise ValidationError({field_name: f"{label} cannot be changed after creation."})
+
+
+def _get_scoped_route_for_bom(*, entity_id: int, subentity_id: Optional[int], route_id: int) -> ManufacturingRoute:
+    route = (
+        ManufacturingRoute.objects
+        .filter(entity_id=entity_id, id=route_id)
+        .filter(_subentity_scope_q(subentity_id, include_shared_when_scoped=True))
+        .first()
+    )
+    if route is None:
+        raise ValidationError({"route": "Selected route is not available in this manufacturing scope."})
+    return route
+
+
+def _assert_master_visible_in_context(*, record_subentity_id: Optional[int], context_subentity_id: Optional[int], label: str) -> None:
+    if context_subentity_id is None:
+        return
+    if record_subentity_id in (None, context_subentity_id):
+        return
+    raise PermissionDenied(f"{label} is not available in the current branch scope.")
+
+
+def _assert_master_writable_in_context(*, record_subentity_id: Optional[int], context_subentity_id: Optional[int], label: str) -> None:
+    _assert_master_visible_in_context(
+        record_subentity_id=record_subentity_id,
+        context_subentity_id=context_subentity_id,
+        label=label,
+    )
+    if context_subentity_id is not None and record_subentity_id is None:
+        raise PermissionDenied(f"Shared root {label.lower()}s are read-only from branch scope.")
+
 EDITABLE_SETTINGS_FIELDS = {
     "default_doc_code_work_order",
     "default_workflow_action",
@@ -139,6 +216,12 @@ class _BaseManufacturingAPIView(ScopedEntitlementMixin, APIView):
     def assert_permission(self, request, entity_id: int, permission_code: str):
         if permission_code not in self.get_permission_codes(request, entity_id):
             raise PermissionDenied(f"Missing permission: {permission_code}")
+
+    def assert_any_permission(self, request, entity_id: int, permission_codes: list[str] | tuple[str, ...]):
+        effective_codes = self.get_permission_codes(request, entity_id)
+        if any(permission_code in effective_codes for permission_code in permission_codes):
+            return
+        raise PermissionDenied(f"Missing permission. Need one of: {', '.join(permission_codes)}")
 
     @staticmethod
     def _parse_int(raw_value: Any, field_name: str, *, required: bool) -> Optional[int]:
@@ -169,6 +252,10 @@ class _BaseManufacturingAPIView(ScopedEntitlementMixin, APIView):
 
 
 class ManufacturingSettingsAPIView(_BaseManufacturingAPIView):
+    SERIES_KEY = "manufacturing_work_order"
+    DOC_KEY = "MANUFACTURING_WORK_ORDER"
+    DOC_LABEL = "Manufacturing Work Order"
+
     def _get_settings(self, *, entity_id: int, subentity_id: Optional[int]) -> ManufacturingSettings:
         settings_obj, _ = ManufacturingSettings.objects.get_or_create(entity_id=entity_id, subentity_id=subentity_id)
         return settings_obj
@@ -187,8 +274,8 @@ class ManufacturingSettingsAPIView(_BaseManufacturingAPIView):
         doc_code = settings_obj.default_doc_code_work_order or "MWO"
         return ensure_document_type(
             module="manufacturing",
-            doc_key="MANUFACTURING_WORK_ORDER",
-            name="Manufacturing Work Order",
+            doc_key=ManufacturingSettingsAPIView.DOC_KEY,
+            name=ManufacturingSettingsAPIView.DOC_LABEL,
             default_code=doc_code,
         )
 
@@ -217,8 +304,8 @@ class ManufacturingSettingsAPIView(_BaseManufacturingAPIView):
                 include_month=False,
             )
         return [{
-            "series_key": "manufacturing_work_order",
-            "label": "Manufacturing Work Order",
+            "series_key": self.SERIES_KEY,
+            "label": self.DOC_LABEL,
             "doc_code": series.doc_code,
             "prefix": series.prefix,
             "suffix": series.suffix,
@@ -232,6 +319,47 @@ class ManufacturingSettingsAPIView(_BaseManufacturingAPIView):
             "custom_format": series.custom_format,
             "is_active": series.is_active,
         }]
+
+    def _update_numbering_series(self, rows: list[dict], *, entity_id: int, entityfinid_id: int, subentity_id: Optional[int], settings_obj: ManufacturingSettings, user_id: Optional[int]) -> None:
+        row = next((item for item in rows if isinstance(item, dict) and item.get("series_key") == self.SERIES_KEY), None)
+        if not row:
+            return
+
+        doc_code = str(row.get("doc_code") or settings_obj.default_doc_code_work_order or "MWO").strip()
+        if not doc_code:
+            raise ValidationError({"numbering_series": "doc_code is required for manufacturing_work_order."})
+
+        settings_obj.default_doc_code_work_order = doc_code
+        doc_type = self._ensure_doc_type(settings_obj)
+        series, _ = ensure_series(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            doc_type_id=doc_type.id,
+            doc_code=doc_code,
+            prefix=(row.get("prefix") if row.get("prefix") is not None else doc_code),
+            start=int(row.get("starting_number") or 1),
+            padding=int(row.get("number_padding") or 0),
+            reset=(row.get("reset_frequency") or "none"),
+            include_year=bool(row.get("include_year", False)),
+            include_month=bool(row.get("include_month", False)),
+        )
+        series.prefix = str(row.get("prefix") or "")
+        series.suffix = str(row.get("suffix") or "")
+        series.starting_number = int(row.get("starting_number") or 1)
+        series.current_number = int(row.get("current_number") or series.starting_number)
+        series.number_padding = int(row.get("number_padding") or 0)
+        series.separator = str(row.get("separator") or "-")
+        series.reset_frequency = str(row.get("reset_frequency") or "none")
+        series.include_year = bool(row.get("include_year", False))
+        series.include_month = bool(row.get("include_month", False))
+        series.custom_format = str(row.get("custom_format") or "")
+        series.is_active = bool(row.get("is_active", True))
+        if user_id and not series.created_by_id:
+            series.created_by_id = user_id
+        validate_unique_series_pattern(series=series, doc_label=self.DOC_LABEL)
+        series.save()
+        settings_obj.save()
 
     @staticmethod
     def _validate_settings_updates(settings_updates: dict[str, Any]) -> None:
@@ -268,6 +396,7 @@ class ManufacturingSettingsAPIView(_BaseManufacturingAPIView):
             "settings": self._settings_payload(settings_obj),
             "accounting": _manufacturing_accounting_payload(settings_obj),
             "numbering_series": self._series_payload(entity_id=entity_id, entityfinid_id=entityfinid_id, subentity_id=subentity_id, settings_obj=settings_obj) if entityfinid_id else [],
+            "numbering_series_schema": NUMBERING_SERIES_SCHEMA,
             "capabilities": {"has_numbering_management": bool(entityfinid_id)},
         })
 
@@ -295,9 +424,25 @@ class ManufacturingSettingsAPIView(_BaseManufacturingAPIView):
             settings_obj.policy_controls = policy_controls
             settings_obj.save()
 
+        if "numbering_series" in request.data:
+            rows = request.data.get("numbering_series") or []
+            if not entityfinid_id:
+                raise ValidationError({"entityfinid": "entityfinid is required when updating numbering_series."})
+            if not isinstance(rows, list):
+                raise ValidationError({"numbering_series": "Provide a list of numbering series rows."})
+            self._update_numbering_series(
+                rows,
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                settings_obj=settings_obj,
+                user_id=getattr(request.user, "id", None),
+            )
+
         return Response({
             "settings": self._settings_payload(settings_obj),
             "numbering_series": self._series_payload(entity_id=entity_id, entityfinid_id=entityfinid_id, subentity_id=subentity_id, settings_obj=settings_obj) if entityfinid_id else [],
+            "numbering_series_schema": NUMBERING_SERIES_SCHEMA,
             "capabilities": {"has_numbering_management": bool(entityfinid_id)},
         })
 
@@ -315,12 +460,9 @@ class ManufacturingRouteListCreateAPIView(_BaseManufacturingAPIView, generics.Li
 
     def get_queryset(self):
         entity_id, subentity_id, _ = self._scope(self.request, require_entityfinid=False)
-        self.assert_permission(self.request, entity_id, "manufacturing.bom.view")
+        self.assert_any_permission(self.request, entity_id, ("manufacturing.route.view", "manufacturing.bom.view"))
         qs = ManufacturingRoute.objects.filter(entity_id=entity_id).prefetch_related("steps")
-        if subentity_id is None:
-            qs = qs.filter(subentity_id__isnull=True)
-        else:
-            qs = qs.filter(subentity_id=subentity_id)
+        qs = qs.filter(_subentity_scope_q(subentity_id, include_shared_when_scoped=True))
         return qs.order_by("code", "id")
 
     def get_serializer_class(self):
@@ -340,7 +482,7 @@ class ManufacturingRouteListCreateAPIView(_BaseManufacturingAPIView, generics.Li
         payload = serializer.validated_data
         entity_id = payload["entity"]
         self.enforce_scope(request, entity_id=entity_id, entityfinid_id=None, subentity_id=payload.get("subentity"))
-        self.assert_permission(request, entity_id, "manufacturing.bom.create")
+        self.assert_any_permission(request, entity_id, ("manufacturing.route.create", "manufacturing.bom.create"))
 
         route = ManufacturingRoute.objects.create(
             entity_id=entity_id,
@@ -384,18 +526,32 @@ class ManufacturingRouteDetailAPIView(_BaseManufacturingAPIView, generics.Retrie
 
     def retrieve(self, request, *args, **kwargs):
         route = self.get_object()
+        context_subentity_id = self._parse_int(request.query_params.get("subentity"), "subentity_id", required=False)
+        _assert_master_visible_in_context(
+            record_subentity_id=route.subentity_id,
+            context_subentity_id=context_subentity_id,
+            label="Route",
+        )
         self.enforce_scope(request, entity_id=route.entity_id, entityfinid_id=None, subentity_id=route.subentity_id)
-        self.assert_permission(request, route.entity_id, "manufacturing.bom.view")
+        self.assert_any_permission(request, route.entity_id, ("manufacturing.route.view", "manufacturing.bom.view"))
         return Response(ManufacturingRouteResponseSerializer(route).data)
 
     @transaction.atomic
     def update(self, request, *args, **kwargs):
         route = self.get_object()
+        context_subentity_id = self._parse_int(request.query_params.get("subentity"), "subentity_id", required=False)
+        _assert_master_writable_in_context(
+            record_subentity_id=route.subentity_id,
+            context_subentity_id=context_subentity_id,
+            label="Route",
+        )
         self.enforce_scope(request, entity_id=route.entity_id, entityfinid_id=None, subentity_id=route.subentity_id)
-        self.assert_permission(request, route.entity_id, "manufacturing.bom.update")
+        self.assert_any_permission(request, route.entity_id, ("manufacturing.route.update", "manufacturing.bom.update"))
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
+        _assert_field_is_unchanged(field_name="entity", current_value=route.entity_id, payload_value=payload["entity"], label="Entity")
+        _assert_field_is_unchanged(field_name="subentity", current_value=route.subentity_id, payload_value=payload.get("subentity"), label="Route scope")
         route.subentity_id = payload.get("subentity")
         route.code = payload["code"]
         route.name = payload["name"]
@@ -425,8 +581,14 @@ class ManufacturingRouteDetailAPIView(_BaseManufacturingAPIView, generics.Retrie
     @transaction.atomic
     def destroy(self, request, *args, **kwargs):
         route = self.get_object()
+        context_subentity_id = self._parse_int(request.query_params.get("subentity"), "subentity_id", required=False)
+        _assert_master_writable_in_context(
+            record_subentity_id=route.subentity_id,
+            context_subentity_id=context_subentity_id,
+            label="Route",
+        )
         self.enforce_scope(request, entity_id=route.entity_id, entityfinid_id=None, subentity_id=route.subentity_id)
-        self.assert_permission(request, route.entity_id, "manufacturing.bom.delete")
+        self.assert_any_permission(request, route.entity_id, ("manufacturing.route.delete", "manufacturing.bom.delete"))
         route.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -438,10 +600,7 @@ class ManufacturingBOMListCreateAPIView(_BaseManufacturingAPIView, generics.List
         entity_id, subentity_id, _ = self._scope(self.request, require_entityfinid=False)
         self.assert_permission(self.request, entity_id, "manufacturing.bom.view")
         qs = ManufacturingBOM.objects.filter(entity_id=entity_id).select_related("finished_product", "output_uom", "route").prefetch_related("materials")
-        if subentity_id is None:
-            qs = qs.filter(subentity_id__isnull=True)
-        else:
-            qs = qs.filter(subentity_id=subentity_id)
+        qs = qs.filter(_subentity_scope_q(subentity_id, include_shared_when_scoped=True))
         return qs.order_by("code", "id")
 
     def get_serializer_class(self):
@@ -470,7 +629,7 @@ class ManufacturingBOMListCreateAPIView(_BaseManufacturingAPIView, generics.List
             name=payload["name"],
             description=payload.get("description") or "",
             finished_product_id=payload["finished_product"],
-            route_id=get_object_or_404(ManufacturingRoute, id=payload.get("route"), entity_id=entity_id).id if payload.get("route") else None,
+            route_id=_get_scoped_route_for_bom(entity_id=entity_id, subentity_id=payload.get("subentity"), route_id=payload.get("route")).id if payload.get("route") else None,
             output_qty=payload["output_qty"],
             output_uom_id=Product.objects.filter(id=payload["finished_product"]).values_list("base_uom_id", flat=True).first(),
             is_active=payload.get("is_active", True),
@@ -510,6 +669,12 @@ class ManufacturingBOMDetailAPIView(_BaseManufacturingAPIView, generics.Retrieve
 
     def retrieve(self, request, *args, **kwargs):
         bom = self.get_object()
+        context_subentity_id = self._parse_int(request.query_params.get("subentity"), "subentity_id", required=False)
+        _assert_master_visible_in_context(
+            record_subentity_id=bom.subentity_id,
+            context_subentity_id=context_subentity_id,
+            label="BOM",
+        )
         self.enforce_scope(request, entity_id=bom.entity_id, entityfinid_id=None, subentity_id=bom.subentity_id)
         self.assert_permission(request, bom.entity_id, "manufacturing.bom.view")
         return Response(ManufacturingBOMResponseSerializer(bom).data)
@@ -517,11 +682,19 @@ class ManufacturingBOMDetailAPIView(_BaseManufacturingAPIView, generics.Retrieve
     @transaction.atomic
     def update(self, request, *args, **kwargs):
         bom = self.get_object()
+        context_subentity_id = self._parse_int(request.query_params.get("subentity"), "subentity_id", required=False)
+        _assert_master_writable_in_context(
+            record_subentity_id=bom.subentity_id,
+            context_subentity_id=context_subentity_id,
+            label="BOM",
+        )
         self.enforce_scope(request, entity_id=bom.entity_id, entityfinid_id=None, subentity_id=bom.subentity_id)
         self.assert_permission(request, bom.entity_id, "manufacturing.bom.update")
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
+        _assert_field_is_unchanged(field_name="entity", current_value=bom.entity_id, payload_value=payload["entity"], label="Entity")
+        _assert_field_is_unchanged(field_name="subentity", current_value=bom.subentity_id, payload_value=payload.get("subentity"), label="BOM scope")
         bom.subentity_id = payload.get("subentity")
         bom.code = payload["code"]
         bom.name = payload["name"]
@@ -529,7 +702,7 @@ class ManufacturingBOMDetailAPIView(_BaseManufacturingAPIView, generics.Retrieve
         bom.finished_product_id = payload["finished_product"]
         bom.route_id = payload.get("route")
         if payload.get("route"):
-            route = get_object_or_404(ManufacturingRoute, id=payload.get("route"), entity_id=bom.entity_id)
+            route = _get_scoped_route_for_bom(entity_id=bom.entity_id, subentity_id=bom.subentity_id, route_id=payload.get("route"))
             bom.route_id = route.id
         else:
             bom.route_id = None
@@ -561,6 +734,12 @@ class ManufacturingBOMDetailAPIView(_BaseManufacturingAPIView, generics.Retrieve
     @transaction.atomic
     def destroy(self, request, *args, **kwargs):
         bom = self.get_object()
+        context_subentity_id = self._parse_int(request.query_params.get("subentity"), "subentity_id", required=False)
+        _assert_master_writable_in_context(
+            record_subentity_id=bom.subentity_id,
+            context_subentity_id=context_subentity_id,
+            label="BOM",
+        )
         self.enforce_scope(request, entity_id=bom.entity_id, entityfinid_id=None, subentity_id=bom.subentity_id)
         self.assert_permission(request, bom.entity_id, "manufacturing.bom.delete")
         bom.delete()
@@ -571,9 +750,13 @@ class ManufacturingWorkOrderListCreateAPIView(_BaseManufacturingAPIView, generic
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        entity_id, subentity_id, _ = self._scope(self.request, require_entityfinid=False)
+        entity_id, subentity_id, entityfinid_id = self._scope(self.request, require_entityfinid=False)
         self.assert_permission(self.request, entity_id, "manufacturing.workorder.view")
-        qs = ManufacturingWorkOrder.objects.filter(entity_id=entity_id).select_related("bom", "bom__route").prefetch_related(
+        qs = _manufacturing_work_orders_queryset(
+            entity_id=entity_id,
+            subentity_id=subentity_id,
+            entityfinid_id=entityfinid_id,
+        ).select_related("bom", "bom__route").prefetch_related(
             "materials",
             "outputs",
             "additional_costs",
@@ -581,10 +764,31 @@ class ManufacturingWorkOrderListCreateAPIView(_BaseManufacturingAPIView, generic
             "trace_links__input_product",
             "trace_links__output_product",
         )
-        if subentity_id is None:
-            qs = qs.filter(subentity_id__isnull=True)
-        else:
-            qs = qs.filter(subentity_id=subentity_id)
+        status_filter = str(self.request.query_params.get("status") or "").strip().upper()
+        if status_filter:
+            valid_statuses = {choice[0] for choice in ManufacturingWorkOrderStatus.choices}
+            if status_filter not in valid_statuses:
+                raise ValidationError({"status": f"Invalid status. Allowed values: {', '.join(sorted(valid_statuses))}."})
+            qs = qs.filter(status=status_filter)
+
+        search_term = str(self.request.query_params.get("search") or "").strip()
+        if search_term:
+            qs = qs.filter(
+                Q(work_order_no__icontains=search_term)
+                | Q(reference_no__icontains=search_term)
+                | Q(bom__code__icontains=search_term)
+                | Q(bom__name__icontains=search_term)
+                | Q(status__icontains=search_term)
+            )
+
+        from_date = _parse_optional_date(self.request.query_params.get("from_date"), "from_date")
+        to_date = _parse_optional_date(self.request.query_params.get("to_date"), "to_date")
+        if from_date and to_date and from_date > to_date:
+            raise ValidationError({"to_date": "to_date cannot be earlier than from_date."})
+        if from_date:
+            qs = qs.filter(production_date__gte=from_date)
+        if to_date:
+            qs = qs.filter(production_date__lte=to_date)
         return qs.order_by("-production_date", "-id")
 
     def get_serializer_class(self):
@@ -594,8 +798,20 @@ class ManufacturingWorkOrderListCreateAPIView(_BaseManufacturingAPIView, generic
 
     def list(self, request, *args, **kwargs):
         queryset = self.get_queryset()
-        serializer = ManufacturingWorkOrderListSerializer(queryset, many=True)
-        return Response({"rows": serializer.data})
+        page = _parse_positive_int(request.query_params.get("page"), "page", default=1)
+        page_size = _parse_positive_int(request.query_params.get("page_size"), "page_size", default=25, maximum=100)
+        total_count = queryset.count()
+        start = (page - 1) * page_size
+        end = start + page_size
+        serializer = ManufacturingWorkOrderListSerializer(queryset[start:end], many=True)
+        return Response({
+            "rows": serializer.data,
+            "total_count": total_count,
+            "page": page,
+            "page_size": page_size,
+            "has_previous": page > 1,
+            "has_next": end < total_count,
+        })
 
     @transaction.atomic
     def create(self, request, *args, **kwargs):
@@ -636,9 +852,13 @@ class ManufacturingWorkOrderDetailAPIView(_BaseManufacturingAPIView, generics.Re
         self.assert_permission(request, work_order.entity_id, "manufacturing.workorder.update")
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
+        _assert_field_is_unchanged(field_name="entity", current_value=work_order.entity_id, payload_value=payload["entity"], label="Entity")
+        _assert_field_is_unchanged(field_name="entityfinid", current_value=work_order.entityfin_id, payload_value=payload.get("entityfinid"), label="Financial year scope")
+        _assert_field_is_unchanged(field_name="subentity", current_value=work_order.subentity_id, payload_value=payload.get("subentity"), label="Work order scope")
         result = ManufacturingWorkOrderService.update_work_order(
             work_order_id=work_order.id,
-            payload=serializer.validated_data,
+            payload=payload,
             user_id=request.user.id,
         )
         return Response({"work_order": ManufacturingWorkOrderResponseSerializer(result.work_order).data})
@@ -1198,13 +1418,9 @@ class ManufacturingBOMFormMetaAPIView(_BaseManufacturingAPIView):
         entity_id, subentity_id, _ = self._scope(request, require_entityfinid=False)
         self.assert_permission(request, entity_id, "manufacturing.bom.view")
         products = Product.objects.filter(entity_id=entity_id, isactive=True, is_service=False).order_by("productname", "id")
-        routes = ManufacturingRoute.objects.filter(entity_id=entity_id, is_active=True)
-        if subentity_id is not None:
-            boms = ManufacturingBOM.objects.filter(entity_id=entity_id, subentity_id=subentity_id, is_active=True).order_by("code", "id")
-            routes = routes.filter(subentity_id=subentity_id)
-        else:
-            boms = ManufacturingBOM.objects.filter(entity_id=entity_id, subentity_id__isnull=True, is_active=True).order_by("code", "id")
-            routes = routes.filter(subentity_id__isnull=True)
+        scoped_filter = _subentity_scope_q(subentity_id, include_shared_when_scoped=True)
+        routes = ManufacturingRoute.objects.filter(entity_id=entity_id, is_active=True).filter(scoped_filter)
+        boms = ManufacturingBOM.objects.filter(entity_id=entity_id, is_active=True).filter(scoped_filter).order_by("code", "id")
         return Response({
             "products": [
                 {
@@ -1229,15 +1445,12 @@ class ManufacturingWorkOrderFormMetaAPIView(_BaseManufacturingAPIView):
         self.assert_permission(request, entity_id, "manufacturing.workorder.view")
         settings_obj, _ = ManufacturingSettings.objects.get_or_create(entity_id=entity_id, subentity_id=subentity_id)
         products = Product.objects.filter(entity_id=entity_id, isactive=True, is_service=False).select_related("base_uom").order_by("productname", "id")
-        boms = ManufacturingBOM.objects.filter(entity_id=entity_id, is_active=True).select_related("finished_product", "route")
-        routes = ManufacturingRoute.objects.filter(entity_id=entity_id, is_active=True)
+        scoped_master_filter = _subentity_scope_q(subentity_id, include_shared_when_scoped=True)
+        boms = ManufacturingBOM.objects.filter(entity_id=entity_id, is_active=True).filter(scoped_master_filter).select_related("finished_product", "route")
+        routes = ManufacturingRoute.objects.filter(entity_id=entity_id, is_active=True).filter(scoped_master_filter)
         if subentity_id is None:
-            boms = boms.filter(subentity_id__isnull=True)
-            routes = routes.filter(subentity_id__isnull=True)
             godowns = Godown.objects.filter(entity_id=entity_id, subentity_id__isnull=True, is_active=True).order_by("name", "id")
         else:
-            boms = boms.filter(subentity_id=subentity_id)
-            routes = routes.filter(subentity_id=subentity_id)
             godowns = Godown.objects.filter(entity_id=entity_id, subentity_id=subentity_id, is_active=True).order_by("name", "id")
         return Response({
             "products": [

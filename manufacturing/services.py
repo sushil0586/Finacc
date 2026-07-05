@@ -6,7 +6,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 from django.db import transaction
-from django.db.models import Sum
+from django.db.models import Q, Sum
 from django.utils.dateparse import parse_date
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
@@ -261,7 +261,7 @@ def _load_bom(*, entity_id: int, subentity_id: int | None, bom_id: int | None) -
     if subentity_id is None:
         qs = qs.filter(subentity_id__isnull=True)
     else:
-        qs = qs.filter(subentity_id=subentity_id)
+        qs = qs.filter(Q(subentity_id=subentity_id) | Q(subentity_id__isnull=True))
     bom = qs.first()
     if bom is None:
         raise ValidationError({"bom": "Invalid BOM selected for this scope."})

@@ -73,11 +73,15 @@ class ManufacturingRouteStepResponseSerializer(serializers.ModelSerializer):
 
 class ManufacturingRouteResponseSerializer(serializers.ModelSerializer):
     steps = ManufacturingRouteStepResponseSerializer(many=True, read_only=True)
+    subentity_id = serializers.IntegerField(read_only=True, allow_null=True)
+    is_shared = serializers.SerializerMethodField()
 
     class Meta:
         model = ManufacturingRoute
         fields = [
             "id",
+            "subentity_id",
+            "is_shared",
             "code",
             "name",
             "description",
@@ -85,14 +89,21 @@ class ManufacturingRouteResponseSerializer(serializers.ModelSerializer):
             "steps",
         ]
 
+    def get_is_shared(self, obj):
+        return obj.subentity_id is None
+
 
 class ManufacturingRouteListSerializer(serializers.ModelSerializer):
     step_count = serializers.SerializerMethodField()
+    subentity_id = serializers.IntegerField(read_only=True, allow_null=True)
+    is_shared = serializers.SerializerMethodField()
 
     class Meta:
         model = ManufacturingRoute
         fields = [
             "id",
+            "subentity_id",
+            "is_shared",
             "code",
             "name",
             "is_active",
@@ -101,6 +112,9 @@ class ManufacturingRouteListSerializer(serializers.ModelSerializer):
 
     def get_step_count(self, obj):
         return obj.steps.count()
+
+    def get_is_shared(self, obj):
+        return obj.subentity_id is None
 
 
 class ManufacturingBOMMaterialWriteSerializer(serializers.Serializer):
@@ -163,6 +177,8 @@ class ManufacturingBOMMaterialResponseSerializer(serializers.ModelSerializer):
 
 
 class ManufacturingBOMResponseSerializer(serializers.ModelSerializer):
+    subentity_id = serializers.IntegerField(read_only=True, allow_null=True)
+    is_shared = serializers.SerializerMethodField()
     finished_product_id = serializers.IntegerField(read_only=True)
     finished_product_name = serializers.CharField(source="finished_product.productname", read_only=True)
     finished_product_sku = serializers.CharField(source="finished_product.sku", read_only=True)
@@ -176,6 +192,8 @@ class ManufacturingBOMResponseSerializer(serializers.ModelSerializer):
         model = ManufacturingBOM
         fields = [
             "id",
+            "subentity_id",
+            "is_shared",
             "code",
             "name",
             "description",
@@ -191,8 +209,13 @@ class ManufacturingBOMResponseSerializer(serializers.ModelSerializer):
             "materials",
         ]
 
+    def get_is_shared(self, obj):
+        return obj.subentity_id is None
+
 
 class ManufacturingBOMListSerializer(serializers.ModelSerializer):
+    subentity_id = serializers.IntegerField(read_only=True, allow_null=True)
+    is_shared = serializers.SerializerMethodField()
     finished_product_name = serializers.CharField(source="finished_product.productname", read_only=True)
     finished_product_sku = serializers.CharField(source="finished_product.sku", read_only=True)
     route_code = serializers.CharField(source="route.code", read_only=True, allow_null=True)
@@ -202,6 +225,8 @@ class ManufacturingBOMListSerializer(serializers.ModelSerializer):
         model = ManufacturingBOM
         fields = [
             "id",
+            "subentity_id",
+            "is_shared",
             "code",
             "name",
             "finished_product_name",
@@ -214,6 +239,9 @@ class ManufacturingBOMListSerializer(serializers.ModelSerializer):
 
     def get_material_count(self, obj):
         return obj.materials.count()
+
+    def get_is_shared(self, obj):
+        return obj.subentity_id is None
 
 
 class ManufacturingWorkOrderMaterialWriteSerializer(serializers.Serializer):
