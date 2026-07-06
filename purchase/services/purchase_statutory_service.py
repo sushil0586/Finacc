@@ -1993,34 +1993,47 @@ class PurchaseStatutoryService:
             return_qs = return_qs.filter(period_from__lte=date_to)
 
         if tax_type == PurchaseStatutoryChallan.TaxType.IT_TDS:
-            deducted = header_qs.aggregate(t=Sum("tds_amount"))["t"] or ZERO2
+            deducted = (header_qs.aggregate(deducted=Sum("tds_amount")).get("deducted") or ZERO2)
             challan_qs = challan_qs.filter(tax_type=PurchaseStatutoryChallan.TaxType.IT_TDS)
             return_qs = return_qs.filter(tax_type=PurchaseStatutoryReturn.TaxType.IT_TDS)
         elif tax_type == PurchaseStatutoryChallan.TaxType.GST_TDS:
-            deducted = header_qs.aggregate(t=Sum("gst_tds_amount"))["t"] or ZERO2
+            deducted = (header_qs.aggregate(deducted=Sum("gst_tds_amount")).get("deducted") or ZERO2)
             challan_qs = challan_qs.filter(tax_type=PurchaseStatutoryChallan.TaxType.GST_TDS)
             return_qs = return_qs.filter(tax_type=PurchaseStatutoryReturn.TaxType.GST_TDS)
         else:
-            deducted_it = header_qs.aggregate(t=Sum("tds_amount"))["t"] or ZERO2
-            deducted_gst = header_qs.aggregate(t=Sum("gst_tds_amount"))["t"] or ZERO2
+            header_totals = header_qs.aggregate(
+                deducted_it=Sum("tds_amount"),
+                deducted_gst=Sum("gst_tds_amount"),
+            )
+            deducted_it = header_totals.get("deducted_it") or ZERO2
+            deducted_gst = header_totals.get("deducted_gst") or ZERO2
             deducted = q2(q2(deducted_it) + q2(deducted_gst))
 
-        deposited = challan_qs.filter(status=PurchaseStatutoryChallan.Status.DEPOSITED).aggregate(t=Sum("amount"))["t"] or ZERO2
-        deposited_interest = challan_qs.filter(status=PurchaseStatutoryChallan.Status.DEPOSITED).aggregate(t=Sum("interest_amount"))[
-            "t"
-        ] or ZERO2
-        deposited_late_fee = challan_qs.filter(status=PurchaseStatutoryChallan.Status.DEPOSITED).aggregate(t=Sum("late_fee_amount"))[
-            "t"
-        ] or ZERO2
-        deposited_penalty = challan_qs.filter(status=PurchaseStatutoryChallan.Status.DEPOSITED).aggregate(t=Sum("penalty_amount"))[
-            "t"
-        ] or ZERO2
-        filed = return_qs.filter(status=PurchaseStatutoryReturn.Status.FILED).aggregate(t=Sum("amount"))["t"] or ZERO2
-        filed_interest = return_qs.filter(status=PurchaseStatutoryReturn.Status.FILED).aggregate(t=Sum("interest_amount"))["t"] or ZERO2
-        filed_late_fee = return_qs.filter(status=PurchaseStatutoryReturn.Status.FILED).aggregate(t=Sum("late_fee_amount"))["t"] or ZERO2
-        filed_penalty = return_qs.filter(status=PurchaseStatutoryReturn.Status.FILED).aggregate(t=Sum("penalty_amount"))["t"] or ZERO2
-        draft_challan = challan_qs.filter(status=PurchaseStatutoryChallan.Status.DRAFT).aggregate(t=Sum("amount"))["t"] or ZERO2
-        draft_return = return_qs.filter(status=PurchaseStatutoryReturn.Status.DRAFT).aggregate(t=Sum("amount"))["t"] or ZERO2
+        challan_totals = challan_qs.aggregate(
+            deposited=Sum("amount", filter=Q(status=PurchaseStatutoryChallan.Status.DEPOSITED)),
+            deposited_interest=Sum("interest_amount", filter=Q(status=PurchaseStatutoryChallan.Status.DEPOSITED)),
+            deposited_late_fee=Sum("late_fee_amount", filter=Q(status=PurchaseStatutoryChallan.Status.DEPOSITED)),
+            deposited_penalty=Sum("penalty_amount", filter=Q(status=PurchaseStatutoryChallan.Status.DEPOSITED)),
+            draft_challan=Sum("amount", filter=Q(status=PurchaseStatutoryChallan.Status.DRAFT)),
+        )
+        deposited = challan_totals.get("deposited") or ZERO2
+        deposited_interest = challan_totals.get("deposited_interest") or ZERO2
+        deposited_late_fee = challan_totals.get("deposited_late_fee") or ZERO2
+        deposited_penalty = challan_totals.get("deposited_penalty") or ZERO2
+        draft_challan = challan_totals.get("draft_challan") or ZERO2
+
+        return_totals = return_qs.aggregate(
+            filed=Sum("amount", filter=Q(status=PurchaseStatutoryReturn.Status.FILED)),
+            filed_interest=Sum("interest_amount", filter=Q(status=PurchaseStatutoryReturn.Status.FILED)),
+            filed_late_fee=Sum("late_fee_amount", filter=Q(status=PurchaseStatutoryReturn.Status.FILED)),
+            filed_penalty=Sum("penalty_amount", filter=Q(status=PurchaseStatutoryReturn.Status.FILED)),
+            draft_return=Sum("amount", filter=Q(status=PurchaseStatutoryReturn.Status.DRAFT)),
+        )
+        filed = return_totals.get("filed") or ZERO2
+        filed_interest = return_totals.get("filed_interest") or ZERO2
+        filed_late_fee = return_totals.get("filed_late_fee") or ZERO2
+        filed_penalty = return_totals.get("filed_penalty") or ZERO2
+        draft_return = return_totals.get("draft_return") or ZERO2
 
         pending_deposit = max(q2(q2(deducted) - q2(deposited)), ZERO2)
         pending_filing = max(q2(q2(deposited) - q2(filed)), ZERO2)

@@ -33,8 +33,12 @@ from sales.views.eway_views import (
 
 from sales.views.sales_invoice_views import (
     SalesInvoiceListCreateAPIView,
+    SalesInvoiceCrossModeNavigationAPIView,
+    SalesInvoiceLookupAPIView,
     SalesInvoiceRetrieveUpdateAPIView,
+    SalesServiceInvoiceCrossModeNavigationAPIView,
     SalesServiceInvoiceListCreateAPIView,
+    SalesServiceInvoiceLookupAPIView,
     SalesServiceInvoiceRetrieveUpdateAPIView,
     SalesInvoiceTransportAPIView,
     SalesInvoicePrintAPIView,
@@ -119,7 +123,9 @@ from invoice_import.views import (
 
 urlpatterns = [
     path("invoices/", SalesInvoiceListCreateAPIView.as_view(), name="sales-invoice-list-create"),
+    path("invoices/lookup/", SalesInvoiceLookupAPIView.as_view(), name="sales-invoice-lookup"),
     path("invoices/search/", SalesInvoiceListCreateAPIView.as_view(), name="sales-invoice-search"),
+    path("invoices/<int:pk>/cross-mode-nav/", SalesInvoiceCrossModeNavigationAPIView.as_view(), name="sales-invoice-cross-mode-nav"),
     path("invoices/<int:pk>/", SalesInvoiceRetrieveUpdateAPIView.as_view(), name="sales-invoice-detail"),
     path("invoices/<int:pk>/attachments/", SalesInvoiceAttachmentListCreateAPIView.as_view(), name="sales-invoice-attachments"),
     path("invoices/<int:pk>/attachments/<int:attachment_id>/", SalesInvoiceAttachmentDeleteAPIView.as_view(), name="sales-invoice-attachment-delete"),
@@ -127,7 +133,9 @@ urlpatterns = [
     path("invoices/<int:pk>/transport/", SalesInvoiceTransportAPIView.as_view(), name="sales-invoice-transport"),
     path("invoices/<int:pk>/print/", SalesInvoicePrintAPIView.as_view(), name="sales-invoice-print"),
     path("service-invoices/", SalesServiceInvoiceListCreateAPIView.as_view(), name="sales-service-invoice-list-create"),
+    path("service-invoices/lookup/", SalesServiceInvoiceLookupAPIView.as_view(), name="sales-service-invoice-lookup"),
     path("service-invoices/search/", SalesServiceInvoiceListCreateAPIView.as_view(), name="sales-service-invoice-search"),
+    path("service-invoices/<int:pk>/cross-mode-nav/", SalesServiceInvoiceCrossModeNavigationAPIView.as_view(), name="sales-service-invoice-cross-mode-nav"),
     path("service-invoices/<int:pk>/", SalesServiceInvoiceRetrieveUpdateAPIView.as_view(), name="sales-service-invoice-detail"),
     path("service-invoices/<int:pk>/attachments/", SalesInvoiceAttachmentListCreateAPIView.as_view(), name="sales-service-invoice-attachments"),
     path("service-invoices/<int:pk>/attachments/<int:attachment_id>/", SalesInvoiceAttachmentDeleteAPIView.as_view(), name="sales-service-invoice-attachment-delete"),

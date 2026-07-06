@@ -55,6 +55,7 @@ class GstExceptionDashboardAPIView(ScopedEntitlementMixin, APIView):
                 "to_date": gstr1_scope.to_date,
             },
             gstr1_scope=gstr1_scope,
+            include_contributors=False,
         )
         payload = build_gst_exception_dashboard(
             gstr1_warnings=gstr1_warnings,
@@ -141,6 +142,7 @@ class GstExceptionDashboardExportAPIView(ScopedEntitlementMixin, APIView):
                 "to_date": gstr1_scope.to_date,
             },
             gstr1_scope=gstr1_scope,
+            include_contributors=False,
         )
         payload = build_gst_exception_dashboard(
             gstr1_warnings=gstr1_warnings,

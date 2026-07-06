@@ -14,6 +14,9 @@ class BankRecoScopeSerializer(serializers.Serializer):
     bank_account = serializers.IntegerField(required=False, allow_null=True)
     import_id = serializers.IntegerField(required=False, allow_null=True)
     run_id = serializers.IntegerField(required=False, allow_null=True)
+    summary_only = serializers.BooleanField(required=False, default=False)
+    include_queues = serializers.BooleanField(required=False, default=True)
+    include_matches = serializers.BooleanField(required=False, default=True)
     date_from = serializers.DateField(required=False, allow_null=True)
     date_to = serializers.DateField(required=False, allow_null=True)
     amount = serializers.DecimalField(required=False, allow_null=True, max_digits=14, decimal_places=2)
@@ -42,6 +45,29 @@ class BankRecoRunReportScopeSerializer(serializers.Serializer):
     run_id = serializers.IntegerField()
     bank_account = serializers.IntegerField(required=False, allow_null=True)
     action = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    limit = serializers.IntegerField(required=False, allow_null=True, min_value=1, max_value=400)
+    offset = serializers.IntegerField(required=False, allow_null=True, min_value=0)
+    date_from = serializers.DateField(required=False, allow_null=True)
+    date_to = serializers.DateField(required=False, allow_null=True)
+    amount = serializers.DecimalField(required=False, allow_null=True, max_digits=14, decimal_places=2)
+    status = serializers.ChoiceField(
+        choices=[
+            BankStatementLine.ReconciliationStatus.UNMATCHED,
+            BankStatementLine.ReconciliationStatus.SUGGESTED,
+            BankStatementLine.ReconciliationStatus.CONFIRMED,
+            BankStatementLine.ReconciliationStatus.PARTIALLY_MATCHED,
+            BankStatementLine.ReconciliationStatus.CANCELLED,
+            BankReconciliationMatch.Status.SUGGESTED,
+            BankReconciliationMatch.Status.CONFIRMED,
+            BankReconciliationMatch.Status.PARTIALLY_MATCHED,
+            BankReconciliationMatch.Status.UNMATCHED,
+            BankReconciliationMatch.Status.CANCELLED,
+        ],
+        required=False,
+        allow_null=True,
+    )
+    reference = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    narration = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
 
 class BankStatementImportCreateSerializer(serializers.Serializer):

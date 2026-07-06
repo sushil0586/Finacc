@@ -394,6 +394,7 @@ class BookReportAPITests(APITestCase):
         response = self.client.get(reverse("reports_api:financial-daybook"), {"entity": self.entity.id, "entityfinid": self.entityfin.id, "subentity": self.subentity.id, "from_date": "2025-04-01", "to_date": "2025-04-30"})
         self.assertEqual(response.status_code, 200)
         data = response.json()
+        print("TB_PERIODS", data["periods"])
         self.assertTrue(data["balance_integrity"])
         self.assertEqual(data["mode"], "voucher_list")
         self.assertEqual(data["totals"]["transaction_count"], 4)
@@ -410,6 +411,7 @@ class BookReportAPITests(APITestCase):
         response = self.client.get(reverse("reports_api:financial-meta"), {"entity": self.entity.id})
         self.assertEqual(response.status_code, 200)
         data = response.json()
+        print("PL_PERIODS", data["periods"])
         self.assertIn("voucher_types", data)
         self.assertIn("daybook_voucher_types", data)
         self.assertIn("cashbook_voucher_types", data)
@@ -478,6 +480,7 @@ class BookReportAPITests(APITestCase):
         response = self.client.get(reverse("reports_api:financial-daybook"), {"entity": self.entity.id, "page": 1, "page_size": 2})
         self.assertEqual(response.status_code, 200)
         data = response.json()
+        print("BS_PERIODS", data["periods"])
         self.assertEqual(len(data["results"]), 2)
         self.assertEqual(data["count"], 4)
         self.assertEqual(data["totals"]["debit_total"], "125.00")
@@ -1459,6 +1462,234 @@ class BookReportAPITests(APITestCase):
         self.assertEqual(set(data["actions"]["export_urls"].keys()), {"excel", "pdf", "csv", "print"})
         self.assertIn("group_by=ledger", data["actions"]["export_urls"]["excel"])
 
+    def test_trial_balance_year_period_by_splits_current_financial_year_by_calendar_year(self):
+        response = self.client.get(
+            reverse("reports_api:financial-trial-balance"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "group_by": "ledger",
+                "posted_only": True,
+                "period_by": "year",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+
+        self.assertEqual(len(data["periods"]), 2, data["periods"])
+        self.assertEqual(data["periods"][0]["period_label"], "2025")
+        self.assertEqual(data["periods"][1]["period_label"], "2026")
+
+        rows = {row["ledger_name"]: row for row in data["rows"]}
+        self.assertEqual(rows["Cash In Hand"]["periods"][0]["debit"], "50.00")
+        self.assertEqual(rows["Cash In Hand"]["periods"][0]["closing"], "150.00")
+        self.assertEqual(rows["Cash In Hand"]["periods"][1]["debit"], "0.00")
+        self.assertEqual(rows["Sales Income"]["periods"][0]["credit"], "90.00")
+
+    def test_profit_loss_year_period_by_uses_previous_financial_year_snapshot(self):
+        previous_fy = EntityFinancialYear.objects.create(
+            entity=self.entity,
+            desc="FY 2024-25",
+            finstartyear=timezone.make_aware(datetime(2024, 4, 1)),
+            finendyear=timezone.make_aware(datetime(2025, 3, 31)),
+            createdby=self.user,
+        )
+        expense_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Indirect Expenses Prior",
+            accounttypecode="5209",
+            createdby=self.user,
+        )
+        income_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Indirect Income Prior",
+            accounttypecode="6209",
+            createdby=self.user,
+        )
+        pl_expense_head = accountHead.objects.create(
+            entity=self.entity,
+            name="Prior Expense",
+            code=5291,
+            detailsingroup=2,
+            balanceType="Debit",
+            drcreffect="Debit",
+            accounttype=expense_type,
+            createdby=self.user,
+        )
+        pl_income_head = accountHead.objects.create(
+            entity=self.entity,
+            name="Prior Income",
+            code=6291,
+            detailsingroup=2,
+            balanceType="Credit",
+            drcreffect="Credit",
+            accounttype=income_type,
+            createdby=self.user,
+        )
+        pl_expense_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=5291,
+            name="Prior Expense",
+            accounthead=pl_expense_head,
+            accounttype=expense_type,
+            createdby=self.user,
+        )
+        pl_income_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=6291,
+            name="Prior Income",
+            accounthead=pl_income_head,
+            accounttype=income_type,
+            createdby=self.user,
+        )
+        pl_expense_account = create_account_with_synced_ledger(
+            account_data={"entity": self.entity, "ledger": pl_expense_ledger, "accountname": "Prior Expense", "createdby": self.user},
+            ledger_overrides={"ledger_code": 5291, "accounthead": pl_expense_head, "is_party": True},
+        )
+        pl_income_account = create_account_with_synced_ledger(
+            account_data={"entity": self.entity, "ledger": pl_income_ledger, "accountname": "Prior Income", "createdby": self.user},
+            ledger_overrides={"ledger_code": 6291, "accounthead": pl_income_head, "is_party": True},
+        )
+        self._create_entry(
+            entity=self.entity,
+            entityfin=previous_fy,
+            subentity=self.subentity,
+            txn_type=TxnType.JOURNAL,
+            txn_id=602,
+            voucher_no="JV-PREV-PL-001",
+            posting_date="2024-04-11",
+            voucher_date="2024-04-11",
+            status=EntryStatus.POSTED,
+            narration="Previous FY profit loss comparison",
+            lines=[
+                (pl_expense_account, pl_expense_ledger, True, "7.00", "Expense debit"),
+                (pl_income_account, pl_income_ledger, False, "19.00", "Income credit"),
+                (self.cash_account, self.cash_ledger, True, "12.00", "Balancing cash"),
+            ],
+        )
+
+        response = self.client.get(
+            reverse("reports_api:financial-profit-loss"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "group_by": "ledger",
+                "posted_only": True,
+                "period_by": "year",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+
+        self.assertEqual(len(data["periods"]), 1)
+        self.assertEqual(data["periods"][0]["period_label"], "FY 2024-25")
+        self.assertEqual(Decimal(str(data["periods"][0]["totals"]["income"])), Decimal("19.00"), data["periods"])
+        self.assertEqual(Decimal(str(data["periods"][0]["totals"]["expense"])), Decimal("7.00"))
+        self.assertEqual(Decimal(str(data["periods"][0]["totals"]["net_profit"])), Decimal("12.00"))
+
+    def test_balance_sheet_year_period_by_uses_previous_financial_year_snapshot(self):
+        previous_fy = EntityFinancialYear.objects.create(
+            entity=self.entity,
+            desc="FY 2024-25",
+            finstartyear=timezone.make_aware(datetime(2024, 4, 1)),
+            finendyear=timezone.make_aware(datetime(2025, 3, 31)),
+            createdby=self.user,
+        )
+        asset_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Current Assets Prior",
+            accounttypecode="1109",
+            createdby=self.user,
+        )
+        asset_head = accountHead.objects.create(
+            entity=self.entity,
+            name="Prior Cash Asset",
+            code=1191,
+            detailsingroup=3,
+            balanceType="Debit",
+            drcreffect="Debit",
+            accounttype=asset_type,
+            createdby=self.user,
+        )
+        asset_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=1191,
+            name="Prior Cash Asset",
+            accounthead=asset_head,
+            accounttype=asset_type,
+            createdby=self.user,
+        )
+        asset_account = create_account_with_synced_ledger(
+            account_data={"entity": self.entity, "ledger": asset_ledger, "accountname": "Prior Cash Asset", "createdby": self.user},
+            ledger_overrides={"ledger_code": 1191, "accounthead": asset_head, "is_party": True},
+        )
+        equity_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Capital and Equity Prior",
+            accounttypecode="3109",
+            createdby=self.user,
+        )
+        equity_head = accountHead.objects.create(
+            entity=self.entity,
+            name="Prior Capital",
+            code=3191,
+            detailsingroup=3,
+            balanceType="Credit",
+            drcreffect="Credit",
+            accounttype=equity_type,
+            createdby=self.user,
+        )
+        equity_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=3191,
+            name="Prior Capital",
+            accounthead=equity_head,
+            accounttype=equity_type,
+            createdby=self.user,
+        )
+        equity_account = create_account_with_synced_ledger(
+            account_data={"entity": self.entity, "ledger": equity_ledger, "accountname": "Prior Capital", "createdby": self.user},
+            ledger_overrides={"ledger_code": 3191, "accounthead": equity_head, "is_party": True},
+        )
+        self._create_entry(
+            entity=self.entity,
+            entityfin=previous_fy,
+            subentity=self.subentity,
+            txn_type=TxnType.JOURNAL,
+            txn_id=603,
+            voucher_no="JV-PREV-BS-001",
+            posting_date="2024-04-12",
+            voucher_date="2024-04-12",
+            status=EntryStatus.POSTED,
+            narration="Previous FY balance sheet comparison",
+            lines=[
+                (asset_account, asset_ledger, True, "12.00", "Asset debit"),
+                (equity_account, equity_ledger, False, "12.00", "Capital credit"),
+            ],
+        )
+
+        response = self.client.get(
+            reverse("reports_api:financial-balance-sheet"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "group_by": "ledger",
+                "posted_only": True,
+                "period_by": "year",
+                "include_diagnostics": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+
+        self.assertEqual(len(data["periods"]), 1)
+        self.assertEqual(data["periods"][0]["period_label"], "FY 2024-25")
+        self.assertEqual(Decimal(str(data["periods"][0]["totals"]["assets"])), Decimal("12.00"), data["periods"])
+        self.assertEqual(Decimal(str(data["periods"][0]["totals"]["liabilities_and_equity"])), Decimal("12.00"))
+
     def test_ledger_summary_date_range_without_scope_mode_still_includes_opening(self):
         response = self.client.get(
             reverse("reports_api:financial-ledger-summary"),
@@ -1753,6 +1984,74 @@ class BookReportAPITests(APITestCase):
         self.assertIn("Service Income", income_labels)
         self.assertIn("Administrative Expense", expense_labels)
 
+    def test_profit_loss_treats_credit_balance_expense_as_income(self):
+        expense_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Indirect Expenses",
+            accounttypecode="5201",
+            createdby=self.user,
+        )
+        expense_head = accountHead.objects.create(
+            entity=self.entity,
+            name="Expense Reversal",
+            code=5202,
+            detailsingroup=2,
+            balanceType="Debit",
+            drcreffect="Debit",
+            accounttype=expense_type,
+            createdby=self.user,
+        )
+        expense_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=5202,
+            name="Expense Reversal",
+            accounthead=expense_head,
+            accounttype=expense_type,
+            createdby=self.user,
+        )
+        expense_account = create_account_with_synced_ledger(
+            account_data={"entity": self.entity, "ledger": expense_ledger, "accountname": "Expense Reversal", "createdby": self.user},
+            ledger_overrides={"ledger_code": 5202, "accounthead": expense_head, "is_party": True},
+        )
+
+        self._create_entry(
+            txn_type=TxnType.JOURNAL,
+            txn_id=109,
+            voucher_no="JV-PL-REV-001",
+            posting_date="2025-04-10",
+            voucher_date="2025-04-10",
+            status=EntryStatus.POSTED,
+            narration="Expense reversal classification test",
+            subentity=self.subentity,
+            lines=[
+                (self.cash_account, self.cash_ledger, True, "5.00", "Cash debit"),
+                (expense_account, expense_ledger, False, "5.00", "Expense reversal"),
+            ],
+        )
+
+        response = self.client.get(
+            reverse("reports_api:financial-profit-loss"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "from_date": "2025-04-01",
+                "to_date": "2025-04-30",
+                "posted_only": True,
+                "group_by": "ledger",
+                "view_type": "summary",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+
+        self.assertEqual(Decimal(str(data["totals"]["income"])), Decimal("5.00"))
+        self.assertEqual(Decimal(str(data["totals"]["expense"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(data["totals"]["net_profit"])), Decimal("5.00"))
+
+        income_labels = {row.get("label") or row.get("ledger_name") for row in data["income"]}
+        self.assertIn("Expense Reversal", income_labels)
+
     def test_profit_loss_export_urls_keep_current_scope_filters(self):
         response = self.client.get(
             reverse("reports_api:financial-profit-loss"),
@@ -1809,6 +2108,7 @@ class BookReportAPITests(APITestCase):
                 "account_group": "ledger",
                 "posted_only": True,
                 "hide_zero_rows": True,
+                "include_diagnostics": True,
             },
         )
         self.assertEqual(response.status_code, 200)
@@ -1900,6 +2200,7 @@ class BookReportAPITests(APITestCase):
                 "account_group": "ledger",
                 "posted_only": True,
                 "hide_zero_rows": True,
+                "include_diagnostics": True,
             },
         )
         self.assertEqual(response.status_code, 200)
@@ -1979,6 +2280,7 @@ class BookReportAPITests(APITestCase):
                 "account_group": "ledger",
                 "posted_only": True,
                 "hide_zero_rows": True,
+                "include_diagnostics": True,
             },
         )
         self.assertEqual(response.status_code, 200)
@@ -1997,6 +2299,43 @@ class BookReportAPITests(APITestCase):
         reason_codes = {row.get("code") for row in diagnostics.get("reason_cards", [])}
         self.assertIn("base_balance_gap", reason_codes)
         self.assertIn("excluded_balance_sheet_rows", reason_codes)
+
+    def test_balance_sheet_api_omits_diagnostics_by_default(self):
+        response = self.client.get(
+            reverse("reports_api:financial-balance-sheet"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "from_date": "2025-04-01",
+                "to_date": "2025-04-30",
+                "account_group": "ledger",
+                "posted_only": True,
+                "hide_zero_rows": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertNotIn("diagnostics", data)
+
+    def test_balance_sheet_api_includes_diagnostics_when_requested(self):
+        response = self.client.get(
+            reverse("reports_api:financial-balance-sheet"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "from_date": "2025-04-01",
+                "to_date": "2025-04-30",
+                "account_group": "ledger",
+                "posted_only": True,
+                "hide_zero_rows": True,
+                "include_diagnostics": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn("diagnostics", data)
 
     def test_balance_sheet_does_not_double_count_posted_opening_balance(self):
         from reports.services.financial.statements import _closing_map

@@ -68,28 +68,24 @@ def posted_opening_map_for_ledgers(
     return opening_map
 
 
-def effective_opening_map_for_ledgers(
+def effective_opening_map_for_ledger_ids(
     *,
     entity_id: int,
     entityfin_id: int | None,
     subentity_id: int | None,
-    ledgers: list[Ledger] | tuple[Ledger, ...],
+    ledger_ids: list[int] | tuple[int, ...] | None = None,
     from_date=None,
     posted_only: bool = True,
 ) -> dict[int, Decimal]:
-    ledger_ids = [int(ledger.id) for ledger in ledgers if getattr(ledger, "id", None) is not None]
+    normalized_ledger_ids = [int(ledger_id) for ledger_id in (ledger_ids or []) if ledger_id is not None]
     posted_map = posted_opening_map_for_ledgers(
         entity_id=entity_id,
         entityfin_id=entityfin_id,
         subentity_id=subentity_id,
-        ledger_ids=ledger_ids,
+        ledger_ids=normalized_ledger_ids or None,
         posted_only=posted_only,
     )
-    opening_map = {
-        int(ledger.id): posted_map.get(int(ledger.id), ZERO)
-        for ledger in ledgers
-        if getattr(ledger, "id", None) is not None
-    }
+    opening_map = dict(posted_map)
 
     report_from = ensure_date(from_date)
     if not entityfin_id or not report_from:
@@ -111,13 +107,14 @@ def effective_opening_map_for_ledgers(
             posted_only=posted_only,
         )
         .exclude(txn_type=TxnType.OPENING_BALANCE)
-        .filter(resolved_ledger_id__in=ledger_ids)
         .values("resolved_ledger_id")
         .annotate(
             debit=Sum("amount", filter=Q(drcr=True), default=ZERO),
             credit=Sum("amount", filter=Q(drcr=False), default=ZERO),
         )
     )
+    if normalized_ledger_ids:
+        prior_rows = prior_rows.filter(resolved_ledger_id__in=normalized_ledger_ids)
     for row in prior_rows:
         ledger_id = row.get("resolved_ledger_id")
         if ledger_id is None:
@@ -125,3 +122,28 @@ def effective_opening_map_for_ledgers(
         opening_map[int(ledger_id)] = opening_map.get(int(ledger_id), ZERO) + (row.get("debit") or ZERO) - (row.get("credit") or ZERO)
 
     return opening_map
+
+
+def effective_opening_map_for_ledgers(
+    *,
+    entity_id: int,
+    entityfin_id: int | None,
+    subentity_id: int | None,
+    ledgers: list[Ledger] | tuple[Ledger, ...],
+    from_date=None,
+    posted_only: bool = True,
+) -> dict[int, Decimal]:
+    ledger_ids = [int(ledger.id) for ledger in ledgers if getattr(ledger, "id", None) is not None]
+    opening_map = effective_opening_map_for_ledger_ids(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        ledger_ids=ledger_ids,
+        from_date=from_date,
+        posted_only=posted_only,
+    )
+    return {
+        int(ledger.id): opening_map.get(int(ledger.id), ZERO)
+        for ledger in ledgers
+        if getattr(ledger, "id", None) is not None
+    }

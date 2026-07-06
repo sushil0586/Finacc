@@ -142,8 +142,8 @@ def _build_reconciliation_drilldowns(scope_params: dict | None, code: str) -> di
     }
 
 
-def _build_source_document_drilldown(*, invoice_id: int) -> dict:
-    route = _resolve_source_document_route(invoice_id=invoice_id)
+def _build_source_document_drilldown(*, invoice_id: int, has_service_lines: bool | None = None) -> dict:
+    route = _resolve_source_document_route(invoice_id=invoice_id, has_service_lines=has_service_lines)
     return {
         "target": "sales_invoice_detail",
         "label": "Open source invoice",
@@ -155,8 +155,9 @@ def _build_source_document_drilldown(*, invoice_id: int) -> dict:
     }
 
 
-def _resolve_source_document_route(*, invoice_id: int) -> str:
-    has_service_lines = SalesInvoiceLine.objects.filter(header_id=invoice_id, is_service=True).exists()
+def _resolve_source_document_route(*, invoice_id: int, has_service_lines: bool | None = None) -> str:
+    if has_service_lines is None:
+        has_service_lines = SalesInvoiceLine.objects.filter(header_id=invoice_id, is_service=True).exists()
     return "/saleserviceinvoice" if has_service_lines else "/saleinvoice"
 
 
@@ -196,6 +197,11 @@ def _build_outward_taxable_contributors(scope) -> list[dict]:
         return []
 
     txn_ids = [int(invoice.id) for invoice in invoices]
+    service_invoice_ids = set(
+        SalesInvoiceLine.objects.filter(header_id__in=txn_ids, is_service=True)
+        .values_list("header_id", flat=True)
+        .distinct()
+    )
     entry_filters = {
         "entity_id": scope.entity_id,
         "txn_id__in": txn_ids,
@@ -214,6 +220,7 @@ def _build_outward_taxable_contributors(scope) -> list[dict]:
     contributors = []
     for invoice in invoices:
         invoice_id = int(invoice.id)
+        has_service_lines = invoice_id in service_invoice_ids
         entry = latest_entry_by_txn.get(invoice_id)
         posting_lookup = (
             {
@@ -244,12 +251,18 @@ def _build_outward_taxable_contributors(scope) -> list[dict]:
                 "posting_status_label": "Posted" if entry else "Not posted",
                 "drilldowns": (
                     {
-                        "source_document": _build_source_document_drilldown(invoice_id=invoice_id),
+                        "source_document": _build_source_document_drilldown(
+                            invoice_id=invoice_id,
+                            has_service_lines=has_service_lines,
+                        ),
                         "posting_lookup": _build_posting_lookup_drilldown(invoice_id=invoice_id),
                     }
                     if entry
                     else {
-                        "source_document": _build_source_document_drilldown(invoice_id=invoice_id),
+                        "source_document": _build_source_document_drilldown(
+                            invoice_id=invoice_id,
+                            has_service_lines=has_service_lines,
+                        ),
                     }
                 ),
                 "posting_lookup": posting_lookup,
@@ -301,6 +314,7 @@ def build_gstr1_vs_gstr3b_reconciliation(
     gstr3b_summary: dict,
     scope_params: dict | None = None,
     gstr1_scope=None,
+    include_contributors: bool = True,
 ) -> dict:
     sections = _section_map(gstr1_summary)
     nil_rows = _nil_exempt_map(gstr1_summary)
@@ -374,10 +388,10 @@ def build_gstr1_vs_gstr3b_reconciliation(
     ]
 
     rows = _normalize_rollup_duplicate(rows)
-    outward_contributors = _build_outward_taxable_contributors(gstr1_scope)
+    outward_contributors = _build_outward_taxable_contributors(gstr1_scope) if include_contributors else []
     for row in rows:
         row["drilldowns"] = _build_reconciliation_drilldowns(scope_params, str(row.get("code") or ""))
-        if str(row.get("code") or "").upper() == "OUTWARD_TAXABLE":
+        if include_contributors and str(row.get("code") or "").upper() == "OUTWARD_TAXABLE":
             row["contributors"] = outward_contributors
             row["contributors_count"] = len(outward_contributors)
             if outward_contributors:

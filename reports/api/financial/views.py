@@ -3323,6 +3323,7 @@ class BalanceSheetAPIView(_BaseFinancialReportAPIView):
             page_size=scope.get("page_size", REPORT_DEFAULTS["default_page_size"]),
             period_by=period_by,
             reporting_policy=reporting_policy,
+            include_diagnostics=scope.get("include_diagnostics", False),
         )
         response = build_report_envelope(
             report_code="balance_sheet",
@@ -3460,6 +3461,7 @@ class _BaseBalanceSheetExportAPIView(_BaseFinancialReportAPIView):
             page_size=scope.get("page_size", REPORT_DEFAULTS["default_page_size"]),
             period_by=period_by,
             reporting_policy=reporting_policy,
+            include_diagnostics=True,
         )
         scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
         subtitle = _balance_sheet_subtitle(scope_names, scope, data)

@@ -646,6 +646,74 @@ class BankRecoMatchingAPITests(APITestCase):
         self.assertEqual(export_labels, section_labels)
         self.assertEqual(brs.json()["supporting_rows"]["unmatched_bank_count"], 1)
 
+    def test_workspace_unmatched_bank_lines_respect_reference_filter(self):
+        statement_import, _run = self._create_import_and_run(
+            [
+                "2026-04-14,Receipt one,FILTER-001,,0,2600,2600",
+                "2026-04-15,Receipt two,FILTER-002,,0,1400,4000",
+            ],
+            closing="4000.00",
+        )
+        response = self.client.get(
+            reverse("bank_reco_api:bank-reco-workspace"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "import_id": statement_import.id,
+                "reference": "FILTER-002",
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.json())
+        payload = response.json()
+        self.assertEqual(payload["counts_by_status"]["unmatched_bank"], 1)
+        self.assertEqual(len(payload["unmatched_bank_lines"]), 1)
+        self.assertEqual(payload["unmatched_bank_lines"][0]["reference_no"], "FILTER-002")
+
+    def test_unmatched_bank_report_respects_reference_filter(self):
+        statement_import, run = self._create_import_and_run(
+            [
+                "2026-04-14,Receipt one,FILTER-001,,0,2600,2600",
+                "2026-04-15,Receipt two,FILTER-002,,0,1400,4000",
+            ],
+            closing="4000.00",
+        )
+        response = self.client.get(
+            reverse("bank_reco_api:bank-reco-report-unmatched-bank"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "run_id": run.id,
+                "reference": "FILTER-002",
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.json())
+        payload = response.json()
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(len(payload["results"]), 1)
+        self.assertEqual(payload["results"][0]["reference_no"], "FILTER-002")
+
+    def test_unmatched_books_report_respects_amount_filter(self):
+        _statement_import, run = self._create_import_and_run(
+            ["2026-04-16,Workspace receipt,WK001,,0,2600,2600"],
+            closing="2600.00",
+        )
+        self._create_book_line(amount="2600.00", posting_date="2026-04-16", description="Filtered book line", voucher_no="RV-FLT-1", drcr=True, txn_id=3001)
+        self._create_book_line(amount="999.00", posting_date="2026-04-16", description="Other book line", voucher_no="RV-FLT-2", drcr=True, txn_id=3002)
+        response = self.client.get(
+            reverse("bank_reco_api:bank-reco-report-unmatched-books"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "run_id": run.id,
+                "amount": "2600.00",
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.json())
+        payload = response.json()
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(len(payload["results"]), 1)
+        self.assertEqual(payload["results"][0]["amount"], 2600.0)
+
     def test_bank_charges_voucher_creation_posts_and_auto_matches(self):
         statement_import, run = self._create_import_and_run(["2026-04-15,Bank charges,BC001,,120.00,0,3480"], closing="3480.00")
         line = statement_import.lines.first()
@@ -869,3 +937,66 @@ class BankRecoMatchingAPITests(APITestCase):
         self.assertIn("sections", brs.json())
         self.assertIn("export_rows", brs.json())
         self.assertEqual(brs.json()["bank_account"]["id"], current_run.bank_account_id)
+
+    def test_brs_breakdown_uses_expected_bucket_totals(self):
+        statement_import, run = self._create_import_and_run(
+            [
+                "2026-04-10,Direct credit,DIRCR1,,0,100.00,1100.00",
+                "2026-04-11,Direct debit,DIRDR1,,50.00,0,1050.00",
+                "2026-04-12,Bank error credit,ERRCR1,,0,80.00,1130.00",
+                "2026-04-13,Book error debit,ERRDR1,,30.00,0,1100.00",
+                "2026-04-14,Pending cheque,PND001,,0,40.00,1140.00",
+            ],
+            opening="1000.00",
+            closing="1140.00",
+        )
+        lines = {line.reference_no: line for line in statement_import.lines.all()}
+        lines["ERRCR1"].exception_status = BankStatementLine.ExceptionStatus.BANK_ERROR
+        lines["ERRCR1"].save(update_fields=["exception_status"])
+        lines["ERRDR1"].exception_status = BankStatementLine.ExceptionStatus.BOOK_ERROR
+        lines["ERRDR1"].save(update_fields=["exception_status"])
+        lines["PND001"].exception_status = BankStatementLine.ExceptionStatus.PENDING_CLEARANCE
+        lines["PND001"].save(update_fields=["exception_status"])
+
+        self._create_book_line(
+            amount="200.00",
+            posting_date="2026-04-09",
+            description="Cheque deposit pending CHQDEP",
+            voucher_no="RV-BRS-1",
+            drcr=True,
+            txn_id=901,
+        )
+        self._create_book_line(
+            amount="120.00",
+            posting_date="2026-04-09",
+            description="Cheque issued CHQISS",
+            voucher_no="RV-BRS-2",
+            drcr=False,
+            txn_id=902,
+        )
+        self._create_book_line(
+            amount="999.00",
+            posting_date="2026-04-09",
+            description="Normal transfer entry",
+            voucher_no="RV-BRS-3",
+            drcr=True,
+            txn_id=903,
+        )
+
+        response = self.client.get(
+            reverse("bank_reco_api:bank-reco-report-brs"),
+            {"entity": self.entity.id, "entityfinid": self.entityfin.id, "run_id": run.id},
+        )
+        self.assertEqual(response.status_code, 200, response.json())
+        payload = response.json()
+        self.assertEqual(payload["add_cheques_issued_not_presented"], 120.0)
+        self.assertEqual(payload["less_cheques_deposited_not_cleared"], 200.0)
+        self.assertEqual(payload["add_direct_bank_entries"], 100.0)
+        self.assertEqual(payload["less_direct_bank_entries"], 50.0)
+        self.assertEqual(payload["add_errors"], 80.0)
+        self.assertEqual(payload["less_errors"], 30.0)
+        self.assertEqual(payload["pending_clearance_amount"], 40.0)
+        self.assertEqual(payload["balance_as_per_books"], 1079.0)
+        self.assertEqual(payload["difference_amount"], 41.0)
+        self.assertEqual(payload["supporting_rows"]["unmatched_bank_count"], 5)
+        self.assertEqual(payload["supporting_rows"]["unmatched_book_count"], 3)

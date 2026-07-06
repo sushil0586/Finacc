@@ -14,7 +14,10 @@ from reports.selectors.financial import (
     resolve_date_window,
     resolve_scope_names,
 )
-from reports.services.financial.opening_balance_source import effective_opening_map_for_ledgers
+from reports.services.financial.opening_balance_source import (
+    effective_opening_map_for_ledger_ids,
+    effective_opening_map_for_ledgers,
+)
 
 
 GROUP_BY_CHOICES = {"ledger", "accounthead", "accounttype"}
@@ -135,10 +138,13 @@ def _raw_trial_balance_rows(
     include_zero_balances=False,
     include_opening=True,
     search=None,
+    scope_names=None,
+    resolve_window=True,
 ):
     entity_id, entityfin_id, subentity_id = normalize_scope_ids(entity_id, entityfin_id, subentity_id)
-    from_date, to_date = _resolve_trial_balance_window(entityfin_id, from_date, to_date)
-    scope_names = resolve_scope_names(entity_id, entityfin_id, subentity_id)
+    if resolve_window:
+        from_date, to_date = _resolve_trial_balance_window(entityfin_id, from_date, to_date)
+    scope_names = scope_names or resolve_scope_names(entity_id, entityfin_id, subentity_id)
 
     lines = journal_lines_for_scope(
         entity_id,
@@ -160,12 +166,20 @@ def _raw_trial_balance_rows(
     selected_ledger_ids = [int(ledger_id) for ledger_id in (ledger_ids or []) if ledger_id is not None]
     if selected_ledger_ids:
         ledger_ids = selected_ledger_ids
-        ledgers = (
+        opening_map = effective_opening_map_for_ledger_ids(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            ledger_ids=ledger_ids,
+            from_date=from_date,
+            posted_only=posted_only,
+        )
+        ledgers = list(
             Ledger.objects.filter(id__in=ledger_ids)
             .select_related("accounthead", "creditaccounthead", "accounttype", "account_profile__commercial_profile")
             .order_by("ledger_code", "name")
         )
-    else:
+    elif include_zero_balances:
         candidate_ledgers = list(
             Ledger.objects.filter(entity_id=entity_id)
             .select_related("accounthead", "creditaccounthead", "accounttype", "account_profile__commercial_profile")
@@ -179,24 +193,24 @@ def _raw_trial_balance_rows(
             from_date=from_date,
             posted_only=posted_only,
         )
-        if include_zero_balances:
-            relevant_ledger_ids = {int(ledger.id) for ledger in candidate_ledgers}
-        else:
-            relevant_ledger_ids = {
-                int(ledger.id)
-                for ledger in candidate_ledgers
-                if int(ledger.id) in movement_map or opening_map.get(int(ledger.id), Decimal("0.00")) != Decimal("0.00")
-            }
-        ledgers = [ledger for ledger in candidate_ledgers if int(ledger.id) in relevant_ledger_ids]
-
-    if 'opening_map' not in locals():
-        opening_map = effective_opening_map_for_ledgers(
+        ledgers = candidate_ledgers
+    else:
+        opening_map = effective_opening_map_for_ledger_ids(
             entity_id=entity_id,
             entityfin_id=entityfin_id,
             subentity_id=subentity_id,
-            ledgers=list(ledgers),
+            ledger_ids=None,
             from_date=from_date,
             posted_only=posted_only,
+        )
+        relevant_ledger_ids = sorted({
+            *movement_map.keys(),
+            *[ledger_id for ledger_id, amount in opening_map.items() if amount != Decimal("0.00")],
+        })
+        ledgers = list(
+            Ledger.objects.filter(id__in=relevant_ledger_ids)
+            .select_related("accounthead", "creditaccounthead", "accounttype", "account_profile__commercial_profile")
+            .order_by("ledger_code", "name")
         )
 
     if not ledgers:
@@ -393,6 +407,7 @@ def _build_snapshot(
     page,
     page_size,
     include_pagination=True,
+    scope_names=None,
 ):
     entity_id, entityfin_id, subentity_id, from_date, to_date, scope_names, rows = _raw_trial_balance_rows(
         entity_id=entity_id,
@@ -405,6 +420,8 @@ def _build_snapshot(
         include_zero_balances=include_zero_balances,
         include_opening=include_opening,
         search=search,
+        scope_names=scope_names,
+        resolve_window=False,
     )
 
     totals = defaultdict(lambda: Decimal("0.00"))
@@ -464,6 +481,7 @@ def _build_snapshot(
             "closing_debit": f"{closing_debit_total:.2f}",
             "closing_credit": f"{closing_credit_total:.2f}",
         },
+        "_selected_ledger_ids": [row["ledger_id"] for row in rows],
     }
     if include_pagination:
         snapshot["pagination"] = {
@@ -537,7 +555,9 @@ def build_trial_balance(
         page=page,
         page_size=page_size,
         include_pagination=True,
+        scope_names=scope_names,
     )
+    selected_ledger_ids = snapshot.pop("_selected_ledger_ids", None)
 
     response = {
         **snapshot,
@@ -572,7 +592,7 @@ def build_trial_balance(
                 subentity_id=subentity_id,
                 from_date=period_start,
                 to_date=period_end,
-                ledger_ids=ledger_ids,
+                ledger_ids=selected_ledger_ids or ledger_ids,
                 posted_only=posted_only,
                 group_by=group_by,
                 include_zero_balances=include_zero_balances,
@@ -583,7 +603,9 @@ def build_trial_balance(
                 page=1,
                 page_size=page_size,
                 include_pagination=False,
+                scope_names=scope_names,
             )
+            period_snapshot.pop("_selected_ledger_ids", None)
             period_snapshot["period_key"] = (
                 f"Q{index}"
                 if period_by == "quarter"

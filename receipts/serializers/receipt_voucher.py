@@ -391,6 +391,68 @@ class ReceiptVoucherHeaderSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(payload)
             raise serializers.ValidationError({"non_field_errors": [str(payload)]})
 
+class ReceiptVoucherLookupSerializer(serializers.ModelSerializer):
+    voucher_date = serializers.DateField(format="%Y-%m-%d")
+    status_name = serializers.CharField(source="get_status_display", read_only=True)
+    receipt_type_name = serializers.CharField(source="get_receipt_type_display", read_only=True)
+    approval_status = serializers.SerializerMethodField()
+    approval_status_name = serializers.SerializerMethodField()
+    received_from_name = serializers.CharField(source="received_from.effective_accounting_name", read_only=True)
+    received_from_accountcode = serializers.IntegerField(source="received_from.effective_accounting_code", read_only=True)
+    received_from_partytype = serializers.CharField(source="received_from.commercial_profile.partytype", read_only=True)
+    received_in_name = serializers.CharField(source="received_in.effective_accounting_name", read_only=True)
+    received_in_accountcode = serializers.IntegerField(source="received_in.effective_accounting_code", read_only=True)
+
+    @staticmethod
+    def _workflow_state(payload):
+        data = payload if isinstance(payload, dict) else {}
+        state = data.get("_approval_state")
+        if not isinstance(state, dict):
+            state = {"status": "DRAFT"}
+        return state
+
+    def get_approval_status(self, obj):
+        return self._workflow_state(getattr(obj, "workflow_payload", None)).get("status") or "DRAFT"
+
+    def get_approval_status_name(self, obj):
+        mapping = {
+            "DRAFT": "Draft",
+            "SUBMITTED": "Submitted",
+            "APPROVED": "Approved",
+            "REJECTED": "Rejected",
+        }
+        status = str(self.get_approval_status(obj)).upper()
+        return mapping.get(status, status.title())
+
+    class Meta:
+        model = ReceiptVoucherHeader
+        fields = [
+            "id",
+            "entity",
+            "entityfinid",
+            "subentity",
+            "voucher_date",
+            "doc_code",
+            "doc_no",
+            "voucher_code",
+            "receipt_type",
+            "receipt_type_name",
+            "received_in",
+            "received_in_name",
+            "received_in_accountcode",
+            "received_from",
+            "received_from_name",
+            "received_from_accountcode",
+            "received_from_partytype",
+            "receipt_mode",
+            "cash_received_amount",
+            "reference_number",
+            "status",
+            "status_name",
+            "approval_status",
+            "approval_status_name",
+        ]
+
 
 class ReceiptVoucherListSerializer(serializers.ModelSerializer):
     voucher_date = serializers.DateField(format="%Y-%m-%d")

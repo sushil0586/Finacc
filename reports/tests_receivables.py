@@ -13,7 +13,11 @@ from financial.models import Ledger, account, accountHead, accounttype
 from financial.profile_access import account_gstno
 from financial.services import apply_normalized_profile_payload, create_account_with_synced_ledger
 from geography.models import City, Country, District, State
-from reports.services.receivables import build_open_items_report, build_receivable_aging_report
+from reports.services.receivables import (
+    build_customer_outstanding_report,
+    build_open_items_report,
+    build_receivable_aging_report,
+)
 from sales.models.sales_ar import CustomerBillOpenItem
 from sales.models.sales_core import SalesInvoiceHeader, SalesInvoiceLine
 
@@ -162,6 +166,67 @@ class ReceivablesRouteContractTests(TestCase):
         )
         return invoice
 
+    def _create_product_invoice(
+        self,
+        *,
+        customer: account,
+        doc_no: int,
+        invoice_number: str,
+        bill_date: str,
+        due_date: str,
+        amount: Decimal,
+    ) -> SalesInvoiceHeader:
+        invoice = SalesInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            doc_type=SalesInvoiceHeader.DocType.TAX_INVOICE,
+            status=SalesInvoiceHeader.Status.POSTED,
+            bill_date=bill_date,
+            posting_date=bill_date,
+            doc_code="SINV",
+            doc_no=doc_no,
+            invoice_number=invoice_number,
+            customer=customer,
+            customer_ledger=customer.ledger,
+            customer_name=customer.accountname,
+            customer_gstin=account_gstno(customer),
+            customer_state_code=self.state.statecode,
+            seller_gstin="27AAAAA9999A1Z5",
+            seller_state_code=self.state.statecode,
+            place_of_supply_state_code=self.state.statecode,
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B,
+            total_taxable_value=amount,
+            total_cgst=Decimal("0.00"),
+            total_sgst=Decimal("0.00"),
+            total_igst=Decimal("0.00"),
+            total_cess=Decimal("0.00"),
+            total_discount=Decimal("0.00"),
+            round_off=Decimal("0.00"),
+            grand_total=amount,
+            created_by=self.user,
+        )
+        CustomerBillOpenItem.objects.create(
+            header=invoice,
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            customer=customer,
+            customer_ledger=customer.ledger,
+            doc_type=invoice.doc_type,
+            bill_date=invoice.bill_date,
+            due_date=due_date,
+            invoice_number=invoice.invoice_number,
+            customer_reference_number=f"REF-{doc_no}",
+            original_amount=amount,
+            gross_amount=amount,
+            net_receivable_amount=amount,
+            settled_amount=Decimal("0.00"),
+            outstanding_amount=amount,
+            is_open=True,
+        )
+        return invoice
+
     def test_open_items_report_exposes_service_invoice_route(self):
         invoice = self._create_service_invoice()
 
@@ -187,3 +252,102 @@ class ReceivablesRouteContractTests(TestCase):
 
         invoice_row = next(row for row in report["rows"] if row["invoice_number"] == invoice.invoice_number)
         self.assertEqual(invoice_row["drilldown"]["invoice"]["route"], "/saleserviceinvoice")
+
+    def test_receivable_aging_summary_and_invoice_views_keep_expected_totals(self):
+        invoice = self._create_service_invoice()
+
+        summary_report = build_receivable_aging_report(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            as_of_date="2025-04-30",
+            view="summary",
+        )
+        self.assertEqual(summary_report["view"], "summary")
+        self.assertEqual(summary_report["summary"]["customer_count"], 1)
+        self.assertEqual(summary_report["totals"]["outstanding"], "118.00")
+        self.assertEqual(summary_report["totals"]["bucket_1_30"], "118.00")
+        self.assertEqual(summary_report["rows"][0]["customer_name"], "Service Customer")
+
+        invoice_report = build_receivable_aging_report(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            as_of_date="2025-04-30",
+            view="invoice",
+        )
+        self.assertEqual(invoice_report["view"], "invoice")
+        self.assertEqual(invoice_report["totals"]["balance"], "118.00")
+        invoice_row = next(row for row in invoice_report["rows"] if row["invoice_number"] == invoice.invoice_number)
+        self.assertEqual(invoice_row["balance"], "118.00")
+        self.assertEqual(invoice_row["bucket_1_30"], "118.00")
+
+    def test_receivable_aging_overdue_only_excludes_current_customer(self):
+        self._create_service_invoice()
+        current_customer = self._create_customer(name="Current Customer", gstin="27ABCDE1234F1Z6", accountcode=5002)
+        self._create_product_invoice(
+            customer=current_customer,
+            doc_no=2,
+            invoice_number="SINV-0002",
+            bill_date="2025-04-25",
+            due_date="2025-05-20",
+            amount=Decimal("75.00"),
+        )
+
+        summary_report = build_receivable_aging_report(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            as_of_date="2025-04-30",
+            view="summary",
+            overdue_only=True,
+        )
+        self.assertEqual(summary_report["summary"]["customer_count"], 1)
+        self.assertEqual(len(summary_report["rows"]), 1)
+        self.assertEqual(summary_report["rows"][0]["customer_name"], "Service Customer")
+
+        invoice_report = build_receivable_aging_report(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            as_of_date="2025-04-30",
+            view="invoice",
+            overdue_only=True,
+        )
+        self.assertEqual(len(invoice_report["rows"]), 1)
+        self.assertEqual(invoice_report["rows"][0]["invoice_number"], "SINV-0001")
+
+    def test_customer_outstanding_totals_and_overdue_only_remain_correct(self):
+        self._create_service_invoice()
+        current_customer = self._create_customer(name="Current Customer", gstin="27ABCDE1234F1Z6", accountcode=5002)
+        self._create_product_invoice(
+            customer=current_customer,
+            doc_no=2,
+            invoice_number="SINV-0002",
+            bill_date="2025-04-25",
+            due_date="2025-05-20",
+            amount=Decimal("75.00"),
+        )
+
+        report = build_customer_outstanding_report(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            as_of_date="2025-04-30",
+        )
+        self.assertEqual(report["summary"]["customer_count"], 2)
+        self.assertEqual(report["totals"]["net_outstanding"], "193.00")
+        self.assertEqual(report["totals"]["overdue_amount"], "118.00")
+        self.assertEqual({row["customer_name"] for row in report["rows"]}, {"Service Customer", "Current Customer"})
+
+        overdue_only_report = build_customer_outstanding_report(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            as_of_date="2025-04-30",
+            overdue_only=True,
+        )
+        self.assertEqual(overdue_only_report["summary"]["customer_count"], 1)
+        self.assertEqual(len(overdue_only_report["rows"]), 1)
+        self.assertEqual(overdue_only_report["rows"][0]["customer_name"], "Service Customer")
+        self.assertEqual(overdue_only_report["totals"]["net_outstanding"], "118.00")

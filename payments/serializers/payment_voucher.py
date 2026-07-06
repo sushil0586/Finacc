@@ -400,6 +400,68 @@ class PaymentVoucherHeaderSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(payload)
             raise serializers.ValidationError({"non_field_errors": [str(payload)]})
 
+class PaymentVoucherLookupSerializer(serializers.ModelSerializer):
+    voucher_date = serializers.DateField(format="%Y-%m-%d")
+    status_name = serializers.CharField(source="get_status_display", read_only=True)
+    payment_type_name = serializers.CharField(source="get_payment_type_display", read_only=True)
+    approval_status = serializers.SerializerMethodField()
+    approval_status_name = serializers.SerializerMethodField()
+    paid_to_name = serializers.CharField(source="paid_to.effective_accounting_name", read_only=True)
+    paid_to_accountcode = serializers.IntegerField(source="paid_to.effective_accounting_code", read_only=True)
+    paid_to_partytype = serializers.CharField(source="paid_to.commercial_profile.partytype", read_only=True)
+    paid_from_name = serializers.CharField(source="paid_from.effective_accounting_name", read_only=True)
+    paid_from_accountcode = serializers.IntegerField(source="paid_from.effective_accounting_code", read_only=True)
+
+    @staticmethod
+    def _workflow_state(payload):
+        data = payload if isinstance(payload, dict) else {}
+        state = data.get("_approval_state")
+        if not isinstance(state, dict):
+            state = {"status": "DRAFT"}
+        return state
+
+    def get_approval_status(self, obj):
+        return self._workflow_state(getattr(obj, "workflow_payload", None)).get("status") or "DRAFT"
+
+    def get_approval_status_name(self, obj):
+        mapping = {
+            "DRAFT": "Draft",
+            "SUBMITTED": "Submitted",
+            "APPROVED": "Approved",
+            "REJECTED": "Rejected",
+        }
+        status = str(self.get_approval_status(obj)).upper()
+        return mapping.get(status, status.title())
+
+    class Meta:
+        model = PaymentVoucherHeader
+        fields = [
+            "id",
+            "entity",
+            "entityfinid",
+            "subentity",
+            "voucher_date",
+            "doc_code",
+            "doc_no",
+            "voucher_code",
+            "payment_type",
+            "payment_type_name",
+            "paid_from",
+            "paid_from_name",
+            "paid_from_accountcode",
+            "paid_to",
+            "paid_to_name",
+            "paid_to_accountcode",
+            "paid_to_partytype",
+            "payment_mode",
+            "cash_paid_amount",
+            "reference_number",
+            "status",
+            "status_name",
+            "approval_status",
+            "approval_status_name",
+        ]
+
 
 class PaymentVoucherListSerializer(serializers.ModelSerializer):
     voucher_date = serializers.DateField(format="%Y-%m-%d")

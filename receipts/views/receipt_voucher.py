@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from django.db.models import Prefetch
+from django.db.models import Prefetch, Q
 from rest_framework import generics, permissions, serializers, status
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
@@ -10,6 +10,7 @@ from receipts.models import ReceiptVoucherHeader, ReceiptVoucherAllocation
 from rbac.services import EffectivePermissionService
 from receipts.serializers.receipt_voucher import (
     ReceiptVoucherHeaderSerializer,
+    ReceiptVoucherLookupSerializer,
     ReceiptVoucherListSerializer,
 )
 from receipts.services.receipt_voucher_service import ReceiptVoucherService
@@ -175,6 +176,88 @@ class ReceiptVoucherListCreateAPIView(generics.ListCreateAPIView):
         _require_receipt_permission(request.user, entity_id=entity_id, action="create")
         response = super().create(request, *args, **kwargs)
         return _attach_reference_feedback(response, getattr(self, "_saved_instance", None))
+
+
+class ReceiptVoucherLookupAPIView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ReceiptVoucherLookupSerializer
+
+    def _scope_ids(self):
+        entity = self.request.query_params.get("entity")
+        entityfinid = self.request.query_params.get("entityfinid")
+        subentity = self.request.query_params.get("subentity")
+        require_query_scope(entity, entityfinid)
+        try:
+            entity_id = int(entity)
+            entityfinid_id = int(entityfinid)
+            subentity_id = int(subentity) if subentity not in (None, "", "null") else None
+            if subentity_id == 0:
+                subentity_id = None
+        except (TypeError, ValueError):
+            raise_scope_type_error()
+        return entity_id, entityfinid_id, subentity_id
+
+    def _parse_limit(self) -> int:
+        raw_limit = self.request.query_params.get("limit")
+        if raw_limit in (None, "", "null"):
+            return 100
+        try:
+            parsed = int(raw_limit)
+        except (TypeError, ValueError):
+            raise ValidationError({"limit": "limit must be an integer."})
+        return min(max(parsed, 1), 250)
+
+    def _base_queryset(self):
+        entity_id, entityfinid_id, subentity_id = self._scope_ids()
+        _require_receipt_permission(self.request.user, entity_id=entity_id, action="view")
+        qs = ReceiptVoucherHeader.objects.filter(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+        ).select_related(
+            "received_in",
+            "received_in__ledger",
+            "received_in__commercial_profile",
+            "received_from",
+            "received_from__ledger",
+            "received_from__commercial_profile",
+        )
+        if subentity_id is not None:
+            qs = qs.filter(subentity_id=subentity_id)
+        search = str(self.request.query_params.get("search") or self.request.query_params.get("q") or "").strip()
+        status_value = self.request.query_params.get("status")
+        receipt_type = self.request.query_params.get("receipt_type")
+        party_id = self.request.query_params.get("received_from")
+        if status_value:
+            qs = qs.filter(status=status_value)
+        if receipt_type:
+            qs = qs.filter(receipt_type=receipt_type)
+        if party_id:
+            qs = qs.filter(received_from_id=party_id)
+        if search:
+            qs = qs.filter(
+                Q(voucher_code__icontains=search)
+                | Q(doc_code__icontains=search)
+                | Q(doc_no__icontains=search)
+                | Q(reference_number__icontains=search)
+                | Q(received_from__accountname__icontains=search)
+                | Q(received_in__accountname__icontains=search)
+            )
+        return qs.order_by("-voucher_date", "-id")
+
+    def get(self, request, *args, **kwargs):
+        queryset = self._base_queryset()
+        total_count = queryset.count()
+        limit = self._parse_limit()
+        items = queryset[:limit]
+        serializer = self.get_serializer(items, many=True, context={"request": request})
+        returned_count = len(serializer.data)
+        return Response({
+            "items": serializer.data,
+            "total_count": total_count,
+            "returned_count": returned_count,
+            "limit": limit,
+            "has_more": total_count > returned_count,
+        })
 
 
 class ReceiptVoucherRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):

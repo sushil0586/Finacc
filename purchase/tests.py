@@ -34,7 +34,11 @@ from purchase.services.purchase_asset_intake_service import PurchaseAssetIntakeS
 from purchase.services.purchase_invoice_service import PurchaseInvoiceService
 from purchase.services.purchase_settings_service import PurchaseSettingsService
 from purchase.services.purchase_statutory_service import PurchaseStatutoryService
-from purchase.views.purchase_invoice import PurchaseInvoiceListCreateAPIView
+from purchase.views.purchase_invoice import (
+    PurchaseInvoiceListCreateAPIView,
+    PurchaseInvoiceLookupAPIView,
+    PurchaseInvoiceCrossModeNavigationAPIView,
+)
 from purchase.views.purchase_ap import VendorSettlementListCreateAPIView
 from purchase.views.purchase_invoice_compliance import PurchaseInvoiceComplianceStatusAPIView
 from purchase.views.purchase_meta import PurchaseInvoiceDetailFormMetaAPIView
@@ -153,6 +157,85 @@ class PurchaseTdsApplyTests(SimpleTestCase):
 
         with self.assertRaisesMessage(ValueError, "not invoice-based"):
             PurchaseInvoiceService._apply_tds(header=header)
+
+
+class PurchaseInvoiceLookupViewTests(SimpleTestCase):
+    def setUp(self):
+        super().setUp()
+        self.factory = APIRequestFactory()
+        self.user = get_user_model()()
+        self.header = SimpleNamespace(
+            id=10,
+            doc_type=int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
+            status=int(PurchaseInvoiceHeader.Status.POSTED),
+            purchase_number="PINV-10",
+            doc_no=10,
+            bill_date=None,
+        )
+
+    def test_lookup_view_returns_limited_payload(self):
+        mocked_queryset = MagicMock()
+        mocked_queryset.count.return_value = 2
+        mocked_queryset.__getitem__.return_value = [self.header]
+        with patch.object(PurchaseInvoiceLookupAPIView, "_base_queryset", return_value=mocked_queryset), patch(
+            "purchase.views.purchase_invoice.PurchaseInvoiceLookupSerializer"
+        ) as mocked_lookup_serializer:
+            mocked_lookup_serializer.return_value.data = [{"id": 10, "purchase_number": "PINV-10"}]
+
+            request = self.factory.get("/api/purchase/purchase-invoices/lookup/?entity=1&entityfinid=1&limit=1")
+            force_authenticate(request, user=self.user)
+
+            response = PurchaseInvoiceLookupAPIView.as_view()(request)
+
+            self.assertEqual(response.status_code, 200)
+            mocked_lookup_serializer.assert_called_once()
+            self.assertEqual(
+                response.data,
+                {
+                    "items": [{"id": 10, "purchase_number": "PINV-10"}],
+                    "total_count": 2,
+                    "returned_count": 1,
+                    "limit": 1,
+                    "has_more": True,
+                },
+            )
+
+    def test_cross_mode_navigation_view_returns_target(self):
+        mocked_header = SimpleNamespace(
+            id=50,
+            entity_id=1,
+            entityfinid_id=2,
+            subentity_id=3,
+            doc_type=int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
+            status=int(PurchaseInvoiceHeader.Status.POSTED),
+            doc_no=100,
+            purchase_number="PINV/2026/100",
+            bill_date=None,
+        )
+        mocked_target = SimpleNamespace(
+            id=51,
+            doc_no=101,
+            purchase_number="PSV/2026/101",
+            status=int(PurchaseInvoiceHeader.Status.POSTED),
+            bill_date=None,
+        )
+        with patch.object(PurchaseInvoiceCrossModeNavigationAPIView, "_get_scoped_header", return_value=mocked_header), patch(
+            "purchase.views.purchase_invoice.require_purchase_request_permission"
+        ), patch(
+            "purchase.views.purchase_invoice.PurchaseInvoiceNavService._scope_qs",
+            return_value=[mocked_target],
+        ):
+            request = self.factory.get(
+                "/api/purchase/purchase-invoices/50/cross-mode-nav/?entity=1&entityfinid=2&target_line_mode=service&direction=next"
+            )
+            force_authenticate(request, user=self.user)
+
+            response = PurchaseInvoiceCrossModeNavigationAPIView.as_view()(request, pk=50)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.data["target"]["id"], 51)
+            self.assertEqual(response.data["target_line_mode"], "service")
+            self.assertEqual(response.data["direction"], "next")
 
 
 class PurchaseDetailMetaContractTests(TestCase):

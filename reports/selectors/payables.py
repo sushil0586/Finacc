@@ -197,7 +197,7 @@ def advance_adjusted_sums(*, entity_id, entityfin_id, subentity_id, upto_date):
     return {row["advance_balance_id"]: q2(row["applied"] or ZERO) for row in rows}
 
 
-def _open_item_balance_queryset(*, entity_id, entityfin_id, subentity_id, upto_date, vendor_ids=None):
+def _open_item_balance_queryset(*, entity_id, entityfin_id, subentity_id, upto_date, vendor_ids=None, search=None):
     settled_sq = VendorSettlementLine.objects.filter(
         open_item_id=OuterRef("pk"),
         settlement__status=VendorSettlement.Status.POSTED,
@@ -221,6 +221,16 @@ def _open_item_balance_queryset(*, entity_id, entityfin_id, subentity_id, upto_d
     qs = _exclude_cancelled_open_items(qs).filter(bill_date__lte=upto_date)
     if vendor_ids:
         qs = qs.filter(vendor_id__in=list(vendor_ids))
+    if search:
+        token = str(search).strip()
+        qs = qs.filter(
+            Q(vendor__accountname__icontains=token)
+            | Q(vendor__legalname__icontains=token)
+            | Q(vendor__ledger__ledger_code__icontains=token)
+            | Q(vendor__compliance_profile__gstno__icontains=token)
+            | Q(purchase_number__icontains=token)
+            | Q(supplier_invoice_number__icontains=token)
+        )
     return qs.only(
         "id",
         "header_id",
@@ -298,19 +308,32 @@ def _advance_balance_queryset(*, entity_id, entityfin_id, subentity_id, upto_dat
     )
 
 
-def asof_open_item_balances(*, entity_id, entityfin_id, subentity_id, upto_date, vendor_ids=None):
+def asof_open_item_balances(*, entity_id, entityfin_id, subentity_id, upto_date, vendor_ids=None, search=None):
     """Return open items with balances annotated up to the supplied reporting date."""
+    return list(
+        iter_asof_open_item_balances(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            upto_date=upto_date,
+            vendor_ids=vendor_ids,
+            search=search,
+        )
+    )
+
+
+def iter_asof_open_item_balances(*, entity_id, entityfin_id, subentity_id, upto_date, vendor_ids=None, search=None):
+    """Yield open items with balances annotated up to the supplied reporting date."""
     qs = _open_item_balance_queryset(
         entity_id=entity_id,
         entityfin_id=entityfin_id,
         subentity_id=subentity_id,
         upto_date=upto_date,
         vendor_ids=vendor_ids,
+        search=search,
     )
-    rows = []
     for item in qs.iterator(chunk_size=2000):
-        rows.append((item, q2(item.settled_asof), q2(item.outstanding_asof)))
-    return rows
+        yield item, q2(item.settled_asof), q2(item.outstanding_asof)
 
 
 def open_item_vendor_summary(*, entity_id, entityfin_id, subentity_id, upto_date, vendor_ids=None):

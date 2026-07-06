@@ -23,6 +23,7 @@ from receipts.views.receipt_meta import ReceiptVoucherDetailFormMetaAPIView
 from receipts.views.receipt_voucher import (
     ReceiptVoucherApprovalAPIView,
     ReceiptVoucherCancelAPIView,
+    ReceiptVoucherLookupAPIView,
     ReceiptVoucherListCreateAPIView,
     ReceiptVoucherPostAPIView,
     _duplicate_reference_warnings,
@@ -1081,6 +1082,35 @@ class ReceiptVoucherViewValidationTests(SimpleTestCase):
         self.assertEqual(str(response.data["entity"]), "This query param is required.")
         self.assertEqual(str(response.data["entityfinid"]), "This query param is required.")
         mocked_error_log.assert_called_once()
+
+    @patch("receipts.views.receipt_voucher.ReceiptVoucherLookupAPIView.get_serializer")
+    @patch("receipts.views.receipt_voucher._require_receipt_permission")
+    @patch("receipts.views.receipt_voucher.ReceiptVoucherHeader.objects")
+    def test_lookup_view_returns_capped_compact_payload(
+        self,
+        mocked_objects,
+        _mocked_require_permission,
+        mocked_get_serializer,
+    ):
+        queryset = MagicMock()
+        queryset.filter.return_value = queryset
+        queryset.select_related.return_value = queryset
+        queryset.order_by.return_value = queryset
+        queryset.only.return_value = queryset
+        queryset.count.return_value = 320
+        queryset.__getitem__.return_value = [SimpleNamespace(id=1), SimpleNamespace(id=2)]
+        mocked_objects.filter.return_value = queryset
+        mocked_get_serializer.return_value.data = [{"id": 1}, {"id": 2}]
+
+        request = self._request("/api/receipts/receipt-vouchers/lookup/?entity=1&entityfinid=2&limit=500")
+
+        response = ReceiptVoucherLookupAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["total_count"], 320)
+        self.assertEqual(response.data["returned_count"], 2)
+        self.assertEqual(response.data["limit"], 250)
+        self.assertTrue(response.data["has_more"])
 
     @patch("errorlogger.drf_exception_handler.ErrorLog.objects.create")
     @patch("receipts.views.receipt_voucher.ReceiptVoucherHeader.objects")

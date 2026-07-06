@@ -11,13 +11,13 @@ from decimal import Decimal
 from io import BytesIO, StringIO
 
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Count, Q
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
 from entity.models import EntityBankAccountV2
 
-from ..models import BankReconciliationAuditLog, BankStatementImport, BankStatementLine, ZERO
+from ..models import BankReconciliationAuditLog, BankReconciliationRun, BankStatementImport, BankStatementLine, ZERO
 
 
 CSV_DELIMITER_CANDIDATES = (",", ";", "\t", "|")
@@ -676,8 +676,9 @@ def build_workspace_summary(*, entity, entityfin=None, subentity=None, bank_acco
     if bank_account is not None:
         imports = imports.filter(bank_account=bank_account)
 
+    recent_import_objects = list(imports.order_by("-created_at", "-id")[:10])
     recent_imports = []
-    for item in imports.order_by("-created_at", "-id")[:10]:
+    for item in recent_import_objects:
         recent_imports.append(
             {
                 "id": item.id,
@@ -700,9 +701,38 @@ def build_workspace_summary(*, entity, entityfin=None, subentity=None, bank_acco
             }
         )
 
+    current_workspace = None
+    latest_import = recent_import_objects[0] if recent_import_objects else None
+    if latest_import is not None:
+        from .matching import build_workspace_payload
+
+        latest_run = (
+            BankReconciliationRun.objects.filter(statement_import=latest_import)
+            .order_by("-created_at", "-id")
+            .first()
+        )
+        current_workspace = build_workspace_payload(
+            statement_import=latest_import,
+            run=latest_run,
+            summary_only=True,
+            include_queues=False,
+            include_matches=False,
+        )
+
+    import_counts = imports.aggregate(
+        total=Count("id"),
+        uploaded=Count("id", filter=Q(status=BankStatementImport.Status.UPLOADED)),
+        validated=Count("id", filter=Q(status=BankStatementImport.Status.VALIDATED)),
+        ready=Count("id", filter=Q(status=BankStatementImport.Status.READY)),
+        rejected=Count("id", filter=Q(status=BankStatementImport.Status.REJECTED)),
+        archived=Count("id", filter=Q(status=BankStatementImport.Status.ARCHIVED)),
+    )
     status_counts = {
-        status_code: imports.filter(status=status_code).count()
-        for status_code, _label in BankStatementImport.Status.choices
+        BankStatementImport.Status.UPLOADED: import_counts["uploaded"] or 0,
+        BankStatementImport.Status.VALIDATED: import_counts["validated"] or 0,
+        BankStatementImport.Status.READY: import_counts["ready"] or 0,
+        BankStatementImport.Status.REJECTED: import_counts["rejected"] or 0,
+        BankStatementImport.Status.ARCHIVED: import_counts["archived"] or 0,
     }
     activity_scope = Q(statement_import__entity=entity) | Q(run__entity=entity)
     if entityfin is not None:
@@ -747,10 +777,11 @@ def build_workspace_summary(*, entity, entityfin=None, subentity=None, bank_acco
 
     return {
         "module": "bank_reco",
-        "imports_count": imports.count(),
+        "imports_count": import_counts["total"] or 0,
         "status_counts": status_counts,
         "recent_imports": recent_imports,
         "recent_activity": recent_activity,
+        "current_workspace": current_workspace,
         "selected_bank_account": (
             {
                 "id": bank_account.id,

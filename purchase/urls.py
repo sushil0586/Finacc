@@ -6,6 +6,10 @@ from purchase.views.purchase_invoice import (
     PurchaseServiceInvoiceListCreateAPIView,
     PurchaseServiceInvoiceRetrieveUpdateDestroyAPIView,
     PurchaseInvoiceSearchAPIView,
+    PurchaseInvoiceLookupAPIView,
+    PurchaseServiceInvoiceLookupAPIView,
+    PurchaseInvoiceCrossModeNavigationAPIView,
+    PurchaseServiceInvoiceCrossModeNavigationAPIView,
 )
 from purchase.views.purchase_attachment import (
     PurchaseInvoiceAttachmentDeleteAPIView,
@@ -123,12 +127,16 @@ from invoice_import.views import (
 urlpatterns = [
     # CRUD
     path("purchase-invoices/", PurchaseInvoiceListCreateAPIView.as_view(), name="purchase-invoice-list-create"),
+    path("purchase-invoices/lookup/", PurchaseInvoiceLookupAPIView.as_view(), name="purchase-invoice-lookup"),
     path("purchase-invoices/<int:pk>/", PurchaseInvoiceRetrieveUpdateDestroyAPIView.as_view(), name="purchase-invoice-rud"),
+    path("purchase-invoices/<int:pk>/cross-mode-nav/", PurchaseInvoiceCrossModeNavigationAPIView.as_view(), name="purchase-invoice-cross-mode-nav"),
     path("purchase-invoices/<int:pk>/attachments/", PurchaseInvoiceAttachmentListCreateAPIView.as_view(), name="purchase-invoice-attachments"),
     path("purchase-invoices/<int:pk>/attachments/<int:attachment_id>/", PurchaseInvoiceAttachmentDeleteAPIView.as_view(), name="purchase-invoice-attachment-delete"),
     path("purchase-invoices/<int:pk>/attachments/<int:attachment_id>/download/", PurchaseInvoiceAttachmentDownloadAPIView.as_view(), name="purchase-invoice-attachment-download"),
     path("purchase-service-invoices/", PurchaseServiceInvoiceListCreateAPIView.as_view(), name="purchase-service-invoice-list-create"),
+    path("purchase-service-invoices/lookup/", PurchaseServiceInvoiceLookupAPIView.as_view(), name="purchase-service-invoice-lookup"),
     path("purchase-service-invoices/<int:pk>/", PurchaseServiceInvoiceRetrieveUpdateDestroyAPIView.as_view(), name="purchase-service-invoice-rud"),
+    path("purchase-service-invoices/<int:pk>/cross-mode-nav/", PurchaseServiceInvoiceCrossModeNavigationAPIView.as_view(), name="purchase-service-invoice-cross-mode-nav"),
     path("purchase-service-invoices/<int:pk>/attachments/", PurchaseInvoiceAttachmentListCreateAPIView.as_view(), name="purchase-service-invoice-attachments"),
     path("purchase-service-invoices/<int:pk>/attachments/<int:attachment_id>/", PurchaseInvoiceAttachmentDeleteAPIView.as_view(), name="purchase-service-invoice-attachment-delete"),
     path("purchase-service-invoices/<int:pk>/attachments/<int:attachment_id>/download/", PurchaseInvoiceAttachmentDownloadAPIView.as_view(), name="purchase-service-invoice-attachment-download"),

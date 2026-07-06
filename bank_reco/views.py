@@ -528,6 +528,9 @@ class BankRecoWorkspaceAPIView(BankRecoBaseAPIView):
                     "reference": payload.get("reference"),
                     "narration": payload.get("narration"),
                 },
+                summary_only=bool(payload.get("summary_only")),
+                include_queues=bool(payload.get("include_queues", True)),
+                include_matches=bool(payload.get("include_matches", True)),
             )
         )
 
@@ -633,10 +636,22 @@ class BankRecoUnmatchedBankReportAPIView(BankRecoBaseAPIView):
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
         run = self.get_scoped_run(request, payload["run_id"])
-        report = build_unmatched_bank_report(run=run)
+        report = build_unmatched_bank_report(
+            run=run,
+            limit=payload.get("limit") or 400,
+            offset=payload.get("offset") or 0,
+            filters={
+                "date_from": payload.get("date_from"),
+                "date_to": payload.get("date_to"),
+                "amount": payload.get("amount"),
+                "status": payload.get("status"),
+                "reference": payload.get("reference"),
+                "narration": payload.get("narration"),
+            },
+        )
         return Response(
             {
-                "count": len(report["rows"]),
+                "count": report["count"],
                 "results": WorkspaceBankLineSerializer(report["rows"], many=True).data,
                 "totals": report["totals"],
                 "export_rows": report["export_rows"],
@@ -651,10 +666,22 @@ class BankRecoUnmatchedBooksReportAPIView(BankRecoBaseAPIView):
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
         run = self.get_scoped_run(request, payload["run_id"])
-        report = build_unmatched_books_report(run=run)
+        report = build_unmatched_books_report(
+            run=run,
+            limit=payload.get("limit") or 400,
+            offset=payload.get("offset") or 0,
+            filters={
+                "date_from": payload.get("date_from"),
+                "date_to": payload.get("date_to"),
+                "amount": payload.get("amount"),
+                "status": payload.get("status"),
+                "reference": payload.get("reference"),
+                "narration": payload.get("narration"),
+            },
+        )
         return Response(
             {
-                "count": len(report["rows"]),
+                "count": report["count"],
                 "results": WorkspaceBookLineSerializer(report["rows"], many=True).data,
                 "totals": report["totals"],
                 "export_rows": report["export_rows"],

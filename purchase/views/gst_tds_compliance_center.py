@@ -127,24 +127,49 @@ class PurchaseGstTdsComplianceCenterAPIView(PurchaseTdsComplianceCenterAPIView):
             date_to=period_to,
         )
 
+        include_all_datasets = self._query_bool(request.query_params.get("include_datasets"), default=True)
+        include_all_return_datasets = self._query_bool(
+            request.query_params.get("include_return_datasets"),
+            default=include_all_datasets,
+        )
+        requested_tabs = self._requested_tabs(request.query_params.get("tabs"))
+        requested_return_tabs = self._requested_tabs(request.query_params.get("return_tabs"))
+        requested_tab = str(request.query_params.get("tab") or "").strip().lower()
+        requested_return_tab = str(request.query_params.get("return_tab") or "").strip().lower()
+        if requested_tab and requested_tab != "return-filing":
+            requested_tabs.add(requested_tab)
+        if requested_tab == "return-filing" and requested_return_tab:
+            requested_return_tabs.add(requested_return_tab)
+
         header_mapping = self._build_header_mapping(challan_lines_all)
-        header_rows = self._build_deduction_rows(headers, header_mapping)
+        needs_header_rows = include_all_datasets or "deduction-register" in requested_tabs
+        needs_section_rows = include_all_datasets or bool({"payable-report", "section-wise-summary"} & requested_tabs)
+        needs_deductee_rows = include_all_datasets or "deductee-wise-summary" in requested_tabs
+        needs_monthly_rows = include_all_datasets or "monthly-summary" in requested_tabs
+        needs_challan_rows = include_all_datasets or "payment-register" in requested_tabs
+        needs_challan_mapping_rows = include_all_datasets or "challan-mapping" in requested_tabs
+        needs_pending_rows = include_all_datasets or "pending-payment" in requested_tabs
+        needs_vendor_rows = include_all_datasets or "vendor-compliance" in requested_tabs
+        needs_filing_rows = include_all_datasets or include_all_return_datasets or "return-filing" in requested_tabs or bool(requested_return_tabs)
+        needs_audit_rows = include_all_datasets or "audit-trail" in requested_tabs
+
+        header_rows = self._build_deduction_rows(headers, header_mapping) if needs_header_rows else []
         section_rows = self._build_section_summary_rows(
             headers=headers,
             challan_lines=challan_lines_all,
             period_from=period_from,
-        )
-        deductee_rows = self._build_deductee_summary_rows(headers=headers, header_mapping=header_mapping)
+        ) if needs_section_rows else []
+        deductee_rows = self._build_deductee_summary_rows(headers=headers, header_mapping=header_mapping) if needs_deductee_rows else []
         monthly_rows = self._build_monthly_summary_rows(
             headers=headers,
             challan_lines=challan_lines_all,
             returns=returns,
-        )
-        challan_rows = self._build_payment_register_rows(challans)
-        challan_mapping_rows = self._build_challan_mapping_rows(headers, header_mapping)
-        pending_rows = self._build_pending_payment_rows(headers, header_mapping)
-        vendor_rows = self._build_vendor_compliance_rows(headers, header_mapping)
-        filing_rows = self._build_return_rows(returns)
+        ) if needs_monthly_rows else []
+        challan_rows = self._build_payment_register_rows(challans) if needs_challan_rows else []
+        challan_mapping_rows = self._build_challan_mapping_rows(headers, header_mapping) if needs_challan_mapping_rows else []
+        pending_rows = self._build_pending_payment_rows(headers, header_mapping) if needs_pending_rows else []
+        vendor_rows = self._build_vendor_compliance_rows(headers, header_mapping) if needs_vendor_rows else []
+        filing_rows = self._build_return_rows(returns) if needs_filing_rows else {"gstr7": []}
         audit_rows = self._build_audit_rows(
             entity_id=entity_id,
             entityfinid_id=entityfinid_id,
@@ -153,7 +178,7 @@ class PurchaseGstTdsComplianceCenterAPIView(PurchaseTdsComplianceCenterAPIView):
             period_to=period_to,
             challans=challans,
             returns=returns,
-        )
+        ) if needs_audit_rows else []
 
         warnings = self._build_warning_chips(
             vendor_rows=vendor_rows,
@@ -164,41 +189,15 @@ class PurchaseGstTdsComplianceCenterAPIView(PurchaseTdsComplianceCenterAPIView):
 
         payload = {
             "pageTitle": "GST-TDS Compliance Center",
-            "meta": {
-                "entityId": entity_id,
-                "entityLabel": getattr(entity, "entityname", None) or f"Entity {entity_id}",
-                "branchLabel": getattr(subentity, "subentityname", None) or "All subentities",
-                "financialYears": self._normalize_financial_years(self._financial_years(entity_id)),
-                "subentities": self._subentities(entity_id),
-                "quarters": self._quarter_options(),
-                "voucherTypes": [
-                    {"value": "purchase_invoice", "label": "Purchase Invoice"},
-                    {"value": "purchase_credit_note", "label": "Purchase Credit Note"},
-                    {"value": "purchase_debit_note", "label": "Purchase Debit Note"},
-                ],
-                "paymentStatuses": [
-                    {"value": "pending", "label": "Pending"},
-                    {"value": "paid", "label": "Paid"},
-                    {"value": "overdue", "label": "Overdue"},
-                    {"value": "partially_mapped", "label": "Partially Mapped"},
-                ],
-                "challanStatuses": [
-                    {"value": "unmapped", "label": "Unmapped"},
-                    {"value": "partially_mapped", "label": "Partially Mapped"},
-                    {"value": "mapped", "label": "Mapped"},
-                    {"value": "deposited", "label": "Deposited"},
-                ],
-                "returnStatuses": [
-                    {"value": "draft", "label": "Draft"},
-                    {"value": "approval_submitted", "label": "Approval Submitted"},
-                    {"value": "approved_draft", "label": "Approved Draft"},
-                    {"value": "rejected_draft", "label": "Rejected Draft"},
-                    {"value": "filed", "label": "Filed"},
-                    {"value": "revised", "label": "Revised"},
-                    {"value": "validated", "label": "Validated"},
-                ],
-                "tdsSections": [],
-            },
+            "meta": self._workspace_meta(
+                namespace="purchase.gst_tds_compliance_center.meta",
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                entity_label=getattr(entity, "entityname", None) or f"Entity {entity_id}",
+                branch_label=getattr(subentity, "subentityname", None) or "All subentities",
+                tds_sections=[],
+            ),
             "tabs": self._tabs(),
             "returnTabs": self._return_tabs(),
             "headerChips": [
@@ -231,169 +230,26 @@ class PurchaseGstTdsComplianceCenterAPIView(PurchaseTdsComplianceCenterAPIView):
                 "entityId": entity_id,
                 "searchText": request.query_params.get("search") or "",
             },
-            "datasets": {
-                "dashboard": self._dataset(
-                    columns=[
-                        {"key": "month", "label": "Month", "type": "text"},
-                        {"key": "tdsDeducted", "label": "GST-TDS Deducted", "type": "currency", "align": "right"},
-                        {"key": "deposited", "label": "Deposited", "type": "currency", "align": "right"},
-                        {"key": "pending", "label": "Pending Liability", "type": "currency", "align": "right"},
-                        {"key": "returnStatus", "label": "Status", "type": "status"},
-                    ],
-                    rows=monthly_rows,
-                    totals={
-                        "primaryLabel": "Period Deducted",
-                        "primaryValue": self._money(summary["deducted"]),
-                        "secondaryLabel": "Pending Deposit",
-                        "secondaryValue": self._money(summary["pending_deposit"]),
-                    },
-                ),
-                "deduction-register": self._dataset(
-                    columns=[
-                        {"key": "date", "label": "Date", "type": "date"},
-                        {"key": "voucherNo", "label": "Voucher No", "type": "text"},
-                        {"key": "voucherType", "label": "Voucher Type", "type": "text"},
-                        {"key": "deductee", "label": "Vendor", "type": "text"},
-                        {"key": "pan", "label": "GSTIN", "type": "text"},
-                        {"key": "section", "label": "Contract / Scope", "type": "text"},
-                        {"key": "taxableAmount", "label": "Taxable Amount", "type": "currency", "align": "right"},
-                        {"key": "tdsAmount", "label": "GST-TDS Amount", "type": "currency", "align": "right"},
-                        {"key": "status", "label": "Status", "type": "status"},
-                        {"key": "actions", "label": "Actions", "type": "actions", "sortable": False},
-                    ],
-                    rows=header_rows,
-                    totals={"primaryLabel": "GST-TDS Total", "primaryValue": self._money(summary["deducted"])},
-                ),
-                "payable-report": self._dataset(
-                    columns=[
-                        {"key": "section", "label": "Contract / Scope", "type": "text"},
-                        {"key": "openingBalance", "label": "Opening Balance", "type": "currency", "align": "right"},
-                        {"key": "currentDeduction", "label": "Current Deduction", "type": "currency", "align": "right"},
-                        {"key": "deposited", "label": "Deposited", "type": "currency", "align": "right"},
-                        {"key": "interest", "label": "Interest", "type": "currency", "align": "right"},
-                        {"key": "closingBalance", "label": "Closing Balance", "type": "currency", "align": "right"},
-                        {"key": "status", "label": "Status", "type": "status"},
-                        {"key": "actions", "label": "Actions", "type": "actions", "sortable": False},
-                    ],
-                    rows=section_rows,
-                    totals={
-                        "primaryLabel": "Closing Balance",
-                        "primaryValue": self._money(sum((self._decimal(row.get("closingBalance")) for row in section_rows), ZERO2)),
-                        "secondaryLabel": "Interest",
-                        "secondaryValue": self._money(sum((self._decimal(row.get("interest")) for row in section_rows), ZERO2)),
-                    },
-                ),
-                "payment-register": self._dataset(
-                    columns=[
-                        {"key": "challanNo", "label": "Challan No", "type": "text"},
-                        {"key": "cin", "label": "CIN", "type": "text"},
-                        {"key": "bank", "label": "Bank", "type": "text"},
-                        {"key": "depositDate", "label": "Deposit Date", "type": "date"},
-                        {"key": "amount", "label": "Amount", "type": "currency", "align": "right"},
-                        {"key": "section", "label": "Contract / Scope", "type": "text"},
-                        {"key": "status", "label": "Status", "type": "status"},
-                        {"key": "actions", "label": "Actions", "type": "actions", "sortable": False},
-                    ],
-                    rows=challan_rows,
-                ),
-                "challan-mapping": self._dataset(
-                    columns=[
-                        {"key": "voucherNo", "label": "Voucher No", "type": "text"},
-                        {"key": "deductee", "label": "Vendor", "type": "text"},
-                        {"key": "section", "label": "Contract / Scope", "type": "text"},
-                        {"key": "tdsAmount", "label": "GST-TDS Amount", "type": "currency", "align": "right"},
-                        {"key": "mappedChallan", "label": "Mapped Challan", "type": "text"},
-                        {"key": "remainingAmount", "label": "Remaining Amount", "type": "currency", "align": "right"},
-                        {"key": "mappingStatus", "label": "Mapping Status", "type": "status"},
-                        {"key": "actions", "label": "Actions", "type": "actions", "sortable": False},
-                    ],
-                    rows=challan_mapping_rows,
-                ),
-                "section-wise-summary": self._dataset(
-                    columns=[
-                        {"key": "section", "label": "Contract / Scope", "type": "text"},
-                        {"key": "nature", "label": "Classification", "type": "text"},
-                        {"key": "transactions", "label": "Transactions", "type": "number", "align": "right"},
-                        {"key": "taxableAmount", "label": "Taxable Amount", "type": "currency", "align": "right"},
-                        {"key": "tdsAmount", "label": "GST-TDS Amount", "type": "currency", "align": "right"},
-                        {"key": "pendingAmount", "label": "Pending Amount", "type": "currency", "align": "right"},
-                    ],
-                    rows=section_rows,
-                ),
-                "deductee-wise-summary": self._dataset(
-                    columns=[
-                        {"key": "deductee", "label": "Vendor", "type": "text"},
-                        {"key": "pan", "label": "GSTIN", "type": "text"},
-                        {"key": "transactions", "label": "Transactions", "type": "number", "align": "right"},
-                        {"key": "taxableAmount", "label": "Taxable Amount", "type": "currency", "align": "right"},
-                        {"key": "tdsAmount", "label": "GST-TDS Amount", "type": "currency", "align": "right"},
-                        {"key": "pending", "label": "Pending", "type": "currency", "align": "right"},
-                        {"key": "complianceStatus", "label": "Compliance", "type": "status"},
-                    ],
-                    rows=deductee_rows,
-                ),
-                "monthly-summary": self._dataset(
-                    columns=[
-                        {"key": "month", "label": "Month", "type": "text"},
-                        {"key": "taxableAmount", "label": "Taxable Amount", "type": "currency", "align": "right"},
-                        {"key": "tdsDeducted", "label": "GST-TDS Deducted", "type": "currency", "align": "right"},
-                        {"key": "deposited", "label": "Deposited", "type": "currency", "align": "right"},
-                        {"key": "pending", "label": "Pending", "type": "currency", "align": "right"},
-                        {"key": "returnStatus", "label": "Return Status", "type": "status"},
-                    ],
-                    rows=monthly_rows,
-                ),
-                "pending-payment": self._dataset(
-                    columns=[
-                        {"key": "dueDate", "label": "Due Date", "type": "date"},
-                        {"key": "section", "label": "Contract / Scope", "type": "text"},
-                        {"key": "deductee", "label": "Vendor", "type": "text"},
-                        {"key": "tdsAmount", "label": "GST-TDS Amount", "type": "currency", "align": "right"},
-                        {"key": "delayDays", "label": "Delay Days", "type": "number", "align": "right"},
-                        {"key": "interest", "label": "Interest", "type": "currency", "align": "right"},
-                        {"key": "status", "label": "Status", "type": "status"},
-                    ],
-                    rows=pending_rows,
-                ),
-                "vendor-compliance": self._dataset(
-                    columns=[
-                        {"key": "deductee", "label": "Vendor", "type": "text"},
-                        {"key": "pan", "label": "GSTIN", "type": "text"},
-                        {"key": "panStatus", "label": "GSTIN Status", "type": "status"},
-                        {"key": "defaultSection", "label": "Contract Ref", "type": "text"},
-                        {"key": "certificate", "label": "GST-TDS Setup", "type": "text"},
-                        {"key": "validity", "label": "Last Activity", "type": "date"},
-                        {"key": "complianceStatus", "label": "Compliance", "type": "status"},
-                    ],
-                    rows=vendor_rows,
-                ),
-                "return-filing": self._dataset(
-                    columns=self._return_columns("gstr7"),
-                    rows=filing_rows["gstr7"],
-                    return_tab="gstr7",
-                ),
-                "audit-trail": self._dataset(
-                    columns=[
-                        {"key": "dateTime", "label": "Date Time", "type": "date"},
-                        {"key": "user", "label": "User", "type": "text"},
-                        {"key": "action", "label": "Action", "type": "text"},
-                        {"key": "voucherNo", "label": "Voucher No", "type": "text"},
-                        {"key": "field", "label": "Field", "type": "text"},
-                        {"key": "oldValue", "label": "Old Value", "type": "text"},
-                        {"key": "newValue", "label": "New Value", "type": "text"},
-                        {"key": "remarks", "label": "Remarks", "type": "text"},
-                        {"key": "ipAddress", "label": "IP Address", "type": "text"},
-                    ],
-                    rows=audit_rows,
-                ),
-            },
-            "returnDatasets": {
-                "gstr7": self._dataset(
-                    columns=self._return_columns("gstr7"),
-                    rows=filing_rows["gstr7"],
-                    return_tab="gstr7",
-                ),
-            },
+            "datasets": self._build_datasets_payload(
+                include_all_datasets=include_all_datasets,
+                requested_tabs=requested_tabs,
+                summary=summary,
+                monthly_rows=monthly_rows,
+                header_rows=header_rows,
+                section_rows=section_rows,
+                challan_rows=challan_rows,
+                challan_mapping_rows=challan_mapping_rows,
+                deductee_rows=deductee_rows,
+                pending_rows=pending_rows,
+                vendor_rows=vendor_rows,
+                filing_rows=filing_rows,
+                audit_rows=audit_rows,
+            ),
+            "returnDatasets": self._build_return_datasets_payload(
+                include_all_return_datasets=include_all_return_datasets,
+                requested_return_tabs=requested_return_tabs,
+                filing_rows=filing_rows,
+            ),
         }
         return Response(payload)
 
@@ -817,6 +673,209 @@ class PurchaseGstTdsComplianceCenterAPIView(PurchaseTdsComplianceCenterAPIView):
 
     def _return_tabs(self) -> list[dict[str, str]]:
         return [{"id": "gstr7", "label": "GSTR-7 Return", "shortLabel": "GSTR-7"}]
+
+    def _build_datasets_payload(
+        self,
+        *,
+        include_all_datasets: bool,
+        requested_tabs: set[str],
+        summary: dict[str, str],
+        monthly_rows: list[dict[str, object]],
+        header_rows: list[dict[str, object]],
+        section_rows: list[dict[str, object]],
+        challan_rows: list[dict[str, object]],
+        challan_mapping_rows: list[dict[str, object]],
+        deductee_rows: list[dict[str, object]],
+        pending_rows: list[dict[str, object]],
+        vendor_rows: list[dict[str, object]],
+        filing_rows: dict[str, list[dict[str, object]]],
+        audit_rows: list[dict[str, object]],
+    ) -> dict[str, object]:
+        datasets = {
+            "dashboard": self._dataset(
+                columns=[
+                    {"key": "month", "label": "Month", "type": "text"},
+                    {"key": "tdsDeducted", "label": "GST-TDS Deducted", "type": "currency", "align": "right"},
+                    {"key": "deposited", "label": "Deposited", "type": "currency", "align": "right"},
+                    {"key": "pending", "label": "Pending Liability", "type": "currency", "align": "right"},
+                    {"key": "returnStatus", "label": "Status", "type": "status"},
+                ],
+                rows=monthly_rows,
+                totals={
+                    "primaryLabel": "Period Deducted",
+                    "primaryValue": self._money(summary["deducted"]),
+                    "secondaryLabel": "Pending Deposit",
+                    "secondaryValue": self._money(summary["pending_deposit"]),
+                },
+            ),
+            "deduction-register": self._dataset(
+                columns=[
+                    {"key": "date", "label": "Date", "type": "date"},
+                    {"key": "voucherNo", "label": "Voucher No", "type": "text"},
+                    {"key": "voucherType", "label": "Voucher Type", "type": "text"},
+                    {"key": "deductee", "label": "Vendor", "type": "text"},
+                    {"key": "pan", "label": "GSTIN", "type": "text"},
+                    {"key": "section", "label": "Contract / Scope", "type": "text"},
+                    {"key": "taxableAmount", "label": "Taxable Amount", "type": "currency", "align": "right"},
+                    {"key": "tdsAmount", "label": "GST-TDS Amount", "type": "currency", "align": "right"},
+                    {"key": "status", "label": "Status", "type": "status"},
+                    {"key": "actions", "label": "Actions", "type": "actions", "sortable": False},
+                ],
+                rows=header_rows,
+                totals={"primaryLabel": "GST-TDS Total", "primaryValue": self._money(summary["deducted"])},
+            ),
+            "payable-report": self._dataset(
+                columns=[
+                    {"key": "section", "label": "Contract / Scope", "type": "text"},
+                    {"key": "openingBalance", "label": "Opening Balance", "type": "currency", "align": "right"},
+                    {"key": "currentDeduction", "label": "Current Deduction", "type": "currency", "align": "right"},
+                    {"key": "deposited", "label": "Deposited", "type": "currency", "align": "right"},
+                    {"key": "interest", "label": "Interest", "type": "currency", "align": "right"},
+                    {"key": "closingBalance", "label": "Closing Balance", "type": "currency", "align": "right"},
+                    {"key": "status", "label": "Status", "type": "status"},
+                    {"key": "actions", "label": "Actions", "type": "actions", "sortable": False},
+                ],
+                rows=section_rows,
+                totals={
+                    "primaryLabel": "Closing Balance",
+                    "primaryValue": self._money(sum((self._decimal(row.get("closingBalance")) for row in section_rows), ZERO2)),
+                    "secondaryLabel": "Interest",
+                    "secondaryValue": self._money(sum((self._decimal(row.get("interest")) for row in section_rows), ZERO2)),
+                },
+            ),
+            "payment-register": self._dataset(
+                columns=[
+                    {"key": "challanNo", "label": "Challan No", "type": "text"},
+                    {"key": "cin", "label": "CIN", "type": "text"},
+                    {"key": "bank", "label": "Bank", "type": "text"},
+                    {"key": "depositDate", "label": "Deposit Date", "type": "date"},
+                    {"key": "amount", "label": "Amount", "type": "currency", "align": "right"},
+                    {"key": "section", "label": "Contract / Scope", "type": "text"},
+                    {"key": "status", "label": "Status", "type": "status"},
+                    {"key": "actions", "label": "Actions", "type": "actions", "sortable": False},
+                ],
+                rows=challan_rows,
+            ),
+            "challan-mapping": self._dataset(
+                columns=[
+                    {"key": "voucherNo", "label": "Voucher No", "type": "text"},
+                    {"key": "deductee", "label": "Vendor", "type": "text"},
+                    {"key": "section", "label": "Contract / Scope", "type": "text"},
+                    {"key": "tdsAmount", "label": "GST-TDS Amount", "type": "currency", "align": "right"},
+                    {"key": "mappedChallan", "label": "Mapped Challan", "type": "text"},
+                    {"key": "remainingAmount", "label": "Remaining Amount", "type": "currency", "align": "right"},
+                    {"key": "mappingStatus", "label": "Mapping Status", "type": "status"},
+                    {"key": "actions", "label": "Actions", "type": "actions", "sortable": False},
+                ],
+                rows=challan_mapping_rows,
+            ),
+            "section-wise-summary": self._dataset(
+                columns=[
+                    {"key": "section", "label": "Contract / Scope", "type": "text"},
+                    {"key": "nature", "label": "Classification", "type": "text"},
+                    {"key": "transactions", "label": "Transactions", "type": "number", "align": "right"},
+                    {"key": "taxableAmount", "label": "Taxable Amount", "type": "currency", "align": "right"},
+                    {"key": "tdsAmount", "label": "GST-TDS Amount", "type": "currency", "align": "right"},
+                    {"key": "pendingAmount", "label": "Pending Amount", "type": "currency", "align": "right"},
+                ],
+                rows=section_rows,
+            ),
+            "deductee-wise-summary": self._dataset(
+                columns=[
+                    {"key": "deductee", "label": "Vendor", "type": "text"},
+                    {"key": "pan", "label": "GSTIN", "type": "text"},
+                    {"key": "transactions", "label": "Transactions", "type": "number", "align": "right"},
+                    {"key": "taxableAmount", "label": "Taxable Amount", "type": "currency", "align": "right"},
+                    {"key": "tdsAmount", "label": "GST-TDS Amount", "type": "currency", "align": "right"},
+                    {"key": "pending", "label": "Pending", "type": "currency", "align": "right"},
+                    {"key": "complianceStatus", "label": "Compliance", "type": "status"},
+                ],
+                rows=deductee_rows,
+            ),
+            "monthly-summary": self._dataset(
+                columns=[
+                    {"key": "month", "label": "Month", "type": "text"},
+                    {"key": "taxableAmount", "label": "Taxable Amount", "type": "currency", "align": "right"},
+                    {"key": "tdsDeducted", "label": "GST-TDS Deducted", "type": "currency", "align": "right"},
+                    {"key": "deposited", "label": "Deposited", "type": "currency", "align": "right"},
+                    {"key": "pending", "label": "Pending", "type": "currency", "align": "right"},
+                    {"key": "returnStatus", "label": "Return Status", "type": "status"},
+                ],
+                rows=monthly_rows,
+            ),
+            "pending-payment": self._dataset(
+                columns=[
+                    {"key": "dueDate", "label": "Due Date", "type": "date"},
+                    {"key": "section", "label": "Contract / Scope", "type": "text"},
+                    {"key": "deductee", "label": "Vendor", "type": "text"},
+                    {"key": "tdsAmount", "label": "GST-TDS Amount", "type": "currency", "align": "right"},
+                    {"key": "delayDays", "label": "Delay Days", "type": "number", "align": "right"},
+                    {"key": "interest", "label": "Interest", "type": "currency", "align": "right"},
+                    {"key": "status", "label": "Status", "type": "status"},
+                ],
+                rows=pending_rows,
+            ),
+            "vendor-compliance": self._dataset(
+                columns=[
+                    {"key": "deductee", "label": "Vendor", "type": "text"},
+                    {"key": "pan", "label": "GSTIN", "type": "text"},
+                    {"key": "panStatus", "label": "GSTIN Status", "type": "status"},
+                    {"key": "defaultSection", "label": "Contract Ref", "type": "text"},
+                    {"key": "certificate", "label": "GST-TDS Setup", "type": "text"},
+                    {"key": "validity", "label": "Last Activity", "type": "date"},
+                    {"key": "complianceStatus", "label": "Compliance", "type": "status"},
+                ],
+                rows=vendor_rows,
+            ),
+            "return-filing": self._dataset(
+                columns=self._return_columns("gstr7"),
+                rows=filing_rows["gstr7"],
+                return_tab="gstr7",
+            ),
+            "audit-trail": self._dataset(
+                columns=[
+                    {"key": "dateTime", "label": "Date Time", "type": "date"},
+                    {"key": "user", "label": "User", "type": "text"},
+                    {"key": "action", "label": "Action", "type": "text"},
+                    {"key": "voucherNo", "label": "Voucher No", "type": "text"},
+                    {"key": "field", "label": "Field", "type": "text"},
+                    {"key": "oldValue", "label": "Old Value", "type": "text"},
+                    {"key": "newValue", "label": "New Value", "type": "text"},
+                    {"key": "remarks", "label": "Remarks", "type": "text"},
+                    {"key": "ipAddress", "label": "IP Address", "type": "text"},
+                ],
+                rows=audit_rows,
+            ),
+        }
+        if include_all_datasets:
+            return datasets
+        return {
+            tab_id: dataset
+            for tab_id, dataset in datasets.items()
+            if tab_id in requested_tabs
+        }
+
+    def _build_return_datasets_payload(
+        self,
+        *,
+        include_all_return_datasets: bool,
+        requested_return_tabs: set[str],
+        filing_rows: dict[str, list[dict[str, object]]],
+    ) -> dict[str, object]:
+        datasets = {
+            "gstr7": self._dataset(
+                columns=self._return_columns("gstr7"),
+                rows=filing_rows["gstr7"],
+                return_tab="gstr7",
+            ),
+        }
+        if include_all_return_datasets:
+            return datasets
+        return {
+            tab_id: dataset
+            for tab_id, dataset in datasets.items()
+            if tab_id in requested_return_tabs
+        }
 
     def _return_columns(self, return_tab: str) -> list[dict[str, object]]:
         return [

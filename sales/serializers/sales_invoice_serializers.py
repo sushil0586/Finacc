@@ -244,6 +244,43 @@ class SalesInvoiceListSerializer(serializers.ModelSerializer):
         return getattr(obj, "grand_total", None) or Decimal("0.00")
 
 
+class SalesInvoiceLookupSerializer(serializers.ModelSerializer):
+    doc_type_name = serializers.CharField(source="get_doc_type_display", read_only=True)
+    status_name = serializers.CharField(source="get_status_display", read_only=True)
+    customer_display_name = serializers.CharField(source="customer.effective_accounting_name", read_only=True)
+    accountname = serializers.CharField(source="customer.accountname", read_only=True)
+    invoice_date = serializers.DateField(source="bill_date", read_only=True)
+    total_value = serializers.SerializerMethodField()
+    subentity_name = serializers.CharField(source="subentity.subentityname", read_only=True)
+    branch_name = serializers.CharField(source="subentity.subentityname", read_only=True)
+
+    class Meta:
+        model = SalesInvoiceHeader
+        fields = [
+            "id",
+            "doc_no",
+            "doc_code",
+            "doc_type",
+            "doc_type_name",
+            "invoice_number",
+            "status",
+            "status_name",
+            "customer_name",
+            "customer_display_name",
+            "accountname",
+            "bill_date",
+            "invoice_date",
+            "grand_total",
+            "total_value",
+            "outstanding_amount",
+            "subentity_name",
+            "branch_name",
+        ]
+
+    def get_total_value(self, obj) -> Decimal:
+        return getattr(obj, "grand_total", None) or Decimal("0.00")
+
+
 class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
     GSTIN_RE = re.compile(r"^[0-9A-Z]{15}$")
     # nested

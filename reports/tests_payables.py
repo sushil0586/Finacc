@@ -776,6 +776,101 @@ class PayableReportAPITests(APITestCase):
         self.assertEqual(row["current"], "300.00")
         self.assertEqual(row["bucket_61_90"], "650.00")
 
+    def test_vendor_outstanding_aging_basis_bill_date_can_mark_future_due_bill_as_overdue(self):
+        future_due_vendor = self._create_vendor("Future Due Vendor", 5006)
+        future_due_header = self._create_purchase_header(
+            vendor=future_due_vendor,
+            vendor_ledger=future_due_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 1),
+            due_date=date(2025, 6, 30),
+            doc_code="PINV",
+            doc_no=1201,
+            purchase_number="PI-PINV-1201",
+            supplier_invoice_number="SUP-1201",
+            amount=Decimal("400.00"),
+        )
+        self._create_open_item(
+            header=future_due_header,
+            vendor=future_due_vendor,
+            vendor_ledger=future_due_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 1),
+            due_date=date(2025, 6, 30),
+            purchase_number="PI-PINV-1201",
+            supplier_invoice_number="SUP-1201",
+            amount=Decimal("400.00"),
+        )
+
+        due_date_response = self.client.get(
+            reverse("reports_api:vendor-outstanding-report"),
+            self._base_scope(as_of_date="2025-04-30", vendor=future_due_vendor.id, aging_basis="due_date"),
+        )
+        self.assertEqual(due_date_response.status_code, 200)
+        due_date_row = due_date_response.json()["rows"][0]
+        self.assertEqual(due_date_row["outstanding"], "400.00")
+        self.assertEqual(due_date_row["not_due"], "400.00")
+        self.assertEqual(due_date_row["overdue_amount"], "0.00")
+        self.assertEqual(due_date_row["bucket_0_30"], "0.00")
+
+        bill_date_response = self.client.get(
+            reverse("reports_api:vendor-outstanding-report"),
+            self._base_scope(as_of_date="2025-04-30", vendor=future_due_vendor.id, aging_basis="bill_date"),
+        )
+        self.assertEqual(bill_date_response.status_code, 200)
+        bill_date_row = bill_date_response.json()["rows"][0]
+        self.assertEqual(bill_date_row["outstanding"], "400.00")
+        self.assertEqual(bill_date_row["not_due"], "0.00")
+        self.assertEqual(bill_date_row["overdue_amount"], "400.00")
+        self.assertEqual(bill_date_row["bucket_0_30"], "400.00")
+
+    def test_ap_aging_overdue_only_excludes_current_vendor_and_invoice_rows(self):
+        current_vendor = self._create_vendor("Current Vendor", 5007)
+        current_header = self._create_purchase_header(
+            vendor=current_vendor,
+            vendor_ledger=current_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 25),
+            due_date=date(2025, 5, 20),
+            doc_code="PINV",
+            doc_no=1202,
+            purchase_number="PI-PINV-1202",
+            supplier_invoice_number="SUP-1202",
+            amount=Decimal("275.00"),
+        )
+        self._create_open_item(
+            header=current_header,
+            vendor=current_vendor,
+            vendor_ledger=current_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 25),
+            due_date=date(2025, 5, 20),
+            purchase_number="PI-PINV-1202",
+            supplier_invoice_number="SUP-1202",
+            amount=Decimal("275.00"),
+        )
+
+        summary_response = self.client.get(
+            reverse("reports_api:ap-aging-report"),
+            self._base_scope(as_of_date="2025-04-30", view="summary", overdue_only="true"),
+        )
+        self.assertEqual(summary_response.status_code, 200)
+        summary_payload = summary_response.json()
+        self.assertEqual(summary_payload["summary"]["vendor_count"], 1)
+        self.assertEqual(len(summary_payload["rows"]), 1)
+        self.assertEqual(summary_payload["rows"][0]["vendor_name"], "ABC Traders")
+        self.assertEqual(summary_payload["totals"]["outstanding"], "650.00")
+
+        invoice_response = self.client.get(
+            reverse("reports_api:ap-aging-report"),
+            self._base_scope(as_of_date="2025-04-30", view="invoice", overdue_only="true"),
+        )
+        self.assertEqual(invoice_response.status_code, 200)
+        invoice_payload = invoice_response.json()
+        self.assertEqual(len(invoice_payload["rows"]), 1)
+        self.assertEqual(invoice_payload["rows"][0]["vendor_name"], "ABC Traders")
+        self.assertEqual(invoice_payload["totals"]["balance"], "650.00")
+
     def test_vendor_outstanding_and_invoice_aging_apply_pagination(self):
         second_vendor = self._create_vendor("Vendor Two", 5004)
         second_invoice = self._create_purchase_header(
@@ -853,6 +948,152 @@ class PayableReportAPITests(APITestCase):
         self.assertTrue(invoice_payload["pagination"]["paginated"])
         self.assertGreaterEqual(invoice_payload["pagination"]["total_rows"], 2)
 
+    def test_vendor_outstanding_credit_limit_exceeded_filters_to_breached_vendors(self):
+        apply_normalized_profile_payload(
+            self.vendor,
+            compliance_data=None,
+            commercial_data={"creditlimit": Decimal("600.00")},
+            primary_address_data=None,
+        )
+        within_limit_vendor = self._create_vendor("Within Limit Vendor", 5008, creditlimit=Decimal("500.00"))
+        within_limit_header = self._create_purchase_header(
+            vendor=within_limit_vendor,
+            vendor_ledger=within_limit_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 8),
+            due_date=date(2025, 4, 12),
+            doc_code="PINV",
+            doc_no=1203,
+            purchase_number="PI-PINV-1203",
+            supplier_invoice_number="SUP-1203",
+            amount=Decimal("200.00"),
+        )
+        self._create_open_item(
+            header=within_limit_header,
+            vendor=within_limit_vendor,
+            vendor_ledger=within_limit_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 8),
+            due_date=date(2025, 4, 12),
+            purchase_number="PI-PINV-1203",
+            supplier_invoice_number="SUP-1203",
+            amount=Decimal("200.00"),
+        )
+
+        response = self.client.get(
+            reverse("reports_api:vendor-outstanding-report"),
+            self._base_scope(as_of_date="2025-04-30", credit_limit_exceeded="true"),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["summary"]["vendor_count"], 1)
+        self.assertEqual(len(payload["rows"]), 1)
+        self.assertEqual(payload["rows"][0]["vendor_name"], "ABC Traders")
+        self.assertEqual(payload["rows"][0]["outstanding"], "650.00")
+
+    def test_ap_aging_credit_limit_exceeded_filters_to_breached_vendors(self):
+        apply_normalized_profile_payload(
+            self.vendor,
+            compliance_data=None,
+            commercial_data={"creditlimit": Decimal("600.00")},
+            primary_address_data=None,
+        )
+        current_vendor = self._create_vendor("Current Limit Vendor", 5009, creditlimit=Decimal("500.00"))
+        current_header = self._create_purchase_header(
+            vendor=current_vendor,
+            vendor_ledger=current_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 18),
+            due_date=date(2025, 5, 10),
+            doc_code="PINV",
+            doc_no=1204,
+            purchase_number="PI-PINV-1204",
+            supplier_invoice_number="SUP-1204",
+            amount=Decimal("200.00"),
+        )
+        self._create_open_item(
+            header=current_header,
+            vendor=current_vendor,
+            vendor_ledger=current_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 18),
+            due_date=date(2025, 5, 10),
+            purchase_number="PI-PINV-1204",
+            supplier_invoice_number="SUP-1204",
+            amount=Decimal("200.00"),
+        )
+
+        response = self.client.get(
+            reverse("reports_api:ap-aging-report"),
+            self._base_scope(as_of_date="2025-04-30", view="summary", credit_limit_exceeded="true"),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["summary"]["vendor_count"], 1)
+        self.assertEqual(len(payload["rows"]), 1)
+        self.assertEqual(payload["rows"][0]["vendor_name"], "ABC Traders")
+        self.assertEqual(payload["rows"][0]["outstanding"], "650.00")
+
+    def test_vendor_outstanding_search_filters_by_vendor_name(self):
+        other_vendor = self._create_vendor("Searchable Vendor", 5010)
+        other_header = self._create_purchase_header(
+            vendor=other_vendor,
+            vendor_ledger=other_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 9),
+            due_date=date(2025, 4, 15),
+            doc_code="PINV",
+            doc_no=1205,
+            purchase_number="PI-PINV-1205",
+            supplier_invoice_number="SUP-1205",
+            amount=Decimal("180.00"),
+        )
+        self._create_open_item(
+            header=other_header,
+            vendor=other_vendor,
+            vendor_ledger=other_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 9),
+            due_date=date(2025, 4, 15),
+            purchase_number="PI-PINV-1205",
+            supplier_invoice_number="SUP-1205",
+            amount=Decimal("180.00"),
+        )
+
+        response = self.client.get(
+            reverse("reports_api:vendor-outstanding-report"),
+            self._base_scope(as_of_date="2025-04-30", search="Searchable"),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["summary"]["vendor_count"], 1)
+        self.assertEqual(len(payload["rows"]), 1)
+        self.assertEqual(payload["rows"][0]["vendor_name"], "Searchable Vendor")
+        self.assertEqual(payload["rows"][0]["outstanding"], "180.00")
+
+    def test_vendor_outstanding_detailed_include_advances_separately_shows_advance_row(self):
+        response = self.client.get(
+            reverse("reports_api:vendor-outstanding-report"),
+            self._base_scope(
+                as_of_date="2025-04-30",
+                vendor=self.vendor.id,
+                view="detailed",
+                include_advances_separately="true",
+                include_credit_balances="true",
+            ),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["summary"]["vendor_count"], 1)
+        self.assertGreaterEqual(len(payload["rows"]), 2)
+
+        advance_rows = [row for row in payload["rows"] if row.get("is_advance")]
+        self.assertEqual(len(advance_rows), 1)
+        advance_row = advance_rows[0]
+        self.assertEqual(advance_row["voucher_no"], "ADV-001")
+        self.assertEqual(advance_row["aging_bucket"], "advance")
+        self.assertEqual(advance_row["outstanding_amount"], "-50.00")
+
     def test_payables_meta_endpoint_exposes_filter_and_report_metadata(self):
         response = self.client.get(
             reverse("reports_api:payables-meta"),
@@ -911,6 +1152,62 @@ class PayableReportAPITests(APITestCase):
         drilldown = response.json()["rows"][0]["_meta"]["drilldown"]["bill_detail"]
         self.assertEqual(drilldown["route"], "/purchaseserviceinvoice")
 
+    def test_ap_payment_forecast_applies_pagination_without_changing_totals(self):
+        second_vendor = self._create_vendor("Forecast Vendor", 5005)
+        second_header = self._create_purchase_header(
+            vendor=second_vendor,
+            vendor_ledger=second_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 22),
+            due_date=date(2025, 4, 28),
+            doc_code="PINV",
+            doc_no=1005,
+            purchase_number="PI-PINV-1005",
+            supplier_invoice_number="SUP-005",
+            amount=Decimal("250.00"),
+        )
+        self._create_open_item(
+            header=second_header,
+            vendor=second_vendor,
+            vendor_ledger=second_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 22),
+            due_date=date(2025, 4, 28),
+            purchase_number="PI-PINV-1005",
+            supplier_invoice_number="SUP-005",
+            amount=Decimal("250.00"),
+        )
+
+        response = self.client.get(
+            reverse("reports_api:ap-payment-forecast"),
+            self._base_scope(from_date="2025-04-01", to_date="2025-04-30", as_of_date="2025-04-30", sort_by="due_date", sort_order="asc", page=1, page_size=1),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["report_code"], "ap_payment_forecast")
+        self.assertEqual(payload["pagination"]["page"], 1)
+        self.assertEqual(payload["pagination"]["page_size"], 1)
+        self.assertEqual(payload["pagination"]["total_rows"], 2)
+        self.assertEqual(payload["summary"]["date_bands"], 2)
+        self.assertEqual(payload["totals"]["due_amount"], "1050.00")
+        self.assertEqual(payload["totals"]["overdue_amount"], "1050.00")
+        self.assertEqual(payload["totals"]["next_30_days_amount"], "0.00")
+        self.assertEqual(len(payload["rows"]), 1)
+        self.assertEqual(payload["rows"][0]["due_date"], "2025-04-10")
+        self.assertEqual(payload["rows"][0]["due_amount"], "800.00")
+        self.assertEqual(payload["rows"][0]["payment_band"], "Overdue")
+
+        second_page = self.client.get(
+            reverse("reports_api:ap-payment-forecast"),
+            self._base_scope(from_date="2025-04-01", to_date="2025-04-30", as_of_date="2025-04-30", sort_by="due_date", sort_order="asc", page=2, page_size=1),
+        )
+        self.assertEqual(second_page.status_code, 200)
+        second_payload = second_page.json()
+        self.assertEqual(second_payload["pagination"]["total_rows"], 2)
+        self.assertEqual(len(second_payload["rows"]), 1)
+        self.assertEqual(second_payload["rows"][0]["due_date"], "2025-04-28")
+        self.assertEqual(second_payload["rows"][0]["due_amount"], "250.00")
+
     def test_vendor_reconciliation_statement_excel_export_returns_workbook(self):
         response = self.client.get(
             reverse("reports_api:vendor-reconciliation-statement-excel"),
@@ -923,6 +1220,86 @@ class PayableReportAPITests(APITestCase):
         self.assertNotRegex(workbook.sheetnames[0], r"[\\\\/*?:\\[\\]]")
         self.assertLessEqual(len(workbook.sheetnames[0]), 31)
 
+    def test_vendor_reconciliation_statement_applies_pagination_without_changing_totals(self):
+        second_vendor = self._create_vendor("XYZ Supplies", 5004)
+        second_header = self._create_purchase_header(
+            vendor=second_vendor,
+            vendor_ledger=second_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 20),
+            due_date=date(2025, 4, 25),
+            doc_code="PINV",
+            doc_no=1004,
+            purchase_number="PI-PINV-1004",
+            supplier_invoice_number="SUP-004",
+            amount=Decimal("400.00"),
+        )
+        self._create_open_item(
+            header=second_header,
+            vendor=second_vendor,
+            vendor_ledger=second_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 20),
+            due_date=date(2025, 4, 25),
+            purchase_number="PI-PINV-1004",
+            supplier_invoice_number="SUP-004",
+            amount=Decimal("400.00"),
+        )
+
+        response = self.client.get(
+            reverse("reports_api:vendor-reconciliation-statement"),
+            self._base_scope(as_of_date="2025-04-30", sort_by="closing_balance", sort_order="desc", page=1, page_size=1),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["report_code"], "vendor_reconciliation_statement")
+        self.assertEqual(payload["pagination"]["page"], 1)
+        self.assertEqual(payload["pagination"]["page_size"], 1)
+        self.assertEqual(payload["pagination"]["total_rows"], 2)
+        self.assertEqual(payload["summary"]["vendor_count"], 2)
+        self.assertEqual(payload["totals"]["invoiced"], "1400.00")
+        self.assertEqual(payload["totals"]["notes"], "100.00")
+        self.assertEqual(payload["totals"]["settled"], "200.00")
+        self.assertEqual(payload["totals"]["closing_balance"], "1100.00")
+        self.assertEqual(len(payload["rows"]), 1)
+        self.assertEqual(payload["rows"][0]["vendor_name"], "ABC Traders")
+        self.assertEqual(payload["rows"][0]["closing_balance"], "700.00")
+        self.assertEqual(payload["rows"][0]["status"], "Mismatch")
+
+        second_page = self.client.get(
+            reverse("reports_api:vendor-reconciliation-statement"),
+            self._base_scope(as_of_date="2025-04-30", sort_by="closing_balance", sort_order="desc", page=2, page_size=1),
+        )
+        self.assertEqual(second_page.status_code, 200)
+        second_payload = second_page.json()
+        self.assertEqual(second_payload["pagination"]["total_rows"], 2)
+        self.assertEqual(len(second_payload["rows"]), 1)
+        self.assertEqual(second_payload["rows"][0]["vendor_name"], "XYZ Supplies")
+        self.assertEqual(second_payload["rows"][0]["closing_balance"], "400.00")
+        self.assertEqual(second_payload["rows"][0]["status"], "Mismatch")
+
+    def test_vendor_reconciliation_statement_uses_opening_balance_and_period_movement(self):
+        response = self.client.get(
+            reverse("reports_api:vendor-reconciliation-statement"),
+            self._base_scope(from_date="2025-04-10", to_date="2025-04-30", sort_by="vendor_name", sort_order="asc"),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["summary"]["vendor_count"], 1)
+        row = payload["rows"][0]
+        self.assertEqual(row["vendor_name"], "ABC Traders")
+        self.assertEqual(row["opening_balance"], "800.00")
+        self.assertEqual(row["invoiced"], "0.00")
+        self.assertEqual(row["notes"], "100.00")
+        self.assertEqual(row["settled"], "0.00")
+        self.assertEqual(row["closing_balance"], "700.00")
+        self.assertEqual(row["status"], "Mismatch")
+        self.assertEqual(payload["totals"]["opening_balance"], "800.00")
+        self.assertEqual(payload["totals"]["invoiced"], "0.00")
+        self.assertEqual(payload["totals"]["notes"], "100.00")
+        self.assertEqual(payload["totals"]["settled"], "0.00")
+        self.assertEqual(payload["totals"]["closing_balance"], "700.00")
+
     def test_duplicate_anomalous_bill_detection_excel_export_returns_workbook(self):
         response = self.client.get(
             reverse("reports_api:duplicate-anomalous-bill-detection-excel"),
@@ -934,6 +1311,312 @@ class PayableReportAPITests(APITestCase):
         self.assertGreaterEqual(len(workbook.sheetnames), 1)
         self.assertNotRegex(workbook.sheetnames[0], r"[\\\\/*?:\\[\\]]")
         self.assertLessEqual(len(workbook.sheetnames[0]), 31)
+
+    def test_duplicate_anomalous_bill_detection_applies_pagination_without_changing_totals(self):
+        duplicate_one = self._create_purchase_header(
+            vendor=self.vendor,
+            vendor_ledger=self.vendor_ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 25),
+            due_date=date(2025, 4, 25),
+            doc_code="PINV",
+            doc_no=1008,
+            purchase_number="PI-PINV-1008",
+            supplier_invoice_number="DUP-001",
+            amount=Decimal("450.00"),
+        )
+        duplicate_two = self._create_purchase_header(
+            vendor=self.vendor,
+            vendor_ledger=self.vendor_ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 26),
+            due_date=date(2025, 4, 26),
+            doc_code="PINV",
+            doc_no=1009,
+            purchase_number="PI-PINV-1009",
+            supplier_invoice_number="DUP-001",
+            amount=Decimal("450.00"),
+        )
+
+        response = self.client.get(
+            reverse("reports_api:duplicate-anomalous-bill-detection"),
+            self._base_scope(from_date="2025-04-01", to_date="2025-04-30", sort_by="bill_date", sort_order="desc", page=1, page_size=1),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["pagination"]["total_rows"], 2)
+        self.assertEqual(payload["summary"]["anomaly_count_total"], 2)
+        self.assertEqual(payload["summary"]["anomaly_counts"]["POSSIBLE_DUPLICATE"], 2)
+        self.assertEqual(payload["totals"]["grand_total"], "900.00")
+        self.assertEqual(len(payload["rows"]), 1)
+        self.assertEqual(payload["rows"][0]["supplier_invoice_number"], duplicate_two.supplier_invoice_number)
+        self.assertEqual(payload["rows"][0]["bill_date"], "2025-04-26")
+        self.assertEqual(payload["rows"][0]["anomaly_type"], "POSSIBLE_DUPLICATE")
+
+        second_page = self.client.get(
+            reverse("reports_api:duplicate-anomalous-bill-detection"),
+            self._base_scope(from_date="2025-04-01", to_date="2025-04-30", sort_by="bill_date", sort_order="desc", page=2, page_size=1),
+        )
+        self.assertEqual(second_page.status_code, 200)
+        second_payload = second_page.json()
+        self.assertEqual(second_payload["pagination"]["total_rows"], 2)
+        self.assertEqual(len(second_payload["rows"]), 1)
+        self.assertEqual(second_payload["rows"][0]["supplier_invoice_number"], duplicate_one.supplier_invoice_number)
+        self.assertEqual(second_payload["rows"][0]["bill_date"], "2025-04-25")
+        self.assertEqual(second_payload["rows"][0]["anomaly_type"], "POSSIBLE_DUPLICATE")
+
+    def test_duplicate_anomalous_bill_detection_ignores_whitespace_supplier_invoice_numbers(self):
+        self._create_purchase_header(
+            vendor=self.vendor,
+            vendor_ledger=self.vendor_ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 27),
+            due_date=date(2025, 4, 27),
+            doc_code="PINV",
+            doc_no=1010,
+            purchase_number="PI-PINV-1010",
+            supplier_invoice_number="   ",
+            amount=Decimal("600.00"),
+        )
+        self._create_purchase_header(
+            vendor=self.vendor,
+            vendor_ledger=self.vendor_ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 28),
+            due_date=date(2025, 4, 28),
+            doc_code="PINV",
+            doc_no=1011,
+            purchase_number="PI-PINV-1011",
+            supplier_invoice_number="   ",
+            amount=Decimal("600.00"),
+        )
+
+        response = self.client.get(
+            reverse("reports_api:duplicate-anomalous-bill-detection"),
+            self._base_scope(from_date="2025-04-01", to_date="2025-04-30"),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["summary"]["anomaly_count_total"], 0)
+        self.assertEqual(payload["summary"]["anomaly_counts"], {})
+        self.assertEqual(payload["rows"], [])
+        self.assertEqual(payload["totals"]["grand_total"], "0.00")
+
+    def test_grn_invoice_posting_exceptions_applies_pagination_without_changing_totals(self):
+        missing_supplier = self._create_purchase_header(
+            vendor=self.vendor,
+            vendor_ledger=self.vendor_ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 18),
+            due_date=date(2025, 4, 18),
+            doc_code="PINV",
+            doc_no=1006,
+            purchase_number="PI-PINV-1006",
+            supplier_invoice_number="",
+            amount=Decimal("150.00"),
+        )
+        not_posted = self._create_purchase_header(
+            vendor=self.vendor,
+            vendor_ledger=self.vendor_ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 21),
+            due_date=date(2025, 4, 21),
+            doc_code="PINV",
+            doc_no=1007,
+            purchase_number="PI-PINV-1007",
+            supplier_invoice_number="SUP-007",
+            amount=Decimal("200.00"),
+            status=PurchaseInvoiceHeader.Status.DRAFT,
+        )
+
+        response = self.client.get(
+            reverse("reports_api:grn-invoice-posting-exceptions"),
+            self._base_scope(from_date="2025-04-01", to_date="2025-04-30", sort_by="bill_date", sort_order="desc", page=1, page_size=1),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["pagination"]["total_rows"], 2)
+        self.assertEqual(payload["summary"]["issue_count_total"], 2)
+        self.assertEqual(payload["totals"]["grand_total"], "350.00")
+        self.assertEqual(len(payload["rows"]), 1)
+        self.assertEqual(payload["rows"][0]["purchase_number"], not_posted.purchase_number)
+        self.assertEqual(payload["rows"][0]["issue_type"], "NOT_POSTED")
+
+        second_page = self.client.get(
+            reverse("reports_api:grn-invoice-posting-exceptions"),
+            self._base_scope(from_date="2025-04-01", to_date="2025-04-30", sort_by="bill_date", sort_order="desc", page=2, page_size=1),
+        )
+        self.assertEqual(second_page.status_code, 200)
+        second_payload = second_page.json()
+        self.assertEqual(second_payload["pagination"]["total_rows"], 2)
+        self.assertEqual(len(second_payload["rows"]), 1)
+        self.assertEqual(second_payload["rows"][0]["purchase_number"], missing_supplier.purchase_number)
+        self.assertEqual(second_payload["rows"][0]["issue_type"], "MISSING_SUPPLIER_INVOICE")
+
+    def test_grn_invoice_posting_exceptions_treats_whitespace_supplier_invoice_as_missing(self):
+        header = self._create_purchase_header(
+            vendor=self.vendor,
+            vendor_ledger=self.vendor_ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 22),
+            due_date=date(2025, 4, 22),
+            doc_code="PINV",
+            doc_no=1012,
+            purchase_number="PI-PINV-1012",
+            supplier_invoice_number="   ",
+            amount=Decimal("175.00"),
+        )
+
+        response = self.client.get(
+            reverse("reports_api:grn-invoice-posting-exceptions"),
+            self._base_scope(from_date="2025-04-01", to_date="2025-04-30"),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        target_row = next(row for row in payload["rows"] if row["purchase_number"] == header.purchase_number)
+        self.assertEqual(target_row["supplier_invoice_number"], "-")
+        self.assertEqual(target_row["issue_type"], "MISSING_SUPPLIER_INVOICE")
+        self.assertEqual(payload["summary"]["issue_counts"]["MISSING_SUPPLIER_INVOICE"], 1)
+
+    def test_ap_compliance_aging_applies_pagination_without_changing_totals(self):
+        second_vendor = self._create_vendor("No GST Vendor", 5003)
+        second_header = self._create_purchase_header(
+            vendor=second_vendor,
+            vendor_ledger=second_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 7, 1),
+            due_date=date(2025, 7, 15),
+            doc_code="PINV",
+            doc_no=1003,
+            purchase_number="PI-PINV-1003",
+            supplier_invoice_number="SUP-003",
+            amount=Decimal("300.00"),
+        )
+        self._create_open_item(
+            header=second_header,
+            vendor=second_vendor,
+            vendor_ledger=second_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 7, 1),
+            due_date=date(2025, 7, 15),
+            purchase_number="PI-PINV-1003",
+            supplier_invoice_number="SUP-003",
+            amount=Decimal("300.00"),
+        )
+
+        response = self.client.get(
+            reverse("reports_api:ap-compliance-aging"),
+            self._base_scope(as_of_date="2025-08-01", sort_by="days_overdue", sort_order="desc", page=1, page_size=1),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["report_code"], "ap_compliance_aging")
+        self.assertEqual(payload["pagination"]["page"], 1)
+        self.assertEqual(payload["pagination"]["page_size"], 1)
+        self.assertEqual(payload["pagination"]["total_rows"], 2)
+        self.assertEqual(payload["summary"]["row_count"], 2)
+        self.assertEqual(payload["totals"]["outstanding"], "1100.00")
+        self.assertEqual(payload["summary"]["risk_counts"]["MEDIUM"], 1)
+        self.assertEqual(payload["summary"]["risk_counts"]["HIGH"], 1)
+        self.assertEqual(len(payload["rows"]), 1)
+        self.assertEqual(payload["rows"][0]["vendor_name"], "ABC Traders")
+        self.assertEqual(payload["rows"][0]["days_overdue"], 113)
+        self.assertEqual(payload["rows"][0]["outstanding"], "800.00")
+
+        second_page = self.client.get(
+            reverse("reports_api:ap-compliance-aging"),
+            self._base_scope(as_of_date="2025-08-01", sort_by="days_overdue", sort_order="desc", page=2, page_size=1),
+        )
+        self.assertEqual(second_page.status_code, 200)
+        second_payload = second_page.json()
+        self.assertEqual(second_payload["pagination"]["total_rows"], 2)
+        self.assertEqual(len(second_payload["rows"]), 1)
+        self.assertEqual(second_payload["rows"][0]["vendor_name"], "No GST Vendor")
+        self.assertEqual(second_payload["rows"][0]["compliance_risk"], "HIGH")
+        self.assertEqual(second_payload["rows"][0]["outstanding"], "300.00")
+
+    def test_ap_compliance_aging_search_matches_bill_number(self):
+        second_vendor = self._create_vendor("Search Vendor", 5004)
+        second_header = self._create_purchase_header(
+            vendor=second_vendor,
+            vendor_ledger=second_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 7, 5),
+            due_date=date(2025, 7, 20),
+            doc_code="PINV",
+            doc_no=1004,
+            purchase_number="PI-PINV-1004",
+            supplier_invoice_number="FIND-ME-004",
+            amount=Decimal("250.00"),
+        )
+        self._create_open_item(
+            header=second_header,
+            vendor=second_vendor,
+            vendor_ledger=second_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 7, 5),
+            due_date=date(2025, 7, 20),
+            purchase_number="PI-PINV-1004",
+            supplier_invoice_number="FIND-ME-004",
+            amount=Decimal("250.00"),
+        )
+
+        response = self.client.get(
+            reverse("reports_api:ap-compliance-aging"),
+            self._base_scope(as_of_date="2025-08-01", search="FIND-ME-004"),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["summary"]["row_count"], 1)
+        self.assertEqual(len(payload["rows"]), 1)
+        self.assertEqual(payload["rows"][0]["bill_number"], "PI-PINV-1004")
+        self.assertEqual(payload["rows"][0]["vendor_name"], "Search Vendor")
+        self.assertEqual(payload["totals"]["outstanding"], "250.00")
+
+    def test_ap_compliance_aging_treats_whitespace_gstin_as_missing_across_sort_paths(self):
+        whitespace_vendor = self._create_vendor("Whitespace GST Vendor", 5005)
+        apply_normalized_profile_payload(
+            whitespace_vendor,
+            compliance_data={"gstno": "   "},
+            commercial_data=None,
+            primary_address_data=None,
+        )
+        header = self._create_purchase_header(
+            vendor=whitespace_vendor,
+            vendor_ledger=whitespace_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 7, 10),
+            due_date=date(2025, 7, 20),
+            doc_code="PINV",
+            doc_no=1005,
+            purchase_number="PI-PINV-1005",
+            supplier_invoice_number="SUP-005",
+            amount=Decimal("125.00"),
+        )
+        self._create_open_item(
+            header=header,
+            vendor=whitespace_vendor,
+            vendor_ledger=whitespace_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 7, 10),
+            due_date=date(2025, 7, 20),
+            purchase_number="PI-PINV-1005",
+            supplier_invoice_number="SUP-005",
+            amount=Decimal("125.00"),
+        )
+
+        response = self.client.get(
+            reverse("reports_api:ap-compliance-aging"),
+            self._base_scope(as_of_date="2025-08-01", sort_by="vendor_name", sort_order="asc"),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        target_row = next(row for row in payload["rows"] if row["vendor_name"] == "Whitespace GST Vendor")
+        self.assertEqual(target_row["gstin"], "-")
+        self.assertEqual(target_row["compliance_risk"], "HIGH")
+        self.assertEqual(payload["summary"]["risk_counts"]["HIGH"], 1)
+        self.assertEqual(payload["summary"]["risk_counts"]["MEDIUM"], 1)
+        self.assertEqual(payload["summary"]["risk_counts"]["LOW"], 0)
 
     def test_payables_meta_filters_reports_and_report_endpoints_enforce_permissions(self):
         limited_user = self._create_limited_report_user("reports.vendoroutstanding.view")
@@ -1536,6 +2219,72 @@ class PayableReportAPITests(APITestCase):
         self.assertIn("800.00", payload["overview"]["msme_reporting_note"])
         self.assertIn("top_vendors", payload)
         self.assertEqual(payload["top_vendors"]["top_msme_overdue_vendors"][0]["vendor_name"], "ABC Traders")
+
+    def test_payables_close_pack_top_overdue_vendors_are_not_limited_to_first_outstanding_page(self):
+        for index in range(10):
+            vendor = self._create_vendor(f"Future Vendor {index + 1}", 5100 + index)
+            vendor_ledger = vendor.ledger
+            header = self._create_purchase_header(
+                vendor=vendor,
+                vendor_ledger=vendor_ledger,
+                doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+                bill_date=date(2025, 7, 20),
+                due_date=date(2025, 9, 15),
+                doc_code="PINV",
+                doc_no=2000 + index,
+                purchase_number=f"PI-FUT-{index + 1}",
+                supplier_invoice_number=f"FUT-{index + 1}",
+                amount=Decimal(str(1000 - (index * 10))),
+            )
+            self._create_open_item(
+                header=header,
+                vendor=vendor,
+                vendor_ledger=vendor_ledger,
+                doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+                bill_date=date(2025, 7, 20),
+                due_date=date(2025, 9, 15),
+                purchase_number=f"PI-FUT-{index + 1}",
+                supplier_invoice_number=f"FUT-{index + 1}",
+                amount=Decimal(str(1000 - (index * 10))),
+            )
+
+        overdue_vendor = self._create_vendor("Critical Overdue Vendor", 5200)
+        overdue_vendor_ledger = overdue_vendor.ledger
+        overdue_header = self._create_purchase_header(
+            vendor=overdue_vendor,
+            vendor_ledger=overdue_vendor_ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 7, 1),
+            due_date=date(2025, 7, 15),
+            doc_code="PINV",
+            doc_no=2999,
+            purchase_number="PI-OVD-1",
+            supplier_invoice_number="OVD-1",
+            amount=Decimal("250.00"),
+        )
+        self._create_open_item(
+            header=overdue_header,
+            vendor=overdue_vendor,
+            vendor_ledger=overdue_vendor_ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 7, 1),
+            due_date=date(2025, 7, 15),
+            purchase_number="PI-OVD-1",
+            supplier_invoice_number="OVD-1",
+            amount=Decimal("250.00"),
+        )
+
+        response = self.client.get(
+            reverse("reports_api:payables-close-pack"),
+            self._base_scope(as_of_date="2025-08-01"),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        top_overdue = payload["top_vendors"]["top_overdue_vendors"]
+        top_outstanding = payload["top_vendors"]["top_outstanding_vendors"]
+
+        self.assertTrue(any(row["vendor_name"] == "Critical Overdue Vendor" for row in top_overdue))
+        self.assertFalse(any(row["vendor_name"] == "Critical Overdue Vendor" for row in top_outstanding))
 
     def test_payables_close_pack_export_endpoints_return_expected_formats(self):
         apply_normalized_profile_payload(

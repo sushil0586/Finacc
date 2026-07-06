@@ -306,6 +306,7 @@ class SalesInvoiceHeader(EntityScopedModel):
             models.Index(fields=["entity", "entityfinid", "subentity", "bill_date"], name="ix_sales_hdr_billdt"),
             models.Index(fields=["entity", "entityfinid", "subentity", "posting_date"], name="ix_sales_hdr_postdt"),
             models.Index(fields=["entity", "entityfinid", "subentity", "due_date"], name="ix_sales_hdr_duedt"),
+            models.Index(fields=["entity", "entityfinid", "subentity", "doc_no"], name="ix_sales_hdr_scope_docno"),
             models.Index(fields=["entity", "entityfinid", "subentity", "doc_type", "doc_code", "doc_no"], name="ix_sales_hdr_nav"),
             models.Index(fields=["entity", "entityfinid", "subentity", "bill_date", "doc_code", "doc_no"], name="ix_sales_hdr_bdt_nav"),
             models.Index(fields=["entity", "entityfinid", "subentity", "status"], name="ix_sales_hdr_status"),

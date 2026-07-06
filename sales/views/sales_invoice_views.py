@@ -4,7 +4,7 @@ import base64
 import io
 from decimal import Decimal
 from typing import Any
-from django.db.models import Exists, OuterRef, Prefetch
+from django.db.models import Exists, OuterRef, Prefetch, Q
 from django.shortcuts import get_object_or_404
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import generics, status
@@ -18,9 +18,14 @@ from financial.profile_access import account_pan, account_primary_bank_detail
 from geography.models import State
 from sales.models import SalesInvoiceHeader, SalesInvoiceLine, SalesTaxSummary, SalesInvoiceTransportSnapshot
 from rbac.services import EffectivePermissionService
-from sales.serializers.sales_invoice_serializers import SalesInvoiceHeaderSerializer, SalesInvoiceListSerializer
+from sales.serializers.sales_invoice_serializers import (
+    SalesInvoiceHeaderSerializer,
+    SalesInvoiceListSerializer,
+    SalesInvoiceLookupSerializer,
+)
 from sales.serializers.sales_transport_serializers import SalesInvoiceTransportSnapshotSerializer
 from sales.services.sales_invoice_service import SalesInvoiceService
+from sales.services.sales_nav_service import SalesInvoiceNavService
 from sales.services.sales_settings_service import SalesSettingsService
 import qrcode
 
@@ -77,9 +82,19 @@ class _SalesScopeMixin:
     @staticmethod
     def _scope_filters(request):
         payload = request.data if isinstance(getattr(request, "data", None), dict) else {}
-        entity_id = request.query_params.get("entity_id") or payload.get("entity_id") or payload.get("entity")
-        entityfinid_id = request.query_params.get("entityfinid_id") or request.query_params.get("entityfinid") or payload.get("entityfinid_id") or payload.get("entityfinid")
-        subentity_id = request.query_params.get("subentity_id")
+        entity_id = (
+            request.query_params.get("entity_id")
+            or request.query_params.get("entity")
+            or payload.get("entity_id")
+            or payload.get("entity")
+        )
+        entityfinid_id = (
+            request.query_params.get("entityfinid_id")
+            or request.query_params.get("entityfinid")
+            or payload.get("entityfinid_id")
+            or payload.get("entityfinid")
+        )
+        subentity_id = request.query_params.get("subentity_id") or request.query_params.get("subentity")
         if subentity_id is None:
             subentity_id = payload.get("subentity_id", payload.get("subentity"))
 
@@ -143,9 +158,9 @@ class SalesInvoiceListCreateAPIView(_SalesScopeMixin, generics.ListCreateAPIView
 
         params = self.request.query_params
 
-        entity_id = params.get("entity_id")
-        entityfinid_id = params.get("entityfinid_id")
-        subentity_id = params.get("subentity_id")
+        entity_id = params.get("entity_id") or params.get("entity")
+        entityfinid_id = params.get("entityfinid_id") or params.get("entityfinid")
+        subentity_id = params.get("subentity_id") or params.get("subentity")
         if subentity_id == "0":
             subentity_id = None
 
@@ -230,6 +245,174 @@ class SalesInvoiceListCreateAPIView(_SalesScopeMixin, generics.ListCreateAPIView
             return super().create(request, *args, **kwargs)
         except (ValueError, DjangoValidationError, DRFValidationError) as e:
             return Response(self._error_payload(e), status=status.HTTP_400_BAD_REQUEST)
+
+
+class SalesInvoiceLookupAPIView(_SalesScopeMixin, APIView):
+    def _parse_limit(self) -> int:
+        try:
+            raw_limit = int(self.request.query_params.get("limit") or 100)
+        except (TypeError, ValueError):
+            raw_limit = 100
+        return max(1, min(raw_limit, 250))
+
+    def _base_queryset(self):
+        scope_filters = self._scope_filters(self.request)
+        entity_id = scope_filters.get("entity_id")
+        if entity_id:
+            require_sales_request_permission(
+                user=self.request.user,
+                entity_id=entity_id,
+                doc_type=self.request.query_params.get("doc_type"),
+                action="view",
+            )
+
+        params = self.request.query_params
+        qs = (
+            self._scoped_queryset()
+            .select_related("customer", "customer__ledger", "subentity")
+            .order_by("-doc_no", "-id")
+        )
+
+        doc_type = params.get("doc_type")
+        status_value = params.get("status")
+        customer_id = params.get("customer_id")
+        search = str(params.get("search") or "").strip()
+
+        if doc_type:
+            qs = qs.filter(doc_type=doc_type)
+        if status_value:
+            qs = qs.filter(status=status_value)
+        if customer_id:
+            qs = qs.filter(customer_id=customer_id)
+        if search:
+            qs = qs.filter(
+                Q(invoice_number__icontains=search)
+                | Q(customer_name__icontains=search)
+                | Q(customer__accountname__icontains=search)
+                | Q(doc_code__icontains=search)
+            )
+
+        return qs.select_related(None).select_related(
+            "customer",
+            "subentity",
+        ).only(
+            "id",
+            "doc_no",
+            "doc_code",
+            "doc_type",
+            "invoice_number",
+            "status",
+            "customer_id",
+            "customer_name",
+            "bill_date",
+            "grand_total",
+            "outstanding_amount",
+            "subentity_id",
+            "customer__accountname",
+            "subentity__subentityname",
+        )
+
+    def get(self, request, *args, **kwargs):
+        queryset = self._base_queryset()
+        total_count = queryset.count()
+        limit = self._parse_limit()
+        items = queryset[:limit]
+        serializer = SalesInvoiceLookupSerializer(items, many=True, context={"request": request})
+        returned_count = len(serializer.data)
+        return Response(
+            {
+                "items": serializer.data,
+                "total_count": total_count,
+                "returned_count": returned_count,
+                "limit": limit,
+                "has_more": total_count > returned_count,
+            }
+        )
+
+
+class SalesInvoiceCrossModeNavigationAPIView(_SalesScopeMixin, APIView):
+    def get(self, request, pk: int, *args, **kwargs):
+        header = self._get_scoped_header(pk)
+        require_sales_request_permission(
+            user=request.user,
+            entity_id=header.entity_id,
+            doc_type=header.doc_type,
+            action="view",
+        )
+
+        target_line_mode = str(request.query_params.get("target_line_mode") or "").strip().lower()
+        if target_line_mode not in {"goods", "service"}:
+            raise DRFValidationError({"target_line_mode": "Use 'goods' or 'service'."})
+
+        direction = str(request.query_params.get("direction") or "").strip().lower()
+        if direction not in {"previous", "next"}:
+            raise DRFValidationError({"direction": "Use 'previous' or 'next'."})
+
+        qs = SalesInvoiceNavService._scope_qs(
+            entity_id=header.entity_id,
+            entityfinid_id=header.entityfinid_id,
+            subentity_id=header.subentity_id,
+            doc_type=int(header.doc_type),
+            doc_code=None,
+            allowed_statuses=SalesInvoiceNavService.DEFAULT_ALLOWED_STATUSES,
+            line_mode=target_line_mode,
+        )
+        rows = list(qs)
+        current_seq = SalesInvoiceNavService._sequence_no(header)
+
+        target_obj = None
+        if current_seq > 0:
+            if direction == "previous":
+                candidates = [
+                    row for row in rows
+                    if (
+                        (SalesInvoiceNavService._sequence_no(row) < current_seq)
+                        or (
+                            SalesInvoiceNavService._sequence_no(row) == current_seq
+                            and int(getattr(row, "id", 0) or 0) < int(getattr(header, "id", 0) or 0)
+                        )
+                    )
+                ]
+                target_obj = max(
+                    candidates,
+                    key=lambda row: (
+                        SalesInvoiceNavService._sequence_no(row),
+                        int(getattr(row, "id", 0) or 0),
+                    ),
+                    default=None,
+                )
+            else:
+                candidates = [
+                    row for row in rows
+                    if (
+                        (SalesInvoiceNavService._sequence_no(row) > current_seq)
+                        or (
+                            SalesInvoiceNavService._sequence_no(row) == current_seq
+                            and int(getattr(row, "id", 0) or 0) > int(getattr(header, "id", 0) or 0)
+                        )
+                    )
+                ]
+                target_obj = min(
+                    candidates,
+                    key=lambda row: (
+                        SalesInvoiceNavService._sequence_no(row),
+                        int(getattr(row, "id", 0) or 0),
+                    ),
+                    default=None,
+                )
+        else:
+            if direction == "previous":
+                target_obj = qs.filter(id__lt=header.id).order_by("-id").first()
+            else:
+                target_obj = qs.filter(id__gt=header.id).order_by("id").first()
+
+        return Response(
+            {
+                "direction": direction,
+                "target_line_mode": target_line_mode,
+                "target": SalesInvoiceNavService._to_item(target_obj),
+            }
+        )
 
 
 class SalesInvoiceRetrieveUpdateAPIView(_SalesScopeMixin, generics.RetrieveUpdateDestroyAPIView):
@@ -322,6 +505,14 @@ class SalesInvoiceRetrieveUpdateAPIView(_SalesScopeMixin, generics.RetrieveUpdat
 
 
 class SalesServiceInvoiceListCreateAPIView(SalesInvoiceListCreateAPIView):
+    line_mode = "service"
+
+
+class SalesServiceInvoiceLookupAPIView(SalesInvoiceLookupAPIView):
+    line_mode = "service"
+
+
+class SalesServiceInvoiceCrossModeNavigationAPIView(SalesInvoiceCrossModeNavigationAPIView):
     line_mode = "service"
 
 

@@ -12,6 +12,7 @@ from gst_reconciliation.serializers import (
     GstReconciliationRunCreateSerializer,
     GstReconciliationRunListRowSerializer,
     GstReconciliationRunSerializer,
+    GstReconciliationRunWorkspaceSerializer,
     GstRunActionSerializer,
     PurchaseGstr2bBatchAdapterSerializer,
 )
@@ -139,17 +140,26 @@ class GstReconciliationRunSummaryListAPIView(generics.ListAPIView):
 
 class GstReconciliationRunDetailAPIView(generics.RetrieveAPIView):
     permission_classes = [permissions.IsAuthenticated]
-    queryset = GstReconciliationRun.objects.all().select_related(
-        "entity",
-        "entityfinid",
-        "subentity",
-        "imported_return",
-        "submitted_by",
-        "reviewed_by",
-        "approved_by",
-        "closed_by",
-    ).prefetch_related("items__mismatch_reasons", "action_logs")
-    serializer_class = GstReconciliationRunSerializer
+
+    def get_queryset(self):
+        queryset = GstReconciliationRun.objects.all().select_related(
+            "entity",
+            "entityfinid",
+            "subentity",
+            "imported_return",
+            "submitted_by",
+            "reviewed_by",
+            "approved_by",
+            "closed_by",
+        ).prefetch_related("action_logs")
+        include_items = str(self.request.query_params.get("include_items", "")).lower() in {"1", "true", "yes"}
+        if include_items:
+            queryset = queryset.prefetch_related("items__mismatch_reasons")
+        return queryset
+
+    def get_serializer_class(self):
+        include_items = str(self.request.query_params.get("include_items", "")).lower() in {"1", "true", "yes"}
+        return GstReconciliationRunSerializer if include_items else GstReconciliationRunWorkspaceSerializer
 
     def get_object(self):
         obj = super().get_object()

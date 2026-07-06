@@ -136,3 +136,11 @@ class GstReconciliationAPITests(APITestCase):
 
         self.assertEqual(drilldown["route"], "/saleserviceinvoice")
         self.assertEqual(drilldown["params"]["transactionid"], 404)
+
+    def test_source_document_drilldown_uses_prefetched_service_flag_without_query(self):
+        with patch("reports.services.gst_reconciliation.SalesInvoiceLine.objects.filter") as mocked_filter:
+            drilldown = _build_source_document_drilldown(invoice_id=505, has_service_lines=False)
+
+        mocked_filter.assert_not_called()
+        self.assertEqual(drilldown["route"], "/saleinvoice")
+        self.assertEqual(drilldown["params"]["transactionid"], 505)

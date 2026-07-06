@@ -277,6 +277,50 @@ class GstReconciliationRunSerializer(serializers.ModelSerializer):
         )
 
 
+class GstReconciliationRunWorkspaceSerializer(serializers.ModelSerializer):
+    imported_return = GstImportedReturnSerializer(read_only=True)
+    action_logs = GstReconciliationActionLogSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = GstReconciliationRun
+        fields = (
+            "id",
+            "entity",
+            "entityfinid",
+            "subentity",
+            "gst_registration_gstin",
+            "reconciliation_type",
+            "period_type",
+            "period_from",
+            "period_to",
+            "return_period",
+            "revision_no",
+            "source_mode",
+            "status",
+            "match_strategy_code",
+            "tolerance_config_json",
+            "imported_return",
+            "source_reference",
+            "summary_json",
+            "notes",
+            "review_comment",
+            "approval_comment",
+            "close_comment",
+            "submitted_by",
+            "reviewed_by",
+            "approved_by",
+            "closed_by",
+            "submitted_at",
+            "reviewed_at",
+            "approved_at",
+            "closed_at",
+            "created_at",
+            "updated_at",
+            "action_logs",
+        )
+        read_only_fields = fields
+
+
 class GstReconciliationRunListRowSerializer(serializers.Serializer):
     id = serializers.IntegerField(read_only=True)
     reconciliation_type = serializers.CharField(read_only=True)

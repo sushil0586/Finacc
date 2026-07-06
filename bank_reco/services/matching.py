@@ -6,7 +6,7 @@ from decimal import Decimal
 from difflib import SequenceMatcher
 
 from django.db import transaction
-from django.db.models import Q, Sum
+from django.db.models import Count, Prefetch, Q, Sum
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
@@ -213,12 +213,59 @@ def get_run_bank_lines(*, run: BankReconciliationRun, bank_line_ids: list[int]):
     return lines
 
 
-def build_unmatched_bank_rows(*, run: BankReconciliationRun):
+def unmatched_bank_lines_for_run(*, run: BankReconciliationRun):
+    return bank_lines_for_run(run=run).filter(reconciliation_status__in=OPEN_BANK_LINE_STATUSES)
+
+
+def filter_bank_lines_queryset(bank_lines, filters: dict | None = None):
+    filters = filters or {}
+    if filters.get("date_from"):
+        bank_lines = bank_lines.filter(Q(txn_date__gte=filters["date_from"]) | Q(value_date__gte=filters["date_from"]))
+    if filters.get("date_to"):
+        bank_lines = bank_lines.filter(Q(txn_date__lte=filters["date_to"]) | Q(value_date__lte=filters["date_to"]))
+    if filters.get("reference"):
+        bank_lines = bank_lines.filter(Q(reference_no__icontains=filters["reference"]) | Q(cheque_no__icontains=filters["reference"]))
+    if filters.get("narration"):
+        bank_lines = bank_lines.filter(narration__icontains=filters["narration"])
+    if filters.get("status"):
+        bank_lines = bank_lines.filter(reconciliation_status=filters["status"])
+    if filters.get("amount") is not None:
+        bank_lines = bank_lines.filter(Q(debit_amount=filters["amount"]) | Q(credit_amount=filters["amount"]))
+    return bank_lines
+
+
+def build_unmatched_bank_rows(*, run: BankReconciliationRun, limit: int = 400, offset: int = 0):
+    return build_unmatched_bank_rows_from_queryset(
+        bank_lines=unmatched_bank_lines_for_run(run=run),
+        current_from=run.statement_import.statement_from,
+        limit=limit,
+        offset=offset,
+    )
+
+
+def build_unmatched_bank_rows_from_queryset(*, bank_lines, current_from, limit: int = 400, offset: int = 0):
     rows = []
-    current_from = run.statement_import.statement_from
-    for line in bank_lines_for_run(run=run).filter(
-        reconciliation_status__in=OPEN_BANK_LINE_STATUSES
-    )[:400]:
+    stop = offset + limit
+    row_queryset = bank_lines.only(
+        "id",
+        "line_no",
+        "txn_date",
+        "value_date",
+        "narration",
+        "reference_no",
+        "cheque_no",
+        "debit_amount",
+        "credit_amount",
+        "balance",
+        "reconciliation_status",
+        "exception_status",
+        "exception_reason",
+        "statement_import_id",
+        "statement_import__import_code",
+        "statement_import__statement_to",
+        "created_voucher_id",
+    )
+    for line in row_queryset[offset:stop]:
         rows.append(
             {
                 "id": line.id,
@@ -259,8 +306,23 @@ def _journal_line_amount(line: JournalLine) -> Decimal:
     return _money(line.amount)
 
 
-def candidate_book_lines(*, run: BankReconciliationRun, statement_line: BankStatementLine, date_tolerance_days: int = 3):
-    binding = resolve_bank_book_binding(entity=run.entity, bank_account=run.bank_account, metadata=run.metadata)
+def _active_book_line_ids_for_candidates(*, run: BankReconciliationRun) -> set[int]:
+    return set(
+        BankReconciliationMatchBookLine.objects.filter(match__status__in=ACTIVE_MATCH_STATUSES)
+        .exclude(match__run=run, match__status=BankReconciliationMatch.Status.SUGGESTED)
+        .values_list("journal_line_id", flat=True)
+    )
+
+
+def candidate_book_lines(
+    *,
+    run: BankReconciliationRun,
+    statement_line: BankStatementLine,
+    date_tolerance_days: int = 3,
+    binding: BankBookBinding | None = None,
+    active_book_line_ids: set[int] | None = None,
+):
+    binding = binding or resolve_bank_book_binding(entity=run.entity, bank_account=run.bank_account, metadata=run.metadata)
     txn_date = statement_line.txn_date or statement_line.value_date
     qs = JournalLine.objects.select_related("entry", "account", "ledger").filter(
         entity=run.entity,
@@ -281,11 +343,7 @@ def candidate_book_lines(*, run: BankReconciliationRun, statement_line: BankStat
     if txn_date:
         qs = qs.filter(posting_date__range=(txn_date - timedelta(days=date_tolerance_days), txn_date + timedelta(days=date_tolerance_days)))
 
-    active_book_line_ids = set(
-        BankReconciliationMatchBookLine.objects.filter(match__status__in=ACTIVE_MATCH_STATUSES)
-        .exclude(match__run=run, match__status=BankReconciliationMatch.Status.SUGGESTED)
-        .values_list("journal_line_id", flat=True)
-    )
+    active_book_line_ids = active_book_line_ids if active_book_line_ids is not None else _active_book_line_ids_for_candidates(run=run)
     if active_book_line_ids:
         qs = qs.exclude(id__in=active_book_line_ids)
     return qs.order_by("posting_date", "id")
@@ -404,39 +462,71 @@ def _cancel_existing_suggestions(*, run: BankReconciliationRun, bank_line_ids=No
 
 
 def _recalculate_line_statuses_for_lines(statement_lines):
+    line_ids = [line.id for line in statement_lines if getattr(line, "id", None)]
+    if not line_ids:
+        return
+
+    status_map: dict[int, set[str]] = {}
+    match_rows = (
+        BankReconciliationMatchBankLine.objects
+        .filter(statement_line_id__in=line_ids, match__status__in=ACTIVE_MATCH_STATUSES)
+        .values_list("statement_line_id", "match__status")
+    )
+    for statement_line_id, match_status in match_rows:
+        status_map.setdefault(statement_line_id, set()).add(match_status)
+
+    changed_lines = []
     for line in statement_lines:
-        active_matches = list(
-            BankReconciliationMatch.objects.filter(bank_lines__statement_line=line, status__in=ACTIVE_MATCH_STATUSES).distinct()
-        )
+        statuses = status_map.get(line.id, set())
         new_status = BankStatementLine.ReconciliationStatus.UNMATCHED
-        if any(match.status == BankReconciliationMatch.Status.CONFIRMED for match in active_matches):
+        if BankReconciliationMatch.Status.CONFIRMED in statuses:
             new_status = BankStatementLine.ReconciliationStatus.CONFIRMED
-        elif any(match.status == BankReconciliationMatch.Status.PARTIALLY_MATCHED for match in active_matches):
+        elif BankReconciliationMatch.Status.PARTIALLY_MATCHED in statuses:
             new_status = BankStatementLine.ReconciliationStatus.PARTIALLY_MATCHED
-        elif any(match.status == BankReconciliationMatch.Status.SUGGESTED for match in active_matches):
+        elif BankReconciliationMatch.Status.SUGGESTED in statuses:
             new_status = BankStatementLine.ReconciliationStatus.SUGGESTED
         if line.reconciliation_status != new_status:
             line.reconciliation_status = new_status
-            line.save(update_fields=["reconciliation_status", "updated_at"])
+            line.updated_at = timezone.now()
+            changed_lines.append(line)
+
+    if changed_lines:
+        BankStatementLine.objects.bulk_update(changed_lines, ["reconciliation_status", "updated_at"])
 
 
 def _recalculate_run_metrics(run: BankReconciliationRun):
     import_lines = bank_lines_for_run(run=run)
-    run.statement_line_count = import_lines.count()
-    run.matched_line_count = import_lines.filter(reconciliation_status=BankStatementLine.ReconciliationStatus.CONFIRMED).count()
-    run.suggested_line_count = import_lines.filter(reconciliation_status=BankStatementLine.ReconciliationStatus.SUGGESTED).count()
-    run.exception_line_count = import_lines.exclude(exception_status=BankStatementLine.ExceptionStatus.NONE).count()
+    line_summary = import_lines.aggregate(
+        statement_line_count=Count("id"),
+        matched_line_count=Count(
+            "id",
+            filter=Q(reconciliation_status=BankStatementLine.ReconciliationStatus.CONFIRMED),
+        ),
+        suggested_line_count=Count(
+            "id",
+            filter=Q(reconciliation_status=BankStatementLine.ReconciliationStatus.SUGGESTED),
+        ),
+        exception_line_count=Count(
+            "id",
+            filter=~Q(exception_status=BankStatementLine.ExceptionStatus.NONE),
+        ),
+    )
+    run.statement_line_count = line_summary["statement_line_count"] or 0
+    run.matched_line_count = line_summary["matched_line_count"] or 0
+    run.suggested_line_count = line_summary["suggested_line_count"] or 0
+    run.exception_line_count = line_summary["exception_line_count"] or 0
     run.matched_amount = (
         BankReconciliationMatch.objects.filter(run=run, status__in=FINAL_MATCH_STATUSES).aggregate(total=Sum("matched_amount"))["total"] or ZERO
     )
-    run.unmatched_bank_amount = sum(
-        (
-            _statement_amount(line)
-            for line in import_lines.filter(reconciliation_status=BankStatementLine.ReconciliationStatus.UNMATCHED)
-            .exclude(exception_status=BankStatementLine.ExceptionStatus.IGNORED)
-        ),
-        ZERO,
+    unmatched_bank_totals = import_lines.filter(
+        reconciliation_status=BankStatementLine.ReconciliationStatus.UNMATCHED
+    ).exclude(
+        exception_status=BankStatementLine.ExceptionStatus.IGNORED
+    ).aggregate(
+        total_debit=Sum("debit_amount"),
+        total_credit=Sum("credit_amount"),
     )
+    run.unmatched_bank_amount = (unmatched_bank_totals["total_debit"] or ZERO) + (unmatched_bank_totals["total_credit"] or ZERO)
     run.unmatched_book_amount = sum(
         (row["amount"] for row in build_unmatched_book_rows(run=run)),
         ZERO,
@@ -587,6 +677,8 @@ def auto_match_import(*, statement_import: BankStatementImport, actor=None, audi
 
     results = []
     lines = bank_lines_for_run(run=run)
+    binding = resolve_bank_book_binding(entity=run.entity, bank_account=run.bank_account, metadata=run.metadata)
+    active_book_line_ids = _active_book_line_ids_for_candidates(run=run)
 
     for line in lines:
         if line.reconciliation_status in {
@@ -610,7 +702,12 @@ def auto_match_import(*, statement_import: BankStatementImport, actor=None, audi
             continue
 
         candidates = []
-        for journal_line in candidate_book_lines(run=run, statement_line=line):
+        for journal_line in candidate_book_lines(
+            run=run,
+            statement_line=line,
+            binding=binding,
+            active_book_line_ids=active_book_line_ids,
+        ):
             candidate = _score_candidate(line, journal_line)
             if candidate is not None:
                 candidates.append(candidate)
@@ -646,6 +743,7 @@ def auto_match_import(*, statement_import: BankStatementImport, actor=None, audi
                 "journal_line_id": best.journal_line.id,
             }
         )
+        active_book_line_ids.add(best.journal_line.id)
     return run, results
 
 
@@ -751,29 +849,30 @@ def unmatch(*, match: BankReconciliationMatch, actor=None, notes: str = "", audi
     return match
 
 
-def build_unmatched_book_rows(*, run: BankReconciliationRun):
-    binding = resolve_bank_book_binding(entity=run.entity, bank_account=run.bank_account, metadata=run.metadata)
-    qs = JournalLine.objects.select_related("entry", "account", "ledger").filter(entity=run.entity, entry__status=EntryStatus.POSTED)
-    if run.entityfin_id:
-        qs = qs.filter(entityfin_id=run.entityfin_id)
-    if run.subentity_id:
-        qs = qs.filter(subentity_id=run.subentity_id)
-    if binding.account_ids and binding.ledger_ids:
-        qs = qs.filter(Q(account_id__in=binding.account_ids) | Q(ledger_id__in=binding.ledger_ids))
-    elif binding.account_ids:
-        qs = qs.filter(account_id__in=binding.account_ids)
-    else:
-        qs = qs.filter(ledger_id__in=binding.ledger_ids)
-    if run.as_of_date:
-        qs = qs.filter(posting_date__lte=run.as_of_date)
-    matched_ids = set(
-        BankReconciliationMatchBookLine.objects.filter(match__status__in=ACTIVE_MATCH_STATUSES).values_list("journal_line_id", flat=True)
+def build_unmatched_book_rows(*, run: BankReconciliationRun, limit: int = 400, offset: int = 0):
+    return build_unmatched_book_rows_from_queryset(
+        qs=unmatched_book_lines_for_run(run=run),
+        current_from=run.statement_import.statement_from,
+        limit=limit,
+        offset=offset,
     )
-    if matched_ids:
-        qs = qs.exclude(id__in=matched_ids)
+
+
+def build_unmatched_book_rows_from_queryset(*, qs, current_from, limit: int = 400, offset: int = 0):
     rows = []
-    current_from = run.statement_import.statement_from
-    for line in qs.order_by("posting_date", "id")[:400]:
+    stop = offset + limit
+    row_queryset = qs.only(
+        "id",
+        "entry_id",
+        "voucher_no",
+        "posting_date",
+        "drcr",
+        "amount",
+        "description",
+        "entry__voucher_no",
+        "entry__narration",
+    ).order_by("posting_date", "id")
+    for line in row_queryset[offset:stop]:
         rows.append(
             {
                 "journal_line_id": line.id,
@@ -790,29 +889,69 @@ def build_unmatched_book_rows(*, run: BankReconciliationRun):
     return rows
 
 
+def filter_unmatched_book_lines_queryset(book_lines, filters: dict | None = None):
+    filters = filters or {}
+    if filters.get("date_from"):
+        book_lines = book_lines.filter(posting_date__gte=filters["date_from"])
+    if filters.get("date_to"):
+        book_lines = book_lines.filter(posting_date__lte=filters["date_to"])
+    if filters.get("reference"):
+        book_lines = book_lines.filter(
+            Q(voucher_no__icontains=filters["reference"])
+            | Q(description__icontains=filters["reference"])
+            | Q(entry__narration__icontains=filters["reference"])
+        )
+    if filters.get("narration"):
+        book_lines = book_lines.filter(
+            Q(description__icontains=filters["narration"])
+            | Q(entry__narration__icontains=filters["narration"])
+        )
+    if filters.get("amount") is not None:
+        book_lines = book_lines.filter(amount=filters["amount"])
+    return book_lines
+
+
+def unmatched_book_lines_for_run(*, run: BankReconciliationRun):
+    binding = resolve_bank_book_binding(entity=run.entity, bank_account=run.bank_account, metadata=run.metadata)
+    qs = JournalLine.objects.select_related("entry").filter(entity=run.entity, entry__status=EntryStatus.POSTED)
+    if run.entityfin_id:
+        qs = qs.filter(entityfin_id=run.entityfin_id)
+    if run.subentity_id:
+        qs = qs.filter(subentity_id=run.subentity_id)
+    if binding.account_ids and binding.ledger_ids:
+        qs = qs.filter(Q(account_id__in=binding.account_ids) | Q(ledger_id__in=binding.ledger_ids))
+    elif binding.account_ids:
+        qs = qs.filter(account_id__in=binding.account_ids)
+    else:
+        qs = qs.filter(ledger_id__in=binding.ledger_ids)
+    if run.as_of_date:
+        qs = qs.filter(posting_date__lte=run.as_of_date)
+    active_matched_book_lines = BankReconciliationMatchBookLine.objects.filter(
+        match__status__in=ACTIVE_MATCH_STATUSES
+    ).values("journal_line_id")
+    return qs.exclude(id__in=active_matched_book_lines)
+
+
 def build_workspace_payload(
     *,
     statement_import: BankStatementImport,
     run: BankReconciliationRun | None = None,
     filters: dict | None = None,
+    summary_only: bool = False,
+    include_queues: bool = True,
+    include_matches: bool = True,
 ):
     filters = filters or {}
     run = run or BankReconciliationRun.objects.filter(statement_import=statement_import).order_by("-created_at", "-id").first()
     bank_lines = bank_lines_for_run(run=run) if run else statement_import.lines.all().order_by("txn_date", "line_no", "id")
-    if filters.get("date_from"):
-        bank_lines = bank_lines.filter(Q(txn_date__gte=filters["date_from"]) | Q(value_date__gte=filters["date_from"]))
-    if filters.get("date_to"):
-        bank_lines = bank_lines.filter(Q(txn_date__lte=filters["date_to"]) | Q(value_date__lte=filters["date_to"]))
-    if filters.get("reference"):
-        bank_lines = bank_lines.filter(Q(reference_no__icontains=filters["reference"]) | Q(cheque_no__icontains=filters["reference"]))
-    if filters.get("narration"):
-        bank_lines = bank_lines.filter(narration__icontains=filters["narration"])
-    if filters.get("status"):
-        bank_lines = bank_lines.filter(reconciliation_status=filters["status"])
-    if filters.get("amount") is not None:
-        bank_lines = bank_lines.filter(Q(debit_amount=filters["amount"]) | Q(credit_amount=filters["amount"]))
+    bank_lines = filter_bank_lines_queryset(bank_lines, filters)
 
-    unmatched_bank = build_unmatched_bank_rows(run=run) if run else [
+    should_include_queues = include_queues or run is None
+    unmatched_bank_queryset = bank_lines.filter(reconciliation_status=BankStatementLine.ReconciliationStatus.UNMATCHED)
+    unmatched_bank = [] if (summary_only or not should_include_queues) else (build_unmatched_bank_rows_from_queryset(
+        bank_lines=unmatched_bank_queryset,
+        current_from=statement_import.statement_from,
+    ) if run else [
         {
             "id": line.id,
             "line_no": line.line_no,
@@ -832,51 +971,94 @@ def build_workspace_payload(
             "is_opening_item": False,
             "created_voucher_id": line.created_voucher_id,
         }
-        for line in bank_lines.filter(reconciliation_status=BankStatementLine.ReconciliationStatus.UNMATCHED)[:200]
-    ]
+        for line in unmatched_bank_queryset[:200]
+    ])
 
     suggested_matches = []
     confirmed_matches = []
     counts_by_status = {}
     unmatched_book_rows = []
     if run:
-        matches = run.matches.prefetch_related("bank_lines__statement_line", "book_lines__journal_line").all()
-        if filters.get("status"):
-            matches = matches.filter(status=filters["status"])
-        for key in [
-            BankReconciliationMatch.Status.SUGGESTED,
-            BankReconciliationMatch.Status.CONFIRMED,
-            BankReconciliationMatch.Status.PARTIALLY_MATCHED,
-            BankReconciliationMatch.Status.UNMATCHED,
-            BankReconciliationMatch.Status.CANCELLED,
-        ]:
-            counts_by_status[key] = run.matches.filter(status=key).count()
-        for match in matches.order_by("-created_at", "-id")[:200]:
-            row = {
-                "match_id": match.id,
-                "status": match.status,
-                "match_type": match.match_type,
-                "match_kind": match.match_kind,
-                "confidence_score": match.confidence_score,
-                "matched_amount": match.matched_amount,
-                "difference_amount": match.difference_amount,
-                "reason_codes": match.reason_codes,
-                "bank_line_ids": [rel.statement_line_id for rel in match.bank_lines.all()],
-                "journal_line_ids": [rel.journal_line_id for rel in match.book_lines.all()],
-            }
-            if match.status == BankReconciliationMatch.Status.SUGGESTED:
-                suggested_matches.append(row)
-            elif match.status in FINAL_MATCH_STATUSES:
-                confirmed_matches.append(row)
-        unmatched_book_rows = build_unmatched_book_rows(run=run)
+        unmatched_bank_count = bank_lines.filter(reconciliation_status__in=OPEN_BANK_LINE_STATUSES).count()
+        filtered_unmatched_book_lines = filter_unmatched_book_lines_queryset(unmatched_book_lines_for_run(run=run), filters)
+        unmatched_book_count = filtered_unmatched_book_lines.count()
+        match_counts = run.matches.aggregate(
+            suggested=Count("id", filter=Q(status=BankReconciliationMatch.Status.SUGGESTED)),
+            confirmed=Count("id", filter=Q(status=BankReconciliationMatch.Status.CONFIRMED)),
+            partially_matched=Count("id", filter=Q(status=BankReconciliationMatch.Status.PARTIALLY_MATCHED)),
+            unmatched=Count("id", filter=Q(status=BankReconciliationMatch.Status.UNMATCHED)),
+            cancelled=Count("id", filter=Q(status=BankReconciliationMatch.Status.CANCELLED)),
+        )
+        counts_by_status = {
+            BankReconciliationMatch.Status.SUGGESTED: match_counts["suggested"] or 0,
+            BankReconciliationMatch.Status.CONFIRMED: match_counts["confirmed"] or 0,
+            BankReconciliationMatch.Status.PARTIALLY_MATCHED: match_counts["partially_matched"] or 0,
+            BankReconciliationMatch.Status.UNMATCHED: match_counts["unmatched"] or 0,
+            BankReconciliationMatch.Status.CANCELLED: match_counts["cancelled"] or 0,
+            "unmatched_bank": unmatched_bank_count,
+            "unmatched_book": unmatched_book_count,
+        }
+        if not summary_only and include_matches:
+            matches = (
+                run.matches.only(
+                    "id",
+                    "status",
+                    "match_type",
+                    "match_kind",
+                    "confidence_score",
+                    "matched_amount",
+                    "difference_amount",
+                    "reason_codes",
+                    "created_at",
+                ).prefetch_related(
+                    Prefetch(
+                        "bank_lines",
+                        queryset=BankReconciliationMatchBankLine.objects.only("id", "match_id", "statement_line_id"),
+                    ),
+                    Prefetch(
+                        "book_lines",
+                        queryset=BankReconciliationMatchBookLine.objects.only("id", "match_id", "journal_line_id"),
+                    ),
+                )
+            )
+            if filters.get("status"):
+                matches = matches.filter(status=filters["status"])
+            confirmed_match_limit = 10
+            for match in matches.order_by("-created_at", "-id")[:200]:
+                row = {
+                    "match_id": match.id,
+                    "status": match.status,
+                    "match_type": match.match_type,
+                    "match_kind": match.match_kind,
+                    "confidence_score": match.confidence_score,
+                    "matched_amount": match.matched_amount,
+                    "difference_amount": match.difference_amount,
+                    "reason_codes": match.reason_codes,
+                    "bank_line_ids": [rel.statement_line_id for rel in match.bank_lines.all()],
+                    "journal_line_ids": [rel.journal_line_id for rel in match.book_lines.all()],
+                }
+                if match.status == BankReconciliationMatch.Status.SUGGESTED:
+                    suggested_matches.append(row)
+                elif match.status in FINAL_MATCH_STATUSES and len(confirmed_matches) < confirmed_match_limit:
+                    confirmed_matches.append(row)
+            if should_include_queues:
+                unmatched_book_rows = build_unmatched_book_rows_from_queryset(
+                    qs=filtered_unmatched_book_lines,
+                    current_from=run.statement_import.statement_from,
+                )
     else:
+        unmatched_count = bank_lines.filter(reconciliation_status=BankStatementLine.ReconciliationStatus.UNMATCHED).count()
         counts_by_status = {
             "suggested": 0,
             "confirmed": 0,
             "partially_matched": 0,
-            "unmatched": bank_lines.filter(reconciliation_status=BankStatementLine.ReconciliationStatus.UNMATCHED).count(),
+            "unmatched": unmatched_count,
             "cancelled": 0,
+            "unmatched_bank": unmatched_count,
+            "unmatched_book": 0,
         }
+        if summary_only:
+            unmatched_bank = []
     return {
         "import": {
             "id": statement_import.id,

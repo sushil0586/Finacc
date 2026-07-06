@@ -4,7 +4,9 @@ from decimal import Decimal
 from datetime import date
 import csv
 import io
+import logging
 import re
+from time import perf_counter
 import zipfile
 
 from django.db.models import Count, Q, Sum, Value
@@ -111,6 +113,7 @@ TCS_RETURN_FILE_PERMISSIONS = ("compliance.tcs_return_27eq.file", "tcs.return_27
 TCS_LEDGER_REPORT_VIEW_PERMISSIONS = ("reports.financial_hub.tcs_compliance_center.view", "reports.tcsledgerreport.view", "tcs.ledger_report.view")
 TCS_FILING_PACK_VIEW_PERMISSIONS = ("reports.financial_hub.tcs_compliance_center.view", "reports.tcsfilingpack.view", "tcs.filing_pack.view")
 WITHHOLDING_READINESS_VIEW_PERMISSIONS = ("purchase.statutory.view", "reports.tds.view")
+logger = logging.getLogger(__name__)
 
 
 def _safe_int(raw):
@@ -1721,6 +1724,16 @@ class TcsWorkspaceTransactionsAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        request_started_at = perf_counter()
+        stage_started_at = request_started_at
+        stage_timings = {}
+
+        def checkpoint(name):
+            nonlocal stage_started_at
+            now = perf_counter()
+            stage_timings[name] = round((now - stage_started_at) * 1000, 2)
+            stage_started_at = now
+
         entity_id = _safe_int(request.query_params.get("entity_id"))
         if entity_id is None:
             raise ValidationError({"entity_id": ["This query param is required."]})
@@ -1742,6 +1755,7 @@ class TcsWorkspaceTransactionsAPIView(APIView):
         include_reversed = _safe_bool(request.query_params.get("include_reversed"))
         include_draft = _safe_bool(request.query_params.get("include_draft"))
         include_cancelled = _safe_bool(request.query_params.get("include_cancelled"))
+        checkpoint("scope_parse_ms")
 
         qs = (
             TcsComputation.objects.select_related("party_account", "section")
@@ -1778,17 +1792,19 @@ class TcsWorkspaceTransactionsAPIView(APIView):
             qs = qs.exclude(status=TcsComputation.Status.DRAFT)
         if not include_cancelled:
             qs = _exclude_cancelled_documents(qs)
+        computations = list(qs)
+        checkpoint("computations_fetch_ms")
 
         sales_doc_ids = {
             int(comp.document_id)
-            for comp in qs
+            for comp in computations
             if str(comp.module_name or "").strip().lower() == "sales"
             and str(comp.document_type or "").strip().lower() in {"invoice", "credit_note", "debit_note"}
             and _safe_int(comp.document_id)
         }
         purchase_doc_ids = {
             int(comp.document_id)
-            for comp in qs
+            for comp in computations
             if str(comp.module_name or "").strip().lower() == "purchase"
             and str(comp.document_type or "").strip().lower() in {"invoice", "credit_note", "debit_note"}
             and _safe_int(comp.document_id)
@@ -1801,13 +1817,15 @@ class TcsWorkspaceTransactionsAPIView(APIView):
             int(row.id): row.status
             for row in PurchaseInvoiceHeader.objects.filter(id__in=purchase_doc_ids).only("id", "status")
         }
+        checkpoint("document_status_map_ms")
 
         rows = []
-        party_ids = {int(comp.party_account_id) for comp in qs}
+        party_ids = {int(comp.party_account_id) for comp in computations}
         profile_map = {
             row.party_account_id: row
             for row in EntityPartyTaxProfile.objects.filter(entity_id=entity_id, party_account_id__in=party_ids, is_active=True).order_by("-updated_at")
         }
+        checkpoint("party_profile_map_ms")
         total_base = Decimal("0.00")
         total_computed = Decimal("0.00")
         total_collected = Decimal("0.00")
@@ -1849,7 +1867,7 @@ class TcsWorkspaceTransactionsAPIView(APIView):
         }
         section_summary = {}
 
-        for comp in qs:
+        for comp in computations:
             if not _tcs_search_match(
                 comp.document_no,
                 getattr(comp.party_account, "legalname", None),
@@ -2117,6 +2135,7 @@ class TcsWorkspaceTransactionsAPIView(APIView):
                     },
                 }
             )
+        checkpoint("row_build_ms")
 
         unallocated_deposits = []
         deposits_qs = TcsDeposit.objects.filter(entity_id=entity_id)
@@ -2144,44 +2163,61 @@ class TcsWorkspaceTransactionsAPIView(APIView):
                         "unallocated_amount": remaining,
                     }
                 )
+        checkpoint("unallocated_deposit_ms")
 
-        return Response(
-            {
-                "filters": {
-                    "entity_id": entity_id,
-                    "fy": fy or None,
-                    "quarter": quarter or None,
-                    "from_date": from_date,
-                    "to_date": to_date,
-                    "section": section_code or None,
-                    "customer_id": customer_id,
-                    "customer_q": customer_q or None,
-                    "search": search or None,
-                    "include_reversed": include_reversed,
-                    "include_draft": include_draft,
-                    "include_cancelled": include_cancelled,
-                },
-                "summary": {
-                    "total_transactions": len(rows),
-                    "total_base": q2(total_base),
-                    "total_computed_tcs": q2(total_computed),
-                    "total_collected_tcs": q2(total_collected),
-                    "total_deposited_tcs": q2(total_deposited),
-                    "pending_collection": _non_negative_q2(total_computed - total_collected),
-                    "pending_deposit": _non_negative_q2(total_collected - total_deposited),
-                    "status_counts": status_counts,
-                    "impact_counts": impact_counts,
-                    "pending_row_counts": pending_row_counts,
-                    "threshold_counts": threshold_counts,
-                    "quality_counts": quality_counts,
-                    "unallocated_deposit_count": len(unallocated_deposits),
-                    "unallocated_deposit_amount": q2(sum((r["unallocated_amount"] for r in unallocated_deposits), Decimal("0.00"))),
-                },
-                "section_summary": list(section_summary.values()),
-                "rows": rows,
-                "unallocated_deposits": unallocated_deposits,
-            }
+        payload = {
+            "filters": {
+                "entity_id": entity_id,
+                "fy": fy or None,
+                "quarter": quarter or None,
+                "from_date": from_date,
+                "to_date": to_date,
+                "section": section_code or None,
+                "customer_id": customer_id,
+                "customer_q": customer_q or None,
+                "search": search or None,
+                "include_reversed": include_reversed,
+                "include_draft": include_draft,
+                "include_cancelled": include_cancelled,
+            },
+            "summary": {
+                "total_transactions": len(rows),
+                "total_base": q2(total_base),
+                "total_computed_tcs": q2(total_computed),
+                "total_collected_tcs": q2(total_collected),
+                "total_deposited_tcs": q2(total_deposited),
+                "pending_collection": _non_negative_q2(total_computed - total_collected),
+                "pending_deposit": _non_negative_q2(total_collected - total_deposited),
+                "status_counts": status_counts,
+                "impact_counts": impact_counts,
+                "pending_row_counts": pending_row_counts,
+                "threshold_counts": threshold_counts,
+                "quality_counts": quality_counts,
+                "unallocated_deposit_count": len(unallocated_deposits),
+                "unallocated_deposit_amount": q2(sum((r["unallocated_amount"] for r in unallocated_deposits), Decimal("0.00"))),
+            },
+            "section_summary": list(section_summary.values()),
+            "rows": rows,
+            "unallocated_deposits": unallocated_deposits,
+        }
+        checkpoint("payload_build_ms")
+        logger.info(
+            "tcs_workspace_transactions_profile entity=%s fy=%s quarter=%s section=%s customer_id=%s search=%s computations=%s rows=%s section_summary=%s "
+            "unallocated_deposits=%s total_ms=%.2f stage_ms=%s",
+            entity_id,
+            fy or None,
+            quarter or None,
+            section_code or None,
+            customer_id,
+            bool(search),
+            len(computations),
+            len(rows),
+            len(payload["section_summary"]),
+            len(unallocated_deposits),
+            (perf_counter() - request_started_at) * 1000,
+            stage_timings,
         )
+        return Response(payload)
 
 
 class TcsReportFilingPackAPIView(APIView):
@@ -2198,6 +2234,16 @@ class TcsReportFilingPackAPIView(APIView):
         return mapping[quarter]
 
     def get(self, request):
+        request_started_at = perf_counter()
+        stage_started_at = request_started_at
+        stage_timings = {}
+
+        def checkpoint(name):
+            nonlocal stage_started_at
+            now = perf_counter()
+            stage_timings[name] = round((now - stage_started_at) * 1000, 2)
+            stage_started_at = now
+
         entity_id = request.query_params.get("entity_id")
         fy = (request.query_params.get("fy") or "").strip()
         quarter = (request.query_params.get("quarter") or "").strip().upper()
@@ -2225,6 +2271,7 @@ class TcsReportFilingPackAPIView(APIView):
         customer_id = _safe_int(request.query_params.get("customer_id"))
         customer_q = (request.query_params.get("customer_q") or "").strip()
         search = (request.query_params.get("search") or "").strip()
+        checkpoint("scope_parse_ms")
 
         fy_candidates = _expand_fy_values(fy)
         computations = (
@@ -2247,8 +2294,11 @@ class TcsReportFilingPackAPIView(APIView):
                 computations = computations.filter(section__section_code__iexact=section_code)
         if not include_cancelled:
             computations = _exclude_cancelled_documents(computations)
+        computations = list(computations)
+        checkpoint("computations_fetch_ms")
         deposits = TcsDeposit.objects.filter(entity_id=entity_id, financial_year__in=fy_candidates, month__in=months).order_by("challan_date", "id")
         return_row = TcsQuarterlyReturn.objects.filter(entity_id=entity_id, fy__in=fy_candidates, quarter=quarter, form_name="27EQ").order_by("-id").first()
+        checkpoint("deposits_and_return_fetch_ms")
 
         sales_doc_ids = set()
         purchase_doc_ids = set()
@@ -2271,6 +2321,7 @@ class TcsReportFilingPackAPIView(APIView):
             int(row["id"]): int(row["status"])
             for row in PurchaseInvoiceHeader.objects.filter(id__in=list(purchase_doc_ids)).values("id", "status")
         }
+        checkpoint("document_status_map_ms")
 
         rows = []
         section_totals = {}
@@ -2455,32 +2506,50 @@ class TcsReportFilingPackAPIView(APIView):
                     ):
                         continue
                     rows.append(row)
+        checkpoint("row_build_ms")
 
         total_deposited = q2(sum((_tcs_computation_total_deposited(comp, deposited_only=True) for comp in computations), Decimal("0.00")))
         pending_collection = _non_negative_q2(total_tcs - total_collected)
         pending_deposit = _non_negative_q2(total_collected - total_deposited)
         exception_row_count = sum(1 for r in rows if any(bool(v) for v in (r.get("exceptions") or {}).values()))
+        checkpoint("summary_finalize_ms")
 
-        return Response(
-            {
-                "header": {
-                    "entity": entity_id,
-                    "fy": fy,
-                    "quarter": quarter,
-                    "total_base": q2(total_base),
-                    "total_tcs": q2(total_tcs),
-                    "total_collected": q2(total_collected),
-                    "total_deposited": q2(total_deposited),
-                    "pending_collection": _non_negative_q2(pending_collection),
-                    "pending_deposit": _non_negative_q2(pending_deposit),
-                    "return_status": return_row.status if return_row else "NOT_CREATED",
-                    "row_count": len(rows),
-                    "exception_row_count": exception_row_count,
-                },
-                "rows": rows,
-                "section_summary": list(section_totals.values()),
-            }
+        payload = {
+            "header": {
+                "entity": entity_id,
+                "fy": fy,
+                "quarter": quarter,
+                "total_base": q2(total_base),
+                "total_tcs": q2(total_tcs),
+                "total_collected": q2(total_collected),
+                "total_deposited": q2(total_deposited),
+                "pending_collection": _non_negative_q2(pending_collection),
+                "pending_deposit": _non_negative_q2(pending_deposit),
+                "return_status": return_row.status if return_row else "NOT_CREATED",
+                "row_count": len(rows),
+                "exception_row_count": exception_row_count,
+            },
+            "rows": rows,
+            "section_summary": list(section_totals.values()),
+        }
+        checkpoint("payload_build_ms")
+        logger.info(
+            "tcs_filing_pack_profile entity=%s fy=%s quarter=%s section=%s customer_id=%s search=%s computations=%s rows=%s section_summary=%s exceptions_only=%s pending_only=%s total_ms=%.2f stage_ms=%s",
+            entity_id,
+            fy,
+            quarter,
+            section_code or None,
+            customer_id,
+            bool(search),
+            len(computations),
+            len(rows),
+            len(payload["section_summary"]),
+            exceptions_only,
+            pending_only,
+            (perf_counter() - request_started_at) * 1000,
+            stage_timings,
         )
+        return Response(payload)
 
 
 class TcsWorkspaceTransactionsExportAPIView(APIView):

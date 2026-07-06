@@ -76,6 +76,7 @@ class FinancialReportScopeSerializer(serializers.Serializer):
     include_closing = serializers.BooleanField(required=False)
     posted_only = serializers.BooleanField(required=False)
     include_inactive_ledgers = serializers.BooleanField(required=False)
+    include_diagnostics = serializers.BooleanField(required=False)
     search = serializers.CharField(required=False, allow_blank=True)
     amount_display_unit = serializers.ChoiceField(
         choices=("actual", "hundreds", "thousands", "lakhs", "crores", "millions"),

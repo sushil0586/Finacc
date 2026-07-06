@@ -516,6 +516,9 @@ def _aggregate_journal(
         )
     ), entityfin_id=entityfin_id, subentity_id=subentity_id)
 
+    if detail_groups:
+        jl_base = jl_base.filter(resolved_head_detailsingroup__in=detail_groups)
+
     if ledger_ids:
         jl_base = jl_base.filter(resolved_account_id__in=ledger_ids)
 
@@ -584,13 +587,6 @@ def _aggregate_journal(
     total_period_credits = Decimal('0')
 
     for row in agg:
-        head_detailsingroup = row.get("resolved_head_detailsingroup")
-        try:
-            head_detailsingroup = int(head_detailsingroup) if head_detailsingroup is not None else None
-        except (TypeError, ValueError):
-            head_detailsingroup = None
-        if head_detailsingroup not in detail_groups:
-            continue
         net = (row['debits'] or Decimal('0')) - (row['credits'] or Decimal('0'))
 
         if level == 'account':
@@ -649,6 +645,76 @@ def _aggregate_journal(
     return debit_rows, credit_rows, total_period_debits, total_period_credits, warnings
 
 
+def build_trading_account_summary(
+    *,
+    entity_id: int,
+    entityfin_id: Optional[int] = None,
+    subentity_id: Optional[int] = None,
+    startdate: str,
+    enddate: str,
+    posted_only: bool = True,
+    ledger_ids: Optional[List[int]] = None,
+    search: Optional[str] = None,
+    valuation_method: str = "fifo",
+    detailsingroup_values=(1,),
+):
+    start = datetime.strptime(startdate, '%Y-%m-%d').date()
+    end = datetime.strptime(enddate, '%Y-%m-%d').date()
+
+    _, _, total_dr, total_cr, _warnings = _aggregate_journal(
+        entity_id,
+        start,
+        end,
+        detailsingroup_values,
+        "head",
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        posted_only=posted_only,
+        ledger_ids=ledger_ids,
+        search=search,
+    )
+
+    method = (valuation_method or "fifo").lower()
+    if method not in STRATEGIES:
+        method = "fifo"
+
+    opening_value, cogs_issues, closing_value = STRATEGIES[method](
+        entity_id,
+        start,
+        end,
+        entityfin_id,
+        subentity_id,
+    )
+
+    total_debits = total_dr + opening_value
+    total_credits = total_cr + closing_value
+    gross_profit = Decimal('0')
+    gross_loss = Decimal('0')
+    if total_credits >= total_debits:
+        gross_profit = Q2(total_credits - total_debits)
+    else:
+        gross_loss = Q2(total_debits - total_credits)
+
+    return {
+        "period": {"start": str(start), "end": str(end)},
+        "entity_id": entity_id,
+        "entityfin_id": entityfin_id,
+        "subentity_id": subentity_id,
+        "opening_stock": float(opening_value),
+        "closing_stock": float(closing_value),
+        "gross_profit": float(Q2(gross_profit)),
+        "gross_loss": float(Q2(gross_loss)),
+        "cogs_from_issues": float(cogs_issues),
+        "params": {
+            "detailsingroup": list(detailsingroup_values),
+            "valuation_method": method,
+            "posted_only": bool(posted_only),
+            "ledger_ids": list(ledger_ids) if ledger_ids else None,
+            "search": search,
+        },
+    }
+
+
 # --------------------------- Main builder ------------------------------
 
 def build_trading_account_dynamic(
@@ -702,18 +768,16 @@ def build_trading_account_dynamic(
         search=search,
     )
 
+    opening_children = []
+    closing_children = []
     # 2) Inventory valuation (opening/closing/COGS by strategy)
     method = (valuation_method or "fifo").lower()
     if method not in STRATEGIES:
         method = "fifo"
-    opening_value, cogs_issues, closing_value = STRATEGIES[method](entity_id, start, end, entityfin_id, subentity_id)
 
-    # 2a) Build product-wise children for opening/closing, if requested
-    opening_children = []
-    closing_children = []
     if inventory_breakdown:
         # Opening = as-of start-1
-        op_rows, _op_qty, _op_val = _inventory_breakdown_asof(
+        op_rows, _op_qty, opening_value = _inventory_breakdown_asof(
             entity_id=entity_id,
             entityfin_id=entityfin_id,
             subentity_id=subentity_id,
@@ -731,7 +795,7 @@ def build_trading_account_dynamic(
         opening_children.sort(key=lambda x: x["amount"], reverse=True)
 
         # Closing = as-of end
-        cl_rows, _cl_qty, _cl_val = _inventory_breakdown_asof(
+        cl_rows, _cl_qty, closing_value = _inventory_breakdown_asof(
             entity_id=entity_id,
             entityfin_id=entityfin_id,
             subentity_id=subentity_id,
@@ -747,6 +811,16 @@ def build_trading_account_dynamic(
                 "amount": r["value"],
             })
         closing_children.sort(key=lambda x: x["amount"], reverse=True)
+        inflow_value = _period_inventory_inflow_value(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            start_date=start,
+            end_date=end,
+        )
+        cogs_issues = Q2(opening_value + inflow_value - closing_value)
+    else:
+        opening_value, cogs_issues, closing_value = STRATEGIES[method](entity_id, start, end, entityfin_id, subentity_id)
 
     # 3) Place Opening/Closing; balance with GP/GL (GP on DEBIT, GL on CREDIT)
     if not hide_zero_rows or opening_value != 0:

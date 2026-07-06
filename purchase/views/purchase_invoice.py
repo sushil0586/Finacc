@@ -10,7 +10,9 @@ from purchase.models.purchase_core import PurchaseInvoiceLine
 from purchase.serializers.purchase_invoice import PurchaseInvoiceSearchSerializer
 from purchase.filters import PurchaseInvoiceSearchFilter
 from rest_framework.filters import OrderingFilter, SearchFilter
+from rest_framework.views import APIView
 from django.db.models import Exists, OuterRef
+from django.db.models import Q
 
 
 
@@ -18,9 +20,11 @@ from purchase.models.purchase_core import PurchaseInvoiceHeader
 from purchase.serializers.purchase_invoice import (
     PurchaseInvoiceHeaderSerializer,
     PurchaseInvoiceListSerializer,
+    PurchaseInvoiceLookupSerializer,
 )
 from purchase.services.purchase_settings_service import PurchaseSettingsService
 from purchase.views.rbac import require_purchase_request_permission
+from django.shortcuts import get_object_or_404
 
 
 class PurchaseInvoiceListCreateAPIView(generics.ListCreateAPIView):
@@ -424,9 +428,275 @@ class PurchaseInvoiceSearchAPIView(generics.ListAPIView):
         return qs
 
 
+class PurchaseInvoiceLookupAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    line_mode = None  # None | "service" | "goods"
+
+    def _parse_limit(self) -> int:
+        try:
+            raw_limit = int(self.request.query_params.get("limit") or 100)
+        except (TypeError, ValueError):
+            raw_limit = 100
+        return max(1, min(raw_limit, 250))
+
+    def _scope_ids(self):
+        entity = self.request.query_params.get("entity")
+        entityfinid = self.request.query_params.get("entityfinid")
+        subentity = self.request.query_params.get("subentity")
+        if not entity or not entityfinid:
+            raise ValidationError({"detail": "entity and entityfinid query params are required."})
+        try:
+            entity_id = int(entity)
+            entityfinid_id = int(entityfinid)
+            subentity_id = int(subentity) if subentity not in (None, "", "null") else None
+        except (TypeError, ValueError):
+            raise ValidationError({"detail": "entity/entityfinid/subentity must be integers."})
+        return entity_id, entityfinid_id, subentity_id
+
+    def _get_line_mode(self):
+        if self.line_mode in ("service", "goods"):
+            return self.line_mode
+        raw = (self.request.query_params.get("line_mode") or "").strip().lower()
+        if raw in ("service", "goods"):
+            return raw
+        return None
+
+    def _apply_line_mode_filter(self, queryset):
+        line_mode = self._get_line_mode()
+        if line_mode not in ("service", "goods"):
+            return queryset
+        matching_lines = PurchaseInvoiceLine.objects.filter(
+            header_id=OuterRef("pk"),
+            is_service=(line_mode == "service"),
+        )
+        return queryset.annotate(_line_mode_match=Exists(matching_lines)).filter(_line_mode_match=True)
+
+    def _base_queryset(self):
+        entity_id, entityfinid_id, subentity_id = self._scope_ids()
+        requested_doc_type = self.request.query_params.get("doc_type")
+        require_purchase_request_permission(
+            user=self.request.user,
+            entity_id=entity_id,
+            doc_type=requested_doc_type,
+            action="view",
+        )
+
+        params = self.request.query_params
+        qs = (
+            PurchaseInvoiceHeader.objects
+            .filter(entity_id=entity_id, entityfinid_id=entityfinid_id)
+            .select_related("vendor", "subentity")
+            .order_by("-doc_no", "-id")
+        )
+
+        if subentity_id is not None:
+            qs = qs.filter(subentity_id=subentity_id)
+
+        doc_type = params.get("doc_type")
+        status_value = params.get("status")
+        vendor_id = params.get("vendor")
+        search = str(params.get("search") or "").strip()
+
+        if doc_type:
+            qs = qs.filter(doc_type=doc_type)
+        if status_value:
+            qs = qs.filter(status=status_value)
+        if vendor_id:
+            qs = qs.filter(vendor_id=vendor_id)
+        if search:
+            qs = qs.filter(
+                Q(purchase_number__icontains=search)
+                | Q(supplier_invoice_number__icontains=search)
+                | Q(vendor_name__icontains=search)
+                | Q(vendor__accountname__icontains=search)
+                | Q(doc_code__icontains=search)
+            )
+
+        return self._apply_line_mode_filter(
+            qs.select_related(None).select_related("vendor", "vendor__ledger", "vendor__commercial_profile", "subentity").only(
+                "id",
+                "doc_type",
+                "status",
+                "bill_date",
+                "doc_code",
+                "doc_no",
+                "purchase_number",
+                "supplier_invoice_number",
+                "vendor_id",
+                "vendor_name",
+                "vendor_gstin",
+                "vendor_ledger_id",
+                "grand_total",
+                "entity_id",
+                "entityfinid_id",
+                "subentity_id",
+                "vendor__accountname",
+                "vendor__ledger_id",
+                "vendor__ledger__ledger_code",
+                "vendor__ledger__name",
+                "vendor__commercial_profile__partytype",
+                "subentity__subentityname",
+            )
+        )
+
+    def get(self, request, *args, **kwargs):
+        queryset = self._base_queryset()
+        total_count = queryset.count()
+        limit = self._parse_limit()
+        items = queryset[:limit]
+        serializer = PurchaseInvoiceLookupSerializer(items, many=True, context={"request": request})
+        returned_count = len(serializer.data)
+        return Response(
+            {
+                "items": serializer.data,
+                "total_count": total_count,
+                "returned_count": returned_count,
+                "limit": limit,
+                "has_more": total_count > returned_count,
+            }
+        )
+
+
+class PurchaseInvoiceCrossModeNavigationAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    line_mode = None  # None | "service" | "goods"
+
+    def _scope_ids(self):
+        entity = self.request.query_params.get("entity")
+        entityfinid = self.request.query_params.get("entityfinid")
+        subentity = self.request.query_params.get("subentity")
+        if not entity or not entityfinid:
+            raise ValidationError({"detail": "entity and entityfinid query params are required."})
+        try:
+            entity_id = int(entity)
+            entityfinid_id = int(entityfinid)
+            subentity_id = int(subentity) if subentity not in (None, "", "null") else None
+        except (TypeError, ValueError):
+            raise ValidationError({"detail": "entity/entityfinid/subentity must be integers."})
+        return entity_id, entityfinid_id, subentity_id
+
+    def _get_line_mode(self):
+        if self.line_mode in ("service", "goods"):
+            return self.line_mode
+        raw = (self.request.query_params.get("line_mode") or "").strip().lower()
+        if raw in ("service", "goods"):
+            return raw
+        return None
+
+    def _apply_line_mode_filter(self, queryset):
+        line_mode = self._get_line_mode()
+        if line_mode not in ("service", "goods"):
+            return queryset
+        matching_lines = PurchaseInvoiceLine.objects.filter(
+            header_id=OuterRef("pk"),
+            is_service=(line_mode == "service"),
+        )
+        return queryset.annotate(_line_mode_match=Exists(matching_lines)).filter(_line_mode_match=True)
+
+    def _get_scoped_header(self, pk: int) -> PurchaseInvoiceHeader:
+        entity_id, entityfinid_id, subentity_id = self._scope_ids()
+        qs = self._apply_line_mode_filter(
+            PurchaseInvoiceHeader.objects.filter(entity_id=entity_id, entityfinid_id=entityfinid_id)
+        )
+        if subentity_id is not None:
+            qs = qs.filter(subentity_id=subentity_id)
+        return get_object_or_404(qs, pk=pk)
+
+    def get(self, request, pk: int, *args, **kwargs):
+        header = self._get_scoped_header(pk)
+        require_purchase_request_permission(
+            user=request.user,
+            entity_id=header.entity_id,
+            doc_type=header.doc_type,
+            action="view",
+        )
+
+        target_line_mode = str(request.query_params.get("target_line_mode") or "").strip().lower()
+        if target_line_mode not in {"goods", "service"}:
+            raise ValidationError({"target_line_mode": "Use 'goods' or 'service'."})
+
+        direction = str(request.query_params.get("direction") or "").strip().lower()
+        if direction not in {"previous", "next"}:
+            raise ValidationError({"direction": "Use 'previous' or 'next'."})
+
+        qs = PurchaseInvoiceNavService._scope_qs(
+            entity_id=header.entity_id,
+            entityfinid_id=header.entityfinid_id,
+            subentity_id=header.subentity_id,
+            doc_type=int(header.doc_type),
+            doc_code=None,
+            allowed_statuses=PurchaseInvoiceNavService.DEFAULT_ALLOWED_STATUSES,
+            line_mode=target_line_mode,
+        )
+        rows = list(qs)
+        current_seq = PurchaseInvoiceNavService._sequence_no(header)
+
+        target_obj = None
+        if current_seq > 0:
+            if direction == "previous":
+                candidates = [
+                    row for row in rows
+                    if (
+                        (PurchaseInvoiceNavService._sequence_no(row) < current_seq)
+                        or (
+                            PurchaseInvoiceNavService._sequence_no(row) == current_seq
+                            and int(getattr(row, "id", 0) or 0) < int(getattr(header, "id", 0) or 0)
+                        )
+                    )
+                ]
+                target_obj = max(
+                    candidates,
+                    key=lambda row: (
+                        PurchaseInvoiceNavService._sequence_no(row),
+                        int(getattr(row, "id", 0) or 0),
+                    ),
+                    default=None,
+                )
+            else:
+                candidates = [
+                    row for row in rows
+                    if (
+                        (PurchaseInvoiceNavService._sequence_no(row) > current_seq)
+                        or (
+                            PurchaseInvoiceNavService._sequence_no(row) == current_seq
+                            and int(getattr(row, "id", 0) or 0) > int(getattr(header, "id", 0) or 0)
+                        )
+                    )
+                ]
+                target_obj = min(
+                    candidates,
+                    key=lambda row: (
+                        PurchaseInvoiceNavService._sequence_no(row),
+                        int(getattr(row, "id", 0) or 0),
+                    ),
+                    default=None,
+                )
+        else:
+            if direction == "previous":
+                target_obj = qs.filter(id__lt=header.id).order_by("-id").first()
+            else:
+                target_obj = qs.filter(id__gt=header.id).order_by("id").first()
+
+        return Response(
+            {
+                "direction": direction,
+                "target_line_mode": target_line_mode,
+                "target": PurchaseInvoiceNavService._to_item(target_obj),
+            }
+        )
+
+
 class PurchaseServiceInvoiceListCreateAPIView(PurchaseInvoiceListCreateAPIView):
     line_mode = "service"
 
 
 class PurchaseServiceInvoiceRetrieveUpdateDestroyAPIView(PurchaseInvoiceRetrieveUpdateDestroyAPIView):
+    line_mode = "service"
+
+
+class PurchaseServiceInvoiceLookupAPIView(PurchaseInvoiceLookupAPIView):
+    line_mode = "service"
+
+
+class PurchaseServiceInvoiceCrossModeNavigationAPIView(PurchaseInvoiceCrossModeNavigationAPIView):
     line_mode = "service"

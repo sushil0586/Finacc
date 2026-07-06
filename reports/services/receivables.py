@@ -4,7 +4,8 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
-from django.db.models import Max, Prefetch, Q, Sum
+from django.db.models import Max, OuterRef, Prefetch, Q, Subquery, Sum
+from django.db.models.functions import Coalesce
 
 from financial.profile_access import (
     account_agent,
@@ -95,6 +96,59 @@ def _customer_queryset(*, entity_id, customer_id=None, customer_group=None, regi
     )
 
 
+def _customer_outstanding_customer_rows(*, entity_id, customer_id=None, customer_group=None, region_id=None, currency=None, search=None):
+    qs = account.objects.filter(entity_id=entity_id)
+    qs = qs.filter(
+        Q(commercial_profile__partytype__in=["Customer", "Both", "Bank"])
+        | Q(commercial_profile__partytype__isnull=True)
+        | Q(commercial_profile__partytype="")
+    )
+    if customer_id:
+        qs = qs.filter(id=customer_id)
+    if customer_group:
+        qs = qs.filter(commercial_profile__agent__iexact=customer_group)
+    if region_id:
+        qs = qs.filter(
+            addresses__isprimary=True,
+            addresses__isactive=True,
+            addresses__state_id=region_id,
+        )
+    if currency:
+        qs = qs.filter(commercial_profile__currency__iexact=currency)
+    if search:
+        token = str(search).strip()
+        qs = qs.filter(
+            Q(accountname__icontains=token)
+            | Q(legalname__icontains=token)
+            | Q(ledger__ledger_code__icontains=token)
+            | Q(compliance_profile__gstno__icontains=token)
+        )
+
+    primary_addresses = AccountAddress.objects.filter(
+        account_id=OuterRef("pk"),
+        isprimary=True,
+        isactive=True,
+    )
+    return list(
+        qs.annotate(
+            effective_name=Coalesce("ledger__name", "accountname"),
+            primary_region_name=Subquery(primary_addresses.values("state__statename")[:1]),
+        )
+        .order_by("accountname", "id")
+        .values(
+            "id",
+            "effective_name",
+            "ledger__ledger_code",
+            "commercial_profile__creditlimit",
+            "commercial_profile__creditdays",
+            "commercial_profile__currency",
+            "commercial_profile__agent",
+            "compliance_profile__gstno",
+            "primary_region_name",
+        )
+    )
+
+
 def _scope_filter(qs, *, entity_id, entityfin_id, subentity_id):
     qs = qs.filter(entity_id=entity_id)
     if entityfin_id:
@@ -115,7 +169,23 @@ def _sales_invoice_route(*, invoice_id: int | None) -> str:
     return "/saleserviceinvoice" if has_service_lines else "/saleinvoice"
 
 
-def _settlement_line_sums(*, entity_id, entityfin_id, subentity_id, upto_date):
+def _sales_invoice_route_map(invoice_ids) -> dict[int, str]:
+    normalized_ids = [int(invoice_id) for invoice_id in invoice_ids if invoice_id]
+    if not normalized_ids:
+        return {}
+    service_invoice_ids = set(
+        SalesInvoiceLine.objects.filter(
+            header_id__in=normalized_ids,
+            is_service=True,
+        ).values_list("header_id", flat=True).distinct()
+    )
+    return {
+        invoice_id: ("/saleserviceinvoice" if invoice_id in service_invoice_ids else "/saleinvoice")
+        for invoice_id in normalized_ids
+    }
+
+
+def _settlement_line_sums(*, entity_id, entityfin_id, subentity_id, upto_date, customer_ids=None):
     qs = CustomerSettlementLine.objects.filter(
         settlement__status=CustomerSettlement.Status.POSTED,
         settlement__settlement_date__lte=upto_date,
@@ -125,11 +195,13 @@ def _settlement_line_sums(*, entity_id, entityfin_id, subentity_id, upto_date):
         qs = qs.filter(settlement__entityfinid_id=entityfin_id)
     if subentity_id is not None:
         qs = qs.filter(settlement__subentity_id=subentity_id)
+    if customer_ids is not None:
+        qs = qs.filter(open_item__customer_id__in=customer_ids)
     rows = qs.values("open_item_id").annotate(applied=Sum("applied_amount_signed"))
     return {row["open_item_id"]: q2(row["applied"] or ZERO) for row in rows}
 
 
-def _advance_adjusted_sums(*, entity_id, entityfin_id, subentity_id, upto_date):
+def _advance_adjusted_sums(*, entity_id, entityfin_id, subentity_id, upto_date, customer_ids=None):
     qs = CustomerSettlement.objects.filter(
         status=CustomerSettlement.Status.POSTED,
         advance_balance_id__isnull=False,
@@ -140,16 +212,19 @@ def _advance_adjusted_sums(*, entity_id, entityfin_id, subentity_id, upto_date):
         qs = qs.filter(entityfinid_id=entityfin_id)
     if subentity_id is not None:
         qs = qs.filter(subentity_id=subentity_id)
+    if customer_ids is not None:
+        qs = qs.filter(advance_balance__customer_id__in=customer_ids)
     rows = qs.values("advance_balance_id").annotate(applied=Sum("total_amount"))
     return {row["advance_balance_id"]: q2(row["applied"] or ZERO) for row in rows}
 
 
-def _asof_open_item_balances(*, entity_id, entityfin_id, subentity_id, upto_date):
+def _asof_open_item_balances(*, entity_id, entityfin_id, subentity_id, upto_date, customer_ids=None):
     line_map = _settlement_line_sums(
         entity_id=entity_id,
         entityfin_id=entityfin_id,
         subentity_id=subentity_id,
         upto_date=upto_date,
+        customer_ids=customer_ids,
     )
     qs = _scope_filter(
         CustomerBillOpenItem.objects.select_related("customer", "customer__ledger", "customer__commercial_profile", "customer__compliance_profile", "subentity", "header"),
@@ -158,6 +233,8 @@ def _asof_open_item_balances(*, entity_id, entityfin_id, subentity_id, upto_date
         subentity_id=subentity_id,
     )
     qs = _exclude_cancelled_open_items(qs).filter(bill_date__lte=upto_date)
+    if customer_ids is not None:
+        qs = qs.filter(customer_id__in=customer_ids)
     rows = []
     for item in qs:
         settled = line_map.get(item.id, ZERO)
@@ -166,12 +243,13 @@ def _asof_open_item_balances(*, entity_id, entityfin_id, subentity_id, upto_date
     return rows
 
 
-def _asof_advances(*, entity_id, entityfin_id, subentity_id, upto_date):
+def _asof_advances(*, entity_id, entityfin_id, subentity_id, upto_date, customer_ids=None):
     adjusted_map = _advance_adjusted_sums(
         entity_id=entity_id,
         entityfin_id=entityfin_id,
         subentity_id=subentity_id,
         upto_date=upto_date,
+        customer_ids=customer_ids,
     )
     qs = _scope_filter(
         CustomerAdvanceBalance.objects.select_related("customer", "customer__ledger", "customer__commercial_profile", "customer__compliance_profile", "subentity", "receipt_voucher"),
@@ -180,6 +258,8 @@ def _asof_advances(*, entity_id, entityfin_id, subentity_id, upto_date):
         subentity_id=subentity_id,
     ).filter(credit_date__lte=upto_date)
     qs = qs.exclude(receipt_voucher__status=ReceiptVoucherHeader.Status.CANCELLED)
+    if customer_ids is not None:
+        qs = qs.filter(customer_id__in=customer_ids)
     rows = []
     for adv in qs:
         adjusted = adjusted_map.get(adv.id, ZERO)
@@ -188,7 +268,7 @@ def _asof_advances(*, entity_id, entityfin_id, subentity_id, upto_date):
     return rows
 
 
-def _posted_receipt_totals(*, entity_id, entityfin_id, subentity_id, from_date, to_date):
+def _posted_receipt_totals(*, entity_id, entityfin_id, subentity_id, from_date, to_date, customer_ids=None):
     qs = CustomerSettlement.objects.filter(
         entity_id=entity_id,
         status=CustomerSettlement.Status.POSTED,
@@ -200,13 +280,15 @@ def _posted_receipt_totals(*, entity_id, entityfin_id, subentity_id, from_date, 
         qs = qs.filter(entityfinid_id=entityfin_id)
     if subentity_id is not None:
         qs = qs.filter(subentity_id=subentity_id)
+    if customer_ids is not None:
+        qs = qs.filter(customer_id__in=customer_ids)
     rows = qs.values("customer_id").annotate(total=Sum("total_amount"), last_payment_date=Max("settlement_date"))
     total_map = {row["customer_id"]: q2(row["total"] or ZERO) for row in rows}
     last_map = {row["customer_id"]: row["last_payment_date"] for row in rows}
     return total_map, last_map
 
 
-def _all_last_payment_dates(*, entity_id, entityfin_id, subentity_id, upto_date):
+def _all_last_payment_dates(*, entity_id, entityfin_id, subentity_id, upto_date, customer_ids=None):
     qs = CustomerSettlement.objects.filter(
         entity_id=entity_id,
         status=CustomerSettlement.Status.POSTED,
@@ -217,6 +299,8 @@ def _all_last_payment_dates(*, entity_id, entityfin_id, subentity_id, upto_date)
         qs = qs.filter(entityfinid_id=entityfin_id)
     if subentity_id is not None:
         qs = qs.filter(subentity_id=subentity_id)
+    if customer_ids is not None:
+        qs = qs.filter(customer_id__in=customer_ids)
     rows = qs.values("customer_id").annotate(last_payment_date=Max("settlement_date"))
     return {row["customer_id"]: row["last_payment_date"] for row in rows}
 
@@ -241,6 +325,136 @@ def _period_invoice_credit_totals(*, entity_id, entityfin_id, subentity_id, from
         else:
             credit_map[item.customer_id] = q2(credit_map[item.customer_id] + abs(q2(item.original_amount)))
     return invoice_map, credit_map, last_invoice_date
+
+
+def _customer_outstanding_open_item_maps(*, entity_id, entityfin_id, subentity_id, upto_date, customer_ids):
+    line_map = _settlement_line_sums(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        upto_date=upto_date,
+        customer_ids=customer_ids,
+    )
+    qs = _scope_filter(
+        CustomerBillOpenItem.objects.all(),
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+    )
+    qs = _exclude_cancelled_open_items(qs).filter(
+        bill_date__lte=upto_date,
+        customer_id__in=customer_ids,
+    )
+    rows = qs.values_list("id", "customer_id", "original_amount", "due_date")
+    net_map = defaultdict(lambda: ZERO)
+    credit_source_map = defaultdict(lambda: ZERO)
+    overdue_map = defaultdict(lambda: ZERO)
+    for item_id, cust_id, original_amount, due_date in rows.iterator(chunk_size=2000):
+        outstanding = q2(original_amount - line_map.get(item_id, ZERO))
+        net_map[cust_id] = q2(net_map[cust_id] + outstanding)
+        if outstanding < ZERO:
+            credit_source_map[cust_id] = q2(credit_source_map[cust_id] + abs(outstanding))
+        elif outstanding > ZERO and due_date and due_date < upto_date:
+            overdue_map[cust_id] = q2(overdue_map[cust_id] + outstanding)
+    return net_map, credit_source_map, overdue_map
+
+
+def _customer_outstanding_advance_map(*, entity_id, entityfin_id, subentity_id, upto_date, customer_ids):
+    adjusted_map = _advance_adjusted_sums(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        upto_date=upto_date,
+        customer_ids=customer_ids,
+    )
+    qs = _scope_filter(
+        CustomerAdvanceBalance.objects.all(),
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+    ).filter(
+        credit_date__lte=upto_date,
+        customer_id__in=customer_ids,
+    )
+    qs = qs.exclude(receipt_voucher__status=ReceiptVoucherHeader.Status.CANCELLED)
+    out = defaultdict(lambda: ZERO)
+    for advance_id, cust_id, original_amount in qs.values_list("id", "customer_id", "original_amount").iterator(chunk_size=2000):
+        outstanding = q2(original_amount - adjusted_map.get(advance_id, ZERO))
+        if outstanding > ZERO:
+            out[cust_id] = q2(out[cust_id] + outstanding)
+    return out
+
+
+def _customer_outstanding_period_invoice_credit_totals(*, entity_id, entityfin_id, subentity_id, from_date, to_date, customer_ids):
+    qs = _scope_filter(
+        CustomerBillOpenItem.objects.all(),
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+    )
+    qs = _exclude_cancelled_open_items(qs).filter(
+        bill_date__gte=from_date,
+        bill_date__lte=to_date,
+        customer_id__in=customer_ids,
+    )
+    invoice_map = defaultdict(lambda: ZERO)
+    credit_map = defaultdict(lambda: ZERO)
+    last_invoice_date = {}
+    for cust_id, original_amount, bill_date in qs.values_list("customer_id", "original_amount", "bill_date").iterator(chunk_size=2000):
+        amount = q2(original_amount)
+        if amount >= ZERO:
+            invoice_map[cust_id] = q2(invoice_map[cust_id] + amount)
+            prev = last_invoice_date.get(cust_id)
+            if prev is None or bill_date > prev:
+                last_invoice_date[cust_id] = bill_date
+        else:
+            credit_map[cust_id] = q2(credit_map[cust_id] + abs(amount))
+    return invoice_map, credit_map, last_invoice_date
+
+
+def _receivable_aging_summary_open_items(*, entity_id, entityfin_id, subentity_id, upto_date, customer_ids):
+    line_map = _settlement_line_sums(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        upto_date=upto_date,
+        customer_ids=customer_ids,
+    )
+    qs = _scope_filter(
+        CustomerBillOpenItem.objects.all(),
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+    )
+    qs = _exclude_cancelled_open_items(qs).filter(
+        bill_date__lte=upto_date,
+        customer_id__in=customer_ids,
+    )
+    rows = []
+    credit_pool = defaultdict(lambda: ZERO)
+    for item_id, cust_id, bill_date, due_date, original_amount in qs.values_list(
+        "id",
+        "customer_id",
+        "bill_date",
+        "due_date",
+        "original_amount",
+    ).iterator(chunk_size=2000):
+        outstanding = q2(original_amount - line_map.get(item_id, ZERO))
+        if outstanding > ZERO:
+            rows.append(
+                (
+                    cust_id,
+                    {
+                        "item_id": item_id,
+                        "invoice_date": bill_date,
+                        "due_date": due_date or bill_date,
+                        "residual_before_credit": q2(outstanding),
+                    },
+                )
+            )
+        elif outstanding < ZERO:
+            credit_pool[cust_id] = q2(credit_pool[cust_id] + abs(outstanding))
+    return rows, credit_pool
 
 
 def _settlement_history_rows(*, entity_id, entityfin_id, subentity_id, customer_id=None, from_date=None, to_date=None, settlement_type=None, status=None, search=None):
@@ -604,18 +818,38 @@ def _aging_bucket(days_overdue):
 
 
 def _customer_meta(cust, *, subentity_name=None):
+    credit_limit = account_creditlimit(cust)
+    region = account_region_state(cust)
     return {
         "customer_id": cust.id,
         "customer_name": cust.effective_accounting_name,
         "customer_code": cust.effective_accounting_code,
-        "credit_limit": f"{q2(account_creditlimit(cust) or ZERO):.2f}" if account_creditlimit(cust) is not None else None,
+        "credit_limit": f"{q2(credit_limit or ZERO):.2f}" if credit_limit is not None else None,
         "credit_days": account_creditdays(cust),
         "currency": account_currency(cust) or "INR",
         "branch": None,
         "subentity_name": subentity_name,
         "gstin": account_gstno(cust),
         "customer_group": account_agent(cust),
-        "region": getattr(account_region_state(cust), "statename", None) or getattr(account_region_state(cust), "state", None),
+        "region": getattr(region, "statename", None) or getattr(region, "state", None),
+        "salesperson": None,
+    }
+
+
+def _customer_meta_row(cust, *, subentity_name=None):
+    credit_limit = cust.get("commercial_profile__creditlimit")
+    return {
+        "customer_id": cust["id"],
+        "customer_name": cust.get("effective_name") or f"Customer {cust['id']}",
+        "customer_code": cust.get("ledger__ledger_code"),
+        "credit_limit": f"{q2(credit_limit or ZERO):.2f}" if credit_limit is not None else None,
+        "credit_days": cust.get("commercial_profile__creditdays"),
+        "currency": cust.get("commercial_profile__currency") or "INR",
+        "branch": None,
+        "subentity_name": subentity_name,
+        "gstin": cust.get("compliance_profile__gstno"),
+        "customer_group": cust.get("commercial_profile__agent"),
+        "region": cust.get("primary_region_name"),
         "salesperson": None,
     }
 
@@ -700,29 +934,56 @@ def build_customer_outstanding_report(
         from_date = to_date
     opening_date = from_date - timedelta(days=1)
 
-    customers = list(
-        _customer_queryset(
-            entity_id=entity_id,
-            customer_id=customer_id,
-            customer_group=customer_group,
-            region_id=region_id,
-            currency=currency,
-            search=search,
-        )
+    customers = _customer_outstanding_customer_rows(
+        entity_id=entity_id,
+        customer_id=customer_id,
+        customer_group=customer_group,
+        region_id=region_id,
+        currency=currency,
+        search=search,
     )
-    customer_ids = {c.id for c in customers}
+    customer_ids = {cust["id"] for cust in customers}
+    if not customer_ids:
+        return {
+            "entity_id": entity_id,
+            "entityfin_id": entityfin_id,
+            "subentity_id": subentity_id,
+            "from_date": from_date,
+            "to_date": to_date,
+            "rows": [],
+            "totals": {k: "0.00" for k in ("opening_balance", "invoice_amount", "receipt_amount", "credit_note", "net_outstanding", "overdue_amount", "unapplied_receipt")},
+            "pagination": {"page": page, "page_size": page_size, "total_rows": 0},
+            "summary": {"customer_count": 0},
+            **_report_meta_payload(),
+        }
 
-    open_items_opening = _asof_open_item_balances(
-        entity_id=entity_id, entityfin_id=entityfin_id, subentity_id=subentity_id, upto_date=opening_date
+    open_items_opening = _customer_outstanding_open_item_maps(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        upto_date=opening_date,
+        customer_ids=customer_ids,
     )
-    open_items_asof = _asof_open_item_balances(
-        entity_id=entity_id, entityfin_id=entityfin_id, subentity_id=subentity_id, upto_date=to_date
+    open_items_asof = _customer_outstanding_open_item_maps(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        upto_date=to_date,
+        customer_ids=customer_ids,
     )
-    advances_opening = _asof_advances(
-        entity_id=entity_id, entityfin_id=entityfin_id, subentity_id=subentity_id, upto_date=opening_date
+    advances_opening = _customer_outstanding_advance_map(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        upto_date=opening_date,
+        customer_ids=customer_ids,
     )
-    advances_asof = _asof_advances(
-        entity_id=entity_id, entityfin_id=entityfin_id, subentity_id=subentity_id, upto_date=to_date
+    advances_asof = _customer_outstanding_advance_map(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        upto_date=to_date,
+        customer_ids=customer_ids,
     )
     receipt_totals, _period_last_pay = _posted_receipt_totals(
         entity_id=entity_id,
@@ -730,67 +991,57 @@ def build_customer_outstanding_report(
         subentity_id=subentity_id,
         from_date=from_date,
         to_date=to_date,
+        customer_ids=customer_ids,
     )
     all_last_payment = _all_last_payment_dates(
-        entity_id=entity_id, entityfin_id=entityfin_id, subentity_id=subentity_id, upto_date=to_date
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        upto_date=to_date,
+        customer_ids=customer_ids,
     )
-    invoice_totals, credit_totals, last_invoice_dates = _period_invoice_credit_totals(
+    invoice_totals, credit_totals, last_invoice_dates = _customer_outstanding_period_invoice_credit_totals(
         entity_id=entity_id,
         entityfin_id=entityfin_id,
         subentity_id=subentity_id,
         from_date=from_date,
         to_date=to_date,
+        customer_ids=customer_ids,
     )
 
+    opening_item_map, _, _ = open_items_opening
+    asof_item_map, credit_source_map, overdue_map = open_items_asof
     opening_map = defaultdict(lambda: ZERO)
-    for item, _settled, outstanding in open_items_opening:
-        if item.customer_id in customer_ids:
-            opening_map[item.customer_id] = q2(opening_map[item.customer_id] + outstanding)
-    for adv, _adjusted, outstanding in advances_opening:
-        if adv.customer_id in customer_ids:
-            opening_map[adv.customer_id] = q2(opening_map[adv.customer_id] - outstanding)
-
-    asof_item_map = defaultdict(lambda: ZERO)
-    credit_source_map = defaultdict(lambda: ZERO)
-    overdue_map = defaultdict(lambda: ZERO)
-    for item, settled, outstanding in open_items_asof:
-        if item.customer_id not in customer_ids:
-            continue
-        asof_item_map[item.customer_id] = q2(asof_item_map[item.customer_id] + outstanding)
-        if outstanding < ZERO:
-            credit_source_map[item.customer_id] = q2(credit_source_map[item.customer_id] + abs(outstanding))
-        elif outstanding > ZERO and item.due_date and item.due_date < to_date:
-            overdue_map[item.customer_id] = q2(overdue_map[item.customer_id] + outstanding)
-    unapplied_map = defaultdict(lambda: ZERO)
-    for adv, _adjusted, outstanding in advances_asof:
-        if adv.customer_id in customer_ids and outstanding > ZERO:
-            unapplied_map[adv.customer_id] = q2(unapplied_map[adv.customer_id] + outstanding)
+    for cust_id in customer_ids:
+        opening_map[cust_id] = q2(opening_item_map[cust_id] - advances_opening[cust_id])
+    unapplied_map = advances_asof
 
     rows = []
     totals = defaultdict(lambda: ZERO)
     for cust in customers:
-        net_outstanding = q2(asof_item_map[cust.id] - unapplied_map[cust.id])
-        overdue_amount = q2(max(overdue_map[cust.id] - credit_source_map[cust.id] - unapplied_map[cust.id], ZERO))
+        customer_id = cust["id"]
+        customer_credit_limit = cust.get("commercial_profile__creditlimit")
+        net_outstanding = q2(asof_item_map[customer_id] - unapplied_map[customer_id])
+        overdue_amount = q2(max(overdue_map[customer_id] - credit_source_map[customer_id] - unapplied_map[customer_id], ZERO))
         if (
             net_outstanding == ZERO
-            and opening_map[cust.id] == ZERO
-            and invoice_totals[cust.id] == ZERO
-            and receipt_totals.get(cust.id, ZERO) == ZERO
-            and credit_totals[cust.id] == ZERO
-            and unapplied_map[cust.id] == ZERO
+            and opening_map[customer_id] == ZERO
+            and invoice_totals[customer_id] == ZERO
+            and receipt_totals.get(customer_id, ZERO) == ZERO
+            and credit_totals[customer_id] == ZERO
+            and unapplied_map[customer_id] == ZERO
         ):
             continue
         if overdue_only and overdue_amount <= ZERO:
             continue
         if outstanding_gt is not None and net_outstanding <= q2(outstanding_gt):
             continue
-        customer_credit_limit = account_creditlimit(cust)
         exception_reasons = []
         if overdue_amount > ZERO:
             exception_reasons.append("Overdue")
         if customer_credit_limit is not None and net_outstanding > q2(customer_credit_limit):
             exception_reasons.append("Credit Limit")
-        if unapplied_map[cust.id] > ZERO:
+        if unapplied_map[customer_id] > ZERO:
             exception_reasons.append("Unapplied Receipt")
         if net_outstanding < ZERO:
             exception_reasons.append("Credit Balance")
@@ -807,7 +1058,7 @@ def build_customer_outstanding_report(
                     "entityfinid": entityfin_id,
                     "subentity": subentity_id,
                     "as_of_date": to_date,
-                    "customer": cust.id,
+                    "customer": customer_id,
                     "view": "summary",
                 },
             },
@@ -818,34 +1069,34 @@ def build_customer_outstanding_report(
                     "entityfinid": entityfin_id,
                     "subentity": subentity_id,
                     "as_of_date": to_date,
-                    "customer": cust.id,
+                    "customer": customer_id,
                     "view": "invoice",
                 },
             },
             "customer_statement": {
                 "target": "sales_ar_customer_statement",
-                "params": {"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "customer": cust.id},
+                "params": {"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "customer": customer_id},
             },
             "open_items": {
                 "target": "sales_ar_open_items",
-                "params": {"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "customer": cust.id},
+                "params": {"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "customer": customer_id},
             },
             "payments": {
                 "target": "sales_ar_settlements",
-                "params": {"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "customer": cust.id},
+                "params": {"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "customer": customer_id},
             },
         }
         row = _row_with_meta({
-            **_customer_meta(cust),
-            "opening_balance": q2(opening_map[cust.id]),
-            "invoice_amount": q2(invoice_totals[cust.id]),
-            "receipt_amount": q2(receipt_totals.get(cust.id, ZERO)),
-            "credit_note": q2(credit_totals[cust.id]),
+            **_customer_meta_row(cust),
+            "opening_balance": q2(opening_map[customer_id]),
+            "invoice_amount": q2(invoice_totals[customer_id]),
+            "receipt_amount": q2(receipt_totals.get(customer_id, ZERO)),
+            "credit_note": q2(credit_totals[customer_id]),
             "net_outstanding": net_outstanding,
             "overdue_amount": overdue_amount,
-            "unapplied_receipt": q2(unapplied_map[cust.id]),
-            "last_invoice_date": last_invoice_dates.get(cust.id),
-            "last_payment_date": all_last_payment.get(cust.id),
+            "unapplied_receipt": q2(unapplied_map[customer_id]),
+            "last_invoice_date": last_invoice_dates.get(customer_id),
+            "last_payment_date": all_last_payment.get(customer_id),
             "exception_reasons": exception_reasons,
         }, drilldown=drilldown)
         rows.append(row)
@@ -901,6 +1152,9 @@ def build_receivable_aging_report(
     as_of = _coerce_date(as_of_date)
     if not as_of:
         raise ValueError("as_of_date is required.")
+    normalized_view = (view or "summary").strip().lower()
+    if normalized_view not in {"summary", "invoice"}:
+        normalized_view = "summary"
 
     customers = list(
         _customer_queryset(
@@ -915,84 +1169,120 @@ def build_receivable_aging_report(
     customer_by_id = {c.id: c for c in customers}
     customer_ids = set(customer_by_id.keys())
 
-    open_items_asof = _asof_open_item_balances(
-        entity_id=entity_id, entityfin_id=entityfin_id, subentity_id=subentity_id, upto_date=as_of
-    )
-    advances_asof = _asof_advances(
-        entity_id=entity_id, entityfin_id=entityfin_id, subentity_id=subentity_id, upto_date=as_of
-    )
+    if normalized_view == "invoice":
+        open_items_asof = _asof_open_item_balances(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            upto_date=as_of,
+            customer_ids=customer_ids,
+        )
+        advances_asof = _asof_advances(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            upto_date=as_of,
+            customer_ids=customer_ids,
+        )
+        invoice_route_map = _sales_invoice_route_map(
+            item.header_id for item, _settled, _outstanding in open_items_asof
+        )
+    else:
+        open_items_asof, credit_pool = _receivable_aging_summary_open_items(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            upto_date=as_of,
+            customer_ids=customer_ids,
+        )
+        advances_asof = _asof_advances(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            upto_date=as_of,
+            customer_ids=customer_ids,
+        )
+        invoice_route_map = {}
     last_payment_map = _all_last_payment_dates(
-        entity_id=entity_id, entityfin_id=entityfin_id, subentity_id=subentity_id, upto_date=as_of
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        upto_date=as_of,
+        customer_ids=customer_ids,
     )
 
     invoice_rows_by_customer = defaultdict(list)
-    credit_pool = defaultdict(lambda: ZERO)
-    for item, settled, outstanding in open_items_asof:
-        if item.customer_id not in customer_ids:
-            continue
-        if outstanding > ZERO:
-            received_amount = _received_amount_asof(item, settled)
-            drilldown = {
-                "invoice_list": {
-                    "target": "receivable_aging",
-                    "params": {
-                        "entity": entity_id,
-                        "entityfinid": entityfin_id,
-                        "subentity": subentity_id,
-                        "as_of_date": as_of,
-                        "customer": item.customer_id,
-                        "view": "invoice",
+    if normalized_view == "invoice":
+        credit_pool = defaultdict(lambda: ZERO)
+        for item, settled, outstanding in open_items_asof:
+            if item.customer_id not in customer_ids:
+                continue
+            if outstanding > ZERO:
+                received_amount = _received_amount_asof(item, settled)
+                drilldown = {
+                    "invoice_list": {
+                        "target": "receivable_aging",
+                        "params": {
+                            "entity": entity_id,
+                            "entityfinid": entityfin_id,
+                            "subentity": subentity_id,
+                            "as_of_date": as_of,
+                            "customer": item.customer_id,
+                            "view": "invoice",
+                        },
                     },
-                },
-                "invoice": {
-                    "target": "sales_invoice",
-                    "route": _sales_invoice_route(invoice_id=item.header_id),
-                    "params": {"id": item.header_id, "entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id},
-                },
-                "payment_allocation": {
-                    "target": "sales_ar_payment_allocation",
-                    "params": {
-                        "entity": entity_id,
-                        "entityfinid": entityfin_id,
-                        "subentity": subentity_id,
-                        "customer": item.customer_id,
-                        "invoice_header": item.header_id,
-                        "open_item": item.id,
-                        "as_of_date": as_of,
+                    "invoice": {
+                        "target": "sales_invoice",
+                        "route": invoice_route_map.get(item.header_id, "/saleinvoice"),
+                        "params": {"id": item.header_id, "entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id},
                     },
-                },
-                "customer_statement": {
-                    "target": "sales_ar_customer_statement",
-                    "params": {"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "customer": item.customer_id},
-                },
-            }
-            invoice_rows_by_customer[item.customer_id].append(
-                _row_with_meta(
-                    {
-                        "item_id": item.id,
-                        "header_id": item.header_id,
-                        "customer_id": item.customer_id,
-                        "customer_name": item.customer.effective_accounting_name,
-                        "customer_code": item.customer.effective_accounting_code,
-                        "invoice_number": item.invoice_number or item.customer_reference_number or f"INV-{item.id}",
-                        "invoice_date": item.bill_date,
-                        "due_date": item.due_date or item.bill_date,
-                        "credit_days": ((item.due_date - item.bill_date).days if item.due_date else None),
-                        "invoice_amount": q2(item.original_amount),
-                        "received_amount": q2(received_amount),
-                        "residual_before_credit": q2(outstanding),
-                        "salesperson": None,
-                        "branch": getattr(item.subentity, "subentityname", None),
-                        "currency": account_currency(item.customer) or "INR",
-                        "gstin": account_gstno(item.customer),
-                        "credit_limit": q2(account_creditlimit(item.customer) or ZERO) if account_creditlimit(item.customer) is not None else None,
-                        "last_payment_date": last_payment_map.get(item.customer_id),
+                    "payment_allocation": {
+                        "target": "sales_ar_payment_allocation",
+                        "params": {
+                            "entity": entity_id,
+                            "entityfinid": entityfin_id,
+                            "subentity": subentity_id,
+                            "customer": item.customer_id,
+                            "invoice_header": item.header_id,
+                            "open_item": item.id,
+                            "as_of_date": as_of,
+                        },
                     },
-                    drilldown=drilldown,
-                )
-            )
-        elif outstanding < ZERO:
-            credit_pool[item.customer_id] = q2(credit_pool[item.customer_id] + abs(outstanding))
+                    "customer_statement": {
+                        "target": "sales_ar_customer_statement",
+                        "params": {"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "customer": item.customer_id},
+                    },
+                }
+                invoice_rows_by_customer[item.customer_id].append(
+                    _row_with_meta(
+                        {
+                            "item_id": item.id,
+                            "header_id": item.header_id,
+                            "customer_id": item.customer_id,
+                            "customer_name": item.customer.effective_accounting_name,
+                            "customer_code": item.customer.effective_accounting_code,
+                            "invoice_number": item.invoice_number or item.customer_reference_number or f"INV-{item.id}",
+                            "invoice_date": item.bill_date,
+                            "due_date": item.due_date or item.bill_date,
+                            "credit_days": ((item.due_date - item.bill_date).days if item.due_date else None),
+                            "invoice_amount": q2(item.original_amount),
+                            "received_amount": q2(received_amount),
+                            "residual_before_credit": q2(outstanding),
+                            "salesperson": None,
+                            "branch": getattr(item.subentity, "subentityname", None),
+                            "currency": account_currency(item.customer) or "INR",
+                            "gstin": account_gstno(item.customer),
+                            "credit_limit": q2(account_creditlimit(item.customer) or ZERO) if account_creditlimit(item.customer) is not None else None,
+                            "last_payment_date": last_payment_map.get(item.customer_id),
+                        },
+                        drilldown=drilldown,
+                        )
+                    )
+            elif outstanding < ZERO:
+                credit_pool[item.customer_id] = q2(credit_pool[item.customer_id] + abs(outstanding))
+    else:
+        for cust_id, summary_row in open_items_asof:
+            invoice_rows_by_customer[cust_id].append(summary_row)
     for adv, _adjusted, outstanding in advances_asof:
         if adv.customer_id in customer_ids and outstanding > ZERO:
             credit_pool[adv.customer_id] = q2(credit_pool[adv.customer_id] + outstanding)
@@ -1019,7 +1309,7 @@ def build_receivable_aging_report(
             outstanding_total = q2(outstanding_total + balance)
             if days_overdue > 0:
                 overdue_total = q2(overdue_total + balance)
-            if view == "invoice":
+            if normalized_view == "invoice":
                 detail = {
                     **row,
                     "balance": balance,
@@ -1071,7 +1361,7 @@ def build_receivable_aging_report(
         for key in ("outstanding", "overdue_amount", "current", "bucket_1_30", "bucket_31_60", "bucket_61_90", "bucket_90_plus", "unapplied_receipt"):
             summary_totals[key] += summary[key]
 
-    if view == "invoice":
+    if normalized_view == "invoice":
         if customer_id:
             invoice_rows = [row for row in invoice_rows if row["customer_id"] == customer_id]
         if overdue_only:
@@ -1139,25 +1429,12 @@ def build_open_items_report(
     if not resolved_as_of:
         raise ValueError("as_of_date is required.")
 
-    line_map = _settlement_line_sums(
+    line_map, last_settlement_map = SalesArService._settlement_line_applied_maps(
         entity_id=entity_id,
-        entityfin_id=entityfin_id,
+        entityfinid_id=entityfin_id,
         subentity_id=subentity_id,
         upto_date=resolved_as_of,
     )
-    last_settlement_rows = CustomerSettlementLine.objects.filter(
-        settlement__status=CustomerSettlement.Status.POSTED,
-        settlement__settlement_date__lte=resolved_as_of,
-        settlement__entity_id=entity_id,
-    )
-    if entityfin_id:
-        last_settlement_rows = last_settlement_rows.filter(settlement__entityfinid_id=entityfin_id)
-    if subentity_id is not None:
-        last_settlement_rows = last_settlement_rows.filter(settlement__subentity_id=subentity_id)
-    last_settlement_map = {
-        row["open_item_id"]: row["last_settled_at"]
-        for row in last_settlement_rows.values("open_item_id").annotate(last_settled_at=Max("settlement__settlement_date"))
-    }
 
     qs = SalesArService.list_open_items(
         entity_id=entity_id,
@@ -1179,10 +1456,11 @@ def build_open_items_report(
                 | Q(customer_reference_number__icontains=token)
             )
 
+    invoice_route_map = _sales_invoice_route_map(qs.values_list("header_id", flat=True).distinct())
     rows = []
     totals = defaultdict(lambda: ZERO)
 
-    for item in qs:
+    for item in qs.iterator(chunk_size=1000):
         settled = q2(line_map.get(item.id, ZERO))
         outstanding = q2(item.original_amount - settled)
         if outstanding <= ZERO:
@@ -1212,7 +1490,7 @@ def build_open_items_report(
             drilldown={
                 "invoice": {
                     "target": "sales_invoice",
-                    "route": _sales_invoice_route(invoice_id=item.header_id),
+                    "route": invoice_route_map.get(item.header_id, "/saleinvoice"),
                     "params": {"id": item.header_id, "entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id},
                 },
                 "customer_statement": {

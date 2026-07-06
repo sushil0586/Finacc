@@ -34,7 +34,9 @@ from withholding.models import WithholdingBaseRule
 from sales.views.sales_invoice_views import (
     SalesInvoiceCancelAPIView,
     SalesInvoiceConfirmAPIView,
+    SalesInvoiceCrossModeNavigationAPIView,
     SalesInvoiceListCreateAPIView,
+    SalesInvoiceLookupAPIView,
     SalesInvoicePostAPIView,
     SalesInvoicePrintAPIView,
     SalesInvoiceTransportAPIView,
@@ -4804,6 +4806,70 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
         self.assertEqual(response.status_code, 200)
         mocked_list_serializer.assert_called_once()
         self.assertEqual(response.data, [{"id": 10, "invoice_number": "INV-10"}])
+
+    def test_lookup_view_returns_limited_payload(self):
+        mocked_queryset = MagicMock()
+        mocked_queryset.count.return_value = 2
+        mocked_queryset.__getitem__.return_value = [self.header]
+        with patch.object(SalesInvoiceLookupAPIView, "_base_queryset", return_value=mocked_queryset), patch(
+            "sales.views.sales_invoice_views.SalesInvoiceLookupSerializer"
+        ) as mocked_lookup_serializer:
+            mocked_lookup_serializer.return_value.data = [{"id": 10, "invoice_number": "INV-10"}]
+
+            request = self.factory.get("/api/sales/invoices/lookup/?entity=1&limit=1")
+            force_authenticate(request, user=self.user)
+
+            response = SalesInvoiceLookupAPIView.as_view()(request)
+
+            self.assertEqual(response.status_code, 200)
+            mocked_lookup_serializer.assert_called_once()
+            self.assertEqual(
+                response.data,
+                {
+                    "items": [{"id": 10, "invoice_number": "INV-10"}],
+                    "total_count": 2,
+                    "returned_count": 1,
+                    "limit": 1,
+                    "has_more": True,
+                },
+            )
+
+    def test_cross_mode_navigation_view_returns_target(self):
+        mocked_header = SimpleNamespace(
+            id=50,
+            entity_id=1,
+            entityfinid_id=2,
+            subentity_id=3,
+            doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+            status=int(SalesInvoiceHeader.Status.POSTED),
+            doc_no=100,
+            invoice_number="SI/2026/100",
+            bill_date=None,
+        )
+        mocked_target = SimpleNamespace(
+            id=51,
+            doc_no=101,
+            invoice_number="SV/2026/101",
+            status=int(SalesInvoiceHeader.Status.POSTED),
+            bill_date=None,
+        )
+        with patch.object(SalesInvoiceCrossModeNavigationAPIView, "_get_scoped_header", return_value=mocked_header), patch(
+            "sales.views.sales_invoice_views.require_sales_request_permission"
+        ), patch(
+            "sales.views.sales_invoice_views.SalesInvoiceNavService._scope_qs",
+            return_value=[mocked_target],
+        ):
+            request = self.factory.get(
+                "/api/sales/invoices/50/cross-mode-nav/?target_line_mode=service&direction=next"
+            )
+            force_authenticate(request, user=self.user)
+
+            response = SalesInvoiceCrossModeNavigationAPIView.as_view()(request, pk=50)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.data["target"]["id"], 51)
+            self.assertEqual(response.data["target_line_mode"], "service")
+            self.assertEqual(response.data["direction"], "next")
 
     @patch("sales.views.sales_invoice_views.require_sales_request_permission")
     @patch("rest_framework.generics.RetrieveUpdateDestroyAPIView.update")

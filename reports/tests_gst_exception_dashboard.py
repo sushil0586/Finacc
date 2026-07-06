@@ -94,6 +94,8 @@ class GstExceptionDashboardAPITests(APITestCase):
 
         response = self.client.get(self.summary_url, self.params)
         self.assertEqual(response.status_code, 200)
+        reconciliation_builder.assert_called_once()
+        self.assertFalse(reconciliation_builder.call_args.kwargs["include_contributors"])
         payload = response.json()
         self.assertEqual(payload["report_code"], "gst-exception-dashboard")
         self.assertEqual(payload["report_name"], "GST Exception Dashboard")
@@ -165,6 +167,7 @@ class GstExceptionDashboardAPITests(APITestCase):
 
         response = self.client.get(self.summary_url, self.params)
         self.assertEqual(response.status_code, 200)
+        self.assertFalse(reconciliation_builder.call_args.kwargs["include_contributors"])
         payload = response.json()
         self.assertEqual(payload["overview"]["reconciliation_mismatch_count"], 1)
         self.assertEqual(len(payload["reconciliation_rows"]), 1)
@@ -195,6 +198,7 @@ class GstExceptionDashboardAPITests(APITestCase):
 
         json_response = self.client.get(self.export_url, {**self.params, "format": "json"})
         self.assertEqual(json_response.status_code, 200)
+        self.assertFalse(reconciliation_builder.call_args.kwargs["include_contributors"])
         self.assertIn("overview", json_response.json())
 
         csv_response = self.client.get(self.export_url, {**self.params, "format": "csv"})

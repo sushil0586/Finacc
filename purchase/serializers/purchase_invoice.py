@@ -1218,3 +1218,41 @@ class PurchaseInvoiceListSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
+
+
+class PurchaseInvoiceLookupSerializer(serializers.ModelSerializer):
+    status_name = serializers.CharField(source="get_status_display", read_only=True)
+    doc_type_name = serializers.CharField(source="get_doc_type_display", read_only=True)
+    vendor_display_name = serializers.CharField(source="vendor.effective_accounting_name", read_only=True)
+    vendor_accountcode = serializers.IntegerField(source="vendor.effective_accounting_code", read_only=True)
+    vendor_ledger_id = serializers.SerializerMethodField()
+    vendor_partytype = serializers.CharField(source="vendor.commercial_profile.partytype", read_only=True)
+
+    def get_vendor_ledger_id(self, obj):
+        return getattr(obj, "vendor_ledger_id", None) or getattr(obj.vendor, "ledger_id", None)
+
+    class Meta:
+        model = PurchaseInvoiceHeader
+        fields = [
+            "id",
+            "doc_type",
+            "doc_type_name",
+            "status",
+            "status_name",
+            "bill_date",
+            "doc_code",
+            "doc_no",
+            "purchase_number",
+            "supplier_invoice_number",
+            "vendor",
+            "vendor_name",
+            "vendor_gstin",
+            "vendor_display_name",
+            "vendor_accountcode",
+            "vendor_ledger_id",
+            "vendor_partytype",
+            "grand_total",
+            "entity",
+            "entityfinid",
+            "subentity",
+        ]

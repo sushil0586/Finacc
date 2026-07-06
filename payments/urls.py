@@ -2,6 +2,7 @@ from django.urls import path
 
 from payments.views import (
     PaymentVoucherListCreateAPIView,
+    PaymentVoucherLookupAPIView,
     PaymentVoucherRetrieveUpdateDestroyAPIView,
     PaymentVoucherConfirmAPIView,
     PaymentVoucherPostAPIView,
@@ -32,6 +33,7 @@ from payments.views import (
 
 urlpatterns = [
     path("payment-vouchers/", PaymentVoucherListCreateAPIView.as_view(), name="payment-voucher-list-create"),
+    path("payment-vouchers/lookup/", PaymentVoucherLookupAPIView.as_view(), name="payment-voucher-lookup"),
     path("payment-vouchers/<int:pk>/", PaymentVoucherRetrieveUpdateDestroyAPIView.as_view(), name="payment-voucher-rud"),
     path("payment-vouchers/<int:pk>/confirm/", PaymentVoucherConfirmAPIView.as_view(), name="payment-voucher-confirm"),
     path("payment-vouchers/<int:pk>/post/", PaymentVoucherPostAPIView.as_view(), name="payment-voucher-post"),

@@ -121,6 +121,7 @@ def build_ledger_summary(
         include_zero_balances=include_zero_balance,
         include_opening=include_opening,
         search=search,
+        resolve_window=False,
     )
 
     resolved_group_by = (group_by or "ledger").strip().lower()

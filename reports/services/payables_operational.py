@@ -23,8 +23,8 @@ from reports.services.payables import (
     build_vendor_outstanding_report,
 )
 from reports.services.payables_control import (
+    CRITICAL_CHECK_CODES,
     build_ap_gl_reconciliation_report,
-    build_payables_close_readiness_summary,
     build_payables_close_validation,
     build_vendor_balance_exception_report,
 )
@@ -32,6 +32,17 @@ from reports.selectors.financial import normalize_scope_ids
 from reports.selectors.payables import note_register_queryset, q2, settlement_history_queryset, vendor_queryset
 
 ZERO = Decimal("0.00")
+
+
+def _close_pack_top_issues(checks):
+    return sorted(
+        [check for check in checks if check.get("affected_count", 0) > 0],
+        key=lambda check: (
+            0 if check.get("check_code") in CRITICAL_CHECK_CODES else 1,
+            0 if check.get("severity") == "error" else 1,
+            -int(check.get("affected_count") or 0),
+        ),
+    )[:5]
 
 
 def _resolve_vendor(entity_id, vendor_id):
@@ -584,112 +595,144 @@ def build_payables_close_pack(
 ):
     entity_id, entityfin_id, subentity_id = normalize_scope_ids(entity_id, entityfin_id, subentity_id)
     sections = get_close_pack_section_codes(include_sections)
+    include_overview = "overview" in sections
+    include_aging = "aging" in sections
+    include_reconciliation = "reconciliation" in sections
+    include_validation = "validation" in sections
+    include_exceptions = "exceptions" in sections and include_top_exceptions
+    include_top_vendors_section = "top_vendors" in sections and include_top_vendors
 
-    dashboard = build_payables_dashboard_summary(
-        entity_id=entity_id,
-        entityfin_id=entityfin_id,
-        subentity_id=subentity_id,
-        as_of_date=as_of_date,
-    )
-    aging = build_ap_aging_report(
-        entity_id=entity_id,
-        entityfin_id=entityfin_id,
-        subentity_id=subentity_id,
-        as_of_date=as_of_date,
-        view="summary",
-    )
-    reconciliation = build_ap_gl_reconciliation_report(
-        entity_id=entity_id,
-        entityfin_id=entityfin_id,
-        subentity_id=subentity_id,
-        as_of_date=as_of_date,
-        page_size=10,
-    )
-    validation = build_payables_close_validation(
-        entity_id=entity_id,
-        entityfin_id=entityfin_id,
-        subentity_id=subentity_id,
-        as_of_date=as_of_date,
-    )
-    close_summary = build_payables_close_readiness_summary(
-        entity_id=entity_id,
-        entityfin_id=entityfin_id,
-        subentity_id=subentity_id,
-        as_of_date=as_of_date,
-    )
-    exception_report = build_vendor_balance_exception_report(
-        entity_id=entity_id,
-        entityfin_id=entityfin_id,
-        subentity_id=subentity_id,
-        as_of_date=as_of_date,
-        page_size=10,
-    )
-    vendor_outstanding = build_vendor_outstanding_report(
-        entity_id=entity_id,
-        entityfin_id=entityfin_id,
-        subentity_id=subentity_id,
-        to_date=as_of_date,
-        page_size=10,
-    )
+    dashboard = None
+    if include_overview or include_top_vendors_section:
+        dashboard = build_payables_dashboard_summary(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            as_of_date=as_of_date,
+        )
 
-    top_overdue_vendors = sorted(
-        vendor_outstanding["rows"],
-        key=lambda row: q2(row.get("overdue_amount") or ZERO),
-        reverse=True,
-    )[:5]
-    top_outstanding_vendors = sorted(
-        vendor_outstanding["rows"],
-        key=lambda row: q2(row.get("net_outstanding") or ZERO),
-        reverse=True,
-    )[:5]
+    aging = None
+    if include_aging:
+        aging = build_ap_aging_report(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            as_of_date=as_of_date,
+            view="summary",
+            include_trace=False,
+            include_drilldown=False,
+        )
+
+    reconciliation = None
+    if include_reconciliation or include_overview or include_validation:
+        reconciliation = build_ap_gl_reconciliation_report(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            as_of_date=as_of_date,
+            page_size=1000 if include_overview or include_validation else 10,
+        )
+
+    validation = None
+    if include_validation or include_overview:
+        validation = build_payables_close_validation(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            as_of_date=as_of_date,
+        )
+
+    exception_report = None
+    if include_exceptions:
+        exception_report = build_vendor_balance_exception_report(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            as_of_date=as_of_date,
+            page_size=10,
+        )
+
+    vendor_outstanding = None
+    if include_top_vendors_section:
+        vendor_outstanding = build_vendor_outstanding_report(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            to_date=as_of_date,
+            include_trace=False,
+            include_drilldown=False,
+            paginate_summary=False,
+        )
+
+    close_as_of_date = (
+        (reconciliation or {}).get("as_of_date")
+        or (aging or {}).get("as_of_date")
+        or (dashboard or {}).get("as_of_date")
+        or as_of_date
+    )
+    validation_checks = (validation or {}).get("checks", [])
+    reconciliation_rows = (reconciliation or {}).get("rows", [])
+    top_overdue_vendors = []
+    top_outstanding_vendors = []
+    if vendor_outstanding:
+        top_overdue_vendors = sorted(
+            vendor_outstanding["rows"],
+            key=lambda row: q2(row.get("overdue_amount") or ZERO),
+            reverse=True,
+        )[:5]
+        top_outstanding_vendors = sorted(
+            vendor_outstanding["rows"],
+            key=lambda row: q2(row.get("outstanding") or row.get("net_outstanding") or ZERO),
+            reverse=True,
+        )[:5]
 
     payload = {
         "entity_id": entity_id,
         "entityfin_id": entityfin_id,
         "subentity_id": subentity_id,
-        "as_of_date": close_summary["as_of_date"],
+        "as_of_date": close_as_of_date,
         "included_sections": sections,
         "section_order": sections,
     }
-    if "overview" in sections:
+    if include_overview:
         payload["overview"] = {
             "total_vendor_outstanding": dashboard["totals"]["vendor_outstanding"],
-            "overdue_outstanding": dashboard.get("overdue_outstanding", "0.00"),
+            "overdue_outstanding": dashboard["totals"].get("overdue_outstanding", "0.00"),
             "msme_overdue_amount": dashboard["totals"].get("msme_overdue_amount", "0.00"),
             "msme_overdue_bill_count": dashboard["summary"].get("msme_overdue_bill_count", 0),
             "msme_overdue_vendor_count": dashboard["summary"].get("msme_overdue_vendor_count", 0),
             "msme_oldest_overdue_days": dashboard["summary"].get("msme_oldest_overdue_days", 0),
             "msme_reporting_note": dashboard["summary"].get("msme_reporting_note", ""),
-            "open_vendor_count": close_summary["open_vendor_count"],
-            "negative_balance_vendor_count": close_summary["negative_balance_vendor_count"],
-            "stale_advance_count": close_summary["stale_advance_count"],
+            "open_vendor_count": len(reconciliation_rows),
+            "negative_balance_vendor_count": sum(1 for row in reconciliation_rows if q2(row.get("subledger_balance")) < ZERO),
+            "stale_advance_count": next((check.get("affected_count", 0) for check in validation_checks if check.get("check_code") == "long_unapplied_advances"), 0),
         }
-    if "aging" in sections:
+    if include_aging:
         payload["aging"] = {
             "totals": aging["totals"],
             "vendor_count": aging["summary"]["vendor_count"],
         }
-    if "reconciliation" in sections:
+    if include_reconciliation:
         payload["reconciliation"] = {
             "subledger_balance": reconciliation["totals"]["subledger_balance"],
             "gl_balance": reconciliation["totals"]["gl_balance"],
             "difference_amount": reconciliation["totals"]["difference_amount"],
             "status": reconciliation["summary"]["overall_status"],
         }
-    if "validation" in sections:
+    if include_validation:
         payload["validation"] = {
             "validation_error_count": validation["summary"]["validation_error_count"],
             "validation_warning_count": validation["summary"]["validation_warning_count"],
-            "top_critical_issues": close_summary["top_critical_issues"],
+            "top_critical_issues": _close_pack_top_issues(validation_checks),
         }
         if expanded_validation:
             payload["validation"]["checks"] = validation["checks"]
-    if "exceptions" in sections and include_top_exceptions:
+    if include_exceptions:
         payload["exceptions"] = {
             "total_exceptions": exception_report["summary"]["total_exceptions"],
             "top_exception_rows": exception_report["rows"],
         }
-    if "top_vendors" in sections and include_top_vendors:
+    if include_top_vendors_section:
         payload["top_vendors"] = {
             "top_overdue_vendors": top_overdue_vendors,
             "top_outstanding_vendors": top_outstanding_vendors,
@@ -703,16 +746,16 @@ def build_payables_close_pack(
             entity_id=entity_id,
             entityfin_id=entityfin_id,
             subentity_id=subentity_id,
-            as_of_date=close_summary["as_of_date"],
+            as_of_date=close_as_of_date,
             required_menu_code="reports.payablesclosepack",
             required_permissions=["reports.payablesclosepack.view"],
             feature_state={
-                "include_overview": "overview" in sections,
-                "include_aging": "aging" in sections,
-                "include_reconciliation": "reconciliation" in sections,
-                "include_validation": "validation" in sections,
-                "include_exceptions": "exceptions" in sections and include_top_exceptions,
-                "include_top_vendors": "top_vendors" in sections and include_top_vendors,
+                "include_overview": include_overview,
+                "include_aging": include_aging,
+                "include_reconciliation": include_reconciliation,
+                "include_validation": include_validation,
+                "include_exceptions": include_exceptions,
+                "include_top_vendors": include_top_vendors_section,
                 "expanded_validation": expanded_validation,
             },
             extra_meta={

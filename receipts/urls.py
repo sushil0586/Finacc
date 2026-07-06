@@ -2,6 +2,7 @@ from django.urls import path
 
 from receipts.views import (
     ReceiptVoucherListCreateAPIView,
+    ReceiptVoucherLookupAPIView,
     ReceiptVoucherRetrieveUpdateDestroyAPIView,
     ReceiptVoucherConfirmAPIView,
     ReceiptVoucherPostAPIView,
@@ -32,6 +33,7 @@ from receipts.views import (
 
 urlpatterns = [
     path("receipt-vouchers/", ReceiptVoucherListCreateAPIView.as_view(), name="receipt-voucher-list-create"),
+    path("receipt-vouchers/lookup/", ReceiptVoucherLookupAPIView.as_view(), name="receipt-voucher-lookup"),
     path("receipt-vouchers/<int:pk>/", ReceiptVoucherRetrieveUpdateDestroyAPIView.as_view(), name="receipt-voucher-rud"),
     path("receipt-vouchers/<int:pk>/confirm/", ReceiptVoucherConfirmAPIView.as_view(), name="receipt-voucher-confirm"),
     path("receipt-vouchers/<int:pk>/post/", ReceiptVoucherPostAPIView.as_view(), name="receipt-voucher-post"),

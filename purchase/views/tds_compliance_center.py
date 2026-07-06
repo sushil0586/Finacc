@@ -4,8 +4,11 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from io import BytesIO
+import logging
+from time import perf_counter
 from typing import Iterable, Optional
 
+from django.conf import settings
 from django.db.models import Q, Sum
 from django.http import HttpResponse
 from django.utils import timezone
@@ -31,12 +34,23 @@ from purchase.views.purchase_statutory import _require_statutory_view
 from reports.api.receivables_views import _safe_filename, _write_csv, _write_excel, _write_pdf
 
 ZERO2 = Decimal("0.00")
+logger = logging.getLogger(__name__)
 
 
 class PurchaseTdsComplianceCenterAPIView(PurchaseMetaBaseAPIView):
     page_size = 25
 
     def get(self, request):
+        request_started_at = perf_counter()
+        stage_started_at = request_started_at
+        stage_timings: dict[str, float] = {}
+
+        def checkpoint(name: str) -> None:
+            nonlocal stage_started_at
+            now = perf_counter()
+            stage_timings[name] = round((now - stage_started_at) * 1000, 2)
+            stage_started_at = now
+
         entity_id, entityfinid_id, subentity_id = self._parse_scope(request, require_entityfinid=True)
         _require_statutory_view(request, entity_id)
 
@@ -51,6 +65,7 @@ class PurchaseTdsComplianceCenterAPIView(PurchaseMetaBaseAPIView):
             request=request,
             financial_year=financial_year,
         )
+        checkpoint("scope_resolution_ms")
 
         entity = Entity.objects.filter(pk=entity_id).only("entityname").first()
         subentity = (
@@ -68,12 +83,13 @@ class PurchaseTdsComplianceCenterAPIView(PurchaseMetaBaseAPIView):
                 bill_date__lte=period_to,
                 tds_amount__gt=ZERO2,
             )
-            .select_related("vendor", "tds_section", "subentity", "created_by")
+            .select_related("vendor", "vendor__compliance_profile", "tds_section", "subentity", "created_by")
             .order_by("-bill_date", "-id")
         )
         if subentity_id is not None:
             posted_headers_qs = posted_headers_qs.filter(subentity_id=subentity_id)
         headers = list(posted_headers_qs)
+        checkpoint("headers_fetch_ms")
 
         challans_qs = (
             PurchaseStatutoryChallan.objects.filter(
@@ -89,6 +105,7 @@ class PurchaseTdsComplianceCenterAPIView(PurchaseMetaBaseAPIView):
         if subentity_id is not None:
             challans_qs = challans_qs.filter(subentity_id=subentity_id)
         challans = list(challans_qs)
+        checkpoint("challans_fetch_ms")
 
         returns_qs = (
             PurchaseStatutoryReturn.objects.filter(
@@ -104,6 +121,7 @@ class PurchaseTdsComplianceCenterAPIView(PurchaseMetaBaseAPIView):
         if subentity_id is not None:
             returns_qs = returns_qs.filter(subentity_id=subentity_id)
         returns = list(returns_qs)
+        checkpoint("returns_fetch_ms")
 
         challan_lines_all = list(
             PurchaseStatutoryChallanLine.objects.filter(
@@ -112,24 +130,12 @@ class PurchaseTdsComplianceCenterAPIView(PurchaseMetaBaseAPIView):
                 challan__tax_type=PurchaseStatutoryChallan.TaxType.IT_TDS,
             )
             .exclude(challan__status=PurchaseStatutoryChallan.Status.CANCELLED)
-            .select_related("challan", "header", "section")
+            .select_related("challan", "header", "header__tds_section", "section")
             .order_by("-challan__challan_date", "-id")
         )
         if subentity_id is not None:
             challan_lines_all = [line for line in challan_lines_all if line.challan.subentity_id == subentity_id]
-
-        return_lines_all = list(
-            PurchaseStatutoryReturnLine.objects.filter(
-                filing__entity_id=entity_id,
-                filing__entityfinid_id=entityfinid_id,
-                filing__tax_type=PurchaseStatutoryReturn.TaxType.IT_TDS,
-            )
-            .exclude(filing__status=PurchaseStatutoryReturn.Status.CANCELLED)
-            .select_related("filing", "header", "challan")
-            .order_by("-filing__period_to", "-id")
-        )
-        if subentity_id is not None:
-            return_lines_all = [line for line in return_lines_all if line.filing.subentity_id == subentity_id]
+        checkpoint("challan_lines_fetch_ms")
 
         summary = PurchaseStatutoryService.reconciliation_summary(
             entity_id=entity_id,
@@ -139,9 +145,35 @@ class PurchaseTdsComplianceCenterAPIView(PurchaseMetaBaseAPIView):
             date_from=period_from,
             date_to=period_to,
         )
+        checkpoint("reconciliation_summary_ms")
+
+        include_all_datasets = self._query_bool(request.query_params.get("include_datasets"), default=True)
+        include_all_return_datasets = self._query_bool(
+            request.query_params.get("include_return_datasets"),
+            default=include_all_datasets,
+        )
+        requested_tabs = self._requested_tabs(request.query_params.get("tabs"))
+        requested_return_tabs = self._requested_tabs(request.query_params.get("return_tabs"))
+        requested_tab = str(request.query_params.get("tab") or "").strip().lower()
+        requested_return_tab = str(request.query_params.get("return_tab") or "").strip().lower()
+        if requested_tab and requested_tab != "return-filing":
+            requested_tabs.add(requested_tab)
+        if requested_tab == "return-filing" and requested_return_tab:
+            requested_return_tabs.add(requested_return_tab)
 
         header_mapping = self._build_header_mapping(challan_lines_all)
-        header_rows = self._build_deduction_rows(headers, header_mapping)
+        needs_header_rows = include_all_datasets or "deduction-register" in requested_tabs
+        needs_section_rows = include_all_datasets or bool({"payable-report", "section-wise-summary"} & requested_tabs)
+        needs_deductee_rows = include_all_datasets or "deductee-wise-summary" in requested_tabs
+        needs_monthly_rows = include_all_datasets or "monthly-summary" in requested_tabs
+        needs_challan_rows = include_all_datasets or "payment-register" in requested_tabs
+        needs_challan_mapping_rows = include_all_datasets or "challan-mapping" in requested_tabs
+        needs_pending_rows = include_all_datasets or "pending-payment" in requested_tabs
+        needs_vendor_rows = include_all_datasets or "vendor-compliance" in requested_tabs
+        needs_filing_rows = include_all_datasets or include_all_return_datasets or "return-filing" in requested_tabs or bool(requested_return_tabs)
+        needs_form16a_rows = include_all_datasets or "form-16a" in requested_tabs
+        needs_audit_rows = include_all_datasets or "audit-trail" in requested_tabs
+
         section_rows = self._build_section_summary_rows(
             headers=headers,
             challan_lines=challan_lines_all,
@@ -153,13 +185,29 @@ class PurchaseTdsComplianceCenterAPIView(PurchaseMetaBaseAPIView):
             challan_lines=challan_lines_all,
             returns=returns,
         )
-        challan_rows = self._build_payment_register_rows(challans)
-        challan_mapping_rows = self._build_challan_mapping_rows(headers, header_mapping)
-        pending_rows = self._build_pending_payment_rows(headers, header_mapping)
-        vendor_rows = self._build_vendor_compliance_rows(headers, header_mapping)
-        filing_rows = self._build_return_rows(returns)
-        form16a_rows = self._build_form16a_rows(returns)
-        audit_rows = self._build_audit_rows(
+        challan_mapping_metrics = self._build_challan_mapping_metrics(headers, header_mapping)
+        pending_dashboard_rows, pending_overdue_count = self._build_pending_liability_preview(headers, header_mapping)
+        missing_pan_count = self._count_missing_pan_deductees(headers)
+        filing_metrics = self._build_filing_metrics(returns)
+        checkpoint("shared_builder_ms")
+        challan_mapping_rows = self._build_challan_mapping_rows(headers, header_mapping) if needs_challan_mapping_rows else []
+        pending_rows = self._build_pending_payment_rows(headers, header_mapping) if needs_pending_rows else []
+        vendor_rows = self._build_vendor_compliance_rows(headers, header_mapping) if needs_vendor_rows else []
+        filing_rows = self._build_return_rows(returns) if needs_filing_rows else {"24q": [], "26q": [], "27q": []}
+        audit_rows = (
+            self._build_audit_rows(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                period_from=period_from,
+                period_to=period_to,
+                challans=challans,
+                returns=returns,
+            )
+            if needs_audit_rows
+            else []
+        )
+        recent_activity_rows = audit_rows[:6] if audit_rows else self._build_recent_activity_rows(
             entity_id=entity_id,
             entityfinid_id=entityfinid_id,
             subentity_id=subentity_id,
@@ -167,21 +215,147 @@ class PurchaseTdsComplianceCenterAPIView(PurchaseMetaBaseAPIView):
             period_to=period_to,
             challans=challans,
             returns=returns,
+            limit=6,
         )
+        header_rows = self._build_deduction_rows(headers, header_mapping) if needs_header_rows else []
+        challan_rows = self._build_payment_register_rows(challans) if needs_challan_rows else []
+        form16a_rows = self._build_form16a_rows(returns) if needs_form16a_rows else []
+        checkpoint("dataset_builder_ms")
 
         warnings = self._build_warning_chips(
-            vendor_rows=vendor_rows,
-            challan_mapping_rows=challan_mapping_rows,
-            pending_rows=pending_rows,
-            filing_rows=filing_rows["26q"] + filing_rows["27q"],
+            missing_pan_count=missing_pan_count,
+            unmapped_count=challan_mapping_metrics["unmapped"],
+            overdue_count=pending_overdue_count,
+            filing_error_count=filing_metrics["filing_errors"],
         )
 
         payload = {
             "pageTitle": "TDS Compliance Center",
-            "meta": {
+            "meta": self._workspace_meta(
+                namespace="purchase.tds_compliance_center.meta",
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                entity_label=getattr(entity, "entityname", None) or f"Entity {entity_id}",
+                branch_label=getattr(subentity, "subentityname", None) or "All subentities",
+                tds_sections=self._tds_sections(),
+            ),
+            "tabs": self._tabs(),
+            "returnTabs": self._return_tabs(),
+            "headerChips": [
+                {"label": getattr(entity, "entityname", None) or f"Entity {entity_id}"},
+                {"label": self._financial_year_label(financial_year)},
+                {"label": self._quarter_label(quarter_code)},
+                {"label": getattr(subentity, "subentityname", None) or "All subentities"},
+                {"label": f"{self._display_date(period_from)} to {self._display_date(period_to)}", "tone": "info"},
+            ],
+            "kpis": self._build_kpis(
+                summary,
+                missing_pan_count=missing_pan_count,
+                pending_challans=challan_mapping_metrics["pending"],
+                pending_returns=filing_metrics["pending_returns"],
+                short_deduction_cases=filing_metrics["short_deduction_cases"],
+            ),
+            "warnings": warnings,
+            "dashboard": self._build_dashboard(
+                monthly_rows,
+                section_rows,
+                deductee_rows,
+                pending_dashboard_rows,
+                recent_activity_rows,
+            ),
+            "filters": {
+                "financialYearId": entityfinid_id,
+                "quarter": quarter_code,
+                "fromDate": period_from.isoformat(),
+                "toDate": period_to.isoformat(),
+                "vendorId": None,
+                "vendorLabel": "",
+                "pan": "",
+                "tdsSectionId": None,
+                "expenseLedgerLabel": "",
+                "voucherType": "",
+                "paymentStatus": "",
+                "challanStatus": "",
+                "returnStatus": "",
+                "minAmount": None,
+                "maxAmount": None,
+                "branchId": subentity_id,
                 "entityId": entity_id,
-                "entityLabel": getattr(entity, "entityname", None) or f"Entity {entity_id}",
-                "branchLabel": getattr(subentity, "subentityname", None) or "All subentities",
+                "searchText": request.query_params.get("search") or "",
+            },
+            "datasets": self._build_datasets_payload(
+                include_all_datasets=include_all_datasets,
+                requested_tabs=requested_tabs,
+                summary=summary,
+                monthly_rows=monthly_rows,
+                header_rows=header_rows,
+                section_rows=section_rows,
+                challan_rows=challan_rows,
+                challan_mapping_rows=challan_mapping_rows,
+                deductee_rows=deductee_rows,
+                pending_rows=pending_rows,
+                vendor_rows=vendor_rows,
+                filing_rows=filing_rows,
+                form16a_rows=form16a_rows,
+                audit_rows=audit_rows,
+            ),
+            "returnDatasets": self._build_return_datasets_payload(
+                include_all_return_datasets=include_all_return_datasets,
+                requested_return_tabs=requested_return_tabs,
+                filing_rows=filing_rows,
+            ),
+        }
+        checkpoint("payload_build_ms")
+        logger.info(
+            "purchase_tds_compliance_center_profile entity=%s entityfinid=%s subentity=%s quarter=%s headers=%s challans=%s returns=%s challan_lines=%s "
+            "deduction_rows=%s section_rows=%s deductee_rows=%s monthly_rows=%s challan_mapping_rows=%s pending_rows=%s vendor_rows=%s filing_rows=%s "
+            "audit_rows=%s form16a_rows=%s total_ms=%.2f stage_ms=%s",
+            entity_id,
+            entityfinid_id,
+            subentity_id,
+            quarter_code,
+            len(headers),
+            len(challans),
+            len(returns),
+            len(challan_lines_all),
+            len(header_rows),
+            len(section_rows),
+            len(deductee_rows),
+            len(monthly_rows),
+            len(challan_mapping_rows),
+            len(pending_rows),
+            len(vendor_rows),
+            sum(len(rows) for rows in filing_rows.values()),
+            len(audit_rows),
+            len(form16a_rows),
+            (perf_counter() - request_started_at) * 1000,
+            stage_timings,
+        )
+        return Response(payload)
+
+    def _workspace_meta(
+        self,
+        *,
+        namespace: str,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: Optional[int],
+        entity_label: str,
+        branch_label: str,
+        tds_sections: list[dict[str, object]],
+    ) -> dict[str, object]:
+        return self._get_cached_meta(
+            namespace=namespace,
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            extra={},
+            timeout=getattr(settings, "META_CACHE_FORM_TTL_SECONDS", 600),
+            loader=lambda: {
+                "entityId": entity_id,
+                "entityLabel": entity_label,
+                "branchLabel": branch_label,
                 "financialYears": self._normalize_financial_years(self._financial_years(entity_id)),
                 "subentities": self._subentities(entity_id),
                 "quarters": self._quarter_options(),
@@ -211,231 +385,9 @@ class PurchaseTdsComplianceCenterAPIView(PurchaseMetaBaseAPIView):
                     {"value": "revised", "label": "Revised"},
                     {"value": "validated", "label": "Validated"},
                 ],
-                "tdsSections": self._tds_sections(),
+                "tdsSections": tds_sections,
             },
-            "tabs": self._tabs(),
-            "returnTabs": self._return_tabs(),
-            "headerChips": [
-                {"label": getattr(entity, "entityname", None) or f"Entity {entity_id}"},
-                {"label": self._financial_year_label(financial_year)},
-                {"label": self._quarter_label(quarter_code)},
-                {"label": getattr(subentity, "subentityname", None) or "All subentities"},
-                {"label": f"{self._display_date(period_from)} to {self._display_date(period_to)}", "tone": "info"},
-            ],
-            "kpis": self._build_kpis(summary, vendor_rows, filing_rows, challan_mapping_rows),
-            "warnings": warnings,
-            "dashboard": self._build_dashboard(monthly_rows, section_rows, deductee_rows, pending_rows, audit_rows),
-            "filters": {
-                "financialYearId": entityfinid_id,
-                "quarter": quarter_code,
-                "fromDate": period_from.isoformat(),
-                "toDate": period_to.isoformat(),
-                "vendorId": None,
-                "vendorLabel": "",
-                "pan": "",
-                "tdsSectionId": None,
-                "expenseLedgerLabel": "",
-                "voucherType": "",
-                "paymentStatus": "",
-                "challanStatus": "",
-                "returnStatus": "",
-                "minAmount": None,
-                "maxAmount": None,
-                "branchId": subentity_id,
-                "entityId": entity_id,
-                "searchText": request.query_params.get("search") or "",
-            },
-            "datasets": {
-                "dashboard": self._dataset(
-                    columns=[
-                        {"key": "month", "label": "Month", "type": "text"},
-                        {"key": "tdsDeducted", "label": "TDS Deducted", "type": "currency", "align": "right"},
-                        {"key": "deposited", "label": "Deposited", "type": "currency", "align": "right"},
-                        {"key": "pending", "label": "Pending Liability", "type": "currency", "align": "right"},
-                        {"key": "returnStatus", "label": "Status", "type": "status"},
-                    ],
-                    rows=monthly_rows,
-                    totals={
-                        "primaryLabel": "Period Deducted",
-                        "primaryValue": self._money(summary["deducted"]),
-                        "secondaryLabel": "Pending Deposit",
-                        "secondaryValue": self._money(summary["pending_deposit"]),
-                    },
-                ),
-                "deduction-register": self._dataset(
-                    columns=[
-                        {"key": "date", "label": "Date", "type": "date"},
-                        {"key": "voucherNo", "label": "Voucher No", "type": "text"},
-                        {"key": "voucherType", "label": "Voucher Type", "type": "text"},
-                        {"key": "deductee", "label": "Deductee", "type": "text"},
-                        {"key": "pan", "label": "PAN", "type": "text"},
-                        {"key": "section", "label": "Section", "type": "text"},
-                        {"key": "taxableAmount", "label": "Taxable Amount", "type": "currency", "align": "right"},
-                        {"key": "tdsAmount", "label": "TDS Amount", "type": "currency", "align": "right"},
-                        {"key": "status", "label": "Status", "type": "status"},
-                        {"key": "actions", "label": "Actions", "type": "actions", "sortable": False},
-                    ],
-                    rows=header_rows,
-                    totals={
-                        "primaryLabel": "TDS Total",
-                        "primaryValue": self._money(summary["deducted"]),
-                    },
-                ),
-                "payable-report": self._dataset(
-                    columns=[
-                        {"key": "section", "label": "Section", "type": "text"},
-                        {"key": "openingBalance", "label": "Opening Balance", "type": "currency", "align": "right"},
-                        {"key": "currentDeduction", "label": "Current Deduction", "type": "currency", "align": "right"},
-                        {"key": "deposited", "label": "Deposited", "type": "currency", "align": "right"},
-                        {"key": "interest", "label": "Interest", "type": "currency", "align": "right"},
-                        {"key": "closingBalance", "label": "Closing Balance", "type": "currency", "align": "right"},
-                        {"key": "status", "label": "Status", "type": "status"},
-                        {"key": "actions", "label": "Actions", "type": "actions", "sortable": False},
-                    ],
-                    rows=section_rows,
-                    totals={
-                        "primaryLabel": "Closing Balance",
-                        "primaryValue": self._money(sum((self._decimal(row.get("closingBalance")) for row in section_rows), ZERO2)),
-                        "secondaryLabel": "Interest",
-                        "secondaryValue": self._money(sum((self._decimal(row.get("interest")) for row in section_rows), ZERO2)),
-                    },
-                ),
-                "payment-register": self._dataset(
-                    columns=[
-                        {"key": "challanNo", "label": "Challan No", "type": "text"},
-                        {"key": "cin", "label": "CIN", "type": "text"},
-                        {"key": "bank", "label": "Bank", "type": "text"},
-                        {"key": "depositDate", "label": "Deposit Date", "type": "date"},
-                        {"key": "amount", "label": "Amount", "type": "currency", "align": "right"},
-                        {"key": "section", "label": "Section", "type": "text"},
-                        {"key": "status", "label": "Status", "type": "status"},
-                        {"key": "actions", "label": "Actions", "type": "actions", "sortable": False},
-                    ],
-                    rows=challan_rows,
-                ),
-                "challan-mapping": self._dataset(
-                    columns=[
-                        {"key": "voucherNo", "label": "Voucher No", "type": "text"},
-                        {"key": "deductee", "label": "Deductee", "type": "text"},
-                        {"key": "section", "label": "Section", "type": "text"},
-                        {"key": "tdsAmount", "label": "TDS Amount", "type": "currency", "align": "right"},
-                        {"key": "mappedChallan", "label": "Mapped Challan", "type": "text"},
-                        {"key": "remainingAmount", "label": "Remaining Amount", "type": "currency", "align": "right"},
-                        {"key": "mappingStatus", "label": "Mapping Status", "type": "status"},
-                        {"key": "actions", "label": "Actions", "type": "actions", "sortable": False},
-                    ],
-                    rows=challan_mapping_rows,
-                ),
-                "section-wise-summary": self._dataset(
-                    columns=[
-                        {"key": "section", "label": "Section", "type": "text"},
-                        {"key": "nature", "label": "Nature Of Payment", "type": "text"},
-                        {"key": "transactions", "label": "Transactions", "type": "number", "align": "right"},
-                        {"key": "taxableAmount", "label": "Taxable Amount", "type": "currency", "align": "right"},
-                        {"key": "tdsAmount", "label": "TDS Amount", "type": "currency", "align": "right"},
-                        {"key": "pendingAmount", "label": "Pending Amount", "type": "currency", "align": "right"},
-                    ],
-                    rows=section_rows,
-                ),
-                "deductee-wise-summary": self._dataset(
-                    columns=[
-                        {"key": "deductee", "label": "Deductee", "type": "text"},
-                        {"key": "pan", "label": "PAN", "type": "text"},
-                        {"key": "transactions", "label": "Transactions", "type": "number", "align": "right"},
-                        {"key": "taxableAmount", "label": "Taxable Amount", "type": "currency", "align": "right"},
-                        {"key": "tdsAmount", "label": "TDS Amount", "type": "currency", "align": "right"},
-                        {"key": "pending", "label": "Pending", "type": "currency", "align": "right"},
-                        {"key": "complianceStatus", "label": "Compliance", "type": "status"},
-                    ],
-                    rows=deductee_rows,
-                ),
-                "monthly-summary": self._dataset(
-                    columns=[
-                        {"key": "month", "label": "Month", "type": "text"},
-                        {"key": "taxableAmount", "label": "Taxable Amount", "type": "currency", "align": "right"},
-                        {"key": "tdsDeducted", "label": "TDS Deducted", "type": "currency", "align": "right"},
-                        {"key": "deposited", "label": "Deposited", "type": "currency", "align": "right"},
-                        {"key": "pending", "label": "Pending", "type": "currency", "align": "right"},
-                        {"key": "returnStatus", "label": "Return Status", "type": "status"},
-                    ],
-                    rows=monthly_rows,
-                ),
-                "pending-payment": self._dataset(
-                    columns=[
-                        {"key": "dueDate", "label": "Due Date", "type": "date"},
-                        {"key": "section", "label": "Section", "type": "text"},
-                        {"key": "deductee", "label": "Deductee", "type": "text"},
-                        {"key": "tdsAmount", "label": "TDS Amount", "type": "currency", "align": "right"},
-                        {"key": "delayDays", "label": "Delay Days", "type": "number", "align": "right"},
-                        {"key": "interest", "label": "Interest", "type": "currency", "align": "right"},
-                        {"key": "status", "label": "Status", "type": "status"},
-                    ],
-                    rows=pending_rows,
-                ),
-                "vendor-compliance": self._dataset(
-                    columns=[
-                        {"key": "deductee", "label": "Deductee", "type": "text"},
-                        {"key": "pan", "label": "PAN", "type": "text"},
-                        {"key": "panStatus", "label": "PAN Status", "type": "status"},
-                        {"key": "defaultSection", "label": "Default TDS Section", "type": "text"},
-                        {"key": "certificate", "label": "Lower / NIL Certificate", "type": "text"},
-                        {"key": "validity", "label": "Certificate Validity", "type": "date"},
-                        {"key": "complianceStatus", "label": "Compliance", "type": "status"},
-                    ],
-                    rows=vendor_rows,
-                ),
-                "return-filing": self._dataset(
-                    columns=self._return_columns("26q"),
-                    rows=filing_rows["26q"],
-                ),
-                "form-16a": self._dataset(
-                    columns=[
-                        {"key": "deductee", "label": "Deductee", "type": "text"},
-                        {"key": "pan", "label": "PAN", "type": "text"},
-                        {"key": "quarter", "label": "Quarter", "type": "text"},
-                        {"key": "certificateNo", "label": "Certificate No", "type": "text"},
-                        {"key": "generatedDate", "label": "Generated Date", "type": "date"},
-                        {"key": "emailStatus", "label": "Email Status", "type": "status"},
-                        {"key": "downloadStatus", "label": "Download Status", "type": "status"},
-                        {"key": "actions", "label": "Actions", "type": "actions", "sortable": False},
-                    ],
-                    rows=form16a_rows,
-                ),
-                "audit-trail": self._dataset(
-                    columns=[
-                        {"key": "dateTime", "label": "Date Time", "type": "date"},
-                        {"key": "user", "label": "User", "type": "text"},
-                        {"key": "action", "label": "Action", "type": "text"},
-                        {"key": "voucherNo", "label": "Voucher No", "type": "text"},
-                        {"key": "field", "label": "Field", "type": "text"},
-                        {"key": "oldValue", "label": "Old Value", "type": "text"},
-                        {"key": "newValue", "label": "New Value", "type": "text"},
-                        {"key": "remarks", "label": "Remarks", "type": "text"},
-                        {"key": "ipAddress", "label": "IP Address", "type": "text"},
-                    ],
-                    rows=audit_rows,
-                ),
-            },
-            "returnDatasets": {
-                "24q": self._dataset(
-                    columns=self._return_columns("24q"),
-                    rows=[],
-                    empty_message="No salary-side 24Q data is available in the purchase statutory TDS source.",
-                    return_tab="24q",
-                ),
-                "26q": self._dataset(
-                    columns=self._return_columns("26q"),
-                    rows=filing_rows["26q"],
-                    return_tab="26q",
-                ),
-                "27q": self._dataset(
-                    columns=self._return_columns("27q"),
-                    rows=filing_rows["27q"],
-                    return_tab="27q",
-                ),
-            },
-        }
-        return Response(payload)
+        )
 
     def _resolve_period(self, *, request, financial_year: EntityFinancialYear) -> tuple[date, date, str]:
         quarter_code = str(request.query_params.get("quarter") or "").strip().upper()
@@ -527,16 +479,27 @@ class PurchaseTdsComplianceCenterAPIView(PurchaseMetaBaseAPIView):
                 status=PurchaseInvoiceHeader.Status.POSTED,
                 bill_date__lt=period_from,
                 tds_amount__gt=ZERO2,
-            ).select_related("tds_section")
+            )
             if headers
             else PurchaseInvoiceHeader.objects.none()
         )
         if headers and headers[0].subentity_id is not None:
             prior_headers = prior_headers.filter(subentity_id=headers[0].subentity_id)
-        for header in prior_headers:
-            code = getattr(getattr(header, "tds_section", None), "section_code", None) or "UNSPECIFIED"
-            bucket = section_map.setdefault(code, self._new_section_bucket(header))
-            bucket["opening"] += self._decimal(header.tds_amount)
+        for row in prior_headers.values("tds_section__section_code", "tds_section__description").annotate(opening=Sum("tds_amount")):
+            code = row.get("tds_section__section_code") or "UNSPECIFIED"
+            bucket = section_map.setdefault(
+                code,
+                {
+                    "nature": row.get("tds_section__description") or "TDS Section",
+                    "opening": ZERO2,
+                    "current": ZERO2,
+                    "deposited": ZERO2,
+                    "interest": ZERO2,
+                    "transactions": 0,
+                    "taxable": ZERO2,
+                },
+            )
+            bucket["opening"] += self._decimal(row.get("opening"))
 
         for line in challan_lines:
             challan = line.challan
@@ -1044,27 +1007,202 @@ class PurchaseTdsComplianceCenterAPIView(PurchaseMetaBaseAPIView):
         rows.sort(key=lambda row: row["dateTime"] or "", reverse=True)
         return rows[:50]
 
+    def _build_recent_activity_rows(
+        self,
+        *,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: Optional[int],
+        period_from: date,
+        period_to: date,
+        challans: list[PurchaseStatutoryChallan],
+        returns: list[PurchaseStatutoryReturn],
+        limit: int,
+    ) -> list[dict[str, object]]:
+        rows: list[dict[str, object]] = []
+
+        for challan in challans[:limit]:
+            rows.append(
+                {
+                    "action": "Challan Created",
+                    "voucherNo": challan.challan_no or f"Challan {challan.id}",
+                    "remarks": challan.remarks or "",
+                    "newValue": challan.get_status_display(),
+                    "dateTime": self._iso_datetime(challan.created_at),
+                }
+            )
+            if challan.deposited_at:
+                rows.append(
+                    {
+                        "action": "Challan Deposited",
+                        "voucherNo": challan.challan_no or f"Challan {challan.id}",
+                        "remarks": challan.bank_ref_no or challan.cin_no or "",
+                        "newValue": "Deposited",
+                        "dateTime": self._iso_datetime(challan.deposited_at),
+                    }
+                )
+
+        for filing in returns[:limit]:
+            rows.append(
+                {
+                    "action": "Return Created",
+                    "voucherNo": filing.return_code or f"Return {filing.id}",
+                    "remarks": filing.remarks or "",
+                    "newValue": filing.get_status_display(),
+                    "dateTime": self._iso_datetime(filing.created_at),
+                }
+            )
+            if filing.filed_at:
+                rows.append(
+                    {
+                        "action": "Return Filed",
+                        "voucherNo": filing.return_code or f"Return {filing.id}",
+                        "remarks": filing.ack_no or filing.arn_no or "",
+                        "newValue": filing.get_status_display(),
+                        "dateTime": self._iso_datetime(filing.filed_at),
+                    }
+                )
+
+        review_events = PurchaseStatutoryReviewNoteEvent.objects.filter(
+            review_note__entity_id=entity_id,
+            review_note__entityfinid_id=entityfinid_id,
+            review_note__tax_type=PurchaseStatutoryChallan.TaxType.IT_TDS,
+            changed_at__date__gte=period_from,
+            changed_at__date__lte=period_to,
+        ).select_related("review_note")
+        if subentity_id is not None:
+            review_events = review_events.filter(review_note__subentity_id=subentity_id)
+        for event in review_events.order_by("-changed_at", "-id")[:limit]:
+            rows.append(
+                {
+                    "action": f"Review {event.action.title()}",
+                    "voucherNo": event.review_note.tax_type or "IT_TDS",
+                    "remarks": event.closure_comment or event.review_summary or "",
+                    "newValue": event.closure_status,
+                    "dateTime": self._iso_datetime(event.changed_at),
+                }
+            )
+
+        rows.sort(key=lambda row: row["dateTime"] or "", reverse=True)
+        return rows[:limit]
+
+    def _count_missing_pan_deductees(self, headers: list[PurchaseInvoiceHeader]) -> int:
+        deductees: dict[str, bool] = {}
+        for header in headers:
+            key = header.vendor_name or getattr(header.vendor, "accountname", "") or f"Vendor {header.vendor_id or header.id}"
+            deductees[key] = deductees.get(key, False) or not bool((account_pan(header.vendor) or "").strip())
+        return sum(1 for missing_pan in deductees.values() if missing_pan)
+
+    def _build_challan_mapping_metrics(
+        self,
+        headers: list[PurchaseInvoiceHeader],
+        header_mapping: dict[int, dict[str, object]],
+    ) -> dict[str, int]:
+        pending = 0
+        unmapped = 0
+        for header in headers:
+            row_mapping = header_mapping.get(int(header.id), {})
+            tds_amount = self._decimal(header.tds_amount)
+            mapped = self._decimal(row_mapping.get("mapped"))
+            remaining = max(tds_amount - mapped, ZERO2)
+            if remaining > ZERO2:
+                pending += 1
+                if mapped <= ZERO2:
+                    unmapped += 1
+        return {"pending": pending, "unmapped": unmapped}
+
+    def _build_pending_liability_preview(
+        self,
+        headers: list[PurchaseInvoiceHeader],
+        header_mapping: dict[int, dict[str, object]],
+    ) -> tuple[list[dict[str, object]], int]:
+        pending_by_section: dict[str, dict[str, object]] = {}
+        overdue_count = 0
+        today = timezone.localdate()
+        for header in headers:
+            row_mapping = header_mapping.get(int(header.id), {})
+            remaining = max(self._decimal(header.tds_amount) - self._decimal(row_mapping.get("deposited")), ZERO2)
+            if remaining <= ZERO2:
+                continue
+            due_date = self._deposit_due_date(header.bill_date)
+            delay_days = max((today - due_date).days, 0)
+            if delay_days > 0:
+                overdue_count += 1
+            section = getattr(getattr(header, "tds_section", None), "section_code", None) or "UNSPECIFIED"
+            bucket = pending_by_section.setdefault(
+                section,
+                {
+                    "section": section,
+                    "pendingAmount": ZERO2,
+                    "interestAmount": ZERO2,
+                    "maxDelayDays": 0,
+                },
+            )
+            bucket["pendingAmount"] += remaining
+            bucket["interestAmount"] += self._interest_estimate(remaining, delay_days)
+            bucket["maxDelayDays"] = max(int(bucket["maxDelayDays"]), delay_days)
+
+        rows = [
+            {
+                "section": section,
+                "pendingAmount": self._money(bucket["pendingAmount"]),
+                "interestAmount": self._money(bucket["interestAmount"]),
+                "dueBucket": (
+                    f"Overdue by {bucket['maxDelayDays']} days"
+                    if int(bucket["maxDelayDays"]) > 0
+                    else "Pending"
+                ),
+                "tone": "danger" if int(bucket["maxDelayDays"]) > 0 else "warning",
+                "_sort_pending": bucket["pendingAmount"],
+            }
+            for section, bucket in pending_by_section.items()
+        ]
+        rows.sort(key=lambda row: (self._decimal(row["_sort_pending"]) * Decimal("-1"), row["section"]))
+        for row in rows:
+            row.pop("_sort_pending", None)
+        return rows[:5], overdue_count
+
+    def _build_filing_metrics(self, returns: list[PurchaseStatutoryReturn]) -> dict[str, int]:
+        pending_returns = 0
+        short_deduction_cases = 0
+        filing_errors = 0
+        for filing in returns:
+            code = (filing.return_code or "").strip().upper()
+            if code not in {"26Q", "27Q"}:
+                continue
+            status_label = self._status_label(self._return_status_badge(filing))
+            if status_label not in {"Filed", "Revised"}:
+                pending_returns += 1
+            validation_errors = 0
+            if code == "27Q":
+                for line in filing.lines.all():
+                    if not (line.deductee_tax_id_snapshot or "").strip():
+                        validation_errors += 1
+            short_deduction_cases += validation_errors
+            filing_errors += validation_errors
+        return {
+            "pending_returns": pending_returns,
+            "short_deduction_cases": short_deduction_cases,
+            "filing_errors": filing_errors,
+        }
+
     def _build_warning_chips(
         self,
         *,
-        vendor_rows: list[dict[str, object]],
-        challan_mapping_rows: list[dict[str, object]],
-        pending_rows: list[dict[str, object]],
-        filing_rows: list[dict[str, object]],
+        missing_pan_count: int,
+        unmapped_count: int,
+        overdue_count: int,
+        filing_error_count: int,
     ) -> list[dict[str, object]]:
-        missing_pan = sum(1 for row in vendor_rows if self._status_label(row.get("panStatus")) == "Missing PAN")
-        unmapped = sum(1 for row in challan_mapping_rows if self._status_label(row.get("mappingStatus")) == "Unmapped")
-        overdue = sum(1 for row in pending_rows if self._status_label(row.get("status")) == "Overdue")
-        filing_errors = sum(int(row.get("validationErrors") or 0) for row in filing_rows)
         chips: list[dict[str, object]] = []
-        if missing_pan:
-            chips.append({"label": f"Missing PAN {missing_pan}", "tone": "danger"})
-        if unmapped:
-            chips.append({"label": f"Unmapped Challans {unmapped}", "tone": "warning"})
-        if overdue:
-            chips.append({"label": f"Pending Deposit {overdue}", "tone": "warning"})
-        if filing_errors:
-            chips.append({"label": f"Return Errors {filing_errors}", "tone": "danger"})
+        if missing_pan_count:
+            chips.append({"label": f"Missing PAN {missing_pan_count}", "tone": "danger"})
+        if unmapped_count:
+            chips.append({"label": f"Unmapped Challans {unmapped_count}", "tone": "warning"})
+        if overdue_count:
+            chips.append({"label": f"Pending Deposit {overdue_count}", "tone": "warning"})
+        if filing_error_count:
+            chips.append({"label": f"Return Errors {filing_error_count}", "tone": "danger"})
         if not chips:
             chips.append({"label": "Real Data Synced", "tone": "success"})
         return chips
@@ -1072,29 +1210,21 @@ class PurchaseTdsComplianceCenterAPIView(PurchaseMetaBaseAPIView):
     def _build_kpis(
         self,
         summary: dict[str, str],
-        vendor_rows: list[dict[str, object]],
-        filing_rows: dict[str, list[dict[str, object]]],
-        challan_mapping_rows: list[dict[str, object]],
+        *,
+        missing_pan_count: int,
+        pending_challans: int,
+        pending_returns: int,
+        short_deduction_cases: int,
     ) -> list[dict[str, object]]:
-        missing_pan = sum(1 for row in vendor_rows if self._status_label(row.get("panStatus")) == "Missing PAN")
-        pending_challans = sum(
-            1 for row in challan_mapping_rows if self._status_label(row.get("mappingStatus")) != "Mapped"
-        )
-        pending_returns = sum(
-            1
-            for row in filing_rows["26q"] + filing_rows["27q"]
-            if self._status_label(row.get("returnStatus")) not in {"Filed", "Revised"}
-        )
-        short_deductions = sum(int(row.get("validationErrors") or 0) for row in filing_rows["26q"] + filing_rows["27q"])
         return [
             {"code": "total_deducted", "label": "Total TDS Deducted", "value": self._money(summary["deducted"]), "tone": "info", "hint": "Selected period"},
             {"code": "total_deposited", "label": "Total TDS Deposited", "value": self._money(summary["deposited"]), "tone": "success", "hint": "Deposited challans"},
             {"code": "pending_liability", "label": "Pending Liability", "value": self._money(summary["pending_deposit"]), "tone": "warning", "hint": "Deducted but not deposited"},
             {"code": "interest_payable", "label": "Interest Payable", "value": self._money(summary["deposited_interest"]), "tone": "danger", "hint": "Deposited interest in period"},
             {"code": "pending_challans", "label": "Pending Challans", "value": str(pending_challans), "tone": "warning", "hint": "Unmapped or partial"},
-            {"code": "vendors_missing_pan", "label": "Vendors Missing PAN", "value": str(missing_pan), "tone": "danger", "hint": "Needs master cleanup"},
+            {"code": "vendors_missing_pan", "label": "Vendors Missing PAN", "value": str(missing_pan_count), "tone": "danger", "hint": "Needs master cleanup"},
             {"code": "returns_pending", "label": "Returns Pending", "value": str(pending_returns), "tone": "warning", "hint": "Draft or not filed"},
-            {"code": "short_deduction_cases", "label": "Short Deduction Cases", "value": str(short_deductions), "tone": "danger", "hint": "Validation cases"},
+            {"code": "short_deduction_cases", "label": "Short Deduction Cases", "value": str(short_deduction_cases), "tone": "danger", "hint": "Validation cases"},
         ]
 
     def _build_dashboard(
@@ -1105,25 +1235,6 @@ class PurchaseTdsComplianceCenterAPIView(PurchaseMetaBaseAPIView):
         pending_rows: list[dict[str, object]],
         audit_rows: list[dict[str, object]],
     ) -> dict[str, object]:
-        pending_by_section: dict[str, dict[str, object]] = {}
-        for row in pending_rows:
-            section = str(row.get("section") or "UNSPECIFIED")
-            bucket = pending_by_section.setdefault(
-                section,
-                {
-                    "section": section,
-                    "pendingAmount": "0.00",
-                    "interestAmount": "0.00",
-                    "dueBucket": "Pending",
-                    "tone": "warning",
-                },
-            )
-            bucket["pendingAmount"] = self._money(self._decimal(bucket["pendingAmount"]) + self._decimal(row.get("tdsAmount")))
-            bucket["interestAmount"] = self._money(self._decimal(bucket["interestAmount"]) + self._decimal(row.get("interest")))
-            if int(row.get("delayDays") or 0) > 0:
-                bucket["dueBucket"] = f"Overdue by {row.get('delayDays')} days"
-                bucket["tone"] = "danger"
-
         return {
             "monthlyTrend": [
                 {
@@ -1153,7 +1264,7 @@ class PurchaseTdsComplianceCenterAPIView(PurchaseMetaBaseAPIView):
                 }
                 for row in deductee_rows[:5]
             ],
-            "pendingLiability": list(pending_by_section.values())[:5],
+            "pendingLiability": pending_rows[:5],
             "recentActivities": [
                 {
                     "title": row.get("action"),
@@ -1163,6 +1274,236 @@ class PurchaseTdsComplianceCenterAPIView(PurchaseMetaBaseAPIView):
                 }
                 for row in audit_rows[:6]
             ],
+        }
+
+    def _build_datasets_payload(
+        self,
+        *,
+        include_all_datasets: bool,
+        requested_tabs: set[str],
+        summary: dict[str, str],
+        monthly_rows: list[dict[str, object]],
+        header_rows: list[dict[str, object]],
+        section_rows: list[dict[str, object]],
+        challan_rows: list[dict[str, object]],
+        challan_mapping_rows: list[dict[str, object]],
+        deductee_rows: list[dict[str, object]],
+        pending_rows: list[dict[str, object]],
+        vendor_rows: list[dict[str, object]],
+        filing_rows: dict[str, list[dict[str, object]]],
+        form16a_rows: list[dict[str, object]],
+        audit_rows: list[dict[str, object]],
+    ) -> dict[str, object]:
+        datasets = {
+            "dashboard": self._dataset(
+                columns=[
+                    {"key": "month", "label": "Month", "type": "text"},
+                    {"key": "tdsDeducted", "label": "TDS Deducted", "type": "currency", "align": "right"},
+                    {"key": "deposited", "label": "Deposited", "type": "currency", "align": "right"},
+                    {"key": "pending", "label": "Pending Liability", "type": "currency", "align": "right"},
+                    {"key": "returnStatus", "label": "Status", "type": "status"},
+                ],
+                rows=monthly_rows,
+                totals={
+                    "primaryLabel": "Period Deducted",
+                    "primaryValue": self._money(summary["deducted"]),
+                    "secondaryLabel": "Pending Deposit",
+                    "secondaryValue": self._money(summary["pending_deposit"]),
+                },
+            ),
+            "deduction-register": self._dataset(
+                columns=[
+                    {"key": "date", "label": "Date", "type": "date"},
+                    {"key": "voucherNo", "label": "Voucher No", "type": "text"},
+                    {"key": "voucherType", "label": "Voucher Type", "type": "text"},
+                    {"key": "deductee", "label": "Deductee", "type": "text"},
+                    {"key": "pan", "label": "PAN", "type": "text"},
+                    {"key": "section", "label": "Section", "type": "text"},
+                    {"key": "taxableAmount", "label": "Taxable Amount", "type": "currency", "align": "right"},
+                    {"key": "tdsAmount", "label": "TDS Amount", "type": "currency", "align": "right"},
+                    {"key": "status", "label": "Status", "type": "status"},
+                    {"key": "actions", "label": "Actions", "type": "actions", "sortable": False},
+                ],
+                rows=header_rows,
+                totals={
+                    "primaryLabel": "TDS Total",
+                    "primaryValue": self._money(summary["deducted"]),
+                },
+            ),
+            "payable-report": self._dataset(
+                columns=[
+                    {"key": "section", "label": "Section", "type": "text"},
+                    {"key": "openingBalance", "label": "Opening Balance", "type": "currency", "align": "right"},
+                    {"key": "currentDeduction", "label": "Current Deduction", "type": "currency", "align": "right"},
+                    {"key": "deposited", "label": "Deposited", "type": "currency", "align": "right"},
+                    {"key": "interest", "label": "Interest", "type": "currency", "align": "right"},
+                    {"key": "closingBalance", "label": "Closing Balance", "type": "currency", "align": "right"},
+                    {"key": "status", "label": "Status", "type": "status"},
+                    {"key": "actions", "label": "Actions", "type": "actions", "sortable": False},
+                ],
+                rows=section_rows,
+                totals={
+                    "primaryLabel": "Closing Balance",
+                    "primaryValue": self._money(sum((self._decimal(row.get("closingBalance")) for row in section_rows), ZERO2)),
+                    "secondaryLabel": "Interest",
+                    "secondaryValue": self._money(sum((self._decimal(row.get("interest")) for row in section_rows), ZERO2)),
+                },
+            ),
+            "payment-register": self._dataset(
+                columns=[
+                    {"key": "challanNo", "label": "Challan No", "type": "text"},
+                    {"key": "cin", "label": "CIN", "type": "text"},
+                    {"key": "bank", "label": "Bank", "type": "text"},
+                    {"key": "depositDate", "label": "Deposit Date", "type": "date"},
+                    {"key": "amount", "label": "Amount", "type": "currency", "align": "right"},
+                    {"key": "section", "label": "Section", "type": "text"},
+                    {"key": "status", "label": "Status", "type": "status"},
+                    {"key": "actions", "label": "Actions", "type": "actions", "sortable": False},
+                ],
+                rows=challan_rows,
+            ),
+            "challan-mapping": self._dataset(
+                columns=[
+                    {"key": "voucherNo", "label": "Voucher No", "type": "text"},
+                    {"key": "deductee", "label": "Deductee", "type": "text"},
+                    {"key": "section", "label": "Section", "type": "text"},
+                    {"key": "tdsAmount", "label": "TDS Amount", "type": "currency", "align": "right"},
+                    {"key": "mappedChallan", "label": "Mapped Challan", "type": "text"},
+                    {"key": "remainingAmount", "label": "Remaining Amount", "type": "currency", "align": "right"},
+                    {"key": "mappingStatus", "label": "Mapping Status", "type": "status"},
+                    {"key": "actions", "label": "Actions", "type": "actions", "sortable": False},
+                ],
+                rows=challan_mapping_rows,
+            ),
+            "section-wise-summary": self._dataset(
+                columns=[
+                    {"key": "section", "label": "Section", "type": "text"},
+                    {"key": "nature", "label": "Nature Of Payment", "type": "text"},
+                    {"key": "transactions", "label": "Transactions", "type": "number", "align": "right"},
+                    {"key": "taxableAmount", "label": "Taxable Amount", "type": "currency", "align": "right"},
+                    {"key": "tdsAmount", "label": "TDS Amount", "type": "currency", "align": "right"},
+                    {"key": "pendingAmount", "label": "Pending Amount", "type": "currency", "align": "right"},
+                ],
+                rows=section_rows,
+            ),
+            "deductee-wise-summary": self._dataset(
+                columns=[
+                    {"key": "deductee", "label": "Deductee", "type": "text"},
+                    {"key": "pan", "label": "PAN", "type": "text"},
+                    {"key": "transactions", "label": "Transactions", "type": "number", "align": "right"},
+                    {"key": "taxableAmount", "label": "Taxable Amount", "type": "currency", "align": "right"},
+                    {"key": "tdsAmount", "label": "TDS Amount", "type": "currency", "align": "right"},
+                    {"key": "pending", "label": "Pending", "type": "currency", "align": "right"},
+                    {"key": "complianceStatus", "label": "Compliance", "type": "status"},
+                ],
+                rows=deductee_rows,
+            ),
+            "monthly-summary": self._dataset(
+                columns=[
+                    {"key": "month", "label": "Month", "type": "text"},
+                    {"key": "taxableAmount", "label": "Taxable Amount", "type": "currency", "align": "right"},
+                    {"key": "tdsDeducted", "label": "TDS Deducted", "type": "currency", "align": "right"},
+                    {"key": "deposited", "label": "Deposited", "type": "currency", "align": "right"},
+                    {"key": "pending", "label": "Pending", "type": "currency", "align": "right"},
+                    {"key": "returnStatus", "label": "Return Status", "type": "status"},
+                ],
+                rows=monthly_rows,
+            ),
+            "pending-payment": self._dataset(
+                columns=[
+                    {"key": "dueDate", "label": "Due Date", "type": "date"},
+                    {"key": "section", "label": "Section", "type": "text"},
+                    {"key": "deductee", "label": "Deductee", "type": "text"},
+                    {"key": "tdsAmount", "label": "TDS Amount", "type": "currency", "align": "right"},
+                    {"key": "delayDays", "label": "Delay Days", "type": "number", "align": "right"},
+                    {"key": "interest", "label": "Interest", "type": "currency", "align": "right"},
+                    {"key": "status", "label": "Status", "type": "status"},
+                ],
+                rows=pending_rows,
+            ),
+            "vendor-compliance": self._dataset(
+                columns=[
+                    {"key": "deductee", "label": "Deductee", "type": "text"},
+                    {"key": "pan", "label": "PAN", "type": "text"},
+                    {"key": "panStatus", "label": "PAN Status", "type": "status"},
+                    {"key": "defaultSection", "label": "Default TDS Section", "type": "text"},
+                    {"key": "certificate", "label": "Lower / NIL Certificate", "type": "text"},
+                    {"key": "validity", "label": "Certificate Validity", "type": "date"},
+                    {"key": "complianceStatus", "label": "Compliance", "type": "status"},
+                ],
+                rows=vendor_rows,
+            ),
+            "return-filing": self._dataset(
+                columns=self._return_columns("26q"),
+                rows=filing_rows["26q"],
+            ),
+            "form-16a": self._dataset(
+                columns=[
+                    {"key": "deductee", "label": "Deductee", "type": "text"},
+                    {"key": "pan", "label": "PAN", "type": "text"},
+                    {"key": "quarter", "label": "Quarter", "type": "text"},
+                    {"key": "certificateNo", "label": "Certificate No", "type": "text"},
+                    {"key": "generatedDate", "label": "Generated Date", "type": "date"},
+                    {"key": "emailStatus", "label": "Email Status", "type": "status"},
+                    {"key": "downloadStatus", "label": "Download Status", "type": "status"},
+                    {"key": "actions", "label": "Actions", "type": "actions", "sortable": False},
+                ],
+                rows=form16a_rows,
+            ),
+            "audit-trail": self._dataset(
+                columns=[
+                    {"key": "dateTime", "label": "Date Time", "type": "date"},
+                    {"key": "user", "label": "User", "type": "text"},
+                    {"key": "action", "label": "Action", "type": "text"},
+                    {"key": "voucherNo", "label": "Voucher No", "type": "text"},
+                    {"key": "field", "label": "Field", "type": "text"},
+                    {"key": "oldValue", "label": "Old Value", "type": "text"},
+                    {"key": "newValue", "label": "New Value", "type": "text"},
+                    {"key": "remarks", "label": "Remarks", "type": "text"},
+                    {"key": "ipAddress", "label": "IP Address", "type": "text"},
+                ],
+                rows=audit_rows,
+            ),
+        }
+        if include_all_datasets:
+            return datasets
+        return {
+            tab_id: dataset
+            for tab_id, dataset in datasets.items()
+            if tab_id in requested_tabs
+        }
+
+    def _build_return_datasets_payload(
+        self,
+        *,
+        include_all_return_datasets: bool,
+        requested_return_tabs: set[str],
+        filing_rows: dict[str, list[dict[str, object]]],
+    ) -> dict[str, object]:
+        datasets = {
+            "24q": self._dataset(
+                columns=self._return_columns("24q"),
+                rows=[],
+                empty_message="No salary-side 24Q data is available in the purchase statutory TDS source.",
+                return_tab="24q",
+            ),
+            "26q": self._dataset(
+                columns=self._return_columns("26q"),
+                rows=filing_rows["26q"],
+                return_tab="26q",
+            ),
+            "27q": self._dataset(
+                columns=self._return_columns("27q"),
+                rows=filing_rows["27q"],
+                return_tab="27q",
+            ),
+        }
+        if include_all_return_datasets:
+            return datasets
+        return {
+            tab_id: dataset
+            for tab_id, dataset in datasets.items()
+            if tab_id in requested_return_tabs
         }
 
     def _dataset(
@@ -1188,6 +1529,25 @@ class PurchaseTdsComplianceCenterAPIView(PurchaseMetaBaseAPIView):
         if return_tab is not None:
             payload["returnTab"] = return_tab
         return payload
+
+    def _query_bool(self, raw_value: Optional[str], *, default: bool) -> bool:
+        if raw_value is None:
+            return default
+        token = str(raw_value).strip().lower()
+        if token in {"1", "true", "yes", "y"}:
+            return True
+        if token in {"0", "false", "no", "n"}:
+            return False
+        return default
+
+    def _requested_tabs(self, raw_value: Optional[str]) -> set[str]:
+        if not raw_value:
+            return set()
+        return {
+            token.strip().lower()
+            for token in str(raw_value).split(",")
+            if token.strip()
+        }
 
     def _tabs(self) -> list[dict[str, str]]:
         return [

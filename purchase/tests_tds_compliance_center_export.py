@@ -9,7 +9,10 @@ from rest_framework.test import APIRequestFactory, force_authenticate
 
 from purchase.views.tds_compliance_center import PurchaseTdsComplianceCenterExportAPIView
 from purchase.views.tds_compliance_center import PurchaseTdsComplianceCenterAPIView
-from purchase.views.gst_tds_compliance_center import PurchaseGstTdsComplianceCenterExportAPIView
+from purchase.views.gst_tds_compliance_center import (
+    PurchaseGstTdsComplianceCenterAPIView,
+    PurchaseGstTdsComplianceCenterExportAPIView,
+)
 
 
 MOCK_TDS_EXPORT_PAYLOAD = {
@@ -238,3 +241,69 @@ class PurchaseTdsComplianceCenterStatusTests(SimpleTestCase):
         self.assertEqual(self.view._challan_primary_action_label(challan), "Create return")
         self.assertEqual(self.view._return_primary_action_label(submitted_return), "Approve draft")
         self.assertEqual(self.view._return_primary_action_label(filed_return), "NSDL / 16A")
+
+    def test_compact_dataset_payload_only_includes_requested_tabs(self):
+        payload = self.view._build_datasets_payload(
+            include_all_datasets=False,
+            requested_tabs={"payment-register"},
+            summary={"deducted": "10.00", "pending_deposit": "2.00"},
+            monthly_rows=[{"id": "m1", "month": "Apr 2026"}],
+            header_rows=[{"id": 1, "voucherNo": "PI/1"}],
+            section_rows=[{"id": "194c", "section": "194C", "closingBalance": "1.00", "interest": "0.00"}],
+            challan_rows=[{"id": 2, "challanNo": "CH-1"}],
+            challan_mapping_rows=[{"id": 3, "voucherNo": "PI/2"}],
+            deductee_rows=[{"id": 4, "deductee": "Vendor-A"}],
+            pending_rows=[{"id": 5, "deductee": "Vendor-B"}],
+            vendor_rows=[{"id": 6, "deductee": "Vendor-C"}],
+            filing_rows={"24q": [], "26q": [], "27q": []},
+            form16a_rows=[{"id": 7, "deductee": "Vendor-D"}],
+            audit_rows=[{"id": 8, "action": "Updated"}],
+        )
+
+        self.assertEqual(set(payload.keys()), {"payment-register"})
+
+    def test_compact_return_dataset_payload_only_includes_requested_bucket(self):
+        payload = self.view._build_return_datasets_payload(
+            include_all_return_datasets=False,
+            requested_return_tabs={"27q"},
+            filing_rows={
+                "24q": [],
+                "26q": [{"id": 1, "returnType": "26Q"}],
+                "27q": [{"id": 2, "returnType": "27Q"}],
+            },
+        )
+
+        self.assertEqual(set(payload.keys()), {"27q"})
+
+
+class PurchaseGstTdsComplianceCenterStatusTests(SimpleTestCase):
+    def setUp(self):
+        self.view = PurchaseGstTdsComplianceCenterAPIView()
+
+    def test_compact_dataset_payload_only_includes_requested_tabs(self):
+        payload = self.view._build_datasets_payload(
+            include_all_datasets=False,
+            requested_tabs={"payment-register"},
+            summary={"deducted": "10.00", "pending_deposit": "2.00"},
+            monthly_rows=[{"id": "m1", "month": "Apr 2026"}],
+            header_rows=[{"id": 1, "voucherNo": "PI/1"}],
+            section_rows=[{"id": "gst-tds", "section": "GST-TDS", "closingBalance": "1.00", "interest": "0.00"}],
+            challan_rows=[{"id": 2, "challanNo": "CH-1"}],
+            challan_mapping_rows=[{"id": 3, "voucherNo": "PI/2"}],
+            deductee_rows=[{"id": 4, "deductee": "Vendor-A"}],
+            pending_rows=[{"id": 5, "deductee": "Vendor-B"}],
+            vendor_rows=[{"id": 6, "deductee": "Vendor-C"}],
+            filing_rows={"gstr7": []},
+            audit_rows=[{"id": 8, "action": "Updated"}],
+        )
+
+        self.assertEqual(set(payload.keys()), {"payment-register"})
+
+    def test_compact_return_dataset_payload_only_includes_requested_bucket(self):
+        payload = self.view._build_return_datasets_payload(
+            include_all_return_datasets=False,
+            requested_return_tabs={"gstr7"},
+            filing_rows={"gstr7": [{"id": 1, "returnType": "GSTR-7"}]},
+        )
+
+        self.assertEqual(set(payload.keys()), {"gstr7"})

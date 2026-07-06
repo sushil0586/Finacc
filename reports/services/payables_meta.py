@@ -6,18 +6,12 @@ from collections import OrderedDict
 from datetime import timedelta
 
 from django.core.cache import cache
+from django.db.models import OuterRef, Subquery
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from entity.models import EntityFinancialYear, SubEntity
-from financial.profile_access import (
-    account_agent,
-    account_creditdays,
-    account_creditlimit,
-    account_currency,
-    account_gstno,
-    account_region_state,
-    account_region_state_id,
-)
+from financial.models import AccountAddress
 from reports.selectors.payables import vendor_queryset
 from reports.services.payables_config import (
     PAYABLE_DRILLDOWN_TARGETS,
@@ -48,25 +42,49 @@ def _subentities(entity_id: int) -> list[dict]:
 
 
 def _vendors(entity_id: int) -> list[dict]:
-    vendors = vendor_queryset(entity_id=entity_id)
-    payload = []
-    for vendor in vendors:
-        payload.append(
-            {
-                "id": vendor.id,
-                "name": vendor.effective_accounting_name,
-                "code": vendor.effective_accounting_code,
-                "gstin": account_gstno(vendor),
-                "currency": account_currency(vendor) or "INR",
-                "vendor_group": account_agent(vendor),
-                "region_id": account_region_state_id(vendor),
-                "region_name": getattr(account_region_state(vendor), "statename", None),
-                "region_code": getattr(account_region_state(vendor), "statecode", None),
-                "credit_days": account_creditdays(vendor),
-                "credit_limit": str(account_creditlimit(vendor)) if account_creditlimit(vendor) is not None else None,
-            }
+    primary_addresses = AccountAddress.objects.filter(
+        account_id=OuterRef("pk"),
+        isprimary=True,
+        isactive=True,
+    )
+    vendor_rows = (
+        vendor_queryset(entity_id=entity_id)
+        .annotate(
+            effective_name=Coalesce("ledger__name", "accountname"),
+            primary_region_id=Subquery(primary_addresses.values("state_id")[:1]),
+            primary_region_name=Subquery(primary_addresses.values("state__statename")[:1]),
+            primary_region_code=Subquery(primary_addresses.values("state__statecode")[:1]),
         )
-    return payload
+        .values(
+            "id",
+            "effective_name",
+            "ledger__ledger_code",
+            "compliance_profile__gstno",
+            "commercial_profile__currency",
+            "commercial_profile__agent",
+            "commercial_profile__creditdays",
+            "commercial_profile__creditlimit",
+            "primary_region_id",
+            "primary_region_name",
+            "primary_region_code",
+        )
+    )
+    return [
+        {
+            "id": row["id"],
+            "name": row["effective_name"],
+            "code": row["ledger__ledger_code"],
+            "gstin": row["compliance_profile__gstno"],
+            "currency": row["commercial_profile__currency"] or "INR",
+            "vendor_group": row["commercial_profile__agent"],
+            "region_id": row["primary_region_id"],
+            "region_name": row["primary_region_name"],
+            "region_code": row["primary_region_code"],
+            "credit_days": row["commercial_profile__creditdays"],
+            "credit_limit": str(row["commercial_profile__creditlimit"]) if row["commercial_profile__creditlimit"] is not None else None,
+        }
+        for row in vendor_rows
+    ]
 
 
 def _date_presets(financial_years: list[dict]) -> list[dict]:
