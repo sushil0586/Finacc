@@ -48,7 +48,7 @@ def _vendors(entity_id: int) -> list[dict]:
         isactive=True,
     )
     vendor_rows = (
-        vendor_queryset(entity_id=entity_id)
+        vendor_queryset(entity_id=entity_id, include_untyped=False)
         .annotate(
             effective_name=Coalesce("ledger__name", "accountname"),
             primary_region_id=Subquery(primary_addresses.values("state_id")[:1]),

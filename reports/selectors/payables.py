@@ -74,14 +74,25 @@ def resolve_scope_dates(entityfin_id=None, from_date=None, to_date=None, as_of_d
     return coerce_date(explicit_from), coerce_date(explicit_to)
 
 
-def vendor_queryset(*, entity_id, vendor_id=None, vendor_ids=None, vendor_group=None, region_id=None, currency=None, search=None, gst_registered=None, msme=None):
+def vendor_queryset(
+    *,
+    entity_id,
+    vendor_id=None,
+    vendor_ids=None,
+    vendor_group=None,
+    region_id=None,
+    currency=None,
+    search=None,
+    gst_registered=None,
+    msme=None,
+    include_untyped=True,
+):
     """Return vendor masters eligible for AP reports within the entity scope."""
     qs = account.objects.filter(entity_id=entity_id)
-    qs = qs.filter(
-        Q(commercial_profile__partytype__in=["Vendor", "Both"])
-        | Q(commercial_profile__partytype__isnull=True)
-        | Q(commercial_profile__partytype="")
-    )
+    party_type_filter = Q(commercial_profile__partytype__in=["Vendor", "Both"])
+    if include_untyped:
+        party_type_filter |= Q(commercial_profile__partytype__isnull=True) | Q(commercial_profile__partytype="")
+    qs = qs.filter(party_type_filter)
     if vendor_id:
         qs = qs.filter(id=vendor_id)
     if vendor_ids:

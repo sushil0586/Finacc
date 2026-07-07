@@ -698,12 +698,13 @@ class SalesArService:
         as_of_date: Optional[date] = None,
     ) -> Dict[str, Any]:
         as_of = SalesArService._coerce_date(as_of_date)
+        should_recompute_as_of = as_of is not None
         open_items_qs = SalesArService.list_open_items(
             entity_id=entity_id,
             entityfinid_id=entityfinid_id,
             subentity_id=subentity_id,
             customer_id=customer_id,
-            is_open=None if include_closed else True,
+            is_open=None if include_closed or should_recompute_as_of else True,
         )
         settlements_qs = CustomerSettlement.objects.filter(
             entity_id=entity_id,
@@ -725,7 +726,7 @@ class SalesArService:
             entityfinid_id=entityfinid_id,
             subentity_id=subentity_id,
             customer_id=customer_id,
-            is_open=None if include_closed else True,
+            is_open=None if include_closed or should_recompute_as_of else True,
         )
 
         if as_of:

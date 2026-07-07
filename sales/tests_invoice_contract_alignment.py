@@ -32,10 +32,11 @@ from financial.models import (
 from financial.services import create_account_with_synced_ledger
 from geography.models import City, Country, District, State
 from sales.models import SalesInvoiceHeader, SalesInvoiceLine
-from sales.models.sales_ar import CustomerBillOpenItem, CustomerSettlement, CustomerSettlementLine
+from sales.models.sales_ar import CustomerAdvanceBalance, CustomerBillOpenItem, CustomerSettlement, CustomerSettlementLine
 from sales.models.sales_compliance import SalesEInvoice, SalesEInvoiceStatus, SalesEWayBill, SalesEWayStatus
 from sales.models.sales_settings import SalesChoiceOverride
 from sales.serializers.sales_invoice_serializers import SalesInvoiceHeaderSerializer, SalesInvoiceLineSerializer
+from sales.services.sales_ar_service import SalesArService
 from sales.services.sales_compliance_service import SalesComplianceService
 from sales.services.sales_invoice_service import SalesInvoiceService
 from sales.services.sales_choices_service import SalesChoicesService
@@ -514,6 +515,90 @@ class SalesInvoiceContractAlignmentTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         row = next(item for item in response.data["open_items"] if item["invoice_number"] == invoice.invoice_number)
         self.assertEqual(row["last_settled_at"], "2025-04-21")
+
+    def test_customer_statement_as_of_date_recomputes_stale_open_flags(self):
+        invoice = SalesInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            doc_type=SalesInvoiceHeader.DocType.TAX_INVOICE,
+            status=SalesInvoiceHeader.Status.POSTED,
+            bill_date=datetime(2025, 4, 20).date(),
+            posting_date=datetime(2025, 4, 20).date(),
+            due_date=datetime(2025, 4, 25).date(),
+            doc_code="SI",
+            doc_no=404,
+            invoice_number="SI/404",
+            customer=self.customer,
+            customer_ledger=self.customer.ledger,
+            customer_name="Alpha Retail",
+            customer_gstin="27ABCDE1234F1Z5",
+            customer_state_code="27",
+            seller_gstin="27AAAAA9999A1Z5",
+            seller_state_code="27",
+            place_of_supply_state_code="27",
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B,
+            taxability=SalesInvoiceHeader.Taxability.TAXABLE,
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTRA_STATE,
+            total_taxable_value=Decimal("100.00"),
+            total_cgst=Decimal("9.00"),
+            total_sgst=Decimal("9.00"),
+            total_igst=Decimal("0.00"),
+            total_cess=Decimal("0.00"),
+            total_discount=Decimal("0.00"),
+            round_off=Decimal("0.00"),
+            grand_total=Decimal("118.00"),
+            created_by=self.user,
+        )
+        CustomerBillOpenItem.objects.create(
+            header=invoice,
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            customer=self.customer,
+            customer_ledger=self.customer.ledger,
+            doc_type=invoice.doc_type,
+            bill_date=invoice.bill_date,
+            due_date=invoice.due_date,
+            invoice_number=invoice.invoice_number,
+            customer_reference_number="REF-404",
+            original_amount=Decimal("118.00"),
+            gross_amount=Decimal("118.00"),
+            net_receivable_amount=Decimal("118.00"),
+            settled_amount=Decimal("118.00"),
+            outstanding_amount=Decimal("0.00"),
+            is_open=False,
+        )
+        CustomerAdvanceBalance.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            customer=self.customer,
+            customer_ledger=self.customer.ledger,
+            source_type=CustomerAdvanceBalance.SourceType.MANUAL,
+            credit_date=datetime(2025, 4, 21).date(),
+            reference_no="ADV-404",
+            original_amount=Decimal("25.00"),
+            adjusted_amount=Decimal("25.00"),
+            outstanding_amount=Decimal("0.00"),
+            is_open=False,
+        )
+
+        result = SalesArService.customer_statement(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            customer_id=self.customer.id,
+            include_closed=False,
+            as_of_date=datetime(2025, 4, 30).date(),
+        )
+
+        self.assertEqual(result["totals"]["original_total"], Decimal("118.00"))
+        self.assertEqual(result["totals"]["outstanding_total"], Decimal("118.00"))
+        self.assertEqual(result["totals"]["advance_outstanding_total"], Decimal("25.00"))
+        self.assertEqual(result["totals"]["net_ar_position"], Decimal("93.00"))
+        self.assertEqual(len(result["open_items"]), 1)
+        self.assertEqual(len(result["advances"]), 1)
 
     @override_settings(META_CACHE_ENABLED=True, META_CACHE_FORM_TTL_SECONDS=600, META_CACHE_VERSION="test")
     def test_sales_form_meta_uses_cache_on_repeated_requests(self):

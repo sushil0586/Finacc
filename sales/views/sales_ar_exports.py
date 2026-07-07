@@ -475,11 +475,12 @@ def _write_customer_statement_pdf(payload, subtitle):
     ]
 
     available_width = landscape(A4)[0] - 36
-    for title, (headers, rows) in [
+    for title, section, numeric_columns in [
         ("Open Items", sections["open_items"], [4, 5, 6]),
         ("Advances", sections["advances"], [4, 5, 6]),
         ("Settlements", sections["settlements"], [3]),
     ]:
+        headers, rows = section
         story.append(Paragraph(title, ParagraphStyle(
             f"CustomerLedger{title}",
             parent=styles["Heading2"],

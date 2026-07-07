@@ -1112,6 +1112,36 @@ class PayableReportAPITests(APITestCase):
         self.assertIn("payables_dashboard_summary", report_codes)
         self.assertIn("upcoming_payments_calendar", report_codes)
 
+    def test_payables_meta_vendor_filters_exclude_non_vendor_accounts(self):
+        control_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=9001,
+            name="Opening Inventory Carry Forward",
+            accounthead=self.expense_head,
+            createdby=self.user,
+        )
+        create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "ledger": control_ledger,
+                "accountname": "Opening Inventory Carry Forward",
+                "createdby": self.user,
+            },
+            ledger_overrides={"ledger_code": 9001, "accounthead": self.expense_head, "is_party": False},
+        )
+
+        response = self.client.get(
+            reverse("reports_api:payables-meta"),
+            self._base_scope(),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+
+        vendor_names = {row["name"] for row in payload["vendors"]}
+        self.assertIn("ABC Traders", vendor_names)
+        self.assertIn("Idle Vendor", vendor_names)
+        self.assertNotIn("Opening Inventory Carry Forward", vendor_names)
+
     def test_upcoming_payments_calendar_returns_due_window_rows_and_exports(self):
         response = self.client.get(
             reverse("reports_api:upcoming-payments-calendar"),

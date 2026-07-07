@@ -779,6 +779,11 @@ def build_collections_history_report(
             "customer_count": len(customer_ids_seen),
             "receipt_count": receipt_count,
             "adjustment_count": adjustment_count,
+            "reporting_note": (
+                "Receipts counts against-invoice collection entries. "
+                "On Account / Manual counts non-receipt settlement rows, "
+                "including unapplied collections; those rows can legitimately have zero lines."
+            ),
         },
         **_report_meta_payload(),
     }
@@ -1047,8 +1052,9 @@ def build_customer_outstanding_report(
             exception_reasons.append("Credit Balance")
         if exception_only and not exception_reasons:
             continue
-        if credit_limit_exceeded and customer_credit_limit is not None and net_outstanding <= q2(customer_credit_limit):
-            continue
+        if credit_limit_exceeded:
+            if customer_credit_limit is None or net_outstanding <= q2(customer_credit_limit):
+                continue
 
         drilldown = {
             "aging_summary": {
@@ -1404,7 +1410,14 @@ def build_receivable_aging_report(
         "rows": paged_rows,
         "totals": {k: f"{q2(v):.2f}" for k, v in summary_totals.items()},
         "pagination": {"page": page, "page_size": page_size, "total_rows": total_rows},
-        "summary": {"customer_count": total_rows},
+        "summary": {
+            "customer_count": total_rows,
+            "reporting_note": (
+                "Residual unapplied receipt shows credit still left after FIFO allocation "
+                "against open invoices. Customer Outstanding separately shows total "
+                "unapplied receipts before that allocation."
+            ),
+        },
         **_report_meta_payload(),
     }
 
@@ -1459,11 +1472,16 @@ def build_open_items_report(
     invoice_route_map = _sales_invoice_route_map(qs.values_list("header_id", flat=True).distinct())
     rows = []
     totals = defaultdict(lambda: ZERO)
+    credit_balance_amount = ZERO
+    customer_ids = set(qs.values_list("customer_id", flat=True).distinct())
 
     for item in qs.iterator(chunk_size=1000):
         settled = q2(line_map.get(item.id, ZERO))
         outstanding = q2(item.original_amount - settled)
-        if outstanding <= ZERO:
+        if outstanding < ZERO:
+            credit_balance_amount = q2(credit_balance_amount + abs(outstanding))
+            continue
+        if outstanding == ZERO:
             continue
 
         row = _row_with_meta(
@@ -1515,6 +1533,26 @@ def build_open_items_report(
         totals["settled_amount"] += row["settled_amount"]
         totals["outstanding_amount"] += row["outstanding_amount"]
 
+    unapplied_receipt_amount = ZERO
+    if customer_ids:
+        advances_asof = _asof_advances(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            upto_date=resolved_as_of,
+            customer_ids=customer_ids,
+        )
+        unapplied_receipt_amount = q2(
+            sum((q2(outstanding) for _adv, _adjusted, outstanding in advances_asof if q2(outstanding) > ZERO), ZERO)
+        )
+
+    open_document_net_amount = q2(totals["outstanding_amount"] - credit_balance_amount)
+    net_exposure_reference = q2(open_document_net_amount - unapplied_receipt_amount)
+    reporting_note = (
+        "Open Items shows invoice-style document residuals used for collection follow-up. "
+        "Credit balances and unapplied receipts are shown below as reconciliation references and are excluded from the grid totals."
+    )
+
     def sort_key(row):
         field = (sort_by or "due_date").strip().lower()
         if field in {"due_date", "bill_date", "last_settled_at"}:
@@ -1538,6 +1576,13 @@ def build_open_items_report(
         "rows": paged_rows,
         "totals": {k: f"{q2(v):.2f}" for k, v in totals.items()},
         "pagination": {"page": page, "page_size": page_size, "total_rows": total_rows},
-        "summary": {"open_item_count": total_rows},
+        "summary": {
+            "open_item_count": total_rows,
+            "credit_balance_amount": f"{credit_balance_amount:.2f}",
+            "open_document_net_amount": f"{open_document_net_amount:.2f}",
+            "unapplied_receipt_amount": f"{unapplied_receipt_amount:.2f}",
+            "net_exposure_reference": f"{net_exposure_reference:.2f}",
+            "reporting_note": reporting_note,
+        },
         **_report_meta_payload(),
     }

@@ -18,7 +18,7 @@ from reports.services.receivables import (
     build_open_items_report,
     build_receivable_aging_report,
 )
-from sales.models.sales_ar import CustomerBillOpenItem
+from sales.models.sales_ar import CustomerAdvanceBalance, CustomerBillOpenItem
 from sales.models.sales_core import SalesInvoiceHeader, SalesInvoiceLine
 
 
@@ -239,6 +239,88 @@ class ReceivablesRouteContractTests(TestCase):
         invoice_row = next(row for row in report["rows"] if row["invoice_number"] == invoice.invoice_number)
         self.assertEqual(invoice_row["drilldown"]["invoice"]["route"], "/saleserviceinvoice")
 
+    def test_open_items_report_exposes_gross_and_net_reconciliation_summary(self):
+        self._create_service_invoice()
+        credit_note = SalesInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            doc_type=SalesInvoiceHeader.DocType.CREDIT_NOTE,
+            status=SalesInvoiceHeader.Status.POSTED,
+            bill_date="2025-04-18",
+            posting_date="2025-04-18",
+            doc_code="SCN",
+            doc_no=3,
+            invoice_number="SCN-0001",
+            customer=self.customer,
+            customer_ledger=self.customer.ledger,
+            customer_name=self.customer.accountname,
+            customer_gstin=account_gstno(self.customer),
+            customer_state_code=self.state.statecode,
+            seller_gstin="27AAAAA9999A1Z5",
+            seller_state_code=self.state.statecode,
+            place_of_supply_state_code=self.state.statecode,
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B,
+            total_taxable_value=Decimal("18.00"),
+            total_cgst=Decimal("0.00"),
+            total_sgst=Decimal("0.00"),
+            total_igst=Decimal("0.00"),
+            total_cess=Decimal("0.00"),
+            total_discount=Decimal("0.00"),
+            round_off=Decimal("0.00"),
+            grand_total=Decimal("18.00"),
+            created_by=self.user,
+        )
+        CustomerBillOpenItem.objects.create(
+            header=credit_note,
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            customer=self.customer,
+            customer_ledger=self.customer.ledger,
+            doc_type=credit_note.doc_type,
+            bill_date=credit_note.bill_date,
+            due_date=credit_note.bill_date,
+            invoice_number=credit_note.invoice_number,
+            customer_reference_number="REF-CN-001",
+            original_amount=Decimal("-18.00"),
+            gross_amount=Decimal("-18.00"),
+            net_receivable_amount=Decimal("-18.00"),
+            settled_amount=Decimal("0.00"),
+            outstanding_amount=Decimal("-18.00"),
+            is_open=True,
+        )
+        CustomerAdvanceBalance.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            customer=self.customer,
+            customer_ledger=self.customer.ledger,
+            source_type=CustomerAdvanceBalance.SourceType.MANUAL,
+            credit_date=datetime(2025, 4, 19).date(),
+            reference_no="ADV-001",
+            original_amount=Decimal("25.00"),
+            adjusted_amount=Decimal("0.00"),
+            outstanding_amount=Decimal("25.00"),
+            is_open=True,
+        )
+
+        report = build_open_items_report(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            customer_id=self.customer.id,
+            as_of_date="2025-04-30",
+        )
+
+        self.assertEqual(len(report["rows"]), 1)
+        self.assertEqual(report["totals"]["outstanding_amount"], "118.00")
+        self.assertEqual(report["summary"]["credit_balance_amount"], "18.00")
+        self.assertEqual(report["summary"]["open_document_net_amount"], "100.00")
+        self.assertEqual(report["summary"]["unapplied_receipt_amount"], "25.00")
+        self.assertEqual(report["summary"]["net_exposure_reference"], "75.00")
+        self.assertIn("invoice-style document residuals", report["summary"]["reporting_note"])
+
     def test_receivable_aging_invoice_view_exposes_service_invoice_route(self):
         invoice = self._create_service_invoice()
 
@@ -265,6 +347,7 @@ class ReceivablesRouteContractTests(TestCase):
         )
         self.assertEqual(summary_report["view"], "summary")
         self.assertEqual(summary_report["summary"]["customer_count"], 1)
+        self.assertIn("Residual unapplied receipt", summary_report["summary"]["reporting_note"])
         self.assertEqual(summary_report["totals"]["outstanding"], "118.00")
         self.assertEqual(summary_report["totals"]["bucket_1_30"], "118.00")
         self.assertEqual(summary_report["rows"][0]["customer_name"], "Service Customer")
@@ -351,3 +434,37 @@ class ReceivablesRouteContractTests(TestCase):
         self.assertEqual(len(overdue_only_report["rows"]), 1)
         self.assertEqual(overdue_only_report["rows"][0]["customer_name"], "Service Customer")
         self.assertEqual(overdue_only_report["totals"]["net_outstanding"], "118.00")
+
+    def test_customer_outstanding_credit_limit_exceeded_excludes_customers_without_limit(self):
+        apply_normalized_profile_payload(
+            self.customer,
+            commercial_data={"creditlimit": Decimal("50.00")},
+        )
+        self._create_service_invoice()
+        no_limit_customer = self._create_customer(
+            name="No Limit Customer",
+            gstin="27ABCDE1234F1Z6",
+            accountcode=5003,
+        )
+        self._create_product_invoice(
+            customer=no_limit_customer,
+            doc_no=2,
+            invoice_number="SINV-0002",
+            bill_date="2025-04-15",
+            due_date="2025-04-15",
+            amount=Decimal("75.00"),
+        )
+
+        report = build_customer_outstanding_report(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            as_of_date="2025-04-30",
+            credit_limit_exceeded=True,
+            page=1,
+            page_size=50,
+        )
+
+        self.assertEqual(report["summary"]["customer_count"], 1)
+        self.assertEqual([row["customer_name"] for row in report["rows"]], ["Service Customer"])
+        self.assertEqual(report["totals"]["net_outstanding"], "118.00")
