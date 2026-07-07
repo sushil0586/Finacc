@@ -218,7 +218,13 @@ def _open_item_balance_queryset(*, entity_id, entityfin_id, subentity_id, upto_d
         entityfin_id=entityfin_id,
         subentity_id=subentity_id,
     )
-    qs = _exclude_cancelled_open_items(qs).filter(bill_date__lte=upto_date)
+    qs = _exclude_cancelled_open_items(qs).filter(
+        bill_date__lte=upto_date,
+    ).filter(
+        Q(vendor__commercial_profile__partytype__in=["Vendor", "Both"])
+        | Q(vendor__commercial_profile__partytype__isnull=True)
+        | Q(vendor__commercial_profile__partytype="")
+    )
     if vendor_ids:
         qs = qs.filter(vendor_id__in=list(vendor_ids))
     if search:

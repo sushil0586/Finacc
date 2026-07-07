@@ -677,7 +677,9 @@ def build_vendor_outstanding_report(
                         ),
                         "vendor_statement": _drilldown_item(
                             label="Vendor Statement",
-                            target="purchase_ap_vendor_statement",
+                            target="vendor_ledger_statement",
+                            report_code="vendor_ledger_statement",
+                            path="/api/reports/payables/vendor-ledger/",
                             params={"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "vendor": vendor.id},
                         ),
                         "payment_allocation": _drilldown_item(
@@ -760,7 +762,9 @@ def build_vendor_outstanding_report(
                     drilldown={
                         "vendor_statement": _drilldown_item(
                             label="Vendor Statement",
-                            target="purchase_ap_vendor_statement",
+                            target="vendor_ledger_statement",
+                            report_code="vendor_ledger_statement",
+                            path="/api/reports/payables/vendor-ledger/",
                             params={"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "vendor": vendor.id},
                         ),
                     } if include_drilldown else {},
@@ -868,7 +872,9 @@ def build_vendor_outstanding_report(
                 ),
                 "vendor_statement": _drilldown_item(
                     label="Vendor Statement",
-                    target="purchase_ap_vendor_statement",
+                    target="vendor_ledger_statement",
+                    report_code="vendor_ledger_statement",
+                    path="/api/reports/payables/vendor-ledger/",
                     params={"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "vendor": vendor.id},
                 ),
                 "open_items": _drilldown_item(
@@ -1113,7 +1119,9 @@ def build_ap_aging_report(
                     ),
                     "vendor_statement": _drilldown_item(
                         label="Vendor Statement",
-                        target="purchase_ap_vendor_statement",
+                        target="vendor_ledger_statement",
+                        report_code="vendor_ledger_statement",
+                        path="/api/reports/payables/vendor-ledger/",
                         params={"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "vendor": item.vendor_id},
                     ),
                 } if include_drilldown else {}
@@ -1219,7 +1227,9 @@ def build_ap_aging_report(
         drilldown = {
             "vendor_statement": _drilldown_item(
                 label="Vendor Statement",
-                target="purchase_ap_vendor_statement",
+                target="vendor_ledger_statement",
+                report_code="vendor_ledger_statement",
+                path="/api/reports/payables/vendor-ledger/",
                 params={"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "vendor": vendor_id_key},
             ),
             "aging_summary": _drilldown_item(
@@ -1834,7 +1844,9 @@ def build_upcoming_payments_calendar_report(
                         ),
                         "vendor_statement": _drilldown_item(
                             label="Vendor Statement",
-                            target="purchase_ap_vendor_statement",
+                            target="vendor_ledger_statement",
+                            report_code="vendor_ledger_statement",
+                            path="/api/reports/payables/vendor-ledger/",
                             params={
                                 "entity": entity_id,
                                 "entityfinid": entityfin_id,

@@ -152,7 +152,9 @@ def _vendor_reconciliation_rows(*, entity_id, entityfin_id, subentity_id, as_of_
             ),
             "vendor_statement": _drilldown_item(
                 label="Vendor Statement",
-                target="purchase_ap_vendor_statement",
+                target="vendor_ledger_statement",
+                report_code="vendor_ledger_statement",
+                path="/api/reports/payables/vendor-ledger/",
                 params={"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "vendor": vendor.id},
             ),
         }
@@ -776,6 +778,5 @@ def build_payables_close_readiness_summary(*, entity_id, entityfin_id=None, sube
             extra_meta={"dashboard": True, "json_first": True},
         ),
     }
-
 
 

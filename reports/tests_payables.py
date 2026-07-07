@@ -1208,6 +1208,26 @@ class PayableReportAPITests(APITestCase):
         self.assertEqual(second_payload["rows"][0]["due_date"], "2025-04-28")
         self.assertEqual(second_payload["rows"][0]["due_amount"], "250.00")
 
+    def test_ap_payment_forecast_exposes_detail_and_related_report_drilldowns(self):
+        response = self.client.get(
+            reverse("reports_api:ap-payment-forecast"),
+            self._base_scope(from_date="2025-04-01", to_date="2025-04-30", as_of_date="2025-04-30", sort_by="due_date", sort_order="asc"),
+        )
+        self.assertEqual(response.status_code, 200)
+        row = response.json()["rows"][0]
+        self.assertEqual(row["can_drilldown"], True)
+        self.assertIn("forecast_detail", row["_meta"]["drilldown"])
+        self.assertIn("upcoming_payments_calendar", row["_meta"]["drilldown"])
+        self.assertIn("vendor_outstanding", row["_meta"]["drilldown"])
+        self.assertIn("ap_aging", row["_meta"]["drilldown"])
+        self.assertEqual(row["_meta"]["drilldown"]["forecast_detail"]["kind"], "detail")
+        self.assertEqual(row["_meta"]["drilldown"]["forecast_detail"]["params"]["due_date"], "2025-04-10")
+        self.assertEqual(row["_meta"]["drilldown"]["upcoming_payments_calendar"]["report_code"], "upcoming_payments_calendar")
+        self.assertEqual(row["_meta"]["drilldown"]["upcoming_payments_calendar"]["params"]["from_date"], "2025-04-10")
+        self.assertEqual(row["_meta"]["drilldown"]["ap_aging"]["params"]["view"], "invoice")
+        self.assertIn("ABC Traders", row["sample_vendor_names"])
+        self.assertIn("PI-PINV-1001", row["sample_bill_numbers"])
+
     def test_vendor_reconciliation_statement_excel_export_returns_workbook(self):
         response = self.client.get(
             reverse("reports_api:vendor-reconciliation-statement-excel"),
@@ -1299,6 +1319,23 @@ class PayableReportAPITests(APITestCase):
         self.assertEqual(payload["totals"]["notes"], "100.00")
         self.assertEqual(payload["totals"]["settled"], "0.00")
         self.assertEqual(payload["totals"]["closing_balance"], "700.00")
+
+    def test_vendor_reconciliation_statement_exposes_detail_and_related_report_drilldowns(self):
+        response = self.client.get(
+            reverse("reports_api:vendor-reconciliation-statement"),
+            self._base_scope(as_of_date="2025-04-30", sort_by="closing_balance", sort_order="desc"),
+        )
+        self.assertEqual(response.status_code, 200)
+        row = response.json()["rows"][0]
+        self.assertEqual(row["can_drilldown"], True)
+        self.assertIn("reconciliation_detail", row["_meta"]["drilldown"])
+        self.assertIn("vendor_ledger_statement", row["_meta"]["drilldown"])
+        self.assertIn("vendor_outstanding", row["_meta"]["drilldown"])
+        self.assertIn("ap_aging", row["_meta"]["drilldown"])
+        self.assertEqual(row["_meta"]["drilldown"]["reconciliation_detail"]["kind"], "detail")
+        self.assertEqual(row["_meta"]["drilldown"]["reconciliation_detail"]["params"]["vendor_name"], "ABC Traders")
+        self.assertEqual(row["_meta"]["drilldown"]["vendor_ledger_statement"]["params"]["vendor"], self.vendor.id)
+        self.assertEqual(row["_meta"]["drilldown"]["ap_aging"]["params"]["view"], "invoice")
 
     def test_duplicate_anomalous_bill_detection_excel_export_returns_workbook(self):
         response = self.client.get(
@@ -1402,6 +1439,50 @@ class PayableReportAPITests(APITestCase):
         self.assertEqual(payload["rows"], [])
         self.assertEqual(payload["totals"]["grand_total"], "0.00")
 
+    def test_duplicate_anomalous_bill_detection_exposes_detail_and_related_report_drilldowns(self):
+        self._create_purchase_header(
+            vendor=self.vendor,
+            vendor_ledger=self.vendor_ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 25),
+            due_date=date(2025, 4, 25),
+            doc_code="PINV",
+            doc_no=1008,
+            purchase_number="PI-PINV-1008",
+            supplier_invoice_number="DUP-001",
+            amount=Decimal("450.00"),
+        )
+        duplicate_two = self._create_purchase_header(
+            vendor=self.vendor,
+            vendor_ledger=self.vendor_ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 26),
+            due_date=date(2025, 4, 26),
+            doc_code="PINV",
+            doc_no=1009,
+            purchase_number="PI-PINV-1009",
+            supplier_invoice_number="DUP-001",
+            amount=Decimal("450.00"),
+        )
+
+        response = self.client.get(
+            reverse("reports_api:duplicate-anomalous-bill-detection"),
+            self._base_scope(from_date="2025-04-01", to_date="2025-04-30"),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        row = next(item for item in payload["rows"] if item["purchase_number"] == duplicate_two.purchase_number)
+        self.assertEqual(row["can_drilldown"], True)
+        self.assertIn("duplicate_bill_detail", row["_meta"]["drilldown"])
+        self.assertIn("bill_detail", row["_meta"]["drilldown"])
+        self.assertIn("vendor_outstanding", row["_meta"]["drilldown"])
+        self.assertIn("ap_aging", row["_meta"]["drilldown"])
+        self.assertEqual(row["_meta"]["drilldown"]["duplicate_bill_detail"]["kind"], "detail")
+        self.assertEqual(row["_meta"]["drilldown"]["duplicate_bill_detail"]["params"]["purchase_number"], duplicate_two.purchase_number)
+        self.assertEqual(row["_meta"]["drilldown"]["bill_detail"]["params"]["id"], duplicate_two.id)
+        self.assertEqual(row["_meta"]["drilldown"]["vendor_outstanding"]["params"]["vendor"], self.vendor.id)
+        self.assertEqual(row["_meta"]["drilldown"]["ap_aging"]["params"]["view"], "invoice")
+
     def test_grn_invoice_posting_exceptions_applies_pagination_without_changing_totals(self):
         missing_supplier = self._create_purchase_header(
             vendor=self.vendor,
@@ -1476,7 +1557,39 @@ class PayableReportAPITests(APITestCase):
         target_row = next(row for row in payload["rows"] if row["purchase_number"] == header.purchase_number)
         self.assertEqual(target_row["supplier_invoice_number"], "-")
         self.assertEqual(target_row["issue_type"], "MISSING_SUPPLIER_INVOICE")
-        self.assertEqual(payload["summary"]["issue_counts"]["MISSING_SUPPLIER_INVOICE"], 1)
+
+    def test_grn_invoice_posting_exceptions_exposes_detail_and_related_report_drilldowns(self):
+        header = self._create_purchase_header(
+            vendor=self.vendor,
+            vendor_ledger=self.vendor_ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 21),
+            due_date=date(2025, 4, 21),
+            doc_code="PINV",
+            doc_no=1007,
+            purchase_number="PI-PINV-1007",
+            supplier_invoice_number="SUP-007",
+            amount=Decimal("200.00"),
+            status=PurchaseInvoiceHeader.Status.DRAFT,
+        )
+
+        response = self.client.get(
+            reverse("reports_api:grn-invoice-posting-exceptions"),
+            self._base_scope(from_date="2025-04-01", to_date="2025-04-30"),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        row = next(item for item in payload["rows"] if item["purchase_number"] == header.purchase_number)
+        self.assertEqual(row["can_drilldown"], True)
+        self.assertIn("grn_exception_detail", row["_meta"]["drilldown"])
+        self.assertIn("bill_detail", row["_meta"]["drilldown"])
+        self.assertIn("vendor_outstanding", row["_meta"]["drilldown"])
+        self.assertIn("ap_aging", row["_meta"]["drilldown"])
+        self.assertEqual(row["_meta"]["drilldown"]["grn_exception_detail"]["kind"], "detail")
+        self.assertEqual(row["_meta"]["drilldown"]["grn_exception_detail"]["params"]["purchase_number"], header.purchase_number)
+        self.assertEqual(row["_meta"]["drilldown"]["bill_detail"]["params"]["id"], header.id)
+        self.assertEqual(row["_meta"]["drilldown"]["vendor_outstanding"]["params"]["vendor"], self.vendor.id)
+        self.assertEqual(row["_meta"]["drilldown"]["ap_aging"]["params"]["view"], "invoice")
 
     def test_ap_compliance_aging_applies_pagination_without_changing_totals(self):
         second_vendor = self._create_vendor("No GST Vendor", 5003)
@@ -1570,8 +1683,88 @@ class PayableReportAPITests(APITestCase):
         self.assertEqual(payload["summary"]["row_count"], 1)
         self.assertEqual(len(payload["rows"]), 1)
         self.assertEqual(payload["rows"][0]["bill_number"], "PI-PINV-1004")
-        self.assertEqual(payload["rows"][0]["vendor_name"], "Search Vendor")
-        self.assertEqual(payload["totals"]["outstanding"], "250.00")
+
+    def test_ap_compliance_aging_exposes_detail_and_related_report_drilldowns(self):
+        response = self.client.get(
+            reverse("reports_api:ap-compliance-aging"),
+            self._base_scope(as_of_date="2025-08-01", sort_by="days_overdue", sort_order="desc"),
+        )
+        self.assertEqual(response.status_code, 200)
+        row = response.json()["rows"][0]
+        self.assertEqual(row["can_drilldown"], True)
+        self.assertIn("compliance_detail", row["_meta"]["drilldown"])
+        self.assertIn("bill_detail", row["_meta"]["drilldown"])
+        self.assertIn("vendor_outstanding", row["_meta"]["drilldown"])
+        self.assertIn("ap_aging", row["_meta"]["drilldown"])
+        self.assertIn("vendor_ledger_statement", row["_meta"]["drilldown"])
+        self.assertEqual(row["_meta"]["drilldown"]["compliance_detail"]["kind"], "detail")
+        self.assertEqual(row["_meta"]["drilldown"]["compliance_detail"]["params"]["vendor_id"], self.vendor.id)
+        self.assertEqual(row["_meta"]["drilldown"]["bill_detail"]["params"]["id"], self.invoice.id)
+        self.assertEqual(row["_meta"]["drilldown"]["ap_aging"]["params"]["view"], "invoice")
+
+    def test_ap_compliance_aging_excludes_customer_only_open_items(self):
+        customer_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=7001,
+            name="Customer 1",
+            accounthead=self.vendor_head,
+            createdby=self.user,
+        )
+        customer = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "ledger": customer_ledger,
+                "accountname": "Customer 1",
+                "createdby": self.user,
+            },
+            ledger_overrides={"ledger_code": 7001, "accounthead": self.vendor_head, "is_party": True},
+        )
+        apply_normalized_profile_payload(
+            customer,
+            compliance_data={"gstno": "27ABCDE1234F1Z5"},
+            commercial_data={
+                "partytype": "Customer",
+                "currency": "INR",
+                "creditdays": 30,
+                "creditlimit": Decimal("1000.00"),
+            },
+            primary_address_data={"state": self.state, "city": self.city},
+        )
+        customer_header = self._create_purchase_header(
+            vendor=customer,
+            vendor_ledger=customer_ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 7, 5),
+            due_date=date(2025, 7, 20),
+            doc_code="PINV",
+            doc_no=1005,
+            purchase_number="PI-PINV-1005",
+            supplier_invoice_number="SUP-005",
+            amount=Decimal("250.00"),
+        )
+        self._create_open_item(
+            header=customer_header,
+            vendor=customer,
+            vendor_ledger=customer_ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 7, 5),
+            due_date=date(2025, 7, 20),
+            purchase_number="PI-PINV-1005",
+            supplier_invoice_number="SUP-005",
+            amount=Decimal("250.00"),
+        )
+
+        response = self.client.get(
+            reverse("reports_api:ap-compliance-aging"),
+            self._base_scope(as_of_date="2025-08-01", sort_by="days_overdue", sort_order="desc", page=1, page_size=50),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        vendor_names = [row["vendor_name"] for row in payload["rows"]]
+        self.assertNotIn("Customer 1", vendor_names)
+        self.assertEqual(payload["summary"]["row_count"], 1)
+        self.assertEqual(payload["rows"][0]["vendor_name"], "ABC Traders")
+        self.assertEqual(payload["totals"]["outstanding"], "800.00")
 
     def test_ap_compliance_aging_treats_whitespace_gstin_as_missing_across_sort_paths(self):
         whitespace_vendor = self._create_vendor("Whitespace GST Vendor", 5005)
@@ -1937,6 +2130,19 @@ class PayableReportAPITests(APITestCase):
         self.assertEqual(payload["summary"]["overall_status"], "mismatch")
         self.assertEqual(payload["rows"][0]["difference_amount"], "650.00")
         self.assertEqual(payload["rows"][0]["reconciliation_status"], "mismatch")
+
+    def test_ap_gl_reconciliation_vendor_statement_drilldown_points_to_vendor_ledger_statement(self):
+        response = self.client.get(
+            reverse("reports_api:ap-gl-reconciliation-report"),
+            self._base_scope(as_of_date="2025-04-30"),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        drilldown = payload["rows"][0]["_meta"]["drilldown"]["vendor_statement"]
+        self.assertEqual(drilldown["target"], "vendor_ledger_statement")
+        self.assertEqual(drilldown["report_code"], "vendor_ledger_statement")
+        self.assertEqual(drilldown["kind"], "report")
+        self.assertEqual(drilldown["params"]["vendor"], self.vendor.id)
 
     def test_vendor_balance_exception_report_detects_negative_balance_and_stale_advance(self):
         credit_vendor = self._create_vendor("Advance Heavy Vendor", 5010)

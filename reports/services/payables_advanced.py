@@ -25,7 +25,7 @@ from reports.selectors.payables import (
     resolve_scope_dates,
     vendor_queryset,
 )
-from reports.services.payables import _iso_date, _report_meta_payload
+from reports.services.payables import _drilldown_item, _iso_date, _report_meta_payload, _row_with_meta, _trace_payload
 
 ZERO = Decimal("0.00")
 
@@ -222,6 +222,20 @@ def build_ap_payment_forecast_report(
             ),
         )
     )
+    sample_vendor_names: dict = defaultdict(list)
+    sample_bill_numbers: dict = defaultdict(list)
+    for sample in (
+        base_qs.order_by("effective_due_date", "id")
+        .values("effective_due_date", "vendor__accountname", "purchase_number", "supplier_invoice_number")
+        .iterator(chunk_size=2000)
+    ):
+        due_date = sample["effective_due_date"]
+        vendor_name = str(sample.get("vendor__accountname") or "").strip()
+        bill_number = str(sample.get("purchase_number") or sample.get("supplier_invoice_number") or "").strip()
+        if vendor_name and vendor_name not in sample_vendor_names[due_date] and len(sample_vendor_names[due_date]) < 3:
+            sample_vendor_names[due_date].append(vendor_name)
+        if bill_number and bill_number not in sample_bill_numbers[due_date] and len(sample_bill_numbers[due_date]) < 5:
+            sample_bill_numbers[due_date].append(bill_number)
 
     def iter_rows():
         for values in grouped_rows:
@@ -236,16 +250,89 @@ def build_ap_payment_forecast_report(
             else:
                 payment_band = "Planned"
             due_amount = q2(values["due_amount"])
-            yield {
+            overdue_amount = q2(values["overdue_amount"])
+            row = {
                 "due_date": due_date,
                 "vendor_count": int(values["vendor_count"] or 0),
                 "bill_count": int(values["bill_count"] or 0),
                 "due_amount": due_amount,
-                "overdue_amount": q2(values["overdue_amount"]),
+                "overdue_amount": overdue_amount,
                 "next_7_days_amount": due_amount if payment_band == "Next 7 Days" else ZERO,
                 "next_30_days_amount": due_amount if payment_band in {"Next 7 Days", "Next 30 Days"} else ZERO,
                 "payment_band": payment_band,
+                "days_to_due": days_to_due,
+                "sample_vendor_names": list(sample_vendor_names.get(due_date, [])),
+                "sample_bill_numbers": list(sample_bill_numbers.get(due_date, [])),
             }
+            drilldown = {
+                "forecast_detail": {
+                    "label": "Details",
+                    "target": "ap_payment_forecast_detail",
+                    "kind": "detail",
+                    "params": {
+                        "due_date": _iso_date(due_date),
+                        "payment_band": payment_band,
+                        "days_to_due": days_to_due,
+                        "vendor_count": int(values["vendor_count"] or 0),
+                        "bill_count": int(values["bill_count"] or 0),
+                        "due_amount": f"{due_amount:.2f}",
+                        "overdue_amount": f"{overdue_amount:.2f}",
+                    },
+                },
+                "upcoming_payments_calendar": _drilldown_item(
+                    label="Due Window",
+                    target="upcoming_payments_calendar",
+                    params={
+                        "entity": entity_id,
+                        "entityfinid": entityfin_id,
+                        "subentity": subentity_id,
+                        "from_date": _iso_date(due_date),
+                        "to_date": _iso_date(due_date),
+                        "as_of_date": _iso_date(reference),
+                        "overdue_only": payment_band == "Overdue",
+                    },
+                    report_code="upcoming_payments_calendar",
+                    kind="report",
+                ),
+                "vendor_outstanding": _drilldown_item(
+                    label="Vendor Outstanding",
+                    target="vendor_outstanding",
+                    params={
+                        "entity": entity_id,
+                        "entityfinid": entityfin_id,
+                        "subentity": subentity_id,
+                        "from_date": _iso_date(start_date),
+                        "to_date": _iso_date(reference),
+                        "as_of_date": _iso_date(reference),
+                    },
+                    report_code="vendor_outstanding",
+                    kind="report",
+                ),
+                "ap_aging": _drilldown_item(
+                    label="AP Aging",
+                    target="ap_aging",
+                    params={
+                        "entity": entity_id,
+                        "entityfinid": entityfin_id,
+                        "subentity": subentity_id,
+                        "as_of_date": _iso_date(reference),
+                        "view": "invoice",
+                    },
+                    report_code="ap_aging",
+                    kind="report",
+                ),
+            }
+            yield _row_with_meta(
+                row,
+                drilldown=drilldown,
+                trace=_trace_payload(
+                    source="ap_payment_forecast",
+                    due_date=_iso_date(due_date),
+                    payment_band=payment_band,
+                    sample_vendor_names=row["sample_vendor_names"],
+                    sample_bill_numbers=row["sample_bill_numbers"],
+                ),
+            )
 
     paged_rows, total_rows = _collect_sorted_page_rows(
         rows=iter_rows(),
@@ -422,6 +509,7 @@ def build_vendor_reconciliation_statement_report(
                 continue
             status = "Reconciled" if closing_balance == ZERO else "Mismatch"
             row = {
+                "vendor_id": vendor_id,
                 "vendor_name": vendor.effective_accounting_name,
                 "vendor_code": vendor.effective_accounting_code,
                 "opening_balance": opening_balance,
@@ -433,7 +521,77 @@ def build_vendor_reconciliation_statement_report(
             }
             for key in ("opening_balance", "invoiced", "notes", "settled", "closing_balance"):
                 totals[key] = q2(totals[key] + row[key])
-            yield row
+            drilldown = {
+                "reconciliation_detail": {
+                    "label": "Details",
+                    "target": "vendor_reconciliation_detail",
+                    "kind": "detail",
+                    "params": {
+                        "vendor_id": vendor_id,
+                        "vendor_name": vendor.effective_accounting_name,
+                        "vendor_code": vendor.effective_accounting_code,
+                        "status": status,
+                        "opening_balance": f"{opening_balance:.2f}",
+                        "invoiced": f"{invoiced_amount:.2f}",
+                        "notes": f"{notes_amount:.2f}",
+                        "settled": f"{settled_amount:.2f}",
+                        "closing_balance": f"{closing_balance:.2f}",
+                    },
+                },
+                "vendor_ledger_statement": _drilldown_item(
+                    label="Vendor Ledger",
+                    target="vendor_ledger_statement",
+                    params={
+                        "entity": entity_id,
+                        "entityfinid": entityfin_id,
+                        "subentity": subentity_id,
+                        "vendor": vendor_id,
+                        "from_date": _iso_date(start_date),
+                        "to_date": _iso_date(as_of),
+                    },
+                    report_code="vendor_ledger_statement",
+                    kind="report",
+                ),
+                "vendor_outstanding": _drilldown_item(
+                    label="Vendor Outstanding",
+                    target="vendor_outstanding",
+                    params={
+                        "entity": entity_id,
+                        "entityfinid": entityfin_id,
+                        "subentity": subentity_id,
+                        "vendor": vendor_id,
+                        "from_date": _iso_date(start_date),
+                        "to_date": _iso_date(as_of),
+                        "as_of_date": _iso_date(as_of),
+                    },
+                    report_code="vendor_outstanding",
+                    kind="report",
+                ),
+                "ap_aging": _drilldown_item(
+                    label="AP Aging",
+                    target="ap_aging",
+                    params={
+                        "entity": entity_id,
+                        "entityfinid": entityfin_id,
+                        "subentity": subentity_id,
+                        "vendor": vendor_id,
+                        "as_of_date": _iso_date(as_of),
+                        "view": "invoice",
+                    },
+                    report_code="ap_aging",
+                    kind="report",
+                ),
+            }
+            yield _row_with_meta(
+                row,
+                drilldown=drilldown,
+                trace=_trace_payload(
+                    source="vendor_reconciliation_statement",
+                    vendor_id=vendor_id,
+                    vendor_name=vendor.effective_accounting_name,
+                    status=status,
+                ),
+            )
 
     paged_rows, total_rows = _collect_sorted_page_rows(
         rows=iter_rows(),
@@ -541,17 +699,83 @@ def build_grn_invoice_posting_exceptions_report(
         if not issue_type:
             continue
         issue_counts[issue_type] += 1
+        grand_total = q2(header.get("grand_total") or ZERO)
+        posting_status = "Posted" if header["status"] == PurchaseInvoiceHeader.Status.POSTED else "Pending"
+        row = {
+            "header_id": header["id"],
+            "vendor_id": header["vendor_id"],
+            "purchase_number": header["purchase_number"],
+            "supplier_invoice_number": supplier_invoice_number or "-",
+            "bill_date": header["bill_date"],
+            "status": header["status"],
+            "posting_status": posting_status,
+            "grand_total": grand_total,
+            "issue_type": issue_type,
+            "issue_message": issue_message,
+        }
         rows.append(
-            {
-                "purchase_number": header["purchase_number"],
-                "supplier_invoice_number": supplier_invoice_number or "-",
-                "bill_date": header["bill_date"],
-                "status": header["status"],
-                "posting_status": "Posted" if header["status"] == PurchaseInvoiceHeader.Status.POSTED else "Pending",
-                "grand_total": q2(header.get("grand_total") or ZERO),
-                "issue_type": issue_type,
-                "issue_message": issue_message,
-            }
+            _row_with_meta(
+                row,
+                drilldown={
+                    "grn_exception_detail": {
+                        "label": "Details",
+                        "target": "grn_exception_detail",
+                        "kind": "detail",
+                        "params": {
+                            "header_id": header["id"],
+                            "vendor_id": header["vendor_id"],
+                            "purchase_number": header["purchase_number"],
+                            "supplier_invoice_number": supplier_invoice_number or "-",
+                            "bill_date": _iso_date(header["bill_date"]),
+                            "status": header["status"],
+                            "posting_status": posting_status,
+                            "grand_total": f"{grand_total:.2f}",
+                            "issue_type": issue_type,
+                            "issue_message": issue_message,
+                        },
+                    },
+                    "bill_detail": _drilldown_item(
+                        label="Purchase Document Detail",
+                        target="purchase_document_detail",
+                        params={"id": header["id"], "entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id},
+                    ),
+                    "vendor_outstanding": _drilldown_item(
+                        label="Vendor Outstanding",
+                        target="vendor_outstanding",
+                        report_code="vendor_outstanding",
+                        params={
+                            "entity": entity_id,
+                            "entityfinid": entityfin_id,
+                            "subentity": subentity_id,
+                            "vendor": header["vendor_id"],
+                            "as_of_date": _iso_date(end_date),
+                            "view": "detailed",
+                            "show_not_due": True,
+                        },
+                        kind="report",
+                    ),
+                    "ap_aging": _drilldown_item(
+                        label="AP Aging",
+                        target="ap_aging",
+                        report_code="ap_aging",
+                        params={
+                            "entity": entity_id,
+                            "entityfinid": entityfin_id,
+                            "subentity": subentity_id,
+                            "vendor": header["vendor_id"],
+                            "as_of_date": _iso_date(end_date),
+                            "view": "invoice",
+                        },
+                        kind="report",
+                    ),
+                },
+                trace=_trace_payload(
+                    source="grn_invoice_posting_exceptions",
+                    header_id=header["id"],
+                    vendor_id=header["vendor_id"],
+                    issue_type=issue_type,
+                ),
+            )
         )
 
     _sort_rows(rows, sort_by or "bill_date", sort_order)
@@ -639,18 +863,95 @@ def build_ap_compliance_aging_report(
             gstin = str(getattr(item, "gstin_value", "") or "").strip()
             due_date = item.effective_due_date
             days_overdue, risk, reason = _ap_compliance_risk_details(gstin=gstin or None, due_date=due_date, as_of=as_of)
+            outstanding = q2(item.outstanding_asof)
+            row = {
+                "vendor_id": item.vendor_id,
+                "header_id": item.header_id,
+                "vendor_name": vendor.effective_accounting_name,
+                "vendor_code": vendor.effective_accounting_code,
+                "gstin": gstin or "-",
+                "bill_number": item.purchase_number or item.supplier_invoice_number or f"BILL-{item.id}",
+                "due_date": due_date,
+                "days_overdue": days_overdue,
+                "outstanding": outstanding,
+                "compliance_risk": risk,
+                "risk_reason": reason,
+            }
             paged_rows.append(
-                {
-                    "vendor_name": vendor.effective_accounting_name,
-                    "vendor_code": vendor.effective_accounting_code,
-                    "gstin": gstin or "-",
-                    "bill_number": item.purchase_number or item.supplier_invoice_number or f"BILL-{item.id}",
-                    "due_date": due_date,
-                    "days_overdue": days_overdue,
-                    "outstanding": q2(item.outstanding_asof),
-                    "compliance_risk": risk,
-                    "risk_reason": reason,
-                }
+                _row_with_meta(
+                    row,
+                    drilldown={
+                        "compliance_detail": {
+                            "label": "Details",
+                            "target": "ap_compliance_detail",
+                            "kind": "detail",
+                            "params": {
+                                "vendor_id": item.vendor_id,
+                                "header_id": item.header_id,
+                                "bill_number": row["bill_number"],
+                                "due_date": _iso_date(due_date),
+                                "days_overdue": days_overdue,
+                                "compliance_risk": risk,
+                                "risk_reason": reason,
+                                "outstanding": f"{outstanding:.2f}",
+                            },
+                        },
+                        "bill_detail": _drilldown_item(
+                            label="Purchase Document Detail",
+                            target="purchase_document_detail",
+                            params={"id": item.header_id, "entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id},
+                        ),
+                        "vendor_outstanding": _drilldown_item(
+                            label="Vendor Outstanding",
+                            target="vendor_outstanding",
+                            report_code="vendor_outstanding",
+                            params={
+                                "entity": entity_id,
+                                "entityfinid": entityfin_id,
+                                "subentity": subentity_id,
+                                "vendor": item.vendor_id,
+                                "as_of_date": _iso_date(as_of),
+                                "view": "detailed",
+                                "show_not_due": True,
+                            },
+                            kind="report",
+                        ),
+                        "ap_aging": _drilldown_item(
+                            label="AP Aging",
+                            target="ap_aging",
+                            report_code="ap_aging",
+                            params={
+                                "entity": entity_id,
+                                "entityfinid": entityfin_id,
+                                "subentity": subentity_id,
+                                "vendor": item.vendor_id,
+                                "as_of_date": _iso_date(as_of),
+                                "view": "invoice",
+                            },
+                            kind="report",
+                        ),
+                        "vendor_ledger_statement": _drilldown_item(
+                            label="Vendor Ledger",
+                            target="vendor_ledger_statement",
+                            report_code="vendor_ledger_statement",
+                            params={
+                                "entity": entity_id,
+                                "entityfinid": entityfin_id,
+                                "subentity": subentity_id,
+                                "vendor": item.vendor_id,
+                                "from_date": _iso_date(as_of),
+                                "to_date": _iso_date(as_of),
+                            },
+                            kind="report",
+                        ),
+                    },
+                    trace=_trace_payload(
+                        source="ap_compliance_aging",
+                        vendor_id=item.vendor_id,
+                        header_id=item.header_id,
+                        risk=risk,
+                    ),
+                )
             )
     else:
         risk_counts = Counter()
@@ -676,7 +977,9 @@ def build_ap_compliance_aging_report(
                 days_overdue, risk, reason = _ap_compliance_risk_details(gstin=gstin, due_date=due_date, as_of=as_of)
                 risk_counts[risk] += 1
                 total_outstanding = q2(total_outstanding + outstanding)
-                yield {
+                row = {
+                    "vendor_id": item.vendor_id,
+                    "header_id": item.header_id,
                     "vendor_name": vendor.effective_accounting_name,
                     "vendor_code": vendor.effective_accounting_code,
                     "gstin": gstin or "-",
@@ -687,6 +990,80 @@ def build_ap_compliance_aging_report(
                     "compliance_risk": risk,
                     "risk_reason": reason,
                 }
+                yield _row_with_meta(
+                    row,
+                    drilldown={
+                        "compliance_detail": {
+                            "label": "Details",
+                            "target": "ap_compliance_detail",
+                            "kind": "detail",
+                            "params": {
+                                "vendor_id": item.vendor_id,
+                                "header_id": item.header_id,
+                                "bill_number": row["bill_number"],
+                                "due_date": _iso_date(due_date),
+                                "days_overdue": days_overdue,
+                                "compliance_risk": risk,
+                                "risk_reason": reason,
+                                "outstanding": f"{outstanding:.2f}",
+                            },
+                        },
+                        "bill_detail": _drilldown_item(
+                            label="Purchase Document Detail",
+                            target="purchase_document_detail",
+                            params={"id": item.header_id, "entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id},
+                        ),
+                        "vendor_outstanding": _drilldown_item(
+                            label="Vendor Outstanding",
+                            target="vendor_outstanding",
+                            report_code="vendor_outstanding",
+                            params={
+                                "entity": entity_id,
+                                "entityfinid": entityfin_id,
+                                "subentity": subentity_id,
+                                "vendor": item.vendor_id,
+                                "as_of_date": _iso_date(as_of),
+                                "view": "detailed",
+                                "show_not_due": True,
+                            },
+                            kind="report",
+                        ),
+                        "ap_aging": _drilldown_item(
+                            label="AP Aging",
+                            target="ap_aging",
+                            report_code="ap_aging",
+                            params={
+                                "entity": entity_id,
+                                "entityfinid": entityfin_id,
+                                "subentity": subentity_id,
+                                "vendor": item.vendor_id,
+                                "as_of_date": _iso_date(as_of),
+                                "view": "invoice",
+                            },
+                            kind="report",
+                        ),
+                        "vendor_ledger_statement": _drilldown_item(
+                            label="Vendor Ledger",
+                            target="vendor_ledger_statement",
+                            report_code="vendor_ledger_statement",
+                            params={
+                                "entity": entity_id,
+                                "entityfinid": entityfin_id,
+                                "subentity": subentity_id,
+                                "vendor": item.vendor_id,
+                                "from_date": _iso_date(as_of),
+                                "to_date": _iso_date(as_of),
+                            },
+                            kind="report",
+                        ),
+                    },
+                    trace=_trace_payload(
+                        source="ap_compliance_aging",
+                        vendor_id=item.vendor_id,
+                        header_id=item.header_id,
+                        risk=risk,
+                    ),
+                )
 
         paged_rows, total_rows = _collect_sorted_page_rows(
             rows=iter_rows(),
@@ -808,17 +1185,84 @@ def build_duplicate_anomalous_bill_detection_report(
         if not anomaly_type:
             continue
         anomaly_counts[anomaly_type] += 1
+        grand_total = q2(header.get("grand_total") or ZERO)
+        row = {
+            "header_id": header["id"],
+            "vendor_id": header["vendor_id"],
+            "purchase_number": header.get("purchase_number") or "-",
+            "vendor_name": header.get("vendor__ledger__name") or header.get("vendor_name") or "-",
+            "vendor_code": header.get("vendor__ledger__ledger_code") or "-",
+            "supplier_invoice_number": supplier_invoice_number or "-",
+            "bill_date": header["bill_date"],
+            "grand_total": grand_total,
+            "anomaly_type": anomaly_type,
+            "anomaly_score": score,
+            "anomaly_reason": reason,
+        }
         anomaly_rows.append(
-            {
-                "vendor_name": header.get("vendor__ledger__name") or header.get("vendor_name") or "-",
-                "vendor_code": header.get("vendor__ledger__ledger_code") or "-",
-                "supplier_invoice_number": supplier_invoice_number or "-",
-                "bill_date": header["bill_date"],
-                "grand_total": q2(header.get("grand_total") or ZERO),
-                "anomaly_type": anomaly_type,
-                "anomaly_score": score,
-                "anomaly_reason": reason,
-            }
+            _row_with_meta(
+                row,
+                drilldown={
+                    "duplicate_bill_detail": {
+                        "label": "Details",
+                        "target": "duplicate_bill_detail",
+                        "kind": "detail",
+                        "params": {
+                            "header_id": header["id"],
+                            "vendor_id": header["vendor_id"],
+                            "purchase_number": row["purchase_number"],
+                            "vendor_name": row["vendor_name"],
+                            "vendor_code": row["vendor_code"],
+                            "supplier_invoice_number": row["supplier_invoice_number"],
+                            "bill_date": _iso_date(header["bill_date"]),
+                            "grand_total": f"{grand_total:.2f}",
+                            "anomaly_type": anomaly_type,
+                            "anomaly_score": score,
+                            "anomaly_reason": reason,
+                        },
+                    },
+                    "bill_detail": _drilldown_item(
+                        label="Purchase Document Detail",
+                        target="purchase_document_detail",
+                        params={"id": header["id"], "entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id},
+                    ),
+                    "vendor_outstanding": _drilldown_item(
+                        label="Vendor Outstanding",
+                        target="vendor_outstanding",
+                        report_code="vendor_outstanding",
+                        params={
+                            "entity": entity_id,
+                            "entityfinid": entityfin_id,
+                            "subentity": subentity_id,
+                            "vendor": header["vendor_id"],
+                            "as_of_date": _iso_date(end_date),
+                            "view": "detailed",
+                            "show_not_due": True,
+                        },
+                        kind="report",
+                    ),
+                    "ap_aging": _drilldown_item(
+                        label="AP Aging",
+                        target="ap_aging",
+                        report_code="ap_aging",
+                        params={
+                            "entity": entity_id,
+                            "entityfinid": entityfin_id,
+                            "subentity": subentity_id,
+                            "vendor": header["vendor_id"],
+                            "as_of_date": _iso_date(end_date),
+                            "view": "invoice",
+                        },
+                        kind="report",
+                    ),
+                },
+                trace=_trace_payload(
+                    source="duplicate_anomalous_bill_detection",
+                    header_id=header["id"],
+                    vendor_id=header["vendor_id"],
+                    anomaly_type=anomaly_type,
+                ),
+            )
         )
     _sort_rows(anomaly_rows, sort_by or "bill_date", sort_order)
     paged_rows, total_rows = _paginate(anomaly_rows, page, page_size)
