@@ -90,13 +90,25 @@ def resolve_scope_names(entity_id, entityfin_id=None, subentity_id=None):
     entity_id, entityfin_id, subentity_id = normalize_scope_ids(entity_id, entityfin_id, subentity_id)
     entity = Entity.objects.filter(id=entity_id).only("id", "entityname").first()
     entityfin = (
-        EntityFinancialYear.objects.filter(id=entityfin_id).only("id", "desc").first() if entityfin_id else None
+        EntityFinancialYear.objects.filter(id=entityfin_id)
+        .only("id", "desc", "year_code", "finstartyear", "finendyear")
+        .first()
+        if entityfin_id
+        else None
     )
     subentity = (
         SubEntity.objects.filter(id=subentity_id).only("id", "subentityname").first() if subentity_id else None
     )
+    entityfin_name = None
+    if entityfin:
+        entityfin_name = getattr(entityfin, "desc", None) or getattr(entityfin, "year_code", None)
+        if not entityfin_name:
+            start_date = ensure_date(getattr(entityfin, "finstartyear", None))
+            end_date = ensure_date(getattr(entityfin, "finendyear", None))
+            if start_date and end_date:
+                entityfin_name = f"FY {start_date.year}-{str(end_date.year)[-2:]}"
     return {
         "entity_name": entity.entityname if entity else None,
-        "entityfin_name": entityfin.desc if entityfin else None,
+        "entityfin_name": entityfin_name,
         "subentity_name": subentity.subentityname if subentity else None,
     }

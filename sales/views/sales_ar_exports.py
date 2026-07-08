@@ -12,7 +12,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.pagesizes import A4, landscape, portrait
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from rest_framework.permissions import IsAuthenticated
@@ -65,14 +65,22 @@ def _format_display_date(value):
     if not value:
         return ""
     if hasattr(value, "strftime"):
-        return value.strftime("%d-%m-%Y")
+        return value.strftime("%d %b %Y")
     text = str(value).strip()
     if not text:
         return ""
     try:
-        return date_cls.fromisoformat(text[:10]).strftime("%d-%m-%Y")
+        return date_cls.fromisoformat(text[:10]).strftime("%d %b %Y")
     except Exception:
-        return text
+        pass
+    normalized = text.replace("/", "-")
+    for pattern in ("%d-%m-%Y", "%Y-%m-%d"):
+        try:
+            from datetime import datetime
+            return datetime.strptime(normalized[:10], pattern).strftime("%d %b %Y")
+        except Exception:
+            continue
+    return text
 
 
 def _amount(value, *, display: bool):
@@ -83,6 +91,57 @@ def _amount(value, *, display: bool):
     except Exception:
         return str(value) if display else value
     return f"{decimal_value:,.2f}" if display else decimal_value
+
+
+def _sum_numeric_column(rows, index):
+    total = Decimal("0.00")
+    for row in rows or []:
+        if index >= len(row):
+            continue
+        raw_value = row[index]
+        if raw_value in (None, "", "-"):
+            continue
+        try:
+            total += Decimal(str(raw_value).replace(",", ""))
+        except Exception:
+            continue
+    return total
+
+
+def _section_total_row(title, rows, *, display):
+    if title == "Open Items":
+        return [
+            "Report Total",
+            "",
+            "",
+            "",
+            _amount(_sum_numeric_column(rows, 4), display=display),
+            _amount(_sum_numeric_column(rows, 5), display=display),
+            _amount(_sum_numeric_column(rows, 6), display=display),
+            "",
+        ]
+    if title == "Advances":
+        return [
+            "Report Total",
+            "",
+            "",
+            "",
+            _amount(_sum_numeric_column(rows, 4), display=display),
+            _amount(_sum_numeric_column(rows, 5), display=display),
+            _amount(_sum_numeric_column(rows, 6), display=display),
+            "",
+        ]
+    if title == "Settlements":
+        return [
+            "Report Total",
+            "",
+            "",
+            _amount(_sum_numeric_column(rows, 3), display=display),
+            "",
+            "",
+            "",
+        ]
+    return None
 
 
 def _build_customer_statement_payload(*, entity_id, entityfinid_id, subentity_id, customer_id, include_closed, as_of_date=None):
@@ -136,12 +195,14 @@ def _statement_subtitle(*, scope_names, payload, include_closed: bool):
     customer_label = customer.get("display_name") or customer.get("accountname") or "Customer"
     fy_label = scope_names.get("entityfin_name") or "Selected financial year"
     subentity_label = scope_names.get("subentity_name") or "All subentities"
+    as_of_label = _format_display_date(payload.get("as_of_date")) or "Selected date"
     closed_label = "Closed items included" if include_closed else "Open items only"
     return (
         f"Entity: {scope_names.get('entity_name') or 'Selected entity'} | "
         f"Financial Year: {fy_label} | "
         f"Subentity: {subentity_label} | "
         f"Customer: {customer_label} | "
+        f"As of: {as_of_label} | "
         f"{closed_label}"
     )
 
@@ -153,6 +214,7 @@ def _statement_sheet_data(payload, *, display: bool):
         ["Customer", customer.get("display_name") or customer.get("accountname") or ""],
         ["Financial Year", payload.get("financial_year_name") or ""],
         ["Subentity", payload.get("subentity_name") or "All subentities"],
+        ["As Of Date", _format_display_date(payload.get("as_of_date"))],
         ["Closed Items", "Included" if payload.get("include_closed") else "Open only"],
         ["Outstanding Total", _amount(totals.get("outstanding_total"), display=display)],
         ["Advances Total", _amount(totals.get("advance_outstanding_total"), display=display)],
@@ -284,12 +346,22 @@ def _write_section_sheet(ws, title, subtitle, headers, rows, numeric_columns):
         cell = ws.cell(row=header_row, column=col_idx)
         cell.font = header_font
         cell.fill = header_fill
-        cell.alignment = center
+        cell.alignment = right if col_idx in numeric_columns else left
         cell.border = border
-        ws.column_dimensions[get_column_letter(col_idx)].width = max(len(headers[col_idx - 1]) + 4, 14)
+        header_len = len(str(headers[col_idx - 1] or ""))
+        sample_len = max([header_len] + [len(str((row[col_idx - 1] if col_idx - 1 < len(row) else "") or "")) for row in rows[:40]])
+        ws.column_dimensions[get_column_letter(col_idx)].width = max(12, min(sample_len + 2, 26))
 
     for row in rows:
         ws.append(row)
+
+    total_row = _section_total_row(title, rows, display=False)
+
+    if total_row:
+        ws.append(total_row)
+        total_row_index = ws.max_row
+    else:
+        total_row_index = None
 
     for row in ws.iter_rows(min_row=header_row, max_row=ws.max_row, min_col=1, max_col=len(headers)):
         for cell in row:
@@ -305,6 +377,9 @@ def _write_section_sheet(ws, title, subtitle, headers, rows, numeric_columns):
                     pass
             else:
                 cell.alignment = left
+            if total_row_index and cell.row == total_row_index:
+                cell.font = Font(bold=True, color="1F2937")
+                cell.fill = PatternFill("solid", fgColor="EAF2FB")
 
 
 def _write_customer_statement_excel(payload, subtitle):
@@ -348,6 +423,9 @@ def _write_customer_statement_csv(payload, subtitle):
         writer.writerow([title])
         writer.writerow(headers)
         writer.writerows(rows)
+        total_row = _section_total_row(title, rows, display=True)
+        if total_row:
+            writer.writerow(total_row)
         writer.writerow([])
     return stream.getvalue().encode("utf-8")
 
@@ -363,6 +441,10 @@ def _decorate_pdf(canvas_obj, doc):
     canvas_obj.drawRightString(width - 18, 12, f"Page {doc.page}")
     canvas_obj.drawString(18, 12, "Finacc ERP")
     canvas_obj.restoreState()
+
+
+def _select_pdf_pagesize(headers):
+    return portrait(A4) if len(headers) <= 7 else landscape(A4)
 
 
 def _pdf_table(headers, rows, *, available_width, numeric_columns=None):
@@ -395,9 +477,11 @@ def _pdf_table(headers, rows, *, available_width, numeric_columns=None):
         ("RIGHTPADDING", (0, 0), (-1, -1), 4),
         ("TOPPADDING", (0, 0), (-1, -1), 4),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-        ("ALIGN", (0, 0), (-1, 0), "CENTER"),
     ]))
     numeric_columns = set(numeric_columns or [])
+    for col_index in range(len(headers)):
+        header_style = "RIGHT" if col_index in numeric_columns else "LEFT"
+        table.setStyle(TableStyle([("ALIGN", (col_index, 0), (col_index, 0), header_style)]))
     for row_index in range(1, len(table_data)):
         for col_index in range(len(headers)):
             table_style = "RIGHT" if col_index in numeric_columns else "LEFT"
@@ -408,9 +492,10 @@ def _pdf_table(headers, rows, *, available_width, numeric_columns=None):
 def _write_customer_statement_pdf(payload, subtitle):
     sections = _statement_sheet_data(payload, display=True)
     buffer = BytesIO()
+    page_size = _select_pdf_pagesize(sections["open_items"][0])
     doc = SimpleDocTemplate(
         buffer,
-        pagesize=landscape(A4),
+        pagesize=page_size,
         leftMargin=18,
         rightMargin=18,
         topMargin=18,
@@ -474,13 +559,16 @@ def _write_customer_statement_pdf(payload, subtitle):
         Spacer(1, 10),
     ]
 
-    available_width = landscape(A4)[0] - 36
+    available_width = page_size[0] - 36
     for title, section, numeric_columns in [
         ("Open Items", sections["open_items"], [4, 5, 6]),
         ("Advances", sections["advances"], [4, 5, 6]),
         ("Settlements", sections["settlements"], [3]),
     ]:
         headers, rows = section
+        total_row = _section_total_row(title, rows, display=True)
+        if total_row:
+            rows = rows + [total_row]
         story.append(Paragraph(title, ParagraphStyle(
             f"CustomerLedger{title}",
             parent=styles["Heading2"],

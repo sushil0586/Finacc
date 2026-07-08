@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date as date_cls, datetime
+
 from django.http import HttpResponse
 from rest_framework import permissions
 from rest_framework.pagination import PageNumberPagination
@@ -24,6 +26,26 @@ def _sales_register_format_scope_date(value):
     if hasattr(value, "strftime"):
         return value.strftime("%d %b %Y")
     return str(value)
+
+
+def _sales_register_format_display_date(value):
+    if not value:
+        return ""
+    if hasattr(value, "strftime"):
+        return value.strftime("%d %b %Y")
+    text = str(value).strip()
+    if not text:
+        return ""
+    for parser in (
+        lambda raw: date_cls.fromisoformat(raw[:10]),
+        lambda raw: datetime.strptime(raw[:10], "%d-%m-%Y").date(),
+        lambda raw: datetime.strptime(raw[:10], "%d/%m/%Y").date(),
+    ):
+        try:
+            return parser(text).strftime("%d %b %Y")
+        except Exception:
+            continue
+    return text
 
 
 def _safe_filename(value):
@@ -203,8 +225,8 @@ class _BaseSalesRegisterExportAPIView(SalesRegisterAPIView):
         rows = []
         for row in payload["results"]:
             rows.append([
-                row.get("invoice_date"),
-                row.get("posting_date"),
+                _sales_register_format_display_date(row.get("invoice_date")),
+                _sales_register_format_display_date(row.get("posting_date")),
                 row.get("doc_type_name") or row.get("doc_type"),
                 row.get("doc_code") or row.get("doc_no"),
                 row.get("sales_invoice_number"),
@@ -225,6 +247,30 @@ class _BaseSalesRegisterExportAPIView(SalesRegisterAPIView):
                 row.get("e_way_bill_no"),
                 row.get("status_name") or row.get("status"),
             ])
+        totals = payload.get("totals") or {}
+        total_row = [
+            "Report Total",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            totals.get("taxable_amount"),
+            totals.get("cgst_amount"),
+            totals.get("sgst_amount"),
+            totals.get("igst_amount"),
+            totals.get("cess_amount"),
+            totals.get("discount_total"),
+            totals.get("roundoff_amount"),
+            totals.get("grand_total"),
+            "",
+            "",
+            "",
+        ]
         subtitle = (
             f"Entity: {scope_names['entity_name'] or 'Selected entity'} | "
             f"FY: {scope_names['entityfin_name'] or 'Current FY'} | "
@@ -233,13 +279,13 @@ class _BaseSalesRegisterExportAPIView(SalesRegisterAPIView):
             f"Period: {_sales_register_format_scope_date(cleaned_filters.get('from_date')) or 'Start'} "
             f"to {_sales_register_format_scope_date(cleaned_filters.get('to_date')) or 'End'}"
         )
-        return payload, headers, rows, subtitle
+        return payload, headers, rows, subtitle, total_row
 
 
 class SalesRegisterExcelAPIView(_BaseSalesRegisterExportAPIView):
     def get(self, request):
-        _payload, headers, rows, subtitle = self.report_data(request)
-        content = _write_excel("Sales Register", subtitle, headers, rows, numeric_columns=set(range(10, 18)))
+        _payload, headers, rows, subtitle, total_row = self.report_data(request)
+        content = _write_excel("Sales Register", subtitle, headers, rows, numeric_columns=set(range(11, 19)), date_columns={1, 2}, total_row=total_row)
         return self.export_response(
             filename=f"SalesRegister_{_safe_filename(subtitle)}.xlsx",
             content=content,
@@ -249,15 +295,15 @@ class SalesRegisterExcelAPIView(_BaseSalesRegisterExportAPIView):
 
 class SalesRegisterCSVAPIView(_BaseSalesRegisterExportAPIView):
     def get(self, request):
-        _payload, headers, rows, subtitle = self.report_data(request)
-        content = _write_csv(headers, rows)
+        _payload, headers, rows, subtitle, total_row = self.report_data(request)
+        content = _write_csv(headers, rows, date_columns={1, 2}, total_row=total_row)
         return self.export_response(filename=f"SalesRegister_{_safe_filename(subtitle)}.csv", content=content, content_type="text/csv")
 
 
 class SalesRegisterPDFAPIView(_BaseSalesRegisterExportAPIView):
     def get(self, request):
-        _payload, headers, rows, subtitle = self.report_data(request)
-        content = _write_pdf("Sales Register", subtitle, headers, rows)
+        _payload, headers, rows, subtitle, total_row = self.report_data(request)
+        content = _write_pdf("Sales Register", subtitle, headers, rows, numeric_columns=set(range(11, 19)), date_columns={1, 2}, total_row=total_row)
         return self.export_response(filename=f"SalesRegister_{_safe_filename(subtitle)}.pdf", content=content, content_type="application/pdf")
 
 
