@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import csv
+from io import StringIO
+
 from django.core.exceptions import ValidationError
 from django.http import HttpResponse
+from django.utils import timezone
 from rest_framework import permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.entitlements import ScopedEntitlementMixin
 from reports.api.report_permissions import assert_any_report_permission
-from reports.api.receivables_views import _write_csv, _write_excel
+from reports.api.receivables_views import _write_excel
 from reports.gstr1.services.report import Gstr1ReportService
 from reports.gstr3b.services import Gstr3bSummaryService
 from reports.services.gst_reconciliation import build_gstr1_vs_gstr3b_reconciliation
@@ -145,19 +149,35 @@ class Gstr1VsGstr3bReconciliationExportAPIView(ScopedEntitlementMixin, APIView):
             [
                 row["label"],
                 row["status"],
-                row["gstr1_taxable_value"],
-                row["gstr3b_taxable_value"],
-                row["difference_taxable_value"],
-                row["gstr1_total_tax"],
-                row["gstr3b_total_tax"],
-                row["difference_total_tax"],
+                _format_export_number(row["gstr1_taxable_value"]),
+                _format_export_number(row["gstr3b_taxable_value"]),
+                _format_export_number(row["difference_taxable_value"]),
+                _format_export_number(row["gstr1_total_tax"]),
+                _format_export_number(row["gstr3b_total_tax"]),
+                _format_export_number(row["difference_total_tax"]),
                 row.get("note") or "",
             ]
             for row in payload["rows"]
         ]
-        subtitle = f"Period: {gstr1_scope.from_date} to {gstr1_scope.to_date}"
+        total_row = _reconciliation_total_row(payload.get("rows") or [])
+        generated_on = timezone.localtime().strftime("%d %b %Y %I:%M %p")
+        subtitle = (
+            f"Period: {_format_export_date(gstr1_scope.from_date)} to "
+            f"{_format_export_date(gstr1_scope.to_date)} | "
+            f"Generated on {generated_on}"
+        )
         if export_format == "csv":
-            return _file_response("GSTR1_vs_GSTR3B_Reconciliation.csv", _write_csv(headers, rows), "text/csv")
+            stream = StringIO()
+            writer = csv.writer(stream)
+            writer.writerow(["Report", "GSTR-1 vs GSTR-3B Reconciliation"])
+            writer.writerow(["Period", f"{_format_export_date(gstr1_scope.from_date)} to {_format_export_date(gstr1_scope.to_date)}"])
+            writer.writerow(["Generated On", generated_on])
+            writer.writerow([])
+            writer.writerow(headers)
+            writer.writerows(rows)
+            if total_row:
+                writer.writerow(total_row)
+            return _file_response("GSTR1_vs_GSTR3B_Reconciliation.csv", stream.getvalue().encode("utf-8"), "text/csv")
         if export_format == "xlsx":
             content = _write_excel(
                 "GSTR-1 vs GSTR-3B Reconciliation",
@@ -165,6 +185,7 @@ class Gstr1VsGstr3bReconciliationExportAPIView(ScopedEntitlementMixin, APIView):
                 headers,
                 rows,
                 numeric_columns={2, 3, 4, 5, 6, 7},
+                total_row=total_row,
             )
             return _file_response(
                 "GSTR1_vs_GSTR3B_Reconciliation.xlsx",
@@ -178,3 +199,49 @@ def _file_response(filename, content, content_type):
     response = HttpResponse(content, content_type=content_type)
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
     return response
+
+
+def _format_export_date(value):
+    if not value:
+        return "-"
+    if hasattr(value, "strftime"):
+        return value.strftime("%d %b %Y")
+    return str(value)
+
+
+def _format_export_number(value):
+    try:
+        return f"{float(value or 0):.2f}"
+    except Exception:
+        return "0.00"
+
+
+def _reconciliation_total_row(rows: list[dict]) -> list[str] | None:
+    if not rows:
+        return None
+    totals = {
+        "gstr1_taxable_value": 0.0,
+        "gstr3b_taxable_value": 0.0,
+        "difference_taxable_value": 0.0,
+        "gstr1_total_tax": 0.0,
+        "gstr3b_total_tax": 0.0,
+        "difference_total_tax": 0.0,
+    }
+    for row in rows:
+        totals["gstr1_taxable_value"] += float(row.get("gstr1_taxable_value") or 0)
+        totals["gstr3b_taxable_value"] += float(row.get("gstr3b_taxable_value") or 0)
+        totals["difference_taxable_value"] += float(row.get("difference_taxable_value") or 0)
+        totals["gstr1_total_tax"] += float(row.get("gstr1_total_tax") or 0)
+        totals["gstr3b_total_tax"] += float(row.get("gstr3b_total_tax") or 0)
+        totals["difference_total_tax"] += float(row.get("difference_total_tax") or 0)
+    return [
+        "Report Total",
+        "",
+        _format_export_number(totals["gstr1_taxable_value"]),
+        _format_export_number(totals["gstr3b_taxable_value"]),
+        _format_export_number(totals["difference_taxable_value"]),
+        _format_export_number(totals["gstr1_total_tax"]),
+        _format_export_number(totals["gstr3b_total_tax"]),
+        _format_export_number(totals["difference_total_tax"]),
+        "",
+    ]

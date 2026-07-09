@@ -241,6 +241,13 @@ def build_ledger_book(
             "credit": f"{total_credit:.2f}",
             "closing_balance": f"{running:.2f}",
         },
+        "running_balance_scope": "account",
+        "balance_basis": "ledger_running_balance",
+        "balance_integrity": True,
+        "balance_note": (
+            "Ledger Book running balance is derived from posted journal lines for the selected ledger "
+            "and is ordered deterministically by posting date, entry id, and journal line id."
+        ),
         "pagination": {
             "page": safe_page,
             "page_size": safe_page_size,

@@ -1129,14 +1129,17 @@ class BookReportAPITests(APITestCase):
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertEqual(data["mode"], "multi_account_summary")
-        self.assertIsNone(data["running_balance_scope"])
+        self.assertEqual(data["running_balance_scope"], "combined_accounts")
         self.assertEqual(data["opening_balance"], "300.00")
         self.assertEqual(data["closing_balance"], "365.00")
         self.assertEqual(len(data["account_summaries"]), 2)
         impacted = {row["account_impacted"]["name"] for row in data["results"]}
         self.assertEqual(impacted, {"Cash In Hand", "Main Bank"})
-        self.assertTrue(all(row["running_balance"] is None for row in data["results"]))
-        self.assertIn("suppress it", data["balance_note"])
+        self.assertEqual(
+            [(row["voucher_number"], row["running_balance"]) for row in data["results"]],
+            [("RV-001", "340.00"), ("CV-001", "390.00"), ("BV-001", "365.00")],
+        )
+        self.assertIn("combined post-transaction balance", data["balance_note"])
 
     def test_cashbook_filters_by_counter_account_and_search_disable_running_balance(self):
         response = self.client.get(reverse("reports_api:financial-cashbook"), {"entity": self.entity.id, "cash_account": str(self.cash_account.id), "account": str(self.expense_account.id), "search": "PV-001"})
@@ -1151,7 +1154,27 @@ class BookReportAPITests(APITestCase):
         self.assertEqual(data["totals"]["payment_total"], "0.00")
         self.assertEqual(data["totals"]["period_receipt_total"], "50.00")
         self.assertEqual(data["totals"]["period_payment_total"], "0.00")
-        self.assertIn("suppress it", data["balance_note"])
+        self.assertEqual(data["running_balance_scope"], "account")
+        self.assertIn("Filtered views may omit intermediate rows", data["balance_note"])
+
+    def test_cashbook_single_account_filtered_rows_still_show_true_running_balance(self):
+        response = self.client.get(
+            reverse("reports_api:financial-cashbook"),
+            {
+                "entity": self.entity.id,
+                "cash_account": str(self.cash_account.id),
+                "search": "CV-001",
+                "from_date": "2025-04-01",
+                "to_date": "2025-04-30",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["mode"], "multi_account_summary")
+        self.assertEqual(data["running_balance_scope"], "account")
+        self.assertEqual(len(data["results"]), 1)
+        self.assertEqual(data["results"][0]["voucher_number"], "CV-001")
+        self.assertEqual(data["results"][0]["running_balance"], "150.00")
 
     def test_cashbook_empty_results_and_pagination(self):
         response = self.client.get(reverse("reports_api:financial-cashbook"), {"entity": self.entity.id, "cash_account": str(self.cash_account.id), "from_date": "2025-05-01", "to_date": "2025-05-31", "page": 1, "page_size": 1})
@@ -1811,6 +1834,30 @@ class BookReportAPITests(APITestCase):
         self.assertEqual(data["available_exports"], ["excel", "pdf", "csv", "print"])
         self.assertEqual(set(data["actions"]["export_urls"].keys()), {"excel", "pdf", "csv", "print"})
         self.assertIn(f"ledger={self.cash_ledger.id}", data["actions"]["export_urls"]["excel"])
+        self.assertEqual(data["running_balance_scope"], "account")
+        self.assertEqual(data["balance_basis"], "ledger_running_balance")
+        self.assertTrue(data["balance_integrity"])
+        self.assertIn("ordered deterministically", data["balance_note"])
+        self.assertEqual(data["reporting"]["basis"], "ledger_running_balance")
+        self.assertEqual(data["reporting"]["scope_mode"], "financial_year")
+
+    def test_ledger_book_csv_export_includes_balance_context_metadata(self):
+        response = self.client.get(
+            reverse("reports_api:financial-ledger-book-csv"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "ledger": self.cash_ledger.id,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode("utf-8-sig")
+        self.assertIn("Ledger Book", content)
+        self.assertIn("Display Unit", content)
+        self.assertIn("Running Balance Scope", content)
+        self.assertIn("Balance Basis", content)
+        self.assertIn("Balance Integrity", content)
+        self.assertIn("Report Total", content)
 
     def test_ledger_summary_financial_year_hides_opening_values_by_default(self):
         response = self.client.get(

@@ -3,6 +3,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from django.http import HttpResponse
+from django.utils import timezone
 from rest_framework import permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -90,6 +91,11 @@ class Gstr1ExportAPIView(Gstr1ScopedReportMixin, APIView):
                 nil_exempt_summary=payload["nil_exempt_summary"],
                 table_payloads=table_payloads,
                 warnings=warnings,
+                export_meta={
+                    "generated_on": timezone.localtime().strftime("%d %b %Y %I:%M %p"),
+                    "scope": f"{scope.from_date.strftime('%d %b %Y')} to {scope.to_date.strftime('%d %b %Y')}",
+                    "entity": f"entity={scope.entity_id}, entityfinid={scope.entityfinid_id}, subentity={scope.subentity_id or '-'}",
+                },
             )
             return _file_response(
                 "GSTR1_Summary.xlsx",
@@ -208,7 +214,7 @@ def _file_response(filename, content, content_type):
 def _fmt_date(value):
     if not value:
         return ""
-    return value.isoformat()
+    return value.strftime("%d %b %Y")
 
 
 def _sum_section_totals(sections):

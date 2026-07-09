@@ -935,15 +935,41 @@ def build_cashbook(
         visible_payments[key] += Decimal(line.amount if not line.drcr else ZERO)
         visible_counts[key] += 1
 
+    running_balance_scope = "account" if len(refs) == 1 else "combined_accounts"
+    running_balance_by_line_id = {}
+
+    if len(refs) == 1:
+        running = {ref.key: Decimal(actual_opening[ref.key]) for ref in refs}
+        for line in all_account_lines:
+            key = _cashbook_target_key(line)
+            if key not in ref_by_key:
+                continue
+            if from_date and line.posting_date < from_date:
+                continue
+            if to_date and line.posting_date > to_date:
+                continue
+            running[key] += _line_delta(line)
+            running_balance_by_line_id[line.id] = _money(running[key])
+    else:
+        combined_running = sum((actual_opening[ref.key] for ref in refs), ZERO)
+        for line in all_account_lines:
+            key = _cashbook_target_key(line)
+            if key not in ref_by_key:
+                continue
+            if from_date and line.posting_date < from_date:
+                continue
+            if to_date and line.posting_date > to_date:
+                continue
+            combined_running += _line_delta(line)
+            running_balance_by_line_id[line.id] = _money(combined_running)
+
     rows = []
     if single_account_mode:
-        running = {ref.key: Decimal(actual_opening[ref.key]) for ref in refs}
         for line in visible_in_range:
             key = _cashbook_target_key(line)
             ref = ref_by_key.get(key)
             if ref is None:
                 continue
-            running[key] += _line_delta(line)
             receipt_amount = Decimal(line.amount if line.drcr else ZERO)
             payment_amount = Decimal(line.amount if not line.drcr else ZERO)
             counters = []
@@ -976,8 +1002,8 @@ def build_cashbook(
                     "particulars": ", ".join(counters),
                     "receipt_amount": _money(receipt_amount),
                     "payment_amount": _money(payment_amount),
-                    "running_balance": _money(running[key]),
-                    "running_balance_scope": "account",
+                    "running_balance": running_balance_by_line_id.get(line.id),
+                    "running_balance_scope": running_balance_scope,
                     "narration": line.entry.narration or line.description,
                     "source_module": source_module,
                     "entry_id": line.entry_id,
@@ -1031,8 +1057,8 @@ def build_cashbook(
                     "particulars": ", ".join(counters),
                     "receipt_amount": _money(receipt_amount),
                     "payment_amount": _money(payment_amount),
-                    "running_balance": None,
-                    "running_balance_scope": None,
+                    "running_balance": running_balance_by_line_id.get(line.id),
+                    "running_balance_scope": running_balance_scope,
                     "narration": line.entry.narration or line.description,
                     "source_module": source_module,
                     "entry_id": line.entry_id,
@@ -1090,13 +1116,18 @@ def build_cashbook(
         "to_date": to_date,
         "mode": mode,
         "mode": "single_account_detail" if single_account_mode else "multi_account_summary",
-        "running_balance_scope": "account" if single_account_mode else None,
+        "running_balance_scope": running_balance_scope,
         "balance_basis": "actual_account_movement",
         "balance_integrity": True,
         "balance_note": (
-            "Running balance is shown only for a single scoped cash/bank account without selective filters; filtered or multi-account views suppress it to avoid misleading balances."
-            if not single_account_mode
-            else "Opening, movement, and closing balances are computed from all posted entries for the account."
+            "Opening, movement, and closing balances are computed from all posted entries for the scoped cash/bank account."
+            if single_account_mode
+            else (
+                "Running balance reflects the true post-transaction balance for the scoped cash/bank selection. "
+                "Filtered views may omit intermediate rows while still showing the correct balance at each visible movement."
+                if selective_filters_applied
+                else "Running balance reflects the combined post-transaction balance across all scoped cash/bank accounts."
+            )
         ),
         "totals": {
             "transaction_count": len(visible_in_range),

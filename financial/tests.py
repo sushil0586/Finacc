@@ -1,10 +1,12 @@
 from datetime import datetime
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.core.management import call_command
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 from django.utils import timezone
+from rest_framework.request import Request
 from rest_framework import serializers
 from rest_framework.test import APIClient, APIRequestFactory
 
@@ -2554,3 +2556,143 @@ class FinancialAccountsBulkCoverageTests(TestCase):
         self.assertEqual(acc.commercial_profile.reminders, 2)
         self.assertEqual(acc.bank_details.get(isprimary=True).bankname, "HDFC")
         self.assertEqual(acc.contact_details.get(isprimary=True).full_name, "Priya")
+
+
+class FinancialExportDisplayUnitRegressionTests(TestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+
+    @patch("reports.api.financial.views.resolve_scope_names", return_value={"entity_name": "Arnika G", "entityfin_name": "FY 2026-27", "subentity_name": "Head Office"})
+    @patch("reports.api.financial.views.build_balance_sheet", return_value={"totals": {"assets": "100.00", "liabilities_and_equity": "100.00"}, "reporting": {}})
+    @patch("reports.api.financial.views.apply_amount_display_unit_override", return_value={"general_display": {"amount_display_unit": "lakhs"}})
+    @patch("reports.api.financial.views.get_effective_balance_sheet_settings", return_value={"report_defaults": {}})
+    @patch("reports.api.financial.views.get_financial_hub_settings_payload", return_value={})
+    def test_balance_sheet_export_applies_amount_display_unit_override(
+        self,
+        _settings_payload,
+        _effective_settings,
+        apply_override,
+        _build_balance_sheet,
+        _resolve_scope_names,
+    ):
+        from reports.api.financial.views import _BaseBalanceSheetExportAPIView
+
+        scope = {
+            "entity": 10,
+            "entityfinid": 8,
+            "subentity": 8,
+            "scope_mode": "custom",
+            "from_date": "2026-04-01",
+            "to_date": "2026-07-08",
+            "view_type": "summary",
+            "group_by": "ledger",
+            "account_group": "ledger",
+            "posted_only": True,
+            "hide_zero_rows": True,
+            "include_zero_balances": False,
+            "sort_order": "asc",
+            "page": 1,
+            "page_size": 100,
+            "amount_display_unit": "lakhs",
+        }
+        request = self.factory.get("/api/reports/financial/balance-sheet/csv", scope)
+        request.user = object()
+        view = _BaseBalanceSheetExportAPIView()
+        view.get_scope = lambda _request: scope
+
+        returned_scope, _data, _subtitle, settings = view.report_data(request)
+
+        self.assertEqual(returned_scope["amount_display_unit"], "lakhs")
+        apply_override.assert_called_once_with({"report_defaults": {}}, "lakhs")
+        self.assertEqual(settings["general_display"]["amount_display_unit"], "lakhs")
+
+    @patch("reports.api.financial.views.resolve_scope_names", return_value={"entity_name": "Arnika G", "entityfin_name": "FY 2026-27", "subentity_name": "Head Office"})
+    @patch("reports.api.financial.views.resolve_date_window")
+    @patch("reports.api.financial.views.build_trading_account_dynamic", return_value={"totals": {}, "reporting": {}})
+    @patch("reports.api.financial.views.apply_amount_display_unit_override", return_value={"general_display": {"amount_display_unit": "lakhs"}, "report_defaults": {}})
+    @patch("reports.api.financial.views.get_effective_trading_account_settings", return_value={"report_defaults": {}})
+    @patch("reports.api.financial.views.get_financial_hub_settings_payload", return_value={})
+    def test_trading_account_export_applies_amount_display_unit_override(
+        self,
+        _settings_payload,
+        _effective_settings,
+        apply_override,
+        _build_trading_account_dynamic,
+        resolve_date_window,
+        _resolve_scope_names,
+    ):
+        from datetime import date
+        from reports.api.financial.views import _BaseTradingAccountExportAPIView
+
+        resolve_date_window.return_value = (date(2026, 4, 1), date(2026, 7, 8))
+
+        request = Request(self.factory.get(
+            "/api/reports/financial/trading-account/csv",
+            {
+                "entity": 10,
+                "entityfinid": 8,
+                "subentity": 8,
+                "scope_mode": "custom",
+                "from_date": "2026-04-01",
+                "to_date": "2026-07-08",
+                "view_type": "summary",
+                "group_by": "accounthead",
+                "account_group": "accounthead",
+                "posted_only": "true",
+                "hide_zero_rows": "true",
+                "amount_display_unit": "lakhs",
+                "valuation_method": "fifo",
+            },
+        ))
+        view = _BaseTradingAccountExportAPIView()
+        view.enforce_scope = lambda *args, **kwargs: None
+        view.enforce_report_permission = lambda *args, **kwargs: None
+
+        returned_scope, _data, _subtitle, settings = view.report_data(request)
+
+        self.assertEqual(returned_scope["amount_display_unit"], "lakhs")
+        apply_override.assert_called_once_with({"report_defaults": {}}, "lakhs")
+        self.assertEqual(settings["general_display"]["amount_display_unit"], "lakhs")
+
+    @patch("reports.api.financial.views.resolve_scope_names", return_value={"entity_name": "Arnika G", "entityfin_name": "FY 2026-27", "subentity_name": "Head Office"})
+    @patch("reports.api.financial.views.build_ledger_summary", return_value={"totals": {}, "reporting": {}, "rows": [], "pagination": {}})
+    @patch("reports.api.financial.views.apply_amount_display_unit_override", return_value={"general_display": {"amount_display_unit": "lakhs"}, "report_defaults": {}})
+    @patch("reports.api.financial.views.get_effective_ledger_summary_settings", return_value={"report_defaults": {}})
+    @patch("reports.api.financial.views.get_financial_hub_settings_payload", return_value={})
+    def test_ledger_summary_export_applies_amount_display_unit_override(
+        self,
+        _settings_payload,
+        _effective_settings,
+        apply_override,
+        _build_ledger_summary,
+        _resolve_scope_names,
+    ):
+        from reports.api.financial.views import _BaseLedgerSummaryExportAPIView
+
+        scope = {
+            "entity": 10,
+            "entityfinid": 8,
+            "subentity": 8,
+            "scope_mode": "custom",
+            "from_date": "2026-04-01",
+            "to_date": "2026-07-08",
+            "view_type": "summary",
+            "group_by": "ledger",
+            "account_group": "ledger",
+            "posted_only": True,
+            "include_zero_balances": False,
+            "sort_order": "asc",
+            "page": 1,
+            "page_size": 100,
+            "amount_display_unit": "lakhs",
+        }
+        request = self.factory.get("/api/reports/financial/ledger-summary/csv", scope)
+        request.user = object()
+        view = _BaseLedgerSummaryExportAPIView()
+        view.get_scope = lambda _request: scope
+
+        returned_scope, _data, _subtitle, settings = view.report_data(request)
+
+        self.assertEqual(returned_scope["amount_display_unit"], "lakhs")
+        apply_override.assert_called_once_with({"report_defaults": {}}, "lakhs")
+        self.assertEqual(settings["general_display"]["amount_display_unit"], "lakhs")

@@ -460,7 +460,7 @@ class Gstr3bSummaryAPITests(APITestCase):
         self.assertIn("4,ITC available,400.00,36.00,36.00,0.00,0.00,72.00", content)
         self.assertIn("4,ITC reversed,100.00,9.00,9.00,0.00,0.00,18.00", content)
         self.assertIn("4,Net ITC,300.00,27.00,27.00,0.00,0.00,54.00", content)
-        self.assertIn("5.1,Inward exempt / nil / non-GST,250.00,0,0,0,0,0", content)
+        self.assertIn("5.1,Inward exempt / nil / non-GST,250.00,0.00,0.00,0.00,0.00,0.00", content)
 
     def test_xlsx_export_preserves_summary_rows_and_warnings_sheet(self):
         self._create_sales_doc(
@@ -532,33 +532,33 @@ class Gstr3bSummaryAPITests(APITestCase):
         )
 
         sheet31 = workbook["3.1 Outward-RCM"]
-        self.assertEqual(sheet31["A5"].value, "Outward taxable supplies")
-        self.assertEqual(Decimal(str(sheet31["B5"].value)), Decimal("1500.00"))
-        self.assertEqual(sheet31["A8"].value, "Outward nil/exempt/non-GST")
-        self.assertEqual(Decimal(str(sheet31["B8"].value)), Decimal("300.00"))
-        self.assertEqual(sheet31["A9"].value, "Non-GST outward supplies")
+        self.assertEqual(sheet31["A7"].value, "Outward taxable supplies")
+        self.assertEqual(Decimal(str(sheet31["B7"].value)), Decimal("1500.00"))
+        self.assertEqual(sheet31["A10"].value, "Outward nil/exempt/non-GST")
+        self.assertEqual(Decimal(str(sheet31["B10"].value)), Decimal("300.00"))
+        self.assertEqual(sheet31["A11"].value, "Non-GST outward supplies")
 
         sheet32 = workbook["3.2 Inter-state"]
-        self.assertEqual(sheet32["A5"].value, "Inter-state to unregistered")
-        self.assertEqual(Decimal(str(sheet32["B5"].value)), Decimal("500.00"))
-        self.assertEqual(sheet32["A6"].value, "Inter-state to composition")
-        self.assertEqual(sheet32["A7"].value, "Inter-state to UIN holders")
+        self.assertEqual(sheet32["A7"].value, "Inter-state to unregistered")
+        self.assertEqual(Decimal(str(sheet32["B7"].value)), Decimal("500.00"))
+        self.assertEqual(sheet32["A8"].value, "Inter-state to composition")
+        self.assertEqual(sheet32["A9"].value, "Inter-state to UIN holders")
 
         sheet4 = workbook["4 ITC"]
-        self.assertEqual(sheet4["A5"].value, "ITC available")
-        self.assertEqual(Decimal(str(sheet4["B5"].value)), Decimal("400.00"))
-        self.assertEqual(sheet4["A6"].value, "ITC reversed")
-        self.assertEqual(Decimal(str(sheet4["B6"].value)), Decimal("100.00"))
-        self.assertEqual(sheet4["A7"].value, "Net ITC")
-        self.assertEqual(Decimal(str(sheet4["B7"].value)), Decimal("300.00"))
+        self.assertEqual(sheet4["A7"].value, "ITC available")
+        self.assertEqual(Decimal(str(sheet4["B7"].value)), Decimal("400.00"))
+        self.assertEqual(sheet4["A8"].value, "ITC reversed")
+        self.assertEqual(Decimal(str(sheet4["B8"].value)), Decimal("100.00"))
+        self.assertEqual(sheet4["A9"].value, "Net ITC")
+        self.assertEqual(Decimal(str(sheet4["B9"].value)), Decimal("300.00"))
 
         sheet51 = workbook["5.1 Inward Exempt"]
-        self.assertEqual(sheet51["A5"].value, "Inward exempt / nil / non-GST")
-        self.assertEqual(Decimal(str(sheet51["B5"].value)), Decimal("250.00"))
+        self.assertEqual(sheet51["A7"].value, "Inward exempt / nil / non-GST")
+        self.assertEqual(Decimal(str(sheet51["B7"].value)), Decimal("250.00"))
 
         warnings = workbook["Warnings"]
-        self.assertEqual(warnings["A5"].value, "info")
-        self.assertEqual(warnings["B5"].value, "GSTR3B_CASH_TAX_SOURCE_PENDING")
+        self.assertEqual(warnings["A7"].value, "info")
+        self.assertEqual(warnings["B7"].value, "GSTR3B_CASH_TAX_SOURCE_PENDING")
 
     def test_xlsx_export_includes_audit_context_rows(self):
         self._create_sales_doc(
@@ -576,13 +576,17 @@ class Gstr3bSummaryAPITests(APITestCase):
         self.assertEqual(response.status_code, 200)
         workbook = load_workbook(filename=BytesIO(response.content), data_only=True)
         sheet31 = workbook["3.1 Outward-RCM"]
-        self.assertEqual(sheet31["A1"].value, "Generated On")
-        self.assertTrue(bool(sheet31["B1"].value))
-        self.assertEqual(sheet31["A2"].value, "Scope")
-        self.assertIn("entity=", str(sheet31["B2"].value))
-        self.assertIn("from_date=2025-04-01", str(sheet31["B2"].value))
-        self.assertIn("to_date=2025-04-30", str(sheet31["B2"].value))
-        self.assertEqual(sheet31["A4"].value, "Nature of Supplies")
+        self.assertEqual(sheet31["A1"].value, "GSTR-3B Summary")
+        self.assertEqual(sheet31["A2"].value, "Period")
+        self.assertIn("01 Apr 2025", str(sheet31["B2"].value))
+        self.assertIn("30 Apr 2025", str(sheet31["B2"].value))
+        self.assertEqual(sheet31["A3"].value, "Generated On")
+        self.assertTrue(bool(sheet31["B3"].value))
+        self.assertEqual(sheet31["A4"].value, "Scope")
+        self.assertIn("entity=", str(sheet31["B4"].value))
+        self.assertIn("from_date=01 Apr 2025", str(sheet31["B4"].value))
+        self.assertIn("to_date=30 Apr 2025", str(sheet31["B4"].value))
+        self.assertEqual(sheet31["A6"].value, "Nature of Supplies")
 
     def test_exports_preserve_warning_drilldown_context(self):
         self._create_sales_doc(
@@ -607,21 +611,23 @@ class Gstr3bSummaryAPITests(APITestCase):
 
         workbook = load_workbook(filename=BytesIO(xlsx_response.content), data_only=True)
         warnings = workbook["Warnings"]
-        self.assertEqual(warnings["A1"].value, "Generated On")
-        self.assertTrue(bool(warnings["B1"].value))
-        self.assertEqual(warnings["A2"].value, "Scope")
-        self.assertIn("entity=", str(warnings["B2"].value))
-        self.assertEqual(warnings["A4"].value, "Severity")
-        self.assertEqual(warnings["B4"].value, "Code")
-        self.assertEqual(warnings["C4"].value, "Message")
-        self.assertEqual(warnings["D4"].value, "Section Route")
-        self.assertEqual(warnings["E4"].value, "Section")
-        self.assertEqual(warnings["F4"].value, "Related Report Route")
-        self.assertEqual(warnings["A5"].value, "warning")
-        self.assertEqual(warnings["B5"].value, "GSTR3B_POS_MISSING")
-        self.assertEqual(warnings["D5"].value, "/gstr3breport")
-        self.assertEqual(warnings["E5"].value, "3.1")
-        self.assertEqual(warnings["F5"].value, "/gstreport")
+        self.assertEqual(warnings["A1"].value, "GSTR-3B Summary")
+        self.assertEqual(warnings["A2"].value, "Period")
+        self.assertEqual(warnings["A3"].value, "Generated On")
+        self.assertTrue(bool(warnings["B3"].value))
+        self.assertEqual(warnings["A4"].value, "Scope")
+        self.assertIn("entity=", str(warnings["B4"].value))
+        self.assertEqual(warnings["A6"].value, "Severity")
+        self.assertEqual(warnings["B6"].value, "Code")
+        self.assertEqual(warnings["C6"].value, "Message")
+        self.assertEqual(warnings["D6"].value, "Section Route")
+        self.assertEqual(warnings["E6"].value, "Section")
+        self.assertEqual(warnings["F6"].value, "Related Report Route")
+        self.assertEqual(warnings["A7"].value, "warning")
+        self.assertEqual(warnings["B7"].value, "GSTR3B_POS_MISSING")
+        self.assertEqual(warnings["D7"].value, "/gstr3breport")
+        self.assertEqual(warnings["E7"].value, "3.1")
+        self.assertEqual(warnings["F7"].value, "/gstreport")
 
     def test_summary_uses_posted_bank_cash_vouchers_for_tax_paid_cash(self):
         self._create_sales_doc(

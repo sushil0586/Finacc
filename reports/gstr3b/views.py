@@ -164,7 +164,9 @@ class Gstr3bExportAPIView(ScopedEntitlementMixin, APIView):
                 summary=summary,
                 warnings=warnings,
                 audit_context={
-                    "generated_on": timezone.now().isoformat(),
+                    "report_title": "GSTR-3B Summary",
+                    "period": f"{scope.from_date.strftime('%d %b %Y')} to {scope.to_date.strftime('%d %b %Y')}",
+                    "generated_on": timezone.localtime().strftime("%d %b %Y %I:%M %p"),
                     "scope": _format_audit_scope(scope),
                 },
             )
@@ -187,7 +189,7 @@ def _format_audit_scope(scope) -> str:
         f"entity={scope.entity_id}",
         f"entityfinid={scope.entityfinid_id}",
         f"subentity={scope.subentity_id or '-'}",
-        f"from_date={scope.from_date.isoformat()}",
-        f"to_date={scope.to_date.isoformat()}",
+        f"from_date={scope.from_date.strftime('%d %b %Y')}",
+        f"to_date={scope.to_date.strftime('%d %b %Y')}",
     ]
     return ", ".join(parts)

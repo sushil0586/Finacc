@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from io import BytesIO
 
 from django.test import override_settings
 from django.urls import reverse
 from django.utils import timezone
+from openpyxl import load_workbook
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.test import APIClient, APITestCase
 from unittest.mock import patch
@@ -552,6 +554,9 @@ class Gstr9ScaffoldAPITests(APITestCase):
         response = self.client.get(self.export_url, {**self.params, "format": "csv"})
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/csv", response["Content-Type"])
+        csv_text = response.content.decode("utf-8")
+        self.assertIn("Report,Finacc Entity - GSTR-9 Annual Return", csv_text)
+        self.assertIn("Table Coverage", csv_text)
 
         response = self.client.get(self.export_url, {**self.params, "format": "xlsx"})
         self.assertEqual(response.status_code, 200)
@@ -559,6 +564,10 @@ class Gstr9ScaffoldAPITests(APITestCase):
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             response["Content-Type"],
         )
+        workbook = load_workbook(filename=BytesIO(response.content))
+        self.assertIn("GSTR9 Summary", workbook.sheetnames)
+        sheet = workbook["GSTR9 Summary"]
+        self.assertIn("GSTR-9 Annual Return", str(sheet["A1"].value))
 
     def test_freeze_contract(self):
         create_one = self.client.post(self.freeze_url, self.params, format="json")
