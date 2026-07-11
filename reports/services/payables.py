@@ -787,16 +787,23 @@ def build_vendor_outstanding_report(
         # credit-adjusted exposure.
         vendor_net_outstanding = q2(vendor_positive_outstanding - vendor_advance_balance)
         vendor_credit_adjusted_outstanding = q2(vendor_net_outstanding - vendor_credit_balance)
-        if include_zero_balance is False and vendor_net_outstanding == ZERO and vendor_credit_balance == ZERO and vendor_advance_balance == ZERO and vendor_overdue == ZERO:
-            continue
-        if vendor_net_outstanding < ZERO and not include_credit_balances:
-            continue
-        if include_overdue_only and vendor_overdue <= ZERO:
-            continue
-        if outstanding_gt is not None and vendor_net_outstanding <= q2(outstanding_gt):
-            continue
-        if credit_limit_exceeded and credit_limit is not None and vendor_credit_adjusted_outstanding <= credit_limit:
-            continue
+        has_visible_detail_rows = bool(vendor_detail_rows)
+        if normalized_view == "detailed" and has_visible_detail_rows:
+            if outstanding_gt is not None and vendor_net_outstanding <= q2(outstanding_gt):
+                continue
+            if credit_limit_exceeded and credit_limit is not None and vendor_credit_adjusted_outstanding <= credit_limit:
+                continue
+        else:
+            if include_zero_balance is False and vendor_net_outstanding == ZERO and vendor_credit_balance == ZERO and vendor_advance_balance == ZERO and vendor_overdue == ZERO:
+                continue
+            if vendor_net_outstanding < ZERO and not include_credit_balances:
+                continue
+            if include_overdue_only and vendor_overdue <= ZERO:
+                continue
+            if outstanding_gt is not None and vendor_net_outstanding <= q2(outstanding_gt):
+                continue
+            if credit_limit_exceeded and credit_limit is not None and vendor_credit_adjusted_outstanding <= credit_limit:
+                continue
 
         display_outstanding = vendor_credit_adjusted_outstanding if credit_limit_exceeded else vendor_net_outstanding
 

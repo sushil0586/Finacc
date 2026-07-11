@@ -1094,6 +1094,58 @@ class PayableReportAPITests(APITestCase):
         self.assertEqual(advance_row["aging_bucket"], "advance")
         self.assertEqual(advance_row["outstanding_amount"], "-50.00")
 
+    def test_vendor_outstanding_detailed_keeps_open_bill_rows_when_vendor_net_is_negative_due_to_advances(self):
+        advance_heavy_vendor = self._create_vendor("Advance Heavy Vendor", 5008)
+        advance_heavy_ledger = advance_heavy_vendor.ledger
+        apply_normalized_profile_payload(
+            advance_heavy_vendor,
+            commercial_data={"partytype": "Vendor", "currency": "INR"},
+            primary_address_data={"state": self.state, "city": self.city},
+        )
+        invoice = self._create_purchase_header(
+            vendor=advance_heavy_vendor,
+            vendor_ledger=advance_heavy_ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 18),
+            due_date=date(2025, 4, 18),
+            doc_code="PINV",
+            doc_no=1008,
+            purchase_number="PI-PINV-1008",
+            supplier_invoice_number="SUP-2001",
+            amount=Decimal("100.00"),
+        )
+        self._create_open_item(
+            header=invoice,
+            vendor=advance_heavy_vendor,
+            vendor_ledger=advance_heavy_ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 18),
+            due_date=date(2025, 4, 18),
+            purchase_number="PI-PINV-1008",
+            supplier_invoice_number="SUP-2001",
+            amount=Decimal("100.00"),
+        )
+        self._create_advance(
+            vendor=advance_heavy_vendor,
+            vendor_ledger=advance_heavy_ledger,
+            credit_date=date(2025, 4, 20),
+            reference_no="ADV-NEG-001",
+            amount=Decimal("200.00"),
+        )
+
+        response = self.client.get(
+            reverse("reports_api:vendor-outstanding-report"),
+            self._base_scope(
+                as_of_date="2025-04-30",
+                vendor=advance_heavy_vendor.id,
+                view="detailed",
+            ),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["summary"]["vendor_count"], 1)
+        self.assertTrue(any(row["bill_ref_no"] == "SUP-2001" for row in payload["rows"]))
+
     def test_payables_meta_endpoint_exposes_filter_and_report_metadata(self):
         response = self.client.get(
             reverse("reports_api:payables-meta"),

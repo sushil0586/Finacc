@@ -10,12 +10,13 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A3, landscape
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from rest_framework import permissions
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from xml.sax.saxutils import escape
 
 from core.entitlements import ScopedEntitlementMixin
 from reports.schemas.common import build_report_envelope
@@ -66,6 +67,16 @@ def _safe_filename(value):
     return text or "report"
 
 
+def _build_total_row(length, *, label="Report Total", values=None):
+    row = [""] * length
+    if length:
+        row[0] = label
+    for index, value in (values or {}).items():
+        if 0 <= index < length and value not in (None, ""):
+            row[index] = value
+    return row
+
+
 def _inventory_querydict(request, *, exclude=None):
     params = request.GET.copy()
     for key in exclude or []:
@@ -97,7 +108,7 @@ def _workbook_styles():
     return header_font, header_fill, center, left, right, border
 
 
-def _write_excel(title, subtitle, headers, rows, *, numeric_columns):
+def _write_excel(title, subtitle, headers, rows, *, numeric_columns, totals_row=None):
     wb = Workbook()
     ws = wb.active
     ws.title = title[:31]
@@ -117,6 +128,15 @@ def _write_excel(title, subtitle, headers, rows, *, numeric_columns):
         ws.column_dimensions[get_column_letter(col_idx)].width = max(len(headers[col_idx - 1]) + 4, 16)
     for row in rows:
         ws.append(row)
+    if totals_row:
+        ws.append(totals_row)
+        total_row = ws.max_row
+        for col_idx in range(1, len(headers) + 1):
+            cell = ws.cell(row=total_row, column=col_idx)
+            cell.font = Font(bold=True, color="1F1F1F")
+            cell.fill = PatternFill("solid", fgColor="E8F0FE")
+            cell.border = border
+            cell.alignment = right if cell.column in numeric_columns else left
     for row in ws.iter_rows(min_row=header_row, max_row=ws.max_row, min_col=1, max_col=len(headers)):
         for cell in row:
             cell.border = border
@@ -129,15 +149,17 @@ def _write_excel(title, subtitle, headers, rows, *, numeric_columns):
     return buffer.getvalue()
 
 
-def _write_csv(headers, rows):
+def _write_csv(headers, rows, *, totals_row=None):
     stream = StringIO()
     writer = csv.writer(stream)
     writer.writerow(headers)
     writer.writerows(rows)
+    if totals_row:
+        writer.writerow(totals_row)
     return stream.getvalue().encode("utf-8")
 
 
-def _write_pdf(title, subtitle, headers, rows, *, col_widths=None):
+def _write_pdf(title, subtitle, headers, rows, *, col_widths=None, numeric_columns=None, totals_row=None):
     buffer = BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -155,26 +177,83 @@ def _write_pdf(title, subtitle, headers, rows, *, col_widths=None):
         Paragraph(subtitle, styles["Normal"]),
         Spacer(1, 10),
     ]
-    table = Table([headers] + rows, repeatRows=1, colWidths=col_widths)
-    table.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2F5597")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("FONTSIZE", (0, 0), (-1, 0), 8),
-                ("ALIGN", (0, 0), (-1, 0), "CENTER"),
-                ("GRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
-                ("FONTSIZE", (0, 1), (-1, -1), 6.5),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 3),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
-                ("TOPPADDING", (0, 0), (-1, -1), 3),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.lightgrey]),
-            ]
-        )
+    numeric_columns = {idx - 1 for idx in (numeric_columns or set()) if idx > 0}
+    cell_style = ParagraphStyle(
+        "InventoryPdfCell",
+        parent=styles["BodyText"],
+        fontName="Helvetica",
+        fontSize=6.5,
+        leading=7.5,
+        leftIndent=0,
+        rightIndent=0,
+        spaceBefore=0,
+        spaceAfter=0,
+        wordWrap="LTR",
+        splitLongWords=True,
     )
+    total_cell_style = ParagraphStyle(
+        "InventoryPdfTotalCell",
+        parent=cell_style,
+        fontName="Helvetica-Bold",
+    )
+
+    def _pdf_cell(value, *, total=False):
+        if value in (None, ""):
+            return ""
+        style = total_cell_style if total else cell_style
+        return Paragraph(escape(str(value)).replace("\n", "<br/>"), style)
+
+    if col_widths:
+        max_width = doc.width
+        total_width = sum(col_widths)
+        if total_width > max_width and total_width > 0:
+            scale = max_width / total_width
+            col_widths = [width * scale for width in col_widths]
+
+    table_rows = [headers]
+    for row in rows:
+        table_rows.append([
+            str(value) if idx in numeric_columns else _pdf_cell(value)
+            for idx, value in enumerate(row)
+        ])
+    if totals_row:
+        table_rows.append([
+            str(value) if idx in numeric_columns else _pdf_cell(value, total=True)
+            for idx, value in enumerate(totals_row)
+        ])
+    table = Table(table_rows, repeatRows=1, colWidths=col_widths)
+    table_style = [
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2F5597")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, 0), 8),
+        ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
+        ("FONTSIZE", (0, 1), (-1, -1), 6.5),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.lightgrey]),
+    ]
+    for col_idx in numeric_columns:
+        table_style.append(("ALIGN", (col_idx, 1), (col_idx, -1), "RIGHT"))
+        table_style.append(("ALIGN", (col_idx, 0), (col_idx, 0), "CENTER"))
+    table.setStyle(
+        TableStyle(table_style)
+    )
+    if totals_row:
+        total_row_idx = len(table_rows) - 1
+        table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, total_row_idx), (-1, total_row_idx), colors.HexColor("#E8F0FE")),
+                    ("FONTNAME", (0, total_row_idx), (-1, total_row_idx), "Helvetica-Bold"),
+                    ("LINEABOVE", (0, total_row_idx), (-1, total_row_idx), 0.5, colors.HexColor("#2F5597")),
+                ]
+            )
+        )
     story.append(table)
     doc.build(story)
     pdf = buffer.getvalue()
@@ -352,6 +431,7 @@ class _BaseInventoryStockSummaryExportAPIView(_BaseInventoryReportAPIView):
             page_size=100000,
             paginate=False,
         )
+        totals = data.get("totals", {})
         headers = [
             "Product",
             "SKU",
@@ -396,13 +476,18 @@ class _BaseInventoryStockSummaryExportAPIView(_BaseInventoryReportAPIView):
             f"As of: {_format_scope_date(scope.get('as_of_date') or scope.get('to_date') or scope.get('as_on_date'))} | "
             f"Valuation: {scope.get('valuation_method') or 'fifo'}"
         )
-        return scope, headers, rows, subtitle
+        totals_row = _build_total_row(len(headers), values={
+            5: totals.get("closing_qty"),
+            6: totals.get("closing_value"),
+            8: data.get("summary", {}).get("movement_count"),
+        })
+        return scope, headers, rows, subtitle, totals_row
 
 
 class InventoryStockSummaryExcelAPIView(_BaseInventoryStockSummaryExportAPIView):
     def get(self, request):
-        scope, headers, rows, subtitle = self.report_data(request)
-        content = _write_excel("Inventory Stock Summary", subtitle, headers, rows, numeric_columns={5, 6, 7, 8, 10, 11, 12, 14})
+        scope, headers, rows, subtitle, totals_row = self.report_data(request)
+        content = _write_excel("Inventory Stock Summary", subtitle, headers, rows, numeric_columns={6, 7, 8, 9, 11, 12, 13, 15}, totals_row=totals_row)
         return self.export_response(
             filename=f"InventoryStockSummary_{_safe_filename(subtitle)}.xlsx",
             content=content,
@@ -412,8 +497,8 @@ class InventoryStockSummaryExcelAPIView(_BaseInventoryStockSummaryExportAPIView)
 
 class InventoryStockSummaryCSVAPIView(_BaseInventoryStockSummaryExportAPIView):
     def get(self, request):
-        scope, headers, rows, subtitle = self.report_data(request)
-        content = _write_csv(headers, rows)
+        scope, headers, rows, subtitle, totals_row = self.report_data(request)
+        content = _write_csv(headers, rows, totals_row=totals_row)
         return self.export_response(
             filename=f"InventoryStockSummary_{_safe_filename(subtitle)}.csv",
             content=content,
@@ -423,9 +508,9 @@ class InventoryStockSummaryCSVAPIView(_BaseInventoryStockSummaryExportAPIView):
 
 class InventoryStockSummaryPDFAPIView(_BaseInventoryStockSummaryExportAPIView):
     def get(self, request):
-        scope, headers, rows, subtitle = self.report_data(request)
+        scope, headers, rows, subtitle, totals_row = self.report_data(request)
         col_widths = [
-            160,
+            174,
             70,
             120,
             56,
@@ -441,7 +526,15 @@ class InventoryStockSummaryPDFAPIView(_BaseInventoryStockSummaryExportAPIView):
             72,
             64,
         ]
-        content = _write_pdf("Inventory Stock Summary", subtitle, headers, rows, col_widths=col_widths)
+        content = _write_pdf(
+            "Inventory Stock Summary",
+            subtitle,
+            headers,
+            rows,
+            col_widths=col_widths,
+            numeric_columns={6, 7, 8, 9, 11, 12, 13, 15},
+            totals_row=totals_row,
+        )
         return self.export_response(
             filename=f"InventoryStockSummary_{_safe_filename(subtitle)}.pdf",
             content=content,
@@ -522,6 +615,7 @@ class _BaseInventoryStockLedgerExportAPIView(_BaseInventoryReportAPIView):
             page_size=100000,
             paginate=False,
         )
+        totals = data.get("totals", {})
         headers = [
             "Posting Date",
             "Voucher No",
@@ -541,7 +635,7 @@ class _BaseInventoryStockLedgerExportAPIView(_BaseInventoryReportAPIView):
         ]
         rows = [
             [
-                row.get("posting_date"),
+                _format_scope_date(row.get("posting_date")),
                 row.get("voucher_no"),
                 row.get("product_name"),
                 row.get("sku"),
@@ -567,13 +661,21 @@ class _BaseInventoryStockLedgerExportAPIView(_BaseInventoryReportAPIView):
             f"To: {_format_scope_date(scope.get('to_date') or scope.get('as_of_date') or scope.get('as_on_date'))} | "
             f"Valuation: {scope.get('valuation_method') or 'fifo'}"
         )
-        return scope, headers, rows, subtitle
+        totals_row = _build_total_row(len(headers), values={
+            7: totals.get("inward_qty"),
+            8: totals.get("outward_qty"),
+            11: totals.get("opening_qty"),
+            12: totals.get("opening_value"),
+            13: totals.get("closing_qty"),
+            14: totals.get("closing_value"),
+        })
+        return scope, headers, rows, subtitle, totals_row
 
 
 class InventoryStockLedgerExcelAPIView(_BaseInventoryStockLedgerExportAPIView):
     def get(self, request):
-        scope, headers, rows, subtitle = self.report_data(request)
-        content = _write_excel("Inventory Stock Ledger", subtitle, headers, rows, numeric_columns={7, 8, 9, 10, 11, 12, 13, 14, 15})
+        scope, headers, rows, subtitle, totals_row = self.report_data(request)
+        content = _write_excel("Inventory Stock Ledger", subtitle, headers, rows, numeric_columns={8, 9, 10, 11, 12, 13, 14, 15}, totals_row=totals_row)
         return self.export_response(
             filename=f"InventoryStockLedger_{_safe_filename(subtitle)}.xlsx",
             content=content,
@@ -583,8 +685,8 @@ class InventoryStockLedgerExcelAPIView(_BaseInventoryStockLedgerExportAPIView):
 
 class InventoryStockLedgerCSVAPIView(_BaseInventoryStockLedgerExportAPIView):
     def get(self, request):
-        scope, headers, rows, subtitle = self.report_data(request)
-        content = _write_csv(headers, rows)
+        scope, headers, rows, subtitle, totals_row = self.report_data(request)
+        content = _write_csv(headers, rows, totals_row=totals_row)
         return self.export_response(
             filename=f"InventoryStockLedger_{_safe_filename(subtitle)}.csv",
             content=content,
@@ -594,9 +696,17 @@ class InventoryStockLedgerCSVAPIView(_BaseInventoryStockLedgerExportAPIView):
 
 class InventoryStockLedgerPDFAPIView(_BaseInventoryStockLedgerExportAPIView):
     def get(self, request):
-        scope, headers, rows, subtitle = self.report_data(request)
-        col_widths = [78, 80, 112, 58, 92, 82, 52, 58, 58, 62, 68, 62, 68, 62, 68]
-        content = _write_pdf("Inventory Stock Ledger", subtitle, headers, rows, col_widths=col_widths)
+        scope, headers, rows, subtitle, totals_row = self.report_data(request)
+        col_widths = [78, 84, 150, 58, 88, 76, 52, 56, 56, 60, 66, 62, 68, 62, 68]
+        content = _write_pdf(
+            "Inventory Stock Ledger",
+            subtitle,
+            headers,
+            rows,
+            col_widths=col_widths,
+            numeric_columns={8, 9, 10, 11, 12, 13, 14, 15},
+            totals_row=totals_row,
+        )
         return self.export_response(
             filename=f"InventoryStockLedger_{_safe_filename(subtitle)}.pdf",
             content=content,
@@ -683,6 +793,7 @@ class _BaseInventoryStockAgingExportAPIView(_BaseInventoryReportAPIView):
             page_size=100000,
             paginate=False,
         )
+        totals = data.get("totals", {})
         headers = [
             "Product",
             "SKU",
@@ -720,13 +831,17 @@ class _BaseInventoryStockAgingExportAPIView(_BaseInventoryReportAPIView):
             f"Valuation: {scope.get('valuation_method') or 'fifo'} | "
             f"Buckets: {', '.join(str(end) for end in (scope.get('bucket_ends') or [30, 60, 90, 120, 150]))}"
         )
-        return scope, headers, rows, subtitle
+        totals_row = _build_total_row(len(headers), values={
+            4: totals.get("closing_qty"),
+            5: totals.get("closing_value"),
+        })
+        return scope, headers, rows, subtitle, totals_row
 
 
 class InventoryStockAgingExcelAPIView(_BaseInventoryStockAgingExportAPIView):
     def get(self, request):
-        scope, headers, rows, subtitle = self.report_data(request)
-        content = _write_excel("Inventory Stock Aging", subtitle, headers, rows, numeric_columns={4, 5, 6, 8, 9})
+        scope, headers, rows, subtitle, totals_row = self.report_data(request)
+        content = _write_excel("Inventory Stock Aging", subtitle, headers, rows, numeric_columns={5, 6, 7, 9}, totals_row=totals_row)
         return self.export_response(
             filename=f"InventoryStockAging_{_safe_filename(subtitle)}.xlsx",
             content=content,
@@ -736,8 +851,8 @@ class InventoryStockAgingExcelAPIView(_BaseInventoryStockAgingExportAPIView):
 
 class InventoryStockAgingCSVAPIView(_BaseInventoryStockAgingExportAPIView):
     def get(self, request):
-        scope, headers, rows, subtitle = self.report_data(request)
-        content = _write_csv(headers, rows)
+        scope, headers, rows, subtitle, totals_row = self.report_data(request)
+        content = _write_csv(headers, rows, totals_row=totals_row)
         return self.export_response(
             filename=f"InventoryStockAging_{_safe_filename(subtitle)}.csv",
             content=content,
@@ -747,9 +862,17 @@ class InventoryStockAgingCSVAPIView(_BaseInventoryStockAgingExportAPIView):
 
 class InventoryStockAgingPDFAPIView(_BaseInventoryStockAgingExportAPIView):
     def get(self, request):
-        scope, headers, rows, subtitle = self.report_data(request)
+        scope, headers, rows, subtitle, totals_row = self.report_data(request)
         col_widths = [140, 70, 110, 90, 60, 74, 60, 84, 56, 84, 64]
-        content = _write_pdf("Inventory Stock Aging", subtitle, headers, rows, col_widths=col_widths)
+        content = _write_pdf(
+            "Inventory Stock Aging",
+            subtitle,
+            headers,
+            rows,
+            col_widths=col_widths,
+            numeric_columns={5, 6, 7, 9},
+            totals_row=totals_row,
+        )
         return self.export_response(
             filename=f"InventoryStockAging_{_safe_filename(subtitle)}.pdf",
             content=content,
@@ -832,6 +955,7 @@ class _BaseInventoryLocationStockExportAPIView(_BaseInventoryReportAPIView):
             page_size=100000,
             paginate=False,
         )
+        totals = data.get("totals", {})
         headers = [
             "Location",
             "Code",
@@ -851,13 +975,22 @@ class _BaseInventoryLocationStockExportAPIView(_BaseInventoryReportAPIView):
         ]
         rows = [_location_stock_row_export(row) for row in data["rows"]]
         subtitle = _location_stock_subtitle(scope, scope_names)
-        return headers, rows, subtitle
+        totals_row = _build_total_row(len(headers), values={
+            4: totals.get("product_count"),
+            5: totals.get("movement_count"),
+            6: totals.get("closing_qty"),
+            7: totals.get("closing_value"),
+            9: data.get("summary", {}).get("low_stock_count"),
+            10: data.get("summary", {}).get("negative_stock_count"),
+            11: data.get("summary", {}).get("zero_stock_count"),
+        })
+        return headers, rows, subtitle, totals_row
 
 
 class InventoryLocationStockExcelAPIView(_BaseInventoryLocationStockExportAPIView):
     def get(self, request):
-        headers, rows, subtitle = self.report_data(request)
-        content = _write_excel("Inventory Location Stock", subtitle, headers, rows, numeric_columns={5, 6, 7, 8, 9, 10, 11, 12})
+        headers, rows, subtitle, totals_row = self.report_data(request)
+        content = _write_excel("Inventory Location Stock", subtitle, headers, rows, numeric_columns={5, 6, 7, 8, 9, 10, 11, 12}, totals_row=totals_row)
         return self.export_response(
             filename=f"InventoryLocationStock_{_safe_filename(subtitle)}.xlsx",
             content=content,
@@ -867,8 +1000,8 @@ class InventoryLocationStockExcelAPIView(_BaseInventoryLocationStockExportAPIVie
 
 class InventoryLocationStockCSVAPIView(_BaseInventoryLocationStockExportAPIView):
     def get(self, request):
-        headers, rows, subtitle = self.report_data(request)
-        content = _write_csv(headers, rows)
+        headers, rows, subtitle, totals_row = self.report_data(request)
+        content = _write_csv(headers, rows, totals_row=totals_row)
         return self.export_response(
             filename=f"InventoryLocationStock_{_safe_filename(subtitle)}.csv",
             content=content,
@@ -878,9 +1011,17 @@ class InventoryLocationStockCSVAPIView(_BaseInventoryLocationStockExportAPIView)
 
 class InventoryLocationStockPDFAPIView(_BaseInventoryLocationStockExportAPIView):
     def get(self, request):
-        headers, rows, subtitle = self.report_data(request)
+        headers, rows, subtitle, totals_row = self.report_data(request)
         col_widths = [90, 52, 54, 54, 48, 52, 58, 68, 52, 52, 56, 52, 62, 62, 52]
-        content = _write_pdf("Inventory Location Stock", subtitle, headers, rows, col_widths=col_widths)
+        content = _write_pdf(
+            "Inventory Location Stock",
+            subtitle,
+            headers,
+            rows,
+            col_widths=col_widths,
+            numeric_columns={5, 6, 7, 8, 9, 10, 11, 12},
+            totals_row=totals_row,
+        )
         return self.export_response(
             filename=f"InventoryLocationStock_{_safe_filename(subtitle)}.pdf",
             content=content,
@@ -965,6 +1106,7 @@ class _BaseInventoryNonMovingStockExportAPIView(_BaseInventoryReportAPIView):
             page_size=100000,
             paginate=False,
         )
+        totals = data.get("totals", {})
         headers = [
             "Product",
             "SKU",
@@ -1002,13 +1144,17 @@ class _BaseInventoryNonMovingStockExportAPIView(_BaseInventoryReportAPIView):
             f"Valuation: {scope.get('valuation_method') or INVENTORY_REPORT_DEFAULTS['default_valuation_method']} | "
             f"Days: {scope.get('non_moving_days') or 90}"
         )
-        return headers, rows, subtitle
+        totals_row = _build_total_row(len(headers), values={
+            4: totals.get("closing_qty"),
+            5: totals.get("closing_value"),
+        })
+        return headers, rows, subtitle, totals_row
 
 
 class InventoryNonMovingStockExcelAPIView(_BaseInventoryNonMovingStockExportAPIView):
     def get(self, request):
-        headers, rows, subtitle = self.report_data(request)
-        content = _write_excel("Inventory Non-Moving Stock", subtitle, headers, rows, numeric_columns={4, 5, 6, 8, 9, 10})
+        headers, rows, subtitle, totals_row = self.report_data(request)
+        content = _write_excel("Inventory Non-Moving Stock", subtitle, headers, rows, numeric_columns={5, 6, 7, 9, 10}, totals_row=totals_row)
         return self.export_response(
             filename=f"InventoryNonMovingStock_{_safe_filename(subtitle)}.xlsx",
             content=content,
@@ -1018,8 +1164,8 @@ class InventoryNonMovingStockExcelAPIView(_BaseInventoryNonMovingStockExportAPIV
 
 class InventoryNonMovingStockCSVAPIView(_BaseInventoryNonMovingStockExportAPIView):
     def get(self, request):
-        headers, rows, subtitle = self.report_data(request)
-        content = _write_csv(headers, rows)
+        headers, rows, subtitle, totals_row = self.report_data(request)
+        content = _write_csv(headers, rows, totals_row=totals_row)
         return self.export_response(
             filename=f"InventoryNonMovingStock_{_safe_filename(subtitle)}.csv",
             content=content,
@@ -1029,9 +1175,17 @@ class InventoryNonMovingStockCSVAPIView(_BaseInventoryNonMovingStockExportAPIVie
 
 class InventoryNonMovingStockPDFAPIView(_BaseInventoryNonMovingStockExportAPIView):
     def get(self, request):
-        headers, rows, subtitle = self.report_data(request)
+        headers, rows, subtitle, totals_row = self.report_data(request)
         col_widths = [138, 72, 110, 88, 60, 72, 60, 82, 54, 66, 64]
-        content = _write_pdf("Inventory Non-Moving Stock", subtitle, headers, rows, col_widths=col_widths)
+        content = _write_pdf(
+            "Inventory Non-Moving Stock",
+            subtitle,
+            headers,
+            rows,
+            col_widths=col_widths,
+            numeric_columns={5, 6, 7, 9, 10},
+            totals_row=totals_row,
+        )
         return self.export_response(
             filename=f"InventoryNonMovingStock_{_safe_filename(subtitle)}.pdf",
             content=content,
@@ -1114,6 +1268,7 @@ class _BaseInventoryReorderStatusExportAPIView(_BaseInventoryReportAPIView):
             page_size=100000,
             paginate=False,
         )
+        totals = data.get("totals", {})
         headers = [
             "Product",
             "SKU",
@@ -1156,13 +1311,17 @@ class _BaseInventoryReorderStatusExportAPIView(_BaseInventoryReportAPIView):
             f"As of: {_format_scope_date(scope.get('as_of_date') or scope.get('to_date') or scope.get('as_on_date'))} | "
             f"Valuation: {scope.get('valuation_method') or INVENTORY_REPORT_DEFAULTS['default_valuation_method']}"
         )
-        return headers, rows, subtitle
+        totals_row = _build_total_row(len(headers), values={
+            4: totals.get("closing_qty"),
+            5: totals.get("closing_value"),
+        })
+        return headers, rows, subtitle, totals_row
 
 
 class InventoryReorderStatusExcelAPIView(_BaseInventoryReorderStatusExportAPIView):
     def get(self, request):
-        headers, rows, subtitle = self.report_data(request)
-        content = _write_excel("Inventory Reorder Status", subtitle, headers, rows, numeric_columns={4, 5, 6, 7, 8, 9, 10, 11, 12})
+        headers, rows, subtitle, totals_row = self.report_data(request)
+        content = _write_excel("Inventory Reorder Status", subtitle, headers, rows, numeric_columns={5, 6, 7, 8, 9, 10, 11, 12}, totals_row=totals_row)
         return self.export_response(
             filename=f"InventoryReorderStatus_{_safe_filename(subtitle)}.xlsx",
             content=content,
@@ -1172,8 +1331,8 @@ class InventoryReorderStatusExcelAPIView(_BaseInventoryReorderStatusExportAPIVie
 
 class InventoryReorderStatusCSVAPIView(_BaseInventoryReorderStatusExportAPIView):
     def get(self, request):
-        headers, rows, subtitle = self.report_data(request)
-        content = _write_csv(headers, rows)
+        headers, rows, subtitle, totals_row = self.report_data(request)
+        content = _write_csv(headers, rows, totals_row=totals_row)
         return self.export_response(
             filename=f"InventoryReorderStatus_{_safe_filename(subtitle)}.csv",
             content=content,
@@ -1183,9 +1342,17 @@ class InventoryReorderStatusCSVAPIView(_BaseInventoryReorderStatusExportAPIView)
 
 class InventoryReorderStatusPDFAPIView(_BaseInventoryReorderStatusExportAPIView):
     def get(self, request):
-        headers, rows, subtitle = self.report_data(request)
+        headers, rows, subtitle, totals_row = self.report_data(request)
         col_widths = [126, 66, 100, 84, 56, 70, 56, 64, 58, 58, 62, 54, 82, 60]
-        content = _write_pdf("Inventory Reorder Status", subtitle, headers, rows, col_widths=col_widths)
+        content = _write_pdf(
+            "Inventory Reorder Status",
+            subtitle,
+            headers,
+            rows,
+            col_widths=col_widths,
+            numeric_columns={5, 6, 7, 8, 9, 10, 11, 12},
+            totals_row=totals_row,
+        )
         return self.export_response(
             filename=f"InventoryReorderStatus_{_safe_filename(subtitle)}.pdf",
             content=content,
@@ -1272,6 +1439,7 @@ class _BaseInventorySlowMovingDeadStockExportAPIView(_BaseInventoryReportAPIView
             page_size=100000,
             paginate=False,
         )
+        totals = data.get("totals", {})
         headers = [
             "Product",
             "SKU",
@@ -1314,13 +1482,17 @@ class _BaseInventorySlowMovingDeadStockExportAPIView(_BaseInventoryReportAPIView
             f"Dead Days: {scope.get('dead_stock_days') or 180} | "
             f"Valuation: {scope.get('valuation_method') or INVENTORY_REPORT_DEFAULTS['default_valuation_method']}"
         )
-        return headers, rows, subtitle
+        totals_row = _build_total_row(len(headers), values={
+            4: totals.get("closing_qty"),
+            5: totals.get("closing_value"),
+        })
+        return headers, rows, subtitle, totals_row
 
 
 class InventorySlowMovingDeadStockExcelAPIView(_BaseInventorySlowMovingDeadStockExportAPIView):
     def get(self, request):
-        headers, rows, subtitle = self.report_data(request)
-        content = _write_excel("Slow Moving vs Dead Stock", subtitle, headers, rows, numeric_columns={4, 5, 6, 8, 9, 10})
+        headers, rows, subtitle, totals_row = self.report_data(request)
+        content = _write_excel("Slow Moving vs Dead Stock", subtitle, headers, rows, numeric_columns={5, 6, 7, 9, 10, 11}, totals_row=totals_row)
         return self.export_response(
             filename=f"SlowMovingDeadStock_{_safe_filename(subtitle)}.xlsx",
             content=content,
@@ -1330,8 +1502,8 @@ class InventorySlowMovingDeadStockExcelAPIView(_BaseInventorySlowMovingDeadStock
 
 class InventorySlowMovingDeadStockCSVAPIView(_BaseInventorySlowMovingDeadStockExportAPIView):
     def get(self, request):
-        headers, rows, subtitle = self.report_data(request)
-        content = _write_csv(headers, rows)
+        headers, rows, subtitle, totals_row = self.report_data(request)
+        content = _write_csv(headers, rows, totals_row=totals_row)
         return self.export_response(
             filename=f"SlowMovingDeadStock_{_safe_filename(subtitle)}.csv",
             content=content,
@@ -1341,9 +1513,17 @@ class InventorySlowMovingDeadStockCSVAPIView(_BaseInventorySlowMovingDeadStockEx
 
 class InventorySlowMovingDeadStockPDFAPIView(_BaseInventorySlowMovingDeadStockExportAPIView):
     def get(self, request):
-        headers, rows, subtitle = self.report_data(request)
+        headers, rows, subtitle, totals_row = self.report_data(request)
         col_widths = [140, 70, 110, 90, 60, 74, 60, 84, 56, 56, 56, 74, 64]
-        content = _write_pdf("Slow Moving vs Dead Stock", subtitle, headers, rows, col_widths=col_widths)
+        content = _write_pdf(
+            "Slow Moving vs Dead Stock",
+            subtitle,
+            headers,
+            rows,
+            col_widths=col_widths,
+            numeric_columns={5, 6, 7, 9, 10, 11},
+            totals_row=totals_row,
+        )
         return self.export_response(
             filename=f"SlowMovingDeadStock_{_safe_filename(subtitle)}.pdf",
             content=content,
@@ -1646,6 +1826,7 @@ class _BaseInventoryStockMovementExportAPIView(_BaseInventoryReportAPIView):
                 sort_order=scope.get("sort_order", "desc"),
             )
         )
+        totals = data.get("totals", {})
         headers = [
             "Product",
             "SKU",
@@ -1669,13 +1850,26 @@ class _BaseInventoryStockMovementExportAPIView(_BaseInventoryReportAPIView):
         ]
         rows = [_movement_row_export(row) for row in data["rows"]]
         subtitle = _movement_subtitle(scope, scope_names)
-        return headers, rows, subtitle
+        totals_row = _build_total_row(len(headers), values={
+            4: totals.get("opening_qty"),
+            5: totals.get("opening_value"),
+            6: totals.get("inward_qty"),
+            7: totals.get("inward_value"),
+            8: totals.get("outward_qty"),
+            9: totals.get("outward_value"),
+            10: totals.get("net_qty"),
+            11: totals.get("net_value"),
+            12: totals.get("closing_qty"),
+            13: totals.get("closing_value"),
+            15: data.get("summary", {}).get("movement_count"),
+        })
+        return headers, rows, subtitle, totals_row
 
 
 class InventoryStockMovementExcelAPIView(_BaseInventoryStockMovementExportAPIView):
     def get(self, request):
-        headers, rows, subtitle = self.report_data(request)
-        content = _write_excel("Inventory Stock Movement", subtitle, headers, rows, numeric_columns={4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17})
+        headers, rows, subtitle, totals_row = self.report_data(request)
+        content = _write_excel("Inventory Stock Movement", subtitle, headers, rows, numeric_columns={5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}, totals_row=totals_row)
         return self.export_response(
             filename=f"InventoryStockMovement_{_safe_filename(subtitle)}.xlsx",
             content=content,
@@ -1685,8 +1879,8 @@ class InventoryStockMovementExcelAPIView(_BaseInventoryStockMovementExportAPIVie
 
 class InventoryStockMovementCSVAPIView(_BaseInventoryStockMovementExportAPIView):
     def get(self, request):
-        headers, rows, subtitle = self.report_data(request)
-        content = _write_csv(headers, rows)
+        headers, rows, subtitle, totals_row = self.report_data(request)
+        content = _write_csv(headers, rows, totals_row=totals_row)
         return self.export_response(
             filename=f"InventoryStockMovement_{_safe_filename(subtitle)}.csv",
             content=content,
@@ -1696,9 +1890,17 @@ class InventoryStockMovementCSVAPIView(_BaseInventoryStockMovementExportAPIView)
 
 class InventoryStockMovementPDFAPIView(_BaseInventoryStockMovementExportAPIView):
     def get(self, request):
-        headers, rows, subtitle = self.report_data(request)
-        col_widths = [118, 60, 84, 76, 52, 64, 52, 62, 52, 62, 52, 62, 52, 64, 46, 54, 64, 64, 58]
-        content = _write_pdf("Inventory Stock Movement", subtitle, headers, rows, col_widths=col_widths)
+        headers, rows, subtitle, totals_row = self.report_data(request)
+        col_widths = [148, 58, 86, 76, 52, 64, 52, 62, 52, 62, 52, 62, 52, 64, 46, 54, 64, 64, 58]
+        content = _write_pdf(
+            "Inventory Stock Movement",
+            subtitle,
+            headers,
+            rows,
+            col_widths=col_widths,
+            numeric_columns={5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+            totals_row=totals_row,
+        )
         return self.export_response(
             filename=f"InventoryStockMovement_{_safe_filename(subtitle)}.pdf",
             content=content,
@@ -1762,6 +1964,7 @@ class _BaseInventoryStockDayBookExportAPIView(_BaseInventoryReportAPIView):
                 sort_order=scope.get("sort_order", "asc"),
             )
         )
+        totals = data.get("totals", {})
         headers = [
             "Date",
             "Opening Qty",
@@ -1777,13 +1980,24 @@ class _BaseInventoryStockDayBookExportAPIView(_BaseInventoryReportAPIView):
         ]
         rows = [_daybook_row_export(row) for row in data["rows"]]
         subtitle = _daybook_subtitle(scope, scope_names)
-        return headers, rows, subtitle
+        totals_row = _build_total_row(len(headers), values={
+            1: totals.get("opening_qty"),
+            2: totals.get("opening_value"),
+            3: totals.get("inward_qty"),
+            4: totals.get("inward_value"),
+            5: totals.get("outward_qty"),
+            6: totals.get("outward_value"),
+            7: totals.get("closing_qty"),
+            8: totals.get("closing_value"),
+            9: data.get("summary", {}).get("movement_count"),
+        })
+        return headers, rows, subtitle, totals_row
 
 
 class InventoryStockDayBookExcelAPIView(_BaseInventoryStockDayBookExportAPIView):
     def get(self, request):
-        headers, rows, subtitle = self.report_data(request)
-        content = _write_excel("Inventory Stock Day Book", subtitle, headers, rows, numeric_columns={1, 2, 3, 4, 5, 6, 7, 8, 9, 10})
+        headers, rows, subtitle, totals_row = self.report_data(request)
+        content = _write_excel("Inventory Stock Day Book", subtitle, headers, rows, numeric_columns={2, 3, 4, 5, 6, 7, 8, 9, 10, 11}, totals_row=totals_row)
         return self.export_response(
             filename=f"InventoryStockDayBook_{_safe_filename(subtitle)}.xlsx",
             content=content,
@@ -1793,8 +2007,8 @@ class InventoryStockDayBookExcelAPIView(_BaseInventoryStockDayBookExportAPIView)
 
 class InventoryStockDayBookCSVAPIView(_BaseInventoryStockDayBookExportAPIView):
     def get(self, request):
-        headers, rows, subtitle = self.report_data(request)
-        content = _write_csv(headers, rows)
+        headers, rows, subtitle, totals_row = self.report_data(request)
+        content = _write_csv(headers, rows, totals_row=totals_row)
         return self.export_response(
             filename=f"InventoryStockDayBook_{_safe_filename(subtitle)}.csv",
             content=content,
@@ -1804,9 +2018,17 @@ class InventoryStockDayBookCSVAPIView(_BaseInventoryStockDayBookExportAPIView):
 
 class InventoryStockDayBookPDFAPIView(_BaseInventoryStockDayBookExportAPIView):
     def get(self, request):
-        headers, rows, subtitle = self.report_data(request)
+        headers, rows, subtitle, totals_row = self.report_data(request)
         col_widths = [78, 72, 72, 72, 72, 72, 72, 72, 72, 58, 58]
-        content = _write_pdf("Inventory Stock Day Book", subtitle, headers, rows, col_widths=col_widths)
+        content = _write_pdf(
+            "Inventory Stock Day Book",
+            subtitle,
+            headers,
+            rows,
+            col_widths=col_widths,
+            numeric_columns={2, 3, 4, 5, 6, 7, 8, 9, 10, 11},
+            totals_row=totals_row,
+        )
         return self.export_response(
             filename=f"InventoryStockDayBook_{_safe_filename(subtitle)}.pdf",
             content=content,
@@ -1870,6 +2092,7 @@ class _BaseInventoryStockBookSummaryExportAPIView(_BaseInventoryReportAPIView):
                 sort_order=scope.get("sort_order", "desc"),
             )
         )
+        totals = data.get("totals", {})
         headers = [
             "Product",
             "SKU",
@@ -1893,13 +2116,26 @@ class _BaseInventoryStockBookSummaryExportAPIView(_BaseInventoryReportAPIView):
         ]
         rows = [_movement_row_export(row) for row in data["rows"]]
         subtitle = _movement_subtitle(scope, scope_names)
-        return headers, rows, subtitle
+        totals_row = _build_total_row(len(headers), values={
+            4: totals.get("opening_qty"),
+            5: totals.get("opening_value"),
+            6: totals.get("inward_qty"),
+            7: totals.get("inward_value"),
+            8: totals.get("outward_qty"),
+            9: totals.get("outward_value"),
+            10: totals.get("net_qty"),
+            11: totals.get("net_value"),
+            12: totals.get("closing_qty"),
+            13: totals.get("closing_value"),
+            15: data.get("summary", {}).get("movement_count"),
+        })
+        return headers, rows, subtitle, totals_row
 
 
 class InventoryStockBookSummaryExcelAPIView(_BaseInventoryStockBookSummaryExportAPIView):
     def get(self, request):
-        headers, rows, subtitle = self.report_data(request)
-        content = _write_excel("Inventory Stock Book Summary", subtitle, headers, rows, numeric_columns={4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17})
+        headers, rows, subtitle, totals_row = self.report_data(request)
+        content = _write_excel("Inventory Stock Book Summary", subtitle, headers, rows, numeric_columns={5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}, totals_row=totals_row)
         return self.export_response(
             filename=f"InventoryStockBookSummary_{_safe_filename(subtitle)}.xlsx",
             content=content,
@@ -1909,8 +2145,8 @@ class InventoryStockBookSummaryExcelAPIView(_BaseInventoryStockBookSummaryExport
 
 class InventoryStockBookSummaryCSVAPIView(_BaseInventoryStockBookSummaryExportAPIView):
     def get(self, request):
-        headers, rows, subtitle = self.report_data(request)
-        content = _write_csv(headers, rows)
+        headers, rows, subtitle, totals_row = self.report_data(request)
+        content = _write_csv(headers, rows, totals_row=totals_row)
         return self.export_response(
             filename=f"InventoryStockBookSummary_{_safe_filename(subtitle)}.csv",
             content=content,
@@ -1920,9 +2156,17 @@ class InventoryStockBookSummaryCSVAPIView(_BaseInventoryStockBookSummaryExportAP
 
 class InventoryStockBookSummaryPDFAPIView(_BaseInventoryStockBookSummaryExportAPIView):
     def get(self, request):
-        headers, rows, subtitle = self.report_data(request)
-        col_widths = [118, 60, 84, 76, 52, 64, 52, 62, 52, 62, 52, 62, 52, 64, 46, 54, 64, 64, 58]
-        content = _write_pdf("Inventory Stock Book Summary", subtitle, headers, rows, col_widths=col_widths)
+        headers, rows, subtitle, totals_row = self.report_data(request)
+        col_widths = [148, 58, 86, 76, 52, 64, 52, 62, 52, 62, 52, 62, 52, 64, 46, 54, 64, 64, 58]
+        content = _write_pdf(
+            "Inventory Stock Book Summary",
+            subtitle,
+            headers,
+            rows,
+            col_widths=col_widths,
+            numeric_columns={5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+            totals_row=totals_row,
+        )
         return self.export_response(
             filename=f"InventoryStockBookSummary_{_safe_filename(subtitle)}.pdf",
             content=content,
@@ -1986,6 +2230,7 @@ class _BaseInventoryStockBookDetailExportAPIView(_BaseInventoryReportAPIView):
                 sort_order=scope.get("sort_order", "asc"),
             )
         )
+        totals = data.get("totals", {})
         headers = [
             "Posting Date",
             "Voucher No",
@@ -2009,13 +2254,21 @@ class _BaseInventoryStockBookDetailExportAPIView(_BaseInventoryReportAPIView):
         ]
         rows = [_book_detail_row_export(row) for row in data["rows"]]
         subtitle = _book_detail_subtitle(scope, scope_names)
-        return headers, rows, subtitle
+        totals_row = _build_total_row(len(headers), values={
+            11: totals.get("inward_qty"),
+            12: totals.get("outward_qty"),
+            15: totals.get("opening_qty"),
+            16: totals.get("opening_value"),
+            17: totals.get("closing_qty"),
+            18: totals.get("closing_value"),
+        })
+        return headers, rows, subtitle, totals_row
 
 
 class InventoryStockBookDetailExcelAPIView(_BaseInventoryStockBookDetailExportAPIView):
     def get(self, request):
-        headers, rows, subtitle = self.report_data(request)
-        content = _write_excel("Inventory Stock Book Detail", subtitle, headers, rows, numeric_columns={12, 13, 14, 15, 16, 17, 18, 19})
+        headers, rows, subtitle, totals_row = self.report_data(request)
+        content = _write_excel("Inventory Stock Book Detail", subtitle, headers, rows, numeric_columns={12, 13, 14, 15, 16, 17, 18, 19}, totals_row=totals_row)
         return self.export_response(
             filename=f"InventoryStockBookDetail_{_safe_filename(subtitle)}.xlsx",
             content=content,
@@ -2025,8 +2278,8 @@ class InventoryStockBookDetailExcelAPIView(_BaseInventoryStockBookDetailExportAP
 
 class InventoryStockBookDetailCSVAPIView(_BaseInventoryStockBookDetailExportAPIView):
     def get(self, request):
-        headers, rows, subtitle = self.report_data(request)
-        content = _write_csv(headers, rows)
+        headers, rows, subtitle, totals_row = self.report_data(request)
+        content = _write_csv(headers, rows, totals_row=totals_row)
         return self.export_response(
             filename=f"InventoryStockBookDetail_{_safe_filename(subtitle)}.csv",
             content=content,
@@ -2036,9 +2289,17 @@ class InventoryStockBookDetailCSVAPIView(_BaseInventoryStockBookDetailExportAPIV
 
 class InventoryStockBookDetailPDFAPIView(_BaseInventoryStockBookDetailExportAPIView):
     def get(self, request):
-        headers, rows, subtitle = self.report_data(request)
-        col_widths = [74, 80, 112, 58, 88, 82, 54, 74, 74, 56, 80, 52, 52, 60, 68, 60, 68, 60, 68]
-        content = _write_pdf("Inventory Stock Book Detail", subtitle, headers, rows, col_widths=col_widths)
+        headers, rows, subtitle, totals_row = self.report_data(request)
+        col_widths = [74, 80, 150, 58, 88, 82, 54, 74, 74, 56, 80, 52, 52, 60, 68, 60, 68, 60, 68]
+        content = _write_pdf(
+            "Inventory Stock Book Detail",
+            subtitle,
+            headers,
+            rows,
+            col_widths=col_widths,
+            numeric_columns={12, 13, 14, 15, 16, 17, 18, 19},
+            totals_row=totals_row,
+        )
         return self.export_response(
             filename=f"InventoryStockBookDetail_{_safe_filename(subtitle)}.pdf",
             content=content,

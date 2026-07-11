@@ -439,6 +439,25 @@ class PurchaseInvoiceLookupAPIView(APIView):
             raw_limit = 100
         return max(1, min(raw_limit, 250))
 
+    def _parse_offset(self) -> int:
+        raw_offset = self.request.query_params.get("offset")
+        if raw_offset not in (None, "", "null"):
+            try:
+                return max(0, int(raw_offset))
+            except (TypeError, ValueError):
+                return 0
+
+        raw_page = self.request.query_params.get("page")
+        raw_page_size = self.request.query_params.get("page_size")
+        if raw_page not in (None, "", "null") and raw_page_size not in (None, "", "null"):
+            try:
+                page = max(1, int(raw_page))
+                page_size = max(1, int(raw_page_size))
+                return (page - 1) * page_size
+            except (TypeError, ValueError):
+                return 0
+        return 0
+
     def _scope_ids(self):
         entity = self.request.query_params.get("entity")
         entityfinid = self.request.query_params.get("entityfinid")
@@ -543,7 +562,8 @@ class PurchaseInvoiceLookupAPIView(APIView):
         queryset = self._base_queryset()
         total_count = queryset.count()
         limit = self._parse_limit()
-        items = queryset[:limit]
+        offset = self._parse_offset()
+        items = queryset[offset:offset + limit]
         serializer = PurchaseInvoiceLookupSerializer(items, many=True, context={"request": request})
         returned_count = len(serializer.data)
         return Response(
@@ -552,7 +572,8 @@ class PurchaseInvoiceLookupAPIView(APIView):
                 "total_count": total_count,
                 "returned_count": returned_count,
                 "limit": limit,
-                "has_more": total_count > returned_count,
+                "offset": offset,
+                "has_more": total_count > (offset + returned_count),
             }
         )
 

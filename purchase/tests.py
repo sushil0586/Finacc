@@ -196,7 +196,36 @@ class PurchaseInvoiceLookupViewTests(SimpleTestCase):
                     "total_count": 2,
                     "returned_count": 1,
                     "limit": 1,
+                    "offset": 0,
                     "has_more": True,
+                },
+            )
+
+    def test_lookup_view_uses_offset_for_next_page(self):
+        mocked_queryset = MagicMock()
+        mocked_queryset.count.return_value = 2
+        mocked_queryset.__getitem__.return_value = [self.header]
+        with patch.object(PurchaseInvoiceLookupAPIView, "_base_queryset", return_value=mocked_queryset), patch(
+            "purchase.views.purchase_invoice.PurchaseInvoiceLookupSerializer"
+        ) as mocked_lookup_serializer:
+            mocked_lookup_serializer.return_value.data = [{"id": 10, "purchase_number": "PINV-10"}]
+
+            request = self.factory.get("/api/purchase/purchase-invoices/lookup/?entity=1&entityfinid=1&limit=1&offset=1")
+            force_authenticate(request, user=self.user)
+
+            response = PurchaseInvoiceLookupAPIView.as_view()(request)
+
+            self.assertEqual(response.status_code, 200)
+            mocked_queryset.__getitem__.assert_called_once_with(slice(1, 2, None))
+            self.assertEqual(
+                response.data,
+                {
+                    "items": [{"id": 10, "purchase_number": "PINV-10"}],
+                    "total_count": 2,
+                    "returned_count": 1,
+                    "limit": 1,
+                    "offset": 1,
+                    "has_more": False,
                 },
             )
 
