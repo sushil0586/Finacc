@@ -404,7 +404,12 @@ def _sort_rows(rows, sort_by, sort_order):
         if field in {"vendor_code", "voucher_no", "bill_ref_no", "voucher_type_name"}:
             return str(row.get(field) or row.get("vendor_code") or row.get("voucher_no") or row.get("bill_ref_no") or "").lower()
         if field in {"last_payment_date", "last_bill_date", "due_date", "bill_date", "date"}:
-            return row.get(field) or date.min
+            return (
+                row.get(field) or date.min,
+                str(row.get("voucher_no") or "").lower(),
+                str(row.get("bill_ref_no") or "").lower(),
+                str(row.get("vendor_name") or "").lower(),
+            )
         return str(row.get(field) or row.get("vendor_name") or row.get("bill_number") or "").lower()
 
     rows.sort(key=key, reverse=reverse)

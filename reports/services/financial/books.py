@@ -280,10 +280,36 @@ def _entry_reference_annotation():
     voucher_ref = VoucherHeader.objects.filter(id=OuterRef("txn_id")).values("reference_number")[:1]
     receipt_ref = ReceiptVoucherHeader.objects.filter(id=OuterRef("txn_id")).values("reference_number")[:1]
     payment_ref = PaymentVoucherHeader.objects.filter(id=OuterRef("txn_id")).values("reference_number")[:1]
+    purchase_supplier_ref = PurchaseInvoiceHeader.objects.filter(id=OuterRef("txn_id")).values("supplier_invoice_number")[:1]
     return Coalesce(
         Subquery(voucher_ref),
         Subquery(receipt_ref),
         Subquery(payment_ref),
+        Subquery(purchase_supplier_ref),
+        Value(""),
+        output_field=CharField(),
+    )
+
+
+def _entry_document_number_annotation():
+    """Resolve human-facing document numbers for invoice/note style documents."""
+    purchase_doc_number = PurchaseInvoiceHeader.objects.filter(id=OuterRef("txn_id")).values("purchase_number")[:1]
+    sales_doc_number = SalesInvoiceHeader.objects.filter(id=OuterRef("txn_id")).values("invoice_number")[:1]
+    return Coalesce(
+        Subquery(purchase_doc_number),
+        Subquery(sales_doc_number),
+        Value(""),
+        output_field=CharField(),
+    )
+
+
+def _entry_counterparty_name_annotation():
+    """Resolve vendor/customer snapshots for report search and discoverability."""
+    purchase_vendor_name = PurchaseInvoiceHeader.objects.filter(id=OuterRef("txn_id")).values("vendor_name")[:1]
+    sales_customer_name = SalesInvoiceHeader.objects.filter(id=OuterRef("txn_id")).values("customer_name")[:1]
+    return Coalesce(
+        Subquery(purchase_vendor_name),
+        Subquery(sales_customer_name),
         Value(""),
         output_field=CharField(),
     )
@@ -363,6 +389,8 @@ def _entry_base_queryset(entity_id, entityfin_id=None, subentity_id=None, from_d
                 ZERO,
             ),
             reference_number=_entry_reference_annotation(),
+            document_number=_entry_document_number_annotation(),
+            counterparty_name=_entry_counterparty_name_annotation(),
         )
     )
     if entityfin_id:
@@ -478,6 +506,8 @@ def build_daybook(
             Q(voucher_no__icontains=search)
             | Q(narration__icontains=search)
             | Q(reference_number__icontains=search)
+            | Q(document_number__icontains=search)
+            | Q(counterparty_name__icontains=search)
         )
 
     qs = qs.distinct().order_by("posting_date", "voucher_date", "created_at", "id")
@@ -517,6 +547,8 @@ def build_daybook(
                 "voucher_type_name": voucher_type_name,
                 "narration": entry.narration,
                 "reference_number": entry.reference_number or None,
+                "document_number": getattr(entry, "document_number", "") or None,
+                "counterparty_name": getattr(entry, "counterparty_name", "") or None,
                 "debit_total": _money(entry.debit_total),
                 "credit_total": _money(entry.credit_total),
                 "status": entry.status,

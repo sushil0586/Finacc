@@ -469,6 +469,116 @@ class BookReportAPITests(APITestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["voucher_number"], "BV-001")
 
+    def test_daybook_search_matches_purchase_supplier_invoice_and_vendor_name(self):
+        vendor_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=4101,
+            name="Vendor Searchable",
+            accounthead=self.head_bank,
+            createdby=self.user,
+        )
+        vendor = create_account_with_synced_ledger(
+            account_data={"entity": self.entity, "ledger": vendor_ledger, "accountname": "Vendor Searchable", "createdby": self.user},
+            ledger_overrides={"ledger_code": 4101, "accounthead": self.head_bank, "is_party": True},
+        )
+        purchase_document = PurchaseInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            created_by=self.user,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            status=PurchaseInvoiceHeader.Status.POSTED,
+            bill_date=date(2025, 4, 11),
+            posting_date=date(2025, 4, 11),
+            doc_code="PINV",
+            doc_no=88,
+            purchase_number="PINV-SEARCH-88",
+            supplier_invoice_number="SUP-SEARCH-88",
+            vendor=vendor,
+            vendor_name="Vendor Searchable",
+        )
+        self._create_entry(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.PURCHASE,
+            txn_id=purchase_document.id,
+            voucher_no="ENTRY-PUR-88",
+            posting_date=date(2025, 4, 11),
+            voucher_date=date(2025, 4, 11),
+            status=EntryStatus.POSTED,
+            narration="Purchase invoice posting",
+            lines=[
+                {"account": self.expense_account, "drcr": True, "amount": "50.00", "description": "Expense Dr"},
+                {"account": self.ap_account, "drcr": False, "amount": "50.00", "description": "Payable Cr"},
+            ],
+        )
+
+        supplier_response = self.client.get(
+            reverse("reports_api:financial-daybook"),
+            {"entity": self.entity.id, "entityfinid": self.entityfin.id, "subentity": self.subentity.id, "search": "SUP-SEARCH-88"},
+        )
+        self.assertEqual(supplier_response.status_code, 200)
+        self.assertEqual([row["voucher_number"] for row in supplier_response.json()["results"]], ["ENTRY-PUR-88"])
+
+        vendor_response = self.client.get(
+            reverse("reports_api:financial-daybook"),
+            {"entity": self.entity.id, "entityfinid": self.entityfin.id, "subentity": self.subentity.id, "search": "Vendor Searchable"},
+        )
+        self.assertEqual(vendor_response.status_code, 200)
+        self.assertEqual([row["voucher_number"] for row in vendor_response.json()["results"]], ["ENTRY-PUR-88"])
+
+    def test_daybook_search_matches_sales_customer_name(self):
+        customer_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=4102,
+            name="Customer Searchable",
+            accounthead=self.head_cash,
+            createdby=self.user,
+        )
+        customer = create_account_with_synced_ledger(
+            account_data={"entity": self.entity, "ledger": customer_ledger, "accountname": "Customer Searchable", "createdby": self.user},
+            ledger_overrides={"ledger_code": 4102, "accounthead": self.head_cash, "is_party": True},
+        )
+        sales_document = SalesInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            created_by=self.user,
+            doc_type=SalesInvoiceHeader.DocType.CREDIT_NOTE,
+            status=SalesInvoiceHeader.Status.POSTED,
+            bill_date=date(2025, 4, 12),
+            posting_date=date(2025, 4, 12),
+            doc_code="SCN",
+            doc_no=25,
+            invoice_number="SCN-SEARCH-25",
+            customer=customer,
+            customer_name="Customer Searchable",
+        )
+        self._create_entry(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.SALES_CREDIT_NOTE,
+            txn_id=sales_document.id,
+            voucher_no="ENTRY-SAL-25",
+            posting_date=date(2025, 4, 12),
+            voucher_date=date(2025, 4, 12),
+            status=EntryStatus.POSTED,
+            narration="Sales credit note posting",
+            lines=[
+                {"account": self.income_account, "drcr": True, "amount": "30.00", "description": "Revenue reversal"},
+                {"account": self.cash_account, "drcr": False, "amount": "30.00", "description": "Receivable reversal"},
+            ],
+        )
+
+        response = self.client.get(
+            reverse("reports_api:financial-daybook"),
+            {"entity": self.entity.id, "entityfinid": self.entityfin.id, "subentity": self.subentity.id, "search": "Customer Searchable"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([row["voucher_number"] for row in response.json()["results"]], ["ENTRY-SAL-25"])
+
     def test_daybook_account_filter_and_scope_isolation(self):
         response = self.client.get(reverse("reports_api:financial-daybook"), {"entity": self.entity.id, "account": str(self.cash_account.id)})
         self.assertEqual(response.status_code, 200)

@@ -1146,6 +1146,79 @@ class PayableReportAPITests(APITestCase):
         self.assertEqual(payload["summary"]["vendor_count"], 1)
         self.assertTrue(any(row["bill_ref_no"] == "SUP-2001" for row in payload["rows"]))
 
+    def test_vendor_outstanding_detailed_bill_date_sort_breaks_same_day_ties_by_latest_voucher(self):
+        same_day_vendor = self._create_vendor("Same Day Vendor", 5009)
+        same_day_ledger = same_day_vendor.ledger
+        apply_normalized_profile_payload(
+            same_day_vendor,
+            commercial_data={"partytype": "Vendor", "currency": "INR"},
+            primary_address_data={"state": self.state, "city": self.city},
+        )
+
+        older_invoice = self._create_purchase_header(
+            vendor=same_day_vendor,
+            vendor_ledger=same_day_ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 18),
+            due_date=date(2025, 4, 18),
+            doc_code="PINV",
+            doc_no=2001,
+            purchase_number="PI-PINV-2001",
+            supplier_invoice_number="SAME-DAY-OLD",
+            amount=Decimal("100.00"),
+        )
+        self._create_open_item(
+            header=older_invoice,
+            vendor=same_day_vendor,
+            vendor_ledger=same_day_ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 18),
+            due_date=date(2025, 4, 18),
+            purchase_number="PI-PINV-2001",
+            supplier_invoice_number="SAME-DAY-OLD",
+            amount=Decimal("100.00"),
+        )
+
+        newer_invoice = self._create_purchase_header(
+            vendor=same_day_vendor,
+            vendor_ledger=same_day_ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 18),
+            due_date=date(2025, 4, 18),
+            doc_code="PINV",
+            doc_no=2002,
+            purchase_number="PI-PINV-2002",
+            supplier_invoice_number="SAME-DAY-NEW",
+            amount=Decimal("100.00"),
+        )
+        self._create_open_item(
+            header=newer_invoice,
+            vendor=same_day_vendor,
+            vendor_ledger=same_day_ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 18),
+            due_date=date(2025, 4, 18),
+            purchase_number="PI-PINV-2002",
+            supplier_invoice_number="SAME-DAY-NEW",
+            amount=Decimal("100.00"),
+        )
+
+        response = self.client.get(
+            reverse("reports_api:vendor-outstanding-report"),
+            self._base_scope(
+                as_of_date="2025-04-30",
+                vendor=same_day_vendor.id,
+                view="detailed",
+                sort_by="bill_date",
+                sort_order="desc",
+            ),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["summary"]["vendor_count"], 1)
+        self.assertEqual(payload["rows"][0]["voucher_no"], "PI-PINV-2002")
+        self.assertEqual(payload["rows"][0]["bill_ref_no"], "SAME-DAY-NEW")
+
     def test_payables_meta_endpoint_exposes_filter_and_report_metadata(self):
         response = self.client.get(
             reverse("reports_api:payables-meta"),

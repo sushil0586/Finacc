@@ -21,6 +21,7 @@ from payments.services.payment_settings_service import (
     DEFAULT_PAYMENT_POLICY_CONTROLS,
     PaymentSettingsService,
 )
+from purchase.services.purchase_settings_service import PurchaseSettingsService
 from purchase.models.purchase_ap import VendorAdvanceBalance, VendorSettlement
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 from withholding.models import WithholdingBaseRule, WithholdingSection, WithholdingTaxType
@@ -289,6 +290,7 @@ class PaymentVoucherSearchMetaAPIView(PaymentMetaBaseAPIView):
 class PaymentApMetaAPIView(PaymentMetaBaseAPIView):
     def get(self, request):
         entity_id, entityfinid_id, subentity_id = self._parse_scope(request, require_entityfinid=True)
+        purchase_policy = PurchaseSettingsService.get_policy(entity_id, subentity_id)
         return Response(
             {
                 "entity_id": entity_id,
@@ -318,6 +320,8 @@ class PaymentApMetaAPIView(PaymentMetaBaseAPIView):
                     {"value": value, "label": label}
                     for value, label in VendorAdvanceBalance.SourceType.choices
                 ],
+                "purchase_ap_policy_controls": purchase_policy.controls,
+                "purchase_ap_settlement_enabled": str(purchase_policy.controls.get("settlement_mode", "off")).lower().strip() != "off",
             }
         )
 
@@ -325,6 +329,7 @@ class PaymentApMetaAPIView(PaymentMetaBaseAPIView):
 class PaymentApSettlementFormMetaAPIView(PaymentMetaBaseAPIView):
     def get(self, request):
         entity_id, entityfinid_id, subentity_id = self._parse_scope(request, require_entityfinid=True)
+        purchase_policy = PurchaseSettingsService.get_policy(entity_id, subentity_id)
         return Response(
             {
                 "entity_id": entity_id,
@@ -348,6 +353,8 @@ class PaymentApSettlementFormMetaAPIView(PaymentMetaBaseAPIView):
                     {"value": value, "label": label}
                     for value, label in VendorSettlement.SettlementType.choices
                 ],
+                "purchase_ap_policy_controls": purchase_policy.controls,
+                "purchase_ap_settlement_enabled": str(purchase_policy.controls.get("settlement_mode", "off")).lower().strip() != "off",
             }
         )
 
