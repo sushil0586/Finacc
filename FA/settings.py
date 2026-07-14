@@ -35,6 +35,18 @@ def _normalize_storage_backend(value):
     return backend
 
 
+def _normalize_samesite(value):
+    raw = str(value or 'Lax').strip().lower()
+    mapping = {
+        'lax': 'Lax',
+        'strict': 'Strict',
+        'none': 'None',
+    }
+    if raw not in mapping:
+        raise ValueError(f'Invalid SameSite value: {value}')
+    return mapping[raw]
+
+
 def _require_config(name):
     value = str(config(name, default='')).strip()
     if not value:
@@ -371,17 +383,19 @@ EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
 EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
 DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default=EMAIL_HOST_USER)
 EMAIL_TIMEOUT = config('EMAIL_TIMEOUT', default=20, cast=int)
-AUTH_REQUIRE_EMAIL_VERIFIED = False
 
 # ---------------------------------------------------------------------------
 # Auth cookies (httpOnly token storage)
 # ---------------------------------------------------------------------------
 AUTH_COOKIE_NAME = 'fa_access'
 AUTH_REFRESH_COOKIE_NAME = 'fa_refresh'
-AUTH_COOKIE_SECURE = not DEBUG      # True in production (HTTPS only), False in dev
-AUTH_COOKIE_HTTPONLY = True
-AUTH_COOKIE_SAMESITE = 'Lax'        # 'None' if frontend/backend on different domains
-AUTH_COOKIE_PATH = '/'
+AUTH_REQUIRE_EMAIL_VERIFIED = config('AUTH_REQUIRE_EMAIL_VERIFIED', default=False, cast=_cast_boolish_env)
+AUTH_COOKIE_SECURE = config('AUTH_COOKIE_SECURE', default=not DEBUG, cast=_cast_boolish_env)
+AUTH_COOKIE_HTTPONLY = config('AUTH_COOKIE_HTTPONLY', default=True, cast=_cast_boolish_env)
+AUTH_COOKIE_SAMESITE = config('AUTH_COOKIE_SAMESITE', default='Lax', cast=_normalize_samesite)
+AUTH_COOKIE_PATH = config('AUTH_COOKIE_PATH', default='/')
+SESSION_COOKIE_SAMESITE = config('SESSION_COOKIE_SAMESITE', default='Lax', cast=_normalize_samesite)
+CSRF_COOKIE_SAMESITE = config('CSRF_COOKIE_SAMESITE', default='Lax', cast=_normalize_samesite)
 
 # ---------------------------------------------------------------------------
 # Logging

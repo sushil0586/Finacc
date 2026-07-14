@@ -6,6 +6,7 @@ from rest_framework.test import APITestCase
 from Authentication.models import User
 from entity.models import Entity
 from hrms.models import (
+    AttendanceApproval,
     ContractLeaveBalanceSnapshot,
     HrEmployee,
     HrEmploymentContract,
@@ -217,6 +218,29 @@ class HrmsApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.leave_policy_rule.refresh_from_db()
         self.assertEqual(self.leave_policy_rule.rule_name, "Casual Leave annual quota")
+
+    def test_attendance_approval_list_filters_by_payroll_period_id(self):
+        AttendanceApproval.objects.create(
+            entity=self.entity,
+            subentity=None,
+            contract=self.contract,
+            payroll_period_code="APR-2026-APP",
+            period_start=date(2026, 4, 1),
+            period_end=date(2026, 4, 30),
+            status=AttendanceApproval.Status.SUBMITTED,
+            summary_json={"payable_days": "26.00", "lop_days": "1.00"},
+            created_by=self.user,
+            updated_by=self.user,
+        )
+        response = self.client.get(
+            "/api/hrms/attendance-approvals/",
+            {"entity": self.entity.id, "payroll_period_code": "APR-2026-APP"},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["contract_code"], "CTR-2001")
+        self.assertEqual(response.data[0]["payroll_period_code"], "APR-2026-APP")
 
     def test_leave_balance_bootstrap_creates_opening_snapshots_from_policy_defaults(self):
         response = self.client.post(

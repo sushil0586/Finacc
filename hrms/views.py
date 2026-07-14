@@ -1121,14 +1121,17 @@ class AttendanceApprovalListAPIView(HrmsScopedAPIView):
             permission_key="attendance_approval_view",
             label="view attendance approvals",
         )
-        queryset = AttendanceApproval.objects.select_related("contract", "contract__employee", "payroll_period").filter(
+        queryset = AttendanceApproval.objects.select_related("contract", "contract__employee", "monthly_close").filter(
             entity_id=entity_id,
             deleted_at__isnull=True,
         )
         if subentity_id is not None:
             queryset = queryset.filter(subentity_id=subentity_id)
-        if self._query_value(request, "payroll_period"):
-            queryset = queryset.filter(payroll_period_id=self._query_value(request, "payroll_period"))
+        payroll_period_code = self._query_value(request, "payroll_period_code")
+        if payroll_period_code is None and self._query_value(request, "payroll_period"):
+            payroll_period_code = self._query_value(request, "payroll_period")
+        if payroll_period_code:
+            queryset = queryset.filter(payroll_period_code=payroll_period_code)
         if self._query_value(request, "status"):
             queryset = queryset.filter(status=self._query_value(request, "status"))
         return Response(AttendanceApprovalSerializer(queryset.order_by("contract__contract_code"), many=True).data)
