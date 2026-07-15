@@ -83,7 +83,7 @@ class EntityGstinValidationTests(TestCase):
     def test_sandbox_gstin_validator_allows_provider_pseudo_gstin(self):
         gstin_validator("29AAGCB1286Q000")
 
-    @override_settings(SALES_MASTERGST_ENV="SANDBOX")
+    @override_settings(SALES_MASTERGST_ENV="SANDBOX")``
     def test_sandbox_onboarding_subentity_serializer_allows_gstin_state_mismatch(self):
         country = Country.objects.create(countryname="India", countrycode="IN")
         punjab = State.objects.create(statename="Punjab", statecode="03", country=country)

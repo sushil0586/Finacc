@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from catalog.models import HsnSac, ProductCategory
+from django.db.models import Prefetch
+
+from catalog.models import HsnSac, Product, ProductCategory, ProductGstRate
 from entity.models import EntityFinancialYear, Godown, SubEntity
 
 
@@ -14,6 +16,38 @@ INVENTORY_REPORT_DEFAULTS = {
     'enable_drilldown': False,
     'default_export_format': 'excel',
 }
+
+
+def _build_filter_relations(entity_id: int) -> dict:
+    product_rows = (
+        Product.objects.filter(entity_id=entity_id, is_service=False)
+        .select_related('productcategory')
+        .prefetch_related(
+            Prefetch(
+                'gst_rates',
+                queryset=ProductGstRate.objects.select_related('hsn').order_by('-isdefault', '-valid_from', '-id'),
+                to_attr='prefetched_gst_rates',
+            ),
+        )
+        .only('id', 'productcategory_id')
+        .order_by('id')
+    )
+
+    relations = []
+    for product in product_rows:
+        gst_rows = list(getattr(product, 'prefetched_gst_rates', []) or [])
+        current = gst_rows[0] if gst_rows else None
+        relations.append(
+            {
+                'product_id': product.id,
+                'category_id': getattr(product, 'productcategory_id', None),
+                'hsn_id': getattr(current, 'hsn_id', None),
+            }
+        )
+
+    return {
+        'product_category_hsn': relations,
+    }
 
 
 def _report_registry() -> list[dict]:
@@ -389,6 +423,7 @@ def build_inventory_report_meta(entity_id: int) -> dict:
         'categories': categories,
         'hsns': hsns,
         'locations': locations,
+        'filter_relations': _build_filter_relations(entity_id),
         'reports': _report_registry(),
         'required_permission_codes': [
             'reports.inventory.view',

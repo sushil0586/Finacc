@@ -59,6 +59,15 @@ class RBACAPITests(TestCase):
         UserRoleAssignment.objects.create(user=user, entity=entity, role=role, is_primary=True)
         return role
 
+    def _find_node(self, nodes, menu_code):
+        for node in nodes:
+            if node["code"] == menu_code:
+                return node
+            child = self._find_node(node.get("children", []), menu_code)
+            if child:
+                return child
+        return None
+
     def test_menu_tree_endpoint_returns_nested_children(self):
         root = Menu.objects.create(name="Sales", code=f"{self.prefix}.sales.root", menu_type=Menu.TYPE_GROUP)
         Menu.objects.create(name="Invoices", code=f"{self.prefix}.sales.invoices", parent=root)
@@ -141,6 +150,177 @@ class RBACAPITests(TestCase):
         self.assertEqual(response.data["menus"][0]["route_path"], "/admin")
         self.assertEqual(response.data["menus"][0]["children"][0]["code"], child.code)
         self.assertEqual(response.data["menus"][0]["children"][0]["route_path"], "/user")
+
+    def test_inventory_hub_menus_are_grouped_by_setup_operations_and_reports(self):
+        role = Role.objects.create(entity=self.entity_a, name="Inventory Operator", code=f"inventory_{self.entity_a.id}")
+        permission_codes = [
+            "reports.inventory.view",
+            "inventory.location.view",
+            "inventory.transfer.view",
+            "inventory.adjustment.view",
+            "reports.inventory.stock_summary.view",
+            "reports.inventory.reorder_status.view",
+        ]
+        for code in permission_codes:
+            permission = Permission.objects.get(code=code)
+            RolePermission.objects.create(role=role, permission=permission)
+        UserRoleAssignment.objects.create(user=self.user, entity=self.entity_a, role=role, is_primary=True)
+
+        response = self.client.get(f"/api/rbac/me/menus?entity={self.entity_a.id}&role={role.id}")
+
+        self.assertEqual(response.status_code, 200)
+        inventory_hub = self._find_node(response.data["menus"], "reports.inventory")
+        self.assertIsNotNone(inventory_hub)
+        self.assertEqual(inventory_hub["route_path"], "/reports/inventory")
+
+        setup_group = self._find_node(inventory_hub["children"], "reports.inventory.setup")
+        operations_group = self._find_node(inventory_hub["children"], "reports.inventory.operations")
+        analysis_group = self._find_node(inventory_hub["children"], "reports.inventory.analysis")
+        controls_group = self._find_node(inventory_hub["children"], "reports.inventory.controls")
+
+        self.assertIsNotNone(setup_group)
+        self.assertIsNotNone(operations_group)
+        self.assertIsNotNone(analysis_group)
+        self.assertIsNotNone(controls_group)
+
+        self.assertIsNotNone(self._find_node(setup_group["children"], "reports.inventory.location_master"))
+        self.assertIsNotNone(self._find_node(operations_group["children"], "reports.inventory.transfer_entry"))
+        self.assertIsNotNone(self._find_node(analysis_group["children"], "reports.inventory.stock_summary"))
+        self.assertIsNotNone(self._find_node(controls_group["children"], "reports.inventory.reorder_status"))
+
+    def test_inventory_settings_menu_requires_inventory_settings_permission(self):
+        role = Role.objects.create(entity=self.entity_a, name="Transfer Viewer", code=f"inventory_transfer_{self.entity_a.id}")
+        for code in ("reports.inventory.view", "inventory.transfer.view"):
+            RolePermission.objects.create(role=role, permission=Permission.objects.get(code=code))
+        UserRoleAssignment.objects.create(user=self.user, entity=self.entity_a, role=role, is_primary=True)
+
+        response = self.client.get(f"/api/rbac/me/menus?entity={self.entity_a.id}&role={role.id}")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(self._find_node(response.data["menus"], "reports.inventory.settings"))
+
+    def test_accounts_menu_is_grouped_into_vouchers_masters_and_settings(self):
+        role = Role.objects.create(entity=self.entity_a, name="Accounts Operator", code=f"accounts_{self.entity_a.id}")
+        permission_codes = [
+            "voucher.payment.view",
+            "financial.account_type.view",
+            "voucher.settings.view",
+        ]
+        for code in permission_codes:
+            RolePermission.objects.create(role=role, permission=Permission.objects.get(code=code))
+        UserRoleAssignment.objects.create(user=self.user, entity=self.entity_a, role=role, is_primary=True)
+
+        response = self.client.get(f"/api/rbac/me/menus?entity={self.entity_a.id}&role={role.id}")
+
+        self.assertEqual(response.status_code, 200)
+        accounts_root = self._find_node(response.data["menus"], "accounts")
+        self.assertIsNotNone(accounts_root)
+        self.assertIsNotNone(self._find_node(accounts_root["children"], "accounts.vouchers"))
+        self.assertIsNotNone(self._find_node(accounts_root["children"], "accounts.financial_masters"))
+        self.assertIsNotNone(self._find_node(accounts_root["children"], "accounts.settings"))
+        self.assertIsNotNone(self._find_node(accounts_root["children"], "accounts.paymentvoucher"))
+        self.assertNotIn(
+            "accounts.financialmaster.accounttypes",
+            [child["code"] for child in accounts_root["children"]],
+        )
+
+    def test_sales_menu_is_grouped_into_transactions_channels_and_setup(self):
+        role = Role.objects.create(entity=self.entity_a, name="Sales Operator", code=f"sales_{self.entity_a.id}")
+        permission_codes = [
+            "sales.invoice.view",
+            "retail.ticket.view",
+            "sales.settings.view",
+        ]
+        for code in permission_codes:
+            RolePermission.objects.create(role=role, permission=Permission.objects.get(code=code))
+        UserRoleAssignment.objects.create(user=self.user, entity=self.entity_a, role=role, is_primary=True)
+
+        response = self.client.get(f"/api/rbac/me/menus?entity={self.entity_a.id}&role={role.id}")
+
+        self.assertEqual(response.status_code, 200)
+        sales_root = self._find_node(response.data["menus"], "sales")
+        self.assertIsNotNone(sales_root)
+        transactions_group = self._find_node(sales_root["children"], "sales.transactions")
+        channels_group = self._find_node(sales_root["children"], "sales.channels")
+        setup_group = self._find_node(sales_root["children"], "sales.setup")
+        self.assertIsNotNone(transactions_group)
+        self.assertIsNotNone(channels_group)
+        self.assertIsNotNone(setup_group)
+        self.assertIsNotNone(self._find_node(transactions_group["children"], "sales.saleinvoice"))
+        self.assertIsNotNone(self._find_node(channels_group["children"], "sales.retail_sale_entry"))
+        self.assertIsNotNone(self._find_node(setup_group["children"], "sales.salessettings"))
+
+    def test_compliance_menu_is_grouped_into_gst_tds_tcs_setup_and_operations(self):
+        role = Role.objects.create(entity=self.entity_a, name="Compliance Operator", code=f"compliance_{self.entity_a.id}")
+        permission_codes = [
+            "gst.reconciliation.view",
+            "compliance.tcs_config.view",
+            "compliance.tcs_statutory.view",
+        ]
+        for code in permission_codes:
+            RolePermission.objects.create(role=role, permission=Permission.objects.get(code=code))
+        UserRoleAssignment.objects.create(user=self.user, entity=self.entity_a, role=role, is_primary=True)
+
+        response = self.client.get(f"/api/rbac/me/menus?entity={self.entity_a.id}&role={role.id}")
+
+        self.assertEqual(response.status_code, 200)
+        compliance_root = self._find_node(response.data["menus"], "compliance")
+        self.assertIsNotNone(compliance_root)
+        gst_tds_group = self._find_node(compliance_root["children"], "compliance.gst_and_tds")
+        tcs_setup_group = self._find_node(compliance_root["children"], "compliance.tcs_setup")
+        tcs_operations_group = self._find_node(compliance_root["children"], "compliance.tcs_operations")
+        self.assertIsNotNone(gst_tds_group)
+        self.assertIsNotNone(tcs_setup_group)
+        self.assertIsNotNone(tcs_operations_group)
+        self.assertIsNotNone(self._find_node(gst_tds_group["children"], "compliance.gst_reconciliation"))
+        self.assertIsNotNone(self._find_node(tcs_setup_group["children"], "compliance.tcsconfig"))
+        self.assertIsNotNone(self._find_node(tcs_operations_group["children"], "compliance.tcsstatutory"))
+
+    def test_reports_menu_is_grouped_into_financial_payables_and_assets_sections(self):
+        role = Role.objects.create(entity=self.entity_a, name="Report Operator", code=f"reports_{self.entity_a.id}")
+        permission_codes = [
+            "reports.financial_hub.view",
+            "reports.payables.view",
+            "reports.vendoroutstanding.view",
+            "assets.fixed_asset_register.view",
+        ]
+        for code in permission_codes:
+            RolePermission.objects.create(role=role, permission=Permission.objects.get(code=code))
+        UserRoleAssignment.objects.create(user=self.user, entity=self.entity_a, role=role, is_primary=True)
+
+        response = self.client.get(f"/api/rbac/me/menus?entity={self.entity_a.id}&role={role.id}")
+
+        self.assertEqual(response.status_code, 200)
+        reports_root = self._find_node(response.data["menus"], "reports")
+        self.assertIsNotNone(reports_root)
+
+        financial_group = self._find_node(reports_root["children"], "reports.financial")
+        payables_group = self._find_node(reports_root["children"], "reports.payables")
+        assets_group = self._find_node(reports_root["children"], "reports.assets")
+
+        self.assertIsNotNone(financial_group)
+        self.assertIsNotNone(payables_group)
+        self.assertIsNotNone(assets_group)
+        self.assertIsNotNone(self._find_node(financial_group["children"], "reports.financial_hub"))
+        self.assertIsNotNone(self._find_node(payables_group["children"], "reports.reports.payables"))
+        self.assertIsNotNone(self._find_node(assets_group["children"], "reports.fixedassetregister"))
+
+    def test_sales_register_moves_under_receivables_reports(self):
+        role = Role.objects.create(entity=self.entity_a, name="Receivables Report Operator", code=f"receivables_reports_{self.entity_a.id}")
+        permission_codes = [
+            "reports.financial_hub.receivables_hub.view",
+            "reports.sales_register.view",
+        ]
+        for code in permission_codes:
+            RolePermission.objects.create(role=role, permission=Permission.objects.get(code=code))
+        UserRoleAssignment.objects.create(user=self.user, entity=self.entity_a, role=role, is_primary=True)
+
+        response = self.client.get(f"/api/rbac/me/menus?entity={self.entity_a.id}&role={role.id}")
+
+        self.assertEqual(response.status_code, 200)
+        receivables_group = self._find_node(response.data["menus"], "reports.receivables")
+        self.assertIsNotNone(receivables_group)
+        self.assertIsNotNone(self._find_node(receivables_group["children"], "reports.reports.salesregister"))
 
     def test_receivables_hub_menu_is_visible_to_receivables_roles(self):
         role = Role.objects.create(entity=self.entity_a, name="Receivables Viewer", code=f"receivables_{self.entity_a.id}")

@@ -13,12 +13,14 @@ _EXACT_ALLOWED_MIME_TYPES = {
     "application/pdf",
     "application/vnd.ms-excel",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "text/plain",
 }
 
 _ALLOWED_EXTENSIONS = {
     ".pdf",
     ".xls",
     ".xlsx",
+    ".txt",
     ".apng",
     ".avif",
     ".bmp",

@@ -311,6 +311,7 @@ class _BaseInventoryReportAPIView(ScopedEntitlementMixin, APIView):
             "group_by_location": scope.get("group_by_location", True),
             "bucket_ends": scope.get("bucket_ends", []),
             "non_moving_days": scope.get("non_moving_days"),
+            "dead_stock_days": scope.get("dead_stock_days"),
             "page": scope.get("page", 1),
             "page_size": scope.get("page_size", INVENTORY_REPORT_DEFAULTS["default_page_size"]),
             "export": scope.get("export"),

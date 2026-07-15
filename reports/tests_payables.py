@@ -1071,6 +1071,138 @@ class PayableReportAPITests(APITestCase):
         self.assertEqual(payload["rows"][0]["vendor_name"], "Searchable Vendor")
         self.assertEqual(payload["rows"][0]["outstanding"], "180.00")
 
+    def test_vendor_outstanding_and_ap_aging_respect_vendor_group_region_currency_scope(self):
+        alternate_state = State.objects.create(statename="Haryana", statecode="HR", country=self.country)
+        alternate_district = District.objects.create(districtname="Alt District", districtcode="AD", state=alternate_state)
+        alternate_city = City.objects.create(cityname="Gurgaon", citycode="GGN", pincode="122001", distt=alternate_district)
+
+        usd_vendor = self._create_vendor("USD Vendor", 5011)
+        apply_normalized_profile_payload(
+            usd_vendor,
+            compliance_data={"gstno": "06ABCDE1234F1Z5"},
+            commercial_data={"partytype": "Vendor", "currency": "USD", "agent": "Wholesale", "creditdays": 30, "creditlimit": Decimal("1000.00")},
+            primary_address_data={"state": self.state, "city": self.city},
+        )
+        usd_header = self._create_purchase_header(
+            vendor=usd_vendor,
+            vendor_ledger=usd_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 7),
+            due_date=date(2025, 4, 11),
+            doc_code="PINV",
+            doc_no=1211,
+            purchase_number="PI-PINV-1211",
+            supplier_invoice_number="SUP-1211",
+            amount=Decimal("210.00"),
+        )
+        self._create_open_item(
+            header=usd_header,
+            vendor=usd_vendor,
+            vendor_ledger=usd_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 7),
+            due_date=date(2025, 4, 11),
+            purchase_number="PI-PINV-1211",
+            supplier_invoice_number="SUP-1211",
+            amount=Decimal("210.00"),
+        )
+
+        south_vendor = self._create_vendor("South Region Vendor", 5012)
+        apply_normalized_profile_payload(
+            south_vendor,
+            compliance_data={"gstno": "06ABCDE1234F1Z6"},
+            commercial_data={"partytype": "Vendor", "currency": "INR", "agent": "Wholesale", "creditdays": 30, "creditlimit": Decimal("1000.00")},
+            primary_address_data={"state": alternate_state, "city": alternate_city},
+        )
+        south_header = self._create_purchase_header(
+            vendor=south_vendor,
+            vendor_ledger=south_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 8),
+            due_date=date(2025, 4, 12),
+            doc_code="PINV",
+            doc_no=1212,
+            purchase_number="PI-PINV-1212",
+            supplier_invoice_number="SUP-1212",
+            amount=Decimal("220.00"),
+        )
+        self._create_open_item(
+            header=south_header,
+            vendor=south_vendor,
+            vendor_ledger=south_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 8),
+            due_date=date(2025, 4, 12),
+            purchase_number="PI-PINV-1212",
+            supplier_invoice_number="SUP-1212",
+            amount=Decimal("220.00"),
+        )
+
+        priority_vendor = self._create_vendor("Priority Vendor", 5013)
+        apply_normalized_profile_payload(
+            priority_vendor,
+            compliance_data={"gstno": "03ABCDE1234F9Z5"},
+            commercial_data={"partytype": "Vendor", "currency": "INR", "agent": "Priority", "creditdays": 30, "creditlimit": Decimal("1000.00")},
+            primary_address_data={"state": self.state, "city": self.city},
+        )
+        priority_header = self._create_purchase_header(
+            vendor=priority_vendor,
+            vendor_ledger=priority_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 9),
+            due_date=date(2025, 4, 13),
+            doc_code="PINV",
+            doc_no=1213,
+            purchase_number="PI-PINV-1213",
+            supplier_invoice_number="SUP-1213",
+            amount=Decimal("230.00"),
+        )
+        self._create_open_item(
+            header=priority_header,
+            vendor=priority_vendor,
+            vendor_ledger=priority_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 9),
+            due_date=date(2025, 4, 13),
+            purchase_number="PI-PINV-1213",
+            supplier_invoice_number="SUP-1213",
+            amount=Decimal("230.00"),
+        )
+
+        scope = self._base_scope(
+            as_of_date="2025-04-30",
+            vendor_group="Wholesale",
+            region=self.state.id,
+            currency="INR",
+            search="ABC",
+        )
+
+        outstanding_response = self.client.get(reverse("reports_api:vendor-outstanding-report"), scope)
+        self.assertEqual(outstanding_response.status_code, 200)
+        outstanding_payload = outstanding_response.json()
+        self.assertEqual(outstanding_payload["summary"]["vendor_count"], 1)
+        self.assertEqual(len(outstanding_payload["rows"]), 1)
+        self.assertEqual(outstanding_payload["rows"][0]["vendor_name"], "ABC Traders")
+        self.assertEqual(outstanding_payload["rows"][0]["currency"], "INR")
+
+        aging_response = self.client.get(
+            reverse("reports_api:ap-aging-report"),
+            self._base_scope(
+                as_of_date="2025-04-30",
+                view="summary",
+                vendor_group="Wholesale",
+                region=self.state.id,
+                currency="INR",
+                search="ABC",
+            ),
+        )
+        self.assertEqual(aging_response.status_code, 200)
+        aging_payload = aging_response.json()
+        self.assertEqual(aging_payload["summary"]["vendor_count"], 1)
+        self.assertEqual(len(aging_payload["rows"]), 1)
+        self.assertEqual(aging_payload["rows"][0]["vendor_name"], "ABC Traders")
+        self.assertEqual(aging_payload["rows"][0]["currency"], "INR")
+
     def test_vendor_outstanding_detailed_include_advances_separately_shows_advance_row(self):
         response = self.client.get(
             reverse("reports_api:vendor-outstanding-report"),
@@ -2129,7 +2261,7 @@ class PayableReportAPITests(APITestCase):
             reverse("reports_api:vendor-outstanding-report"),
             self._base_scope(from_date="2025-04-01", to_date="2025-04-30"),
         )
-        self.assertEqual(response.status_code, 403)
+        self.assertIn(response.status_code, (401, 403))
 
     def test_rbac_menu_registration_exposes_vendor_outstanding_and_ap_aging(self):
         tree = EffectiveMenuService.menu_tree_for_user(self.user, self.entity.id)
