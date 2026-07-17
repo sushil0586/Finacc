@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from datetime import datetime
+from datetime import date, datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
+from django.http import Http404
 from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 from rest_framework.test import APIRequestFactory, force_authenticate
@@ -142,6 +143,121 @@ class ReceiptVoucherReferenceWarningTests(SimpleTestCase):
 class ReceiptVoucherServiceTests(SimpleTestCase):
     databases = {"default"}
 
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherHeader.objects")
+    def test_submit_voucher_returns_already_submitted_for_repeat_submit(self, mock_header_objects):
+        header = SimpleNamespace(
+            status=ReceiptVoucherHeader.Status.DRAFT,
+            workflow_payload={"_approval_state": {"status": "SUBMITTED", "submitted_by": 7}},
+        )
+        mock_header_objects.select_for_update.return_value.get.return_value = header
+
+        result = ReceiptVoucherService.submit_voucher.__wrapped__(voucher_id=11, submitted_by_id=7, remarks="Retry")
+
+        self.assertEqual(result.message, "Already submitted.")
+
+    @patch("receipts.services.receipt_voucher_service.ReceiptSettingsService.get_policy")
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherHeader.objects")
+    def test_approve_voucher_returns_already_approved_for_repeat_approve(self, mock_header_objects, mock_get_policy):
+        header = SimpleNamespace(
+            entity_id=1,
+            subentity_id=None,
+            status=ReceiptVoucherHeader.Status.CONFIRMED,
+            workflow_payload={"_approval_state": {"status": "APPROVED", "submitted_by": 7, "approved_by": 8}},
+        )
+        mock_header_objects.select_for_update.return_value.get.return_value = header
+        mock_get_policy.return_value = SimpleNamespace(controls={})
+
+        result = ReceiptVoucherService.approve_voucher.__wrapped__(voucher_id=11, approved_by_id=8, remarks="Retry")
+
+        self.assertEqual(result.message, "Already approved.")
+
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherHeader.objects")
+    def test_reject_voucher_returns_already_rejected_for_repeat_reject(self, mock_header_objects):
+        header = SimpleNamespace(
+            status=ReceiptVoucherHeader.Status.CONFIRMED,
+            workflow_payload={"_approval_state": {"status": "REJECTED", "rejected_by": 8}},
+        )
+        mock_header_objects.select_for_update.return_value.get.return_value = header
+
+        result = ReceiptVoucherService.reject_voucher.__wrapped__(voucher_id=11, rejected_by_id=8, remarks="Retry")
+
+        self.assertEqual(result.message, "Already rejected.")
+
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._resolve_financial_year")
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherHeader.objects")
+    def test_post_voucher_blocks_when_books_locked(self, mock_header_objects, mock_resolve_year):
+        header = SimpleNamespace(
+            id=51,
+            entity_id=1,
+            entityfinid_id=2,
+            voucher_date=date(2026, 4, 15),
+        )
+        mock_header_objects.select_related.return_value.prefetch_related.return_value.select_for_update.return_value.get.return_value = header
+        mock_resolve_year.return_value = SimpleNamespace(
+            id=2,
+            desc="FY 2026-27",
+            year_code="2026-27",
+            is_year_closed=False,
+            period_status="OPEN",
+            books_locked_until=date(2026, 4, 30),
+            ap_ar_locked_until=None,
+            gst_locked_until=None,
+            inventory_locked_until=None,
+        )
+
+        with self.assertRaisesMessage(ValueError, "Cannot post voucher: Books locked up to 2026-04-30 in financial year FY 2026-27."):
+            ReceiptVoucherService.post_voucher.__wrapped__(voucher_id=51, posted_by_id=9)
+
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._resolve_financial_year")
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherHeader.objects")
+    def test_unpost_voucher_blocks_when_books_locked(self, mock_header_objects, mock_resolve_year):
+        header = SimpleNamespace(
+            id=52,
+            entity_id=1,
+            entityfinid_id=2,
+            voucher_date=date(2026, 4, 15),
+        )
+        mock_header_objects.select_related.return_value.prefetch_related.return_value.select_for_update.return_value.get.return_value = header
+        mock_resolve_year.return_value = SimpleNamespace(
+            id=2,
+            desc="FY 2026-27",
+            year_code="2026-27",
+            is_year_closed=False,
+            period_status="OPEN",
+            books_locked_until=date(2026, 4, 30),
+            ap_ar_locked_until=None,
+            gst_locked_until=None,
+            inventory_locked_until=None,
+        )
+
+        with self.assertRaisesMessage(ValueError, "Cannot unpost voucher: Books locked up to 2026-04-30 in financial year FY 2026-27."):
+            ReceiptVoucherService.unpost_voucher.__wrapped__(voucher_id=52, unposted_by_id=9)
+
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._resolve_financial_year")
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherHeader.objects")
+    def test_cancel_voucher_blocks_when_books_locked(self, mock_header_objects, mock_resolve_year):
+        header = SimpleNamespace(
+            id=53,
+            entity_id=1,
+            entityfinid_id=2,
+            voucher_date=date(2026, 4, 15),
+        )
+        mock_header_objects.select_for_update.return_value.get.return_value = header
+        mock_resolve_year.return_value = SimpleNamespace(
+            id=2,
+            desc="FY 2026-27",
+            year_code="2026-27",
+            is_year_closed=False,
+            period_status="OPEN",
+            books_locked_until=date(2026, 4, 30),
+            ap_ar_locked_until=None,
+            gst_locked_until=None,
+            inventory_locked_until=None,
+        )
+
+        with self.assertRaisesMessage(ValueError, "Cannot cancel voucher: Books locked up to 2026-04-30 in financial year FY 2026-27."):
+            ReceiptVoucherService.cancel_voucher.__wrapped__(voucher_id=53, cancelled_by_id=9)
+
     def test_validate_positive_receipt_support_raises_guidance_for_bank_charges_duplicate(self):
         with self.assertRaisesMessage(
             ValueError,
@@ -266,6 +382,8 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
         self.assertEqual(payload["sgst_amount"], Decimal("4.50"))
         self.assertEqual(payload["igst_amount"], Decimal("0.00"))
 
+    @patch("receipts.services.receipt_voucher_service.logger")
+    @patch("receipts.services.receipt_voucher_service.logger")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._sync_runtime_tcs_computation")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._fresh_allocation_rows")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherPostingAdapter.post_receipt_voucher")
@@ -278,6 +396,8 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
         mock_post_adapter,
         mock_fresh_allocs,
         _mock_sync_tcs,
+        _mock_logger_one,
+        _mock_logger_two,
     ):
         header = SimpleNamespace(
             id=11,
@@ -304,7 +424,7 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
             save=MagicMock(),
         )
 
-        mock_header_objects.select_related.return_value.prefetch_related.return_value.get.return_value = header
+        mock_header_objects.select_related.return_value.prefetch_related.return_value.select_for_update.return_value.get.return_value = header
         mock_fresh_allocs.return_value = []
 
         mock_get_policy.return_value = SimpleNamespace(controls={
@@ -329,6 +449,7 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
             entityfinid_id=1,
             subentity_id=None,
             status=ReceiptVoucherHeader.Status.POSTED,
+            voucher_date=date(2026, 5, 28),
             ap_settlement_id=99,
             created_by_id=5,
             voucher_code="RV-12",
@@ -339,7 +460,7 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
             advance_adjustments=SimpleNamespace(all=lambda: []),
             save=MagicMock(),
         )
-        mock_header_objects.select_related.return_value.prefetch_related.return_value.get.return_value = header
+        mock_header_objects.select_related.return_value.prefetch_related.return_value.select_for_update.return_value.get.return_value = header
         mock_get_policy.return_value = SimpleNamespace(controls={"unpost_target_status": "confirmed"})
 
         res = ReceiptVoucherService.unpost_voucher.__wrapped__(voucher_id=12, unposted_by_id=9)
@@ -515,6 +636,9 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
                 ReceiptVoucherService.post_voucher.__wrapped__(voucher_id=31, posted_by_id=9)
         mock_post_adapter.assert_not_called()
 
+    @patch("receipts.services.receipt_voucher_service.logger")
+    @patch("receipts.services.receipt_voucher_service.logger")
+    @patch("receipts.services.receipt_voucher_service.logger")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._sync_runtime_tcs_computation")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._fresh_allocation_rows")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherPostingAdapter.post_receipt_voucher")
@@ -531,6 +655,7 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
         mock_post_adapter,
         mock_fresh_allocs,
         _mock_sync_tcs,
+        mock_logger,
     ):
         advance_row = SimpleNamespace(
             advance_balance_id=14,
@@ -605,6 +730,159 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
         self.assertEqual(adv_call["settlement_type"], "advance_adjustment")
         self.assertEqual(adv_call["advance_balance_id"], 14)
         self.assertEqual(adv_call["lines"][0]["amount"], Decimal("50000.00"))
+        mock_post_adapter.assert_called_once()
+
+    @patch("receipts.services.receipt_voucher_service.logger")
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._sync_runtime_tcs_computation")
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._fresh_allocation_rows")
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherPostingAdapter.post_receipt_voucher")
+    @patch("receipts.services.receipt_voucher_service.SalesArService.post_settlement")
+    @patch("receipts.services.receipt_voucher_service.SalesArService.create_settlement")
+    @patch("receipts.services.receipt_voucher_service.ReceiptSettingsService.get_policy")
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherHeader.objects")
+    def test_post_voucher_reuses_existing_ar_settlement_ids_on_retry(
+        self,
+        mock_header_objects,
+        mock_get_policy,
+        mock_create_settlement,
+        mock_post_settlement,
+        mock_post_adapter,
+        mock_fresh_allocs,
+        _mock_sync_tcs,
+        mock_logger,
+    ):
+        advance_row = SimpleNamespace(
+            advance_balance_id=14,
+            allocation_id=None,
+            open_item_id=55,
+            adjusted_amount=Decimal("50000.00"),
+            ap_settlement_id=202,
+            remarks="adjust",
+            save=MagicMock(),
+        )
+        alloc_row = SimpleNamespace(open_item_id=55, settled_amount=Decimal("116000.00"))
+        header = SimpleNamespace(
+            id=33,
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            status=ReceiptVoucherHeader.Status.CONFIRMED,
+            receipt_type=ReceiptVoucherHeader.ReceiptType.AGAINST_INVOICE,
+            voucher_date="2026-03-07",
+            voucher_code="RV-33",
+            reference_number="UTR-2",
+            narration="retry",
+            received_from_id=99,
+            cash_received_amount=Decimal("66000.00"),
+            total_adjustment_amount=Decimal("0.00"),
+            settlement_effective_amount=Decimal("66000.00"),
+            settlement_effective_amount_base_currency=Decimal("66000.00"),
+            exchange_rate=Decimal("1.000000"),
+            created_by_id=5,
+            ap_settlement_id=201,
+            approved_at=None,
+            approved_by_id=None,
+            workflow_payload={},
+            adjustments=SimpleNamespace(all=lambda: [], values=lambda *args, **kwargs: []),
+            allocations=SimpleNamespace(all=lambda: [alloc_row]),
+            advance_adjustments=SimpleNamespace(all=lambda: [advance_row]),
+            save=MagicMock(),
+        )
+        mock_header_objects.select_related.return_value.prefetch_related.return_value.get.return_value = header
+        mock_fresh_allocs.return_value = [alloc_row]
+        mock_get_policy.return_value = SimpleNamespace(controls={
+            "require_allocation_on_post": "hard",
+            "sync_ar_settlement_on_post": "on",
+            "allocation_amount_match_rule": "hard",
+            "require_confirm_before_post": "on",
+            "receipt_maker_checker": "off",
+            "over_settlement_rule": "block",
+            "allocation_policy": "manual",
+            "sync_advance_balance_on_post": "off",
+        })
+        mock_post_settlement.side_effect = [
+            SimpleNamespace(settlement=SimpleNamespace(id=201)),
+            SimpleNamespace(settlement=SimpleNamespace(id=202)),
+        ]
+
+        with patch.object(ReceiptVoucherService, "_validate_advance_adjustments", return_value=None), \
+             patch.object(ReceiptVoucherService, "_validate_allocations", return_value=[]):
+            res = ReceiptVoucherService.post_voucher.__wrapped__(voucher_id=33, posted_by_id=9)
+
+        self.assertIn("Posted with warnings:", res.message)
+        self.assertIn("Receipt settlement resumed from existing linked settlement", res.message)
+        self.assertIn("Advance adjustment settlement resumed from existing linked settlement", res.message)
+        mock_create_settlement.assert_not_called()
+        self.assertEqual(mock_post_settlement.call_args_list[0].kwargs["settlement_id"], 201)
+        self.assertEqual(mock_post_settlement.call_args_list[1].kwargs["settlement_id"], 202)
+        self.assertEqual(mock_logger.info.call_count, 2)
+        mock_post_adapter.assert_called_once()
+
+    @patch("receipts.services.receipt_voucher_service.CustomerAdvanceBalance.objects")
+    @patch("receipts.services.receipt_voucher_service.logger")
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._sync_runtime_tcs_computation")
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherPostingAdapter.post_receipt_voucher")
+    @patch("receipts.services.receipt_voucher_service.ReceiptSettingsService.get_policy")
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherHeader.objects")
+    def test_post_voucher_reuses_existing_advance_balance_on_retry(
+        self,
+        mock_header_objects,
+        mock_get_policy,
+        mock_post_adapter,
+        _mock_sync_tcs,
+        mock_logger,
+        mocked_adv_objects,
+    ):
+        existing_advance = SimpleNamespace(id=301)
+        header = SimpleNamespace(
+            id=34,
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            status=ReceiptVoucherHeader.Status.CONFIRMED,
+            receipt_type=ReceiptVoucherHeader.ReceiptType.ADVANCE,
+            voucher_date="2026-03-08",
+            voucher_code="RV-34",
+            reference_number="UTR-3",
+            narration="advance retry",
+            received_from_id=99,
+            cash_received_amount=Decimal("5000.00"),
+            total_adjustment_amount=Decimal("0.00"),
+            settlement_effective_amount=Decimal("5000.00"),
+            settlement_effective_amount_base_currency=Decimal("5000.00"),
+            exchange_rate=Decimal("1.000000"),
+            created_by_id=5,
+            ap_settlement_id=None,
+            approved_at=None,
+            approved_by_id=None,
+            workflow_payload={},
+            customer_advance_balance=None,
+            adjustments=SimpleNamespace(all=lambda: [], values=lambda *args, **kwargs: []),
+            allocations=SimpleNamespace(all=lambda: []),
+            advance_adjustments=SimpleNamespace(all=lambda: []),
+            save=MagicMock(),
+        )
+        mock_header_objects.select_related.return_value.prefetch_related.return_value.get.return_value = header
+        mock_get_policy.return_value = SimpleNamespace(controls={
+            "require_allocation_on_post": "hard",
+            "require_confirm_before_post": "on",
+            "receipt_maker_checker": "off",
+            "sync_ar_settlement_on_post": "on",
+            "sync_advance_balance_on_post": "on",
+            "residual_to_advance_balance": "on",
+        })
+        mocked_adv_objects.filter.return_value.first.return_value = existing_advance
+
+        with patch.object(ReceiptVoucherService, "_validate_allocations", return_value=[]), \
+             patch.object(ReceiptVoucherService, "_validate_advance_adjustments", return_value=None), \
+             patch("receipts.services.receipt_voucher_service.SalesArService.create_advance_balance") as mock_create_adv:
+            res = ReceiptVoucherService.post_voucher.__wrapped__(voucher_id=34, posted_by_id=9)
+
+        self.assertIn("Posted with warnings:", res.message)
+        self.assertIn("Receipt advance balance resumed from existing linked balance", res.message)
+        mock_create_adv.assert_not_called()
+        self.assertIs(header.customer_advance_balance, existing_advance)
+        mock_logger.info.assert_called_once()
         mock_post_adapter.assert_called_once()
 
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._sync_runtime_tcs_computation")
@@ -1166,15 +1444,15 @@ class ReceiptVoucherViewValidationTests(SimpleTestCase):
     @patch("receipts.views.receipt_voucher._require_receipt_permission")
     @patch("receipts.views.receipt_voucher.ReceiptVoucherService.post_voucher")
     @patch("receipts.views.receipt_voucher.ReceiptVoucherHeaderSerializer")
-    @patch("receipts.views.receipt_voucher.ReceiptVoucherHeader.objects")
+    @patch.object(ReceiptVoucherPostAPIView, "_get_header")
     def test_post_view_returns_structured_warning_feedback(
         self,
-        mocked_header_objects,
+        mocked_get_header,
         mocked_serializer,
         mocked_post_voucher,
         _mocked_require_permission,
     ):
-        mocked_header_objects.only.return_value.get.return_value = SimpleNamespace(id=9, entity_id=1)
+        mocked_get_header.return_value = SimpleNamespace(id=9, entity_id=1)
         mocked_serializer.return_value.data = {"id": 9}
         mocked_post_voucher.return_value = SimpleNamespace(
             message="Posted with warnings: Round-off line inserted | Static fallback used",
@@ -1190,6 +1468,41 @@ class ReceiptVoucherViewValidationTests(SimpleTestCase):
             "Round-off line inserted",
             "Static fallback used",
         ])
+
+    @patch("receipts.views.receipt_voucher.ReceiptVoucherService.post_voucher")
+    @patch("receipts.views.receipt_voucher.EffectivePermissionService.permission_codes_for_user", return_value=set())
+    @patch("receipts.views.receipt_voucher.EffectivePermissionService.entity_for_user", return_value=SimpleNamespace(id=1))
+    @patch.object(ReceiptVoucherPostAPIView, "_get_header")
+    def test_post_view_requires_backend_permission_before_service_call(
+        self,
+        mocked_get_header,
+        _mocked_entity,
+        _mocked_codes,
+        mocked_post_voucher,
+    ):
+        mocked_get_header.return_value = SimpleNamespace(id=9, entity_id=1)
+        request = self._request("/api/receipts/receipt-vouchers/9/post/?entity=1&entityfinid=2", {})
+
+        response = ReceiptVoucherPostAPIView.as_view()(request, pk=9)
+
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("Missing permission", str(response.data))
+        mocked_post_voucher.assert_not_called()
+
+    @patch("receipts.views.receipt_voucher.ReceiptVoucherService.post_voucher")
+    @patch.object(ReceiptVoucherPostAPIView, "_get_header")
+    def test_post_view_rejects_out_of_scope_header_before_service_call(
+        self,
+        mocked_get_header,
+        mocked_post_voucher,
+    ):
+        mocked_get_header.side_effect = Http404()
+        request = self._request("/api/receipts/receipt-vouchers/9/post/?entity=1&entityfinid=2&subentity=99", {})
+
+        response = ReceiptVoucherPostAPIView.as_view()(request, pk=9)
+
+        self.assertEqual(response.status_code, 404)
+        mocked_post_voucher.assert_not_called()
 
 
 

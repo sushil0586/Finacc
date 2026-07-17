@@ -544,11 +544,18 @@ class PurchaseInvoiceActions:
             level_key="itc_action_status_gate",
             message="ITC action allowed only for confirmed/posted document and not allowed for cancelled document.",
         )
+        next_reason = (reason or "").strip()[:200] or "Blocked"
+        if (
+            int(getattr(h, "itc_claim_status", ItcClaimStatus.PENDING)) == int(ItcClaimStatus.BLOCKED)
+            and not bool(getattr(h, "is_itc_eligible", True))
+            and str(getattr(h, "itc_block_reason", "") or "").strip() == next_reason
+        ):
+            return ActionResult(h, "Already blocked.")
 
         from_status = int(getattr(h, "itc_claim_status", ItcClaimStatus.PENDING))
         h.itc_claim_status = ItcClaimStatus.BLOCKED
         h.is_itc_eligible = False
-        h.itc_block_reason = (reason or "").strip()[:200] or "Blocked"
+        h.itc_block_reason = next_reason
         h.save(update_fields=["itc_claim_status", "is_itc_eligible", "itc_block_reason"])
         PurchaseInvoiceActions._log_itc_action(
             header=h,
@@ -573,6 +580,12 @@ class PurchaseInvoiceActions:
             level_key="itc_action_status_gate",
             message="ITC action allowed only for confirmed/posted document and not allowed for cancelled document.",
         )
+        if (
+            int(getattr(h, "itc_claim_status", ItcClaimStatus.PENDING)) == int(ItcClaimStatus.PENDING)
+            and not getattr(h, "itc_claim_period", None)
+            and not getattr(h, "itc_claimed_at", None)
+        ):
+            return ActionResult(h, "Already pending.")
 
         from_status = int(getattr(h, "itc_claim_status", ItcClaimStatus.PENDING))
         h.itc_claim_status = ItcClaimStatus.PENDING
@@ -598,6 +611,15 @@ class PurchaseInvoiceActions:
             level_key="itc_action_status_gate",
             message="ITC action allowed only for confirmed/posted document and not allowed for cancelled document.",
         )
+        next_reason = (reason or "").strip()[:200] or None
+        if (
+            bool(getattr(h, "is_itc_eligible", True))
+            and int(getattr(h, "itc_claim_status", ItcClaimStatus.PENDING)) == int(ItcClaimStatus.PENDING)
+            and not getattr(h, "itc_claim_period", None)
+            and not getattr(h, "itc_claimed_at", None)
+            and str(getattr(h, "itc_block_reason", "") or "").strip() == str(next_reason or "")
+        ):
+            return ActionResult(h, "Already unblocked.")
 
         from_status = int(getattr(h, "itc_claim_status", ItcClaimStatus.PENDING))
         h.is_itc_eligible = True
@@ -605,7 +627,7 @@ class PurchaseInvoiceActions:
         h.itc_claim_period = None
         h.itc_claimed_at = None
         # Clear previous block reason unless caller wants to keep an audit marker.
-        h.itc_block_reason = (reason or "").strip()[:200] or None
+        h.itc_block_reason = next_reason
         h.save(
             update_fields=[
                 "is_itc_eligible",
@@ -655,6 +677,11 @@ class PurchaseInvoiceActions:
         requested_period = (year * 100) + month
         if requested_period > current_period:
             raise ValueError("ITC claim period cannot be in the future month.")
+        if (
+            int(getattr(h, "itc_claim_status", ItcClaimStatus.PENDING)) == int(ItcClaimStatus.CLAIMED)
+            and str(getattr(h, "itc_claim_period", "") or "") == period
+        ):
+            return ActionResult(h, "Already claimed.")
 
         policy = PurchaseSettingsService.get_policy(h.entity_id, h.subentity_id)
         gate = getattr(policy, "itc_claim_2b_gate", None)
@@ -707,11 +734,17 @@ class PurchaseInvoiceActions:
             level_key="itc_action_status_gate",
             message="ITC action allowed only for confirmed/posted document and not allowed for cancelled document.",
         )
+        next_reason = reason[:200] if reason else None
+        if (
+            int(getattr(h, "itc_claim_status", ItcClaimStatus.PENDING)) == int(ItcClaimStatus.REVERSED)
+            and str(getattr(h, "itc_block_reason", "") or "").strip() == str(next_reason or "")
+        ):
+            return ActionResult(h, "Already reversed.")
 
         from_status = int(getattr(h, "itc_claim_status", ItcClaimStatus.PENDING))
         h.itc_claim_status = ItcClaimStatus.REVERSED
         if reason:
-            h.itc_block_reason = reason[:200]
+            h.itc_block_reason = next_reason
         h.save(update_fields=["itc_claim_status", "itc_block_reason"])
         PurchaseInvoiceActions._log_itc_action(
             header=h,
@@ -745,6 +778,8 @@ class PurchaseInvoiceActions:
             raise ValueError(
                 f"Invalid GSTR-2B match_status '{match_status}'."
             )
+        if int(getattr(h, "gstr2b_match_status", PurchaseInvoiceHeader.Gstr2bMatchStatus.NOT_CHECKED)) == int(match_status):
+            return ActionResult(h, "GSTR-2B status unchanged.")
         old_status = int(getattr(h, "gstr2b_match_status", PurchaseInvoiceHeader.Gstr2bMatchStatus.NOT_CHECKED))
         h.gstr2b_match_status = int(match_status)
         h.save(update_fields=["gstr2b_match_status"])

@@ -126,6 +126,10 @@ class SalesComplianceService:
         return f"{amount.quantize(Decimal('0.01'))}"
 
     @staticmethod
+    def _text(value: Any) -> str:
+        return str(value or "").strip()
+
+    @staticmethod
     def _default_exp_ship_dtls(inv: SalesInvoiceHeader) -> Dict[str, Any]:
         ship = getattr(inv, "shipto_snapshot", None)
         return build_exp_ship_dtls(
@@ -156,6 +160,22 @@ class SalesComplianceService:
         if buyer_gstin and merged_gstin == buyer_gstin:
             return None
         return {k: v for k, v in merged.items() if v is not None}
+
+    @staticmethod
+    def _same_date_text(current: Any, requested: Any, fmt: str = "%d/%m/%Y") -> bool:
+        if current in (None, "") and requested in (None, ""):
+            return True
+        if current in (None, "") or requested in (None, ""):
+            return False
+        if hasattr(current, "strftime"):
+            current_text = current.strftime(fmt)
+        else:
+            current_text = str(current).strip()
+        if hasattr(requested, "strftime"):
+            requested_text = requested.strftime(fmt)
+        else:
+            requested_text = str(requested).strip()
+        return current_text == requested_text
 
     @staticmethod
     def compliance_action_flags(inv: SalesInvoiceHeader) -> Dict[str, Any]:
@@ -842,8 +862,15 @@ class SalesComplianceService:
     @transaction.atomic
     def cancel_irn(self, *, reason_code: str, remarks: Optional[str] = None) -> Dict[str, Any]:
         inv = self.invoice
-        self.assert_action_allowed(inv, "can_cancel_irn")
         einv = self._ensure_einvoice_row()
+        if einv.irn and einv.status == SalesEInvoiceStatus.CANCELLED:
+            return {
+                "status": "SUCCESS",
+                "irn": einv.irn,
+                "idempotent": True,
+                "raw": einv.last_response_json,
+            }
+        self.assert_action_allowed(inv, "can_cancel_irn")
         if not einv.irn or einv.status != SalesEInvoiceStatus.GENERATED:
             raise ValidationError("IRN cancel is allowed only for generated IRN.")
         ewb = getattr(inv, "eway_artifact", None)
@@ -921,7 +948,7 @@ class SalesComplianceService:
             response_json=result.raw,
         )
         ComplianceAuditService.resolve_exception(invoice=inv, exception_type="STATUTORY_CANCEL_REQUIRED", user=self.user)
-        return {"status": "SUCCESS", "irn": einv.irn, "raw": result.raw}
+        return {"status": "SUCCESS", "irn": einv.irn, "idempotent": False, "raw": result.raw}
 
     @transaction.atomic
     def get_irn_details(self, *, irn: Optional[str] = None, supplier_gstin: Optional[str] = None) -> Dict[str, Any]:
@@ -2318,8 +2345,15 @@ class SalesComplianceService:
     @transaction.atomic
     def cancel_eway(self, *, reason_code: str, remarks: Optional[str] = None) -> Dict[str, Any]:
         inv = self.invoice
-        self.assert_action_allowed(inv, "can_cancel_eway")
         art = self._ensure_eway_row()
+        if art.ewb_no and art.status == SalesEWayStatus.CANCELLED:
+            return {
+                "status": "SUCCESS",
+                "ewb_no": art.ewb_no,
+                "idempotent": True,
+                "raw": art.last_response_json,
+            }
+        self.assert_action_allowed(inv, "can_cancel_eway")
         if not art.ewb_no or art.status != SalesEWayStatus.GENERATED:
             raise ValidationError("E-Way cancel is allowed only for generated EWB.")
 
@@ -2403,15 +2437,37 @@ class SalesComplianceService:
             response_json=resp,
         )
         ComplianceAuditService.resolve_exception(invoice=inv, exception_type="STATUTORY_CANCEL_REQUIRED", user=self.user)
-        return {"status": "SUCCESS", "ewb_no": art.ewb_no, "cancel_date": portal_cancel_date, "raw": resp}
+        return {
+            "status": "SUCCESS",
+            "ewb_no": art.ewb_no,
+            "cancel_date": portal_cancel_date,
+            "idempotent": False,
+            "raw": resp,
+        }
 
     @transaction.atomic
     def update_eway_vehicle(self, *, req: Dict[str, Any]) -> Dict[str, Any]:
         inv = self.invoice
-        self.assert_action_allowed(inv, "can_update_eway_vehicle")
         art = self._ensure_eway_row()
         if not art.ewb_no:
             raise ValidationError("EWB number not found. Generate EWB first.")
+        same_vehicle_request = (
+            self._text(getattr(art, "vehicle_no", None)) == self._text(req.get("vehicle_no"))
+            and self._text(getattr(art, "vehicle_type", None)) == self._text(req.get("vehicle_type"))
+            and self._text(getattr(art, "doc_no", None)) == self._text(req.get("trans_doc_no"))
+            and self._same_date_text(getattr(art, "doc_date", None), req.get("trans_doc_date"))
+            and self._text(getattr(art, "transport_mode", None)) == self._text(req.get("trans_mode"))
+        )
+        if same_vehicle_request:
+            return {
+                "status": "SUCCESS",
+                "ewb_no": art.ewb_no,
+                "veh_update_date": None,
+                "valid_upto": getattr(art, "valid_upto", None),
+                "idempotent": True,
+                "raw": art.last_response_json,
+            }
+        self.assert_action_allowed(inv, "can_update_eway_vehicle")
 
         cred = self._get_mastergst_cred_for_entity(
             inv.entity,
@@ -2474,16 +2530,24 @@ class SalesComplianceService:
             "ewb_no": art.ewb_no,
             "veh_update_date": self._parse_dt(data.get("vehUpdDate")),
             "valid_upto": art.valid_upto,
+            "idempotent": False,
             "raw": resp,
         }
 
     @transaction.atomic
     def update_eway_transporter(self, *, transporter_id: str) -> Dict[str, Any]:
         inv = self.invoice
-        self.assert_action_allowed(inv, "can_update_eway_transporter")
         art = self._ensure_eway_row()
         if not art.ewb_no:
             raise ValidationError("EWB number not found. Generate EWB first.")
+        if self._text(getattr(art, "transporter_id", None)) == self._text(transporter_id):
+            return {
+                "status": "SUCCESS",
+                "ewb_no": art.ewb_no,
+                "idempotent": True,
+                "raw": art.last_response_json,
+            }
+        self.assert_action_allowed(inv, "can_update_eway_transporter")
 
         cred = self._get_mastergst_cred_for_entity(
             inv.entity,
@@ -2525,15 +2589,31 @@ class SalesComplianceService:
             request_json=payload,
             response_json=resp,
         )
-        return {"status": "SUCCESS", "ewb_no": art.ewb_no, "raw": resp}
+        return {"status": "SUCCESS", "ewb_no": art.ewb_no, "idempotent": False, "raw": resp}
 
     @transaction.atomic
     def extend_eway_validity(self, *, req: Dict[str, Any]) -> Dict[str, Any]:
         inv = self.invoice
-        self.assert_action_allowed(inv, "can_extend_eway_validity")
         art = self._ensure_eway_row()
         if not art.ewb_no:
             raise ValidationError("EWB number not found. Generate EWB first.")
+        same_validity_request = (
+            self._text(getattr(art, "vehicle_no", None)) == self._text(req.get("vehicle_no"))
+            and self._text(getattr(art, "vehicle_type", None)) == self._text(req.get("vehicle_type"))
+            and self._text(getattr(art, "doc_no", None)) == self._text(req.get("trans_doc_no"))
+            and self._same_date_text(getattr(art, "doc_date", None), req.get("trans_doc_date"))
+            and self._text(getattr(art, "transport_mode", None)) == self._text(req.get("trans_mode"))
+            and self._text(getattr(art, "transporter_id", None)) == self._text(req.get("transporter_id"))
+        )
+        if same_validity_request and getattr(art, "valid_upto", None):
+            return {
+                "status": "SUCCESS",
+                "ewb_no": art.ewb_no,
+                "valid_upto": art.valid_upto,
+                "idempotent": True,
+                "raw": art.last_response_json,
+            }
+        self.assert_action_allowed(inv, "can_extend_eway_validity")
 
         cred = self._get_mastergst_cred_for_entity(
             inv.entity,
@@ -2588,7 +2668,13 @@ class SalesComplianceService:
             request_json=payload,
             response_json=resp,
         )
-        return {"status": "SUCCESS", "ewb_no": art.ewb_no, "valid_upto": art.valid_upto, "raw": resp}
+        return {
+            "status": "SUCCESS",
+            "ewb_no": art.ewb_no,
+            "valid_upto": art.valid_upto,
+            "idempotent": False,
+            "raw": resp,
+        }
 
     # -------------------------
     # E-Way Generate (B2C direct, no IRN)

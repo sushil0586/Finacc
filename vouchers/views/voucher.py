@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from django.db.models import Prefetch
+from django.shortcuts import get_object_or_404
 from rest_framework import generics, permissions, status
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
@@ -107,7 +108,7 @@ class _VoucherScopedActionMixin(_VoucherScopeMixin):
     """
 
     def _get_header(self, pk: int) -> VoucherHeader:
-        return self._scoped_queryset().get(pk=pk)
+        return get_object_or_404(self._scoped_queryset(), pk=pk)
 
     def _require(self, header: VoucherHeader, action: str):
         _assert_permission(self.request.user, entity_id=header.entity_id, voucher_type=header.voucher_type, action=action)

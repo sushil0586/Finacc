@@ -1532,6 +1532,31 @@ class PurchaseApiEndToEndTests(APITestCase):
         delete_draft = self.client.delete(f"/api/purchase/purchase-invoices/{draft['id']}/{self._scope_qs()}")
         self.assertEqual(delete_draft.status_code, status.HTTP_204_NO_CONTENT)
 
+    def test_repeated_confirm_call_is_idempotent_for_confirmed_purchase_invoice(self):
+        created = self._create_invoice(supplier_invoice_number="INV-CONFIRM-IDEMPOTENT")
+        invoice_id = created["id"]
+
+        first_confirm_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{invoice_id}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(first_confirm_resp.status_code, status.HTTP_200_OK, first_confirm_resp.json())
+        self.assertEqual(first_confirm_resp.json()["data"]["status"], int(PurchaseInvoiceHeader.Status.CONFIRMED))
+        first_doc_no = first_confirm_resp.json()["data"]["doc_no"]
+        first_purchase_number = first_confirm_resp.json()["data"]["purchase_number"]
+
+        second_confirm_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{invoice_id}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(second_confirm_resp.status_code, status.HTTP_200_OK, second_confirm_resp.json())
+        self.assertEqual(second_confirm_resp.json()["message"], "Already confirmed (number ensured).")
+        self.assertEqual(second_confirm_resp.json()["data"]["status"], int(PurchaseInvoiceHeader.Status.CONFIRMED))
+        self.assertEqual(second_confirm_resp.json()["data"]["doc_no"], first_doc_no)
+        self.assertEqual(second_confirm_resp.json()["data"]["purchase_number"], first_purchase_number)
+
     def test_cancel_marks_draft_invoice_cancelled(self):
         created = self._create_invoice(supplier_invoice_number="INV-CANCEL")
         invoice_id = created["id"]
@@ -1543,6 +1568,27 @@ class PurchaseApiEndToEndTests(APITestCase):
         )
         self.assertEqual(cancel_resp.status_code, status.HTTP_200_OK, cancel_resp.json())
         self.assertEqual(cancel_resp.json()["data"]["status"], int(PurchaseInvoiceHeader.Status.CANCELLED))
+
+    def test_repeated_cancel_call_is_idempotent_for_cancelled_purchase_invoice(self):
+        created = self._create_invoice(supplier_invoice_number="INV-CANCEL-IDEMPOTENT")
+        invoice_id = created["id"]
+
+        first_cancel_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{invoice_id}/cancel/{self._scope_qs()}",
+            {"reason": "Initial cancel"},
+            format="json",
+        )
+        self.assertEqual(first_cancel_resp.status_code, status.HTTP_200_OK, first_cancel_resp.json())
+        self.assertEqual(first_cancel_resp.json()["data"]["status"], int(PurchaseInvoiceHeader.Status.CANCELLED))
+
+        second_cancel_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{invoice_id}/cancel/{self._scope_qs()}",
+            {"reason": "Retry cancel"},
+            format="json",
+        )
+        self.assertEqual(second_cancel_resp.status_code, status.HTTP_200_OK, second_cancel_resp.json())
+        self.assertEqual(second_cancel_resp.json()["message"], "Already cancelled.")
+        self.assertEqual(second_cancel_resp.json()["data"]["status"], int(PurchaseInvoiceHeader.Status.CANCELLED))
 
     def test_create_credit_note_action_from_invoice(self):
         created = self._create_invoice(supplier_invoice_number="INV-CN-ACTION")

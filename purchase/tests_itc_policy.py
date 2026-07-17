@@ -346,3 +346,74 @@ class PurchaseItcPolicyActionTests(TestCase):
             reason="Annual reversal required after exempt turnover allocation.",
         )
         mock_rebuild.assert_called_once_with(header)
+
+    @patch("purchase.services.purchase_invoice_actions.PurchaseInvoiceActions._log_itc_action")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseInvoiceActions._assert_action_allowed_by_level")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseSettingsService.get_policy")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseInvoiceActions._get")
+    def test_repeated_itc_claim_with_same_period_is_idempotent(self, mock_get, mock_get_policy, _mock_assert, mock_log):
+        header = _DummyHeader(
+            id=1,
+            entity_id=1,
+            subentity_id=None,
+            status=Status.CONFIRMED,
+            is_itc_eligible=True,
+            gstr2b_match_status=PurchaseInvoiceHeader.Gstr2bMatchStatus.MATCHED,
+            itc_claim_status=ItcClaimStatus.CLAIMED,
+            itc_claim_period="2026-04",
+            itc_claimed_at="2026-04-20T10:00:00Z",
+        )
+        mock_get.return_value = header
+        mock_get_policy.return_value = SimpleNamespace(
+            itc_claim_2b_gate="off",
+            itc_claim_allowed_2b_statuses={"matched", "partial"},
+            enforce_2b_before_itc_claim=False,
+        )
+
+        result = PurchaseInvoiceActions.mark_itc_claimed(1, "2026-04")
+
+        self.assertEqual(result.message, "Already claimed.")
+        mock_log.assert_not_called()
+
+    @patch("purchase.services.purchase_invoice_actions.PurchaseInvoiceService.rebuild_tax_summary")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseInvoiceActions._log_itc_action")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseInvoiceActions._assert_action_allowed_by_level")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseInvoiceActions._get")
+    def test_repeated_itc_block_with_same_reason_is_idempotent(self, mock_get, _mock_assert, mock_log, mock_rebuild):
+        header = _DummyHeader(
+            id=1,
+            entity_id=1,
+            subentity_id=None,
+            status=Status.CONFIRMED,
+            is_itc_eligible=False,
+            itc_claim_status=ItcClaimStatus.BLOCKED,
+            itc_block_reason="Blocked for review",
+        )
+        mock_get.return_value = header
+
+        result = PurchaseInvoiceActions.mark_itc_blocked(1, "Blocked for review")
+
+        self.assertEqual(result.message, "Already blocked.")
+        mock_log.assert_not_called()
+        mock_rebuild.assert_not_called()
+
+    @patch("purchase.services.purchase_invoice_actions.PurchaseInvoiceActions._log_itc_action")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseInvoiceActions._assert_action_allowed_by_level")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseInvoiceActions._get")
+    def test_repeated_2b_status_update_to_same_value_is_idempotent(self, mock_get, _mock_assert, mock_log):
+        header = _DummyHeader(
+            id=1,
+            entity_id=1,
+            subentity_id=None,
+            status=Status.CONFIRMED,
+            gstr2b_match_status=PurchaseInvoiceHeader.Gstr2bMatchStatus.MATCHED,
+        )
+        mock_get.return_value = header
+
+        result = PurchaseInvoiceActions.update_2b_match_status(
+            1,
+            int(PurchaseInvoiceHeader.Gstr2bMatchStatus.MATCHED),
+        )
+
+        self.assertEqual(result.message, "GSTR-2B status unchanged.")
+        mock_log.assert_not_called()

@@ -290,8 +290,10 @@ class VoucherService(SettlementVoucherRuntimeMixin):
     @transaction.atomic
     def confirm_voucher(cls, voucher_id: int, *, confirmed_by_id: Optional[int]) -> VoucherResult:
         header = VoucherHeader.objects.select_for_update().get(pk=voucher_id)
-        if int(header.status) != int(VoucherHeader.Status.DRAFT):
-            raise ValueError("Only draft vouchers can be confirmed.")
+        if int(header.status) == int(VoucherHeader.Status.CANCELLED):
+            raise ValueError("Cancelled vouchers cannot be confirmed.")
+        if int(header.status) == int(VoucherHeader.Status.POSTED):
+            return VoucherResult(header=header, message="Already posted.")
         header.doc_code = header.doc_code or _default_doc_code(header.voucher_type, header.entity_id, header.subentity_id)
         if not header.doc_no:
             VoucherSettingsService.ensure_numbering_scope_for_type(
@@ -311,6 +313,9 @@ class VoucherService(SettlementVoucherRuntimeMixin):
             )
             header.doc_no = int(res.doc_no)
             header.voucher_code = res.display_no
+        if int(header.status) == int(VoucherHeader.Status.CONFIRMED):
+            header.save(update_fields=["doc_no", "voucher_code", "updated_at"])
+            return VoucherResult(header=header, message="Already confirmed.")
         header.status = VoucherHeader.Status.CONFIRMED
         payload = cls._append_audit(header.workflow_payload, {"at": timezone.now().isoformat(), "by": confirmed_by_id, "action": "CONFIRMED", "remarks": None})
         header.workflow_payload = payload
@@ -321,9 +326,15 @@ class VoucherService(SettlementVoucherRuntimeMixin):
     @transaction.atomic
     def submit_voucher(cls, voucher_id: int, *, submitted_by_id: int, remarks: Optional[str] = None) -> VoucherResult:
         header = VoucherHeader.objects.select_for_update().get(pk=voucher_id)
+        if int(header.status) == int(VoucherHeader.Status.CANCELLED):
+            raise ValueError("Cancelled vouchers cannot be submitted.")
+        if int(header.status) == int(VoucherHeader.Status.POSTED):
+            raise ValueError("Posted vouchers cannot be submitted.")
+        state = cls._workflow_state(header.workflow_payload)
+        if state.get("status") == "SUBMITTED":
+            return VoucherResult(header=header, message="Already submitted.")
         if int(header.status) != int(VoucherHeader.Status.DRAFT):
             raise ValueError("Only draft vouchers can be submitted.")
-        state = cls._workflow_state(header.workflow_payload)
         state.update({"status": "SUBMITTED", "submitted_by": submitted_by_id, "submitted_at": timezone.now().isoformat(), "remarks": remarks})
         payload = cls._set_workflow_state(header.workflow_payload, state)
         payload = cls._append_audit(payload, {"at": timezone.now().isoformat(), "by": submitted_by_id, "action": "SUBMITTED", "remarks": remarks})
@@ -339,6 +350,8 @@ class VoucherService(SettlementVoucherRuntimeMixin):
             raise ValueError("Posted/cancelled vouchers cannot be approved.")
         policy = VoucherSettingsService.get_policy(header.entity_id, header.subentity_id)
         state = cls._workflow_state(header.workflow_payload)
+        if state.get("status") == "APPROVED":
+            return VoucherResult(header=header, message="Already approved.")
         if str(policy.controls.get("require_submit_before_approve", "off")).lower() == "on" and state.get("status") != "SUBMITTED":
             raise ValueError("Voucher must be submitted before approval by policy.")
         if str(policy.controls.get("same_user_submit_approve", "on")).lower() == "off" and state.get("submitted_by") and int(state["submitted_by"]) == int(approved_by_id):
@@ -359,6 +372,8 @@ class VoucherService(SettlementVoucherRuntimeMixin):
         if int(header.status) in {VoucherHeader.Status.POSTED, VoucherHeader.Status.CANCELLED}:
             raise ValueError("Posted/cancelled vouchers cannot be rejected.")
         state = cls._workflow_state(header.workflow_payload)
+        if state.get("status") == "REJECTED":
+            return VoucherResult(header=header, message="Already rejected.")
         state.update({"status": "REJECTED", "rejected_by": rejected_by_id, "rejected_at": timezone.now().isoformat(), "remarks": remarks})
         payload = cls._set_workflow_state(header.workflow_payload, state)
         payload = cls._append_audit(payload, {"at": timezone.now().isoformat(), "by": rejected_by_id, "action": "REJECTED", "remarks": remarks})
@@ -372,7 +387,7 @@ class VoucherService(SettlementVoucherRuntimeMixin):
         header = VoucherHeader.objects.select_for_update().prefetch_related("lines").get(pk=voucher_id)
         policy = VoucherSettingsService.get_policy(header.entity_id, header.subentity_id)
         if int(header.status) == int(VoucherHeader.Status.POSTED):
-            raise ValueError("Voucher is already posted.")
+            return VoucherResult(header=header, message="Already posted.")
         if int(header.status) == int(VoucherHeader.Status.CANCELLED):
             raise ValueError("Cancelled voucher cannot be posted.")
         if str(policy.controls.get("require_confirm_before_post", "on")).lower() == "on" and int(header.status) != int(VoucherHeader.Status.CONFIRMED):
@@ -408,7 +423,7 @@ class VoucherService(SettlementVoucherRuntimeMixin):
         if int(header.status) == int(VoucherHeader.Status.POSTED):
             raise ValueError("Posted voucher cannot be cancelled. Unpost it first.")
         if int(header.status) == int(VoucherHeader.Status.CANCELLED):
-            raise ValueError("Voucher is already cancelled.")
+            return VoucherResult(header=header, message="Already cancelled.")
         header.status = VoucherHeader.Status.CANCELLED
         header.is_cancelled = True
         header.cancel_reason = reason

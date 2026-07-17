@@ -36,14 +36,30 @@ def _build_filter_relations(entity_id: int) -> dict:
     relations = []
     for product in product_rows:
         gst_rows = list(getattr(product, 'prefetched_gst_rates', []) or [])
-        current = gst_rows[0] if gst_rows else None
-        relations.append(
-            {
-                'product_id': product.id,
-                'category_id': getattr(product, 'productcategory_id', None),
-                'hsn_id': getattr(current, 'hsn_id', None),
-            }
-        )
+        category_id = getattr(product, 'productcategory_id', None)
+        seen_hsn_ids = set()
+
+        for gst_row in gst_rows:
+            hsn_id = getattr(gst_row, 'hsn_id', None)
+            if hsn_id is None or hsn_id in seen_hsn_ids:
+                continue
+            seen_hsn_ids.add(hsn_id)
+            relations.append(
+                {
+                    'product_id': product.id,
+                    'category_id': category_id,
+                    'hsn_id': hsn_id,
+                }
+            )
+
+        if not seen_hsn_ids:
+            relations.append(
+                {
+                    'product_id': product.id,
+                    'category_id': category_id,
+                    'hsn_id': None,
+                }
+            )
 
     return {
         'product_category_hsn': relations,

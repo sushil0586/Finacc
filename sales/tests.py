@@ -9,6 +9,7 @@ from rest_framework.test import APIRequestFactory, force_authenticate
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from sales.models import SalesInvoiceHeader, SalesSettings, SalesEWaySource
+from sales.models.sales_compliance import SalesEInvoiceStatus, SalesEWayStatus
 from sales.services.sales_invoice_service import SalesInvoiceService
 from sales.services.sales_stock_balance_service import SalesStockBalanceService
 from sales.services.sales_withholding_service import SalesWithholdingService
@@ -18,11 +19,13 @@ from sales.services.eway_payload_builder import EWayInput, build_exp_ship_dtls, 
 from sales.services.eway.payload_b2c import build_b2c_direct_payload
 from sales.services.sales_compliance_service import SalesComplianceService
 from sales.services.sales_nav_service import SalesInvoiceNavService
+from sales.services.sales_ar_service import SalesArService
 from sales.services.sales_settings_service import SalesSettingsService
 from sales.services.providers.mastergst import _extract_error
 from sales.services.providers.mastergst_client import MasterGSTClient
 from sales.services.providers.credential_resolver import CredentialResolver
 from sales.models.mastergst_models import MasterGSTServiceScope
+from sales.models.sales_ar import CustomerSettlement
 from sales.serializers.sales_compliance_serializers import (
     EnsureComplianceActionSerializer,
     ExtendEWayValidityActionSerializer,
@@ -107,6 +110,50 @@ class SalesInvoiceServiceUnitTests(SimpleTestCase):
         clean = SalesInvoiceService._sanitize_header_data_inputs(payload)
 
         self.assertEqual(clean, payload)
+
+
+class SalesArServiceUnitTests(SimpleTestCase):
+    databases = {"default"}
+
+    @patch("sales.services.sales_ar_service.CustomerSettlement.objects")
+    def test_post_settlement_returns_already_posted_for_repeat_post(self, mocked_objects):
+        settlement = SimpleNamespace(
+            status=CustomerSettlement.Status.POSTED,
+            total_amount=Decimal("125.00"),
+        )
+        mocked_objects.select_for_update.return_value.get.return_value = settlement
+
+        result = SalesArService.post_settlement(settlement_id=91, posted_by_id=7)
+
+        self.assertIs(result.settlement, settlement)
+        self.assertEqual(result.applied_total, Decimal("125.00"))
+        self.assertEqual(result.message, "Settlement already posted.")
+
+    @patch("sales.services.sales_ar_service.CustomerSettlement.objects")
+    def test_cancel_settlement_returns_already_cancelled_for_repeat_cancel(self, mocked_objects):
+        settlement = SimpleNamespace(status=CustomerSettlement.Status.CANCELLED)
+        mocked_objects.select_for_update.return_value.get.return_value = settlement
+
+        result = SalesArService.cancel_settlement(settlement_id=92, cancelled_by_id=7)
+
+        self.assertIs(result.settlement, settlement)
+        self.assertEqual(result.message, "Settlement already cancelled.")
+
+    @patch("sales.services.sales_ar_service.CustomerSettlement.objects")
+    def test_cancel_settlement_cancels_draft_without_reversal_work(self, mocked_objects):
+        save_spy = MagicMock()
+        settlement = SimpleNamespace(
+            status=CustomerSettlement.Status.DRAFT,
+            save=save_spy,
+        )
+        mocked_objects.select_for_update.return_value.get.return_value = settlement
+
+        result = SalesArService.cancel_settlement(settlement_id=93, cancelled_by_id=7)
+
+        self.assertIs(result.settlement, settlement)
+        self.assertEqual(settlement.status, CustomerSettlement.Status.CANCELLED)
+        self.assertEqual(result.message, "Draft settlement cancelled.")
+        save_spy.assert_called_once_with(update_fields=["status", "updated_at"])
 
     def test_normalize_invoice_printing_applies_defaults(self):
         normalized = SalesSettingsService.normalize_invoice_printing(
@@ -3616,6 +3663,54 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
         self.assertTrue(serializer.is_valid(), serializer.errors)
         self.assertEqual(serializer.validated_data["eway"], {})
 
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._ensure_einvoice_row")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService.assert_action_allowed")
+    def test_cancel_irn_returns_idempotent_success_when_already_cancelled(
+        self,
+        mocked_assert_allowed,
+        mocked_ensure_einv,
+    ):
+        invoice = SimpleNamespace(id=10, entity=SimpleNamespace(id=1))
+        user = SimpleNamespace(id=7)
+        einv = SimpleNamespace(
+            irn="IRN123",
+            status=SalesEInvoiceStatus.CANCELLED,
+            last_response_json={"status_cd": "1", "data": {"CancelDate": "2026-07-16 10:00:00"}},
+        )
+        mocked_ensure_einv.return_value = einv
+
+        svc = SalesComplianceService(invoice=invoice, user=user)
+        result = svc.cancel_irn(reason_code="1", remarks="Duplicate retry")
+
+        self.assertEqual(result["status"], "SUCCESS")
+        self.assertEqual(result["irn"], "IRN123")
+        self.assertEqual(result["idempotent"], True)
+        mocked_assert_allowed.assert_not_called()
+
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._ensure_eway_row")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService.assert_action_allowed")
+    def test_cancel_eway_returns_idempotent_success_when_already_cancelled(
+        self,
+        mocked_assert_allowed,
+        mocked_ensure_eway,
+    ):
+        invoice = SimpleNamespace(id=10, entity=SimpleNamespace(id=1))
+        user = SimpleNamespace(id=7)
+        eway = SimpleNamespace(
+            ewb_no="171001234567",
+            status=SalesEWayStatus.CANCELLED,
+            last_response_json={"status_cd": "1", "data": {"cancelDate": "2026-07-16 10:00:00"}},
+        )
+        mocked_ensure_eway.return_value = eway
+
+        svc = SalesComplianceService(invoice=invoice, user=user)
+        result = svc.cancel_eway(reason_code="1", remarks="Duplicate retry")
+
+        self.assertEqual(result["status"], "SUCCESS")
+        self.assertEqual(result["ewb_no"], "171001234567")
+        self.assertEqual(result["idempotent"], True)
+        mocked_assert_allowed.assert_not_called()
+
     def test_extend_eway_validity_serializer_accepts_whitebooks_aliases(self):
         serializer = ExtendEWayValidityActionSerializer(
             data={
@@ -3711,6 +3806,107 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
         self.assertNotIn("reasonRem", payload)
         save_spy.assert_called()
         mocked_log_action.assert_called_once()
+
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._ensure_eway_row")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService.assert_action_allowed")
+    def test_update_eway_vehicle_returns_idempotent_success_for_same_saved_request(
+        self,
+        mocked_assert_allowed,
+        mocked_ensure_eway,
+    ):
+        invoice = SimpleNamespace(id=10, entity=SimpleNamespace(id=1))
+        user = SimpleNamespace(id=7)
+        valid_upto = timezone.now()
+        eway = SimpleNamespace(
+            ewb_no="171001234567",
+            vehicle_no="PB10AB1234",
+            vehicle_type="R",
+            doc_no="LR-22",
+            doc_date=date(2026, 6, 18),
+            transport_mode=1,
+            valid_upto=valid_upto,
+            last_response_json={"status_cd": "1"},
+        )
+        mocked_ensure_eway.return_value = eway
+
+        svc = SalesComplianceService(invoice=invoice, user=user)
+        result = svc.update_eway_vehicle(
+            req={
+                "vehicle_no": "PB10AB1234",
+                "vehicle_type": "R",
+                "trans_doc_no": "LR-22",
+                "trans_doc_date": date(2026, 6, 18),
+                "trans_mode": "1",
+            }
+        )
+
+        self.assertEqual(result["status"], "SUCCESS")
+        self.assertEqual(result["idempotent"], True)
+        self.assertEqual(result["valid_upto"], valid_upto)
+        mocked_assert_allowed.assert_not_called()
+
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._ensure_eway_row")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService.assert_action_allowed")
+    def test_update_eway_transporter_returns_idempotent_success_for_same_saved_transporter(
+        self,
+        mocked_assert_allowed,
+        mocked_ensure_eway,
+    ):
+        invoice = SimpleNamespace(id=10, entity=SimpleNamespace(id=1))
+        user = SimpleNamespace(id=7)
+        eway = SimpleNamespace(
+            ewb_no="171001234567",
+            transporter_id="05AAACG0904A1ZL",
+            last_response_json={"status_cd": "1"},
+        )
+        mocked_ensure_eway.return_value = eway
+
+        svc = SalesComplianceService(invoice=invoice, user=user)
+        result = svc.update_eway_transporter(transporter_id="05AAACG0904A1ZL")
+
+        self.assertEqual(result["status"], "SUCCESS")
+        self.assertEqual(result["idempotent"], True)
+        mocked_assert_allowed.assert_not_called()
+
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._ensure_eway_row")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService.assert_action_allowed")
+    def test_extend_eway_validity_returns_idempotent_success_for_same_saved_request(
+        self,
+        mocked_assert_allowed,
+        mocked_ensure_eway,
+    ):
+        invoice = SimpleNamespace(id=10, entity=SimpleNamespace(id=1))
+        user = SimpleNamespace(id=7)
+        valid_upto = timezone.now()
+        eway = SimpleNamespace(
+            ewb_no="171001234567",
+            vehicle_no="PB10AB1234",
+            vehicle_type="R",
+            doc_no="LR-22",
+            doc_date=date(2026, 6, 18),
+            transport_mode=1,
+            transporter_id="05AAACG0904A1ZL",
+            valid_upto=valid_upto,
+            last_response_json={"status_cd": "1"},
+        )
+        mocked_ensure_eway.return_value = eway
+
+        svc = SalesComplianceService(invoice=invoice, user=user)
+        result = svc.extend_eway_validity(
+            req={
+                "vehicle_no": "PB10AB1234",
+                "vehicle_type": "R",
+                "trans_doc_no": "LR-22",
+                "trans_doc_date": date(2026, 6, 18),
+                "trans_mode": "1",
+                "transporter_id": "05AAACG0904A1ZL",
+            }
+        )
+
+        self.assertEqual(result["status"], "SUCCESS")
+        self.assertEqual(result["idempotent"], True)
+        self.assertEqual(result["valid_upto"], valid_upto)
+        mocked_assert_allowed.assert_not_called()
 
     @patch("sales.services.sales_compliance_service.ComplianceAuditService.open_exception")
     @patch("sales.services.sales_compliance_service.ComplianceAuditService.log_action")

@@ -722,6 +722,37 @@ class SalesApiEndToEndTests(APITestCase):
         mocked_sync_open_item.assert_called_once()
         mocked_auto_compliance.assert_called()
 
+    def test_repeated_confirm_call_is_idempotent_for_confirmed_invoice(self):
+        created = self._create_invoice(reference="SO-CONFIRM-IDEMPOTENT")
+        invoice_id = created["id"]
+
+        first_confirm_resp = self.client.post(
+            f"/api/sales/invoices/{invoice_id}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(first_confirm_resp.status_code, status.HTTP_200_OK, first_confirm_resp.json())
+        first_body = first_confirm_resp.json()
+        self.assertEqual(first_body["status"], int(SalesInvoiceHeader.Status.CONFIRMED))
+
+        header = SalesInvoiceHeader.objects.get(pk=invoice_id)
+        first_confirmed_at = header.confirmed_at
+        first_doc_no = header.doc_no
+        self.assertIsNotNone(first_confirmed_at)
+
+        second_confirm_resp = self.client.post(
+            f"/api/sales/invoices/{invoice_id}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(second_confirm_resp.status_code, status.HTTP_200_OK, second_confirm_resp.json())
+        second_body = second_confirm_resp.json()
+        self.assertEqual(second_body["status"], int(SalesInvoiceHeader.Status.CONFIRMED))
+
+        header.refresh_from_db()
+        self.assertEqual(header.confirmed_at, first_confirmed_at)
+        self.assertEqual(header.doc_no, first_doc_no)
+
     @patch("sales.services.sales_invoice_service.SalesInvoiceService._run_auto_compliance")
     @patch("sales.services.sales_invoice_service.SalesArService.sync_open_item_for_header")
     @patch("sales.services.sales_invoice_service.SalesInvoicePostingAdapter.post_sales_invoice")
@@ -890,6 +921,33 @@ class SalesApiEndToEndTests(APITestCase):
         )
         self.assertEqual(cancel_resp.status_code, status.HTTP_200_OK, cancel_resp.json())
         self.assertEqual(cancel_resp.json()["status"], int(SalesInvoiceHeader.Status.CANCELLED))
+
+    def test_repeated_cancel_call_is_idempotent_for_cancelled_invoice(self):
+        created = self._create_invoice(reference="SO-CANCEL-IDEMPOTENT")
+        invoice_id = created["id"]
+
+        first_cancel_resp = self.client.post(
+            f"/api/sales/invoices/{invoice_id}/cancel/{self._scope_qs()}",
+            {"reason": "Test cancel"},
+            format="json",
+        )
+        self.assertEqual(first_cancel_resp.status_code, status.HTTP_200_OK, first_cancel_resp.json())
+        self.assertEqual(first_cancel_resp.json()["status"], int(SalesInvoiceHeader.Status.CANCELLED))
+
+        header = SalesInvoiceHeader.objects.get(pk=invoice_id)
+        first_cancelled_at = header.cancelled_at
+        self.assertIsNotNone(first_cancelled_at)
+
+        second_cancel_resp = self.client.post(
+            f"/api/sales/invoices/{invoice_id}/cancel/{self._scope_qs()}",
+            {"reason": "Test cancel again"},
+            format="json",
+        )
+        self.assertEqual(second_cancel_resp.status_code, status.HTTP_200_OK, second_cancel_resp.json())
+        self.assertEqual(second_cancel_resp.json()["status"], int(SalesInvoiceHeader.Status.CANCELLED))
+
+        header.refresh_from_db()
+        self.assertEqual(header.cancelled_at, first_cancelled_at)
 
     @patch("sales.services.sales_invoice_service.SalesInvoiceService._run_auto_compliance")
     @patch("sales.services.sales_invoice_service.SalesArService.sync_open_item_for_header")

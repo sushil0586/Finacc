@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from datetime import datetime
+from datetime import date, datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
+from django.http import Http404
 from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 from rest_framework.test import APIRequestFactory, force_authenticate
@@ -30,6 +31,8 @@ from payments.views.payment_voucher import (
 )
 from payments.views.payment_settings import PaymentSettingsAPIView
 from posting.adapters.payment_voucher import PaymentVoucherPostingAdapter
+from purchase.models.purchase_ap import VendorSettlement
+from purchase.services.purchase_ap_service import PurchaseApService
 from withholding.models import WithholdingBaseRule
 
 User = get_user_model()
@@ -109,6 +112,122 @@ class PaymentVoucherReferenceWarningTests(SimpleTestCase):
 
 class PaymentVoucherServiceTests(SimpleTestCase):
     databases = {"default"}
+
+    @patch("payments.services.payment_voucher_service.PaymentVoucherHeader.objects")
+    def test_submit_voucher_returns_already_submitted_for_repeat_submit(self, mock_header_objects):
+        header = SimpleNamespace(
+            status=PaymentVoucherHeader.Status.DRAFT,
+            workflow_payload={"_approval_state": {"status": "SUBMITTED", "submitted_by": 7}},
+        )
+        mock_header_objects.select_for_update.return_value.get.return_value = header
+
+        result = PaymentVoucherService.submit_voucher.__wrapped__(voucher_id=11, submitted_by_id=7, remarks="Retry")
+
+        self.assertEqual(result.message, "Already submitted.")
+
+    @patch("payments.services.payment_voucher_service.PaymentSettingsService.get_policy")
+    @patch("payments.services.payment_voucher_service.PaymentVoucherHeader.objects")
+    def test_approve_voucher_returns_already_approved_for_repeat_approve(self, mock_header_objects, mock_get_policy):
+        header = SimpleNamespace(
+            entity_id=1,
+            subentity_id=None,
+            status=PaymentVoucherHeader.Status.CONFIRMED,
+            workflow_payload={"_approval_state": {"status": "APPROVED", "submitted_by": 7, "approved_by": 8}},
+        )
+        mock_header_objects.select_for_update.return_value.get.return_value = header
+        mock_get_policy.return_value = SimpleNamespace(controls={})
+
+        result = PaymentVoucherService.approve_voucher.__wrapped__(voucher_id=11, approved_by_id=8, remarks="Retry")
+
+        self.assertEqual(result.message, "Already approved.")
+
+    @patch("payments.services.payment_voucher_service.PaymentVoucherHeader.objects")
+    def test_reject_voucher_returns_already_rejected_for_repeat_reject(self, mock_header_objects):
+        header = SimpleNamespace(
+            status=PaymentVoucherHeader.Status.CONFIRMED,
+            workflow_payload={"_approval_state": {"status": "REJECTED", "rejected_by": 8}},
+        )
+        mock_header_objects.select_for_update.return_value.get.return_value = header
+
+        result = PaymentVoucherService.reject_voucher.__wrapped__(voucher_id=11, rejected_by_id=8, remarks="Retry")
+
+        self.assertEqual(result.message, "Already rejected.")
+
+    @patch("payments.services.payment_voucher_service.PaymentVoucherService._resolve_financial_year")
+    @patch("payments.services.payment_voucher_service.PaymentVoucherHeader.objects")
+    def test_post_voucher_blocks_when_books_locked(self, mock_header_objects, mock_resolve_year):
+        header = SimpleNamespace(
+            id=51,
+            entity_id=1,
+            entityfinid_id=2,
+            voucher_date=date(2026, 4, 15),
+        )
+        mock_header_objects.select_related.return_value.prefetch_related.return_value.select_for_update.return_value.get.return_value = header
+        mock_resolve_year.return_value = SimpleNamespace(
+            id=2,
+            desc="FY 2026-27",
+            year_code="2026-27",
+            is_year_closed=False,
+            period_status="OPEN",
+            books_locked_until=date(2026, 4, 30),
+            ap_ar_locked_until=None,
+            gst_locked_until=None,
+            inventory_locked_until=None,
+        )
+
+        with self.assertRaisesMessage(ValueError, "Cannot post voucher: Books locked up to 2026-04-30 in financial year FY 2026-27."):
+            PaymentVoucherService.post_voucher.__wrapped__(voucher_id=51, posted_by_id=9)
+
+    @patch("payments.services.payment_voucher_service.PaymentVoucherService._resolve_financial_year")
+    @patch("payments.services.payment_voucher_service.PaymentVoucherHeader.objects")
+    def test_unpost_voucher_blocks_when_books_locked(self, mock_header_objects, mock_resolve_year):
+        header = SimpleNamespace(
+            id=52,
+            entity_id=1,
+            entityfinid_id=2,
+            voucher_date=date(2026, 4, 15),
+        )
+        mock_header_objects.select_related.return_value.prefetch_related.return_value.select_for_update.return_value.get.return_value = header
+        mock_resolve_year.return_value = SimpleNamespace(
+            id=2,
+            desc="FY 2026-27",
+            year_code="2026-27",
+            is_year_closed=False,
+            period_status="OPEN",
+            books_locked_until=date(2026, 4, 30),
+            ap_ar_locked_until=None,
+            gst_locked_until=None,
+            inventory_locked_until=None,
+        )
+
+        with self.assertRaisesMessage(ValueError, "Cannot unpost voucher: Books locked up to 2026-04-30 in financial year FY 2026-27."):
+            PaymentVoucherService.unpost_voucher.__wrapped__(voucher_id=52, unposted_by_id=9)
+
+    @patch("payments.services.payment_voucher_service.PaymentVoucherService._resolve_financial_year")
+    @patch("payments.services.payment_voucher_service.PaymentVoucherHeader.objects")
+    def test_cancel_voucher_blocks_when_books_locked(self, mock_header_objects, mock_resolve_year):
+        header = SimpleNamespace(
+            id=53,
+            entity_id=1,
+            entityfinid_id=2,
+            voucher_date=date(2026, 4, 15),
+        )
+        mock_header_objects.select_for_update.return_value.get.return_value = header
+        mock_resolve_year.return_value = SimpleNamespace(
+            id=2,
+            desc="FY 2026-27",
+            year_code="2026-27",
+            is_year_closed=False,
+            period_status="OPEN",
+            books_locked_until=date(2026, 4, 30),
+            ap_ar_locked_until=None,
+            gst_locked_until=None,
+            inventory_locked_until=None,
+        )
+
+        with self.assertRaisesMessage(ValueError, "Cannot cancel voucher: Books locked up to 2026-04-30 in financial year FY 2026-27."):
+            PaymentVoucherService.cancel_voucher.__wrapped__(voucher_id=53, cancelled_by_id=9)
+
     @patch.object(PaymentVoucherService, "_fresh_allocation_rows", return_value=[])
     @patch("payments.services.payment_voucher_service.PaymentVoucherPostingAdapter.post_payment_voucher")
     @patch("payments.services.payment_voucher_service.PaymentSettingsService.get_policy")
@@ -145,7 +264,7 @@ class PaymentVoucherServiceTests(SimpleTestCase):
             save=MagicMock(),
         )
 
-        mock_header_objects.select_related.return_value.prefetch_related.return_value.get.return_value = header
+        mock_header_objects.select_related.return_value.prefetch_related.return_value.select_for_update.return_value.get.return_value = header
 
         mock_get_policy.return_value = SimpleNamespace(controls={
             "require_allocation_on_post": "off",
@@ -168,6 +287,7 @@ class PaymentVoucherServiceTests(SimpleTestCase):
             entityfinid_id=1,
             subentity_id=None,
             status=PaymentVoucherHeader.Status.POSTED,
+            voucher_date=date(2026, 5, 28),
             ap_settlement_id=99,
             created_by_id=5,
             voucher_code="PPV-12",
@@ -178,7 +298,7 @@ class PaymentVoucherServiceTests(SimpleTestCase):
             advance_adjustments=SimpleNamespace(all=lambda: []),
             save=MagicMock(),
         )
-        mock_header_objects.select_related.return_value.prefetch_related.return_value.get.return_value = header
+        mock_header_objects.select_related.return_value.prefetch_related.return_value.select_for_update.return_value.get.return_value = header
         mock_get_policy.return_value = SimpleNamespace(controls={"unpost_target_status": "confirmed"})
 
         res = PaymentVoucherService.unpost_voucher.__wrapped__(voucher_id=12, unposted_by_id=9)
@@ -287,6 +407,50 @@ class PaymentVoucherServiceTests(SimpleTestCase):
                     "adjusted_amount": Decimal("50001.00"),
                 }],
             )
+
+
+class PurchaseApServiceUnitTests(SimpleTestCase):
+    databases = {"default"}
+
+    @patch("purchase.services.purchase_ap_service.VendorSettlement.objects")
+    def test_post_settlement_returns_already_posted_for_repeat_post(self, mocked_objects):
+        settlement = SimpleNamespace(
+            status=VendorSettlement.Status.POSTED,
+            total_amount=Decimal("125.00"),
+        )
+        mocked_objects.select_for_update.return_value.get.return_value = settlement
+
+        result = PurchaseApService.post_settlement(settlement_id=91, posted_by_id=7)
+
+        self.assertIs(result.settlement, settlement)
+        self.assertEqual(result.applied_total, Decimal("125.00"))
+        self.assertEqual(result.message, "Settlement already posted.")
+
+    @patch("purchase.services.purchase_ap_service.VendorSettlement.objects")
+    def test_cancel_settlement_returns_already_cancelled_for_repeat_cancel(self, mocked_objects):
+        settlement = SimpleNamespace(status=VendorSettlement.Status.CANCELLED)
+        mocked_objects.select_for_update.return_value.get.return_value = settlement
+
+        result = PurchaseApService.cancel_settlement(settlement_id=92, cancelled_by_id=7)
+
+        self.assertIs(result.settlement, settlement)
+        self.assertEqual(result.message, "Settlement already cancelled.")
+
+    @patch("purchase.services.purchase_ap_service.VendorSettlement.objects")
+    def test_cancel_settlement_cancels_draft_without_reversal_work(self, mocked_objects):
+        save_spy = MagicMock()
+        settlement = SimpleNamespace(
+            status=VendorSettlement.Status.DRAFT,
+            save=save_spy,
+        )
+        mocked_objects.select_for_update.return_value.get.return_value = settlement
+
+        result = PurchaseApService.cancel_settlement(settlement_id=93, cancelled_by_id=7)
+
+        self.assertIs(result.settlement, settlement)
+        self.assertEqual(settlement.status, VendorSettlement.Status.CANCELLED)
+        self.assertEqual(result.message, "Draft settlement cancelled.")
+        save_spy.assert_called_once_with(update_fields=["status", "updated_at"])
 
     @patch.object(PaymentVoucherService, "_fresh_allocation_rows", return_value=[SimpleNamespace(open_item_id=55, settled_amount=Decimal("116000.00"))])
     @patch("payments.services.payment_voucher_service.PaymentVoucherPostingAdapter.post_payment_voucher")
@@ -435,6 +599,155 @@ class PaymentVoucherServiceTests(SimpleTestCase):
         self.assertEqual(adv_call["settlement_type"], "advance_adjustment")
         self.assertEqual(adv_call["advance_balance_id"], 14)
         self.assertEqual(adv_call["lines"][0]["amount"], Decimal("50000.00"))
+        mock_post_adapter.assert_called_once()
+
+    @patch("payments.services.payment_voucher_service.logger")
+    @patch("payments.services.payment_voucher_service.PaymentVoucherService._fresh_allocation_rows")
+    @patch("payments.services.payment_voucher_service.PaymentVoucherPostingAdapter.post_payment_voucher")
+    @patch("payments.services.payment_voucher_service.PurchaseApService.post_settlement")
+    @patch("payments.services.payment_voucher_service.PurchaseApService.create_settlement")
+    @patch("payments.services.payment_voucher_service.PaymentSettingsService.get_policy")
+    @patch("payments.services.payment_voucher_service.PaymentVoucherHeader.objects")
+    def test_post_voucher_reuses_existing_ap_settlement_ids_on_retry(
+        self,
+        mock_header_objects,
+        mock_get_policy,
+        mock_create_settlement,
+        mock_post_settlement,
+        mock_post_adapter,
+        mock_fresh_allocs,
+        mock_logger,
+    ):
+        advance_row = SimpleNamespace(
+            advance_balance_id=14,
+            allocation_id=None,
+            open_item_id=55,
+            adjusted_amount=Decimal("50000.00"),
+            ap_settlement_id=202,
+            remarks="adjust",
+            save=MagicMock(),
+        )
+        alloc_row = SimpleNamespace(open_item_id=55, settled_amount=Decimal("116000.00"))
+        header = SimpleNamespace(
+            id=33,
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            status=PaymentVoucherHeader.Status.CONFIRMED,
+            payment_type=PaymentVoucherHeader.PaymentType.AGAINST_BILL,
+            voucher_date="2026-03-07",
+            voucher_code="PPV-33",
+            reference_number="UTR-2",
+            narration="retry",
+            paid_to_id=99,
+            cash_paid_amount=Decimal("66000.00"),
+            total_adjustment_amount=Decimal("0.00"),
+            settlement_effective_amount=Decimal("66000.00"),
+            settlement_effective_amount_base_currency=Decimal("66000.00"),
+            exchange_rate=Decimal("1.000000"),
+            created_by_id=5,
+            ap_settlement_id=201,
+            approved_at=None,
+            approved_by_id=None,
+            workflow_payload={},
+            adjustments=SimpleNamespace(all=lambda: [], values=lambda *args, **kwargs: []),
+            allocations=SimpleNamespace(all=lambda: [alloc_row]),
+            advance_adjustments=SimpleNamespace(all=lambda: [advance_row]),
+            save=MagicMock(),
+        )
+        mock_header_objects.select_related.return_value.prefetch_related.return_value.get.return_value = header
+        mock_fresh_allocs.return_value = [alloc_row]
+        mock_get_policy.return_value = SimpleNamespace(controls={
+            "require_allocation_on_post": "hard",
+            "sync_ap_settlement_on_post": "on",
+            "allocation_amount_match_rule": "hard",
+            "require_confirm_before_post": "on",
+            "payment_maker_checker": "off",
+            "over_settlement_rule": "block",
+            "allocation_policy": "manual",
+            "sync_advance_balance_on_post": "off",
+        })
+        mock_post_settlement.side_effect = [
+            SimpleNamespace(settlement=SimpleNamespace(id=201)),
+            SimpleNamespace(settlement=SimpleNamespace(id=202)),
+        ]
+
+        with patch.object(PaymentVoucherService, "_validate_advance_adjustments", return_value=None), \
+             patch.object(PaymentVoucherService, "_validate_allocations", return_value=[]):
+            res = PaymentVoucherService.post_voucher.__wrapped__(voucher_id=33, posted_by_id=9)
+
+        self.assertIn("Posted with warnings:", res.message)
+        self.assertIn("Payment settlement resumed from existing linked settlement", res.message)
+        self.assertIn("Advance adjustment settlement resumed from existing linked settlement", res.message)
+        mock_create_settlement.assert_not_called()
+        self.assertEqual(mock_post_settlement.call_args_list[0].kwargs["settlement_id"], 201)
+        self.assertEqual(mock_post_settlement.call_args_list[1].kwargs["settlement_id"], 202)
+        self.assertEqual(mock_logger.info.call_count, 2)
+        mock_post_adapter.assert_called_once()
+
+    @patch("payments.services.payment_voucher_service.VendorAdvanceBalance.objects")
+    @patch("payments.services.payment_voucher_service.logger")
+    @patch("payments.services.payment_voucher_service.PaymentVoucherPostingAdapter.post_payment_voucher")
+    @patch("payments.services.payment_voucher_service.PaymentSettingsService.get_policy")
+    @patch("payments.services.payment_voucher_service.PaymentVoucherHeader.objects")
+    def test_post_voucher_reuses_existing_vendor_advance_balance_on_retry(
+        self,
+        mock_header_objects,
+        mock_get_policy,
+        mock_post_adapter,
+        mock_logger,
+        mocked_adv_objects,
+    ):
+        existing_advance = SimpleNamespace(id=301)
+        header = SimpleNamespace(
+            id=34,
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            status=PaymentVoucherHeader.Status.CONFIRMED,
+            payment_type=PaymentVoucherHeader.PaymentType.ADVANCE,
+            voucher_date="2026-03-08",
+            voucher_code="PPV-34",
+            reference_number="UTR-3",
+            narration="advance retry",
+            paid_to_id=99,
+            cash_paid_amount=Decimal("5000.00"),
+            total_adjustment_amount=Decimal("0.00"),
+            settlement_effective_amount=Decimal("5000.00"),
+            settlement_effective_amount_base_currency=Decimal("5000.00"),
+            exchange_rate=Decimal("1.000000"),
+            created_by_id=5,
+            ap_settlement_id=None,
+            approved_at=None,
+            approved_by_id=None,
+            workflow_payload={},
+            vendor_advance_balance=None,
+            adjustments=SimpleNamespace(all=lambda: [], values=lambda *args, **kwargs: []),
+            allocations=SimpleNamespace(all=lambda: []),
+            advance_adjustments=SimpleNamespace(all=lambda: []),
+            save=MagicMock(),
+        )
+        mock_header_objects.select_related.return_value.prefetch_related.return_value.get.return_value = header
+        mock_get_policy.return_value = SimpleNamespace(controls={
+            "require_allocation_on_post": "hard",
+            "require_confirm_before_post": "on",
+            "payment_maker_checker": "off",
+            "sync_ap_settlement_on_post": "on",
+            "sync_advance_balance_on_post": "on",
+            "residual_to_advance_balance": "on",
+        })
+        mocked_adv_objects.filter.return_value.first.return_value = existing_advance
+
+        with patch.object(PaymentVoucherService, "_validate_allocations", return_value=[]), \
+             patch.object(PaymentVoucherService, "_validate_advance_adjustments", return_value=None), \
+             patch("payments.services.payment_voucher_service.PurchaseApService.create_advance_balance") as mock_create_adv:
+            res = PaymentVoucherService.post_voucher.__wrapped__(voucher_id=34, posted_by_id=9)
+
+        self.assertIn("Posted with warnings:", res.message)
+        self.assertIn("Payment advance balance resumed from existing linked balance", res.message)
+        mock_create_adv.assert_not_called()
+        self.assertIs(header.vendor_advance_balance, existing_advance)
+        mock_logger.info.assert_called_once()
         mock_post_adapter.assert_called_once()
 
     @patch("payments.services.payment_voucher_service.PaymentSettingsService.get_policy")
@@ -1010,15 +1323,15 @@ class PaymentVoucherViewValidationTests(SimpleTestCase):
     @patch("payments.views.payment_voucher._require_payment_permission")
     @patch("payments.views.payment_voucher.PaymentVoucherService.post_voucher")
     @patch("payments.views.payment_voucher.PaymentVoucherHeaderSerializer")
-    @patch("payments.views.payment_voucher.PaymentVoucherHeader.objects")
+    @patch.object(PaymentVoucherPostAPIView, "_get_header")
     def test_post_view_returns_structured_warning_feedback(
         self,
-        mocked_header_objects,
+        mocked_get_header,
         mocked_serializer,
         mocked_post_voucher,
         _mocked_require_permission,
     ):
-        mocked_header_objects.only.return_value.get.return_value = SimpleNamespace(id=9, entity_id=1)
+        mocked_get_header.return_value = SimpleNamespace(id=9, entity_id=1)
         mocked_serializer.return_value.data = {"id": 9}
         mocked_post_voucher.return_value = SimpleNamespace(
             message="Posted with warnings: Advance settlement synced later | Static fallback used",
@@ -1034,6 +1347,41 @@ class PaymentVoucherViewValidationTests(SimpleTestCase):
             "Advance settlement synced later",
             "Static fallback used",
         ])
+
+    @patch("payments.views.payment_voucher.PaymentVoucherService.post_voucher")
+    @patch("payments.views.payment_voucher.EffectivePermissionService.permission_codes_for_user", return_value=set())
+    @patch("payments.views.payment_voucher.EffectivePermissionService.entity_for_user", return_value=SimpleNamespace(id=1))
+    @patch.object(PaymentVoucherPostAPIView, "_get_header")
+    def test_post_view_requires_backend_permission_before_service_call(
+        self,
+        mocked_get_header,
+        _mocked_entity,
+        _mocked_codes,
+        mocked_post_voucher,
+    ):
+        mocked_get_header.return_value = SimpleNamespace(id=9, entity_id=1)
+        request = self._request("/api/payments/payment-vouchers/9/post/?entity=1&entityfinid=2", {})
+
+        response = PaymentVoucherPostAPIView.as_view()(request, pk=9)
+
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("Missing permission", str(response.data))
+        mocked_post_voucher.assert_not_called()
+
+    @patch("payments.views.payment_voucher.PaymentVoucherService.post_voucher")
+    @patch.object(PaymentVoucherPostAPIView, "_get_header")
+    def test_post_view_rejects_out_of_scope_header_before_service_call(
+        self,
+        mocked_get_header,
+        mocked_post_voucher,
+    ):
+        mocked_get_header.side_effect = Http404()
+        request = self._request("/api/payments/payment-vouchers/9/post/?entity=1&entityfinid=2&subentity=99", {})
+
+        response = PaymentVoucherPostAPIView.as_view()(request, pk=9)
+
+        self.assertEqual(response.status_code, 404)
+        mocked_post_voucher.assert_not_called()
 
 
 class PaymentSettingsValidationTests(SimpleTestCase):

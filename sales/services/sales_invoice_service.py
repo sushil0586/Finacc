@@ -2676,6 +2676,13 @@ class SalesInvoiceService:
     @classmethod
     @transaction.atomic
     def confirm(cls, *, header: SalesInvoiceHeader, user) -> SalesInvoiceHeader:
+        if header.status == SalesInvoiceHeader.Status.POSTED:
+            return header
+        if header.status == SalesInvoiceHeader.Status.CONFIRMED:
+            cls.ensure_doc_number(header=header, user=user)
+            return header
+        if header.status == SalesInvoiceHeader.Status.CANCELLED:
+            raise ValueError("Only Draft invoices can be confirmed.")
         if header.status != SalesInvoiceHeader.Status.DRAFT:
             raise ValueError("Only Draft invoices can be confirmed.")
 

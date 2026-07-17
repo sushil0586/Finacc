@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from django.db.models import Prefetch, Q
+from django.shortcuts import get_object_or_404
 from rest_framework import generics, permissions, serializers, status
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
@@ -99,6 +100,32 @@ def _require_receipt_permission(user, *, entity_id: int, action: str):
     legacy_code = f"receipt.voucher.{action}"
     if permission_code not in permission_codes and legacy_code not in permission_codes:
         raise PermissionDenied({"detail": f"Missing permission: {permission_code}"})
+
+
+class _ReceiptVoucherScopedActionMixin:
+    def _scope_ids(self):
+        entity = self.request.query_params.get("entity")
+        entityfinid = self.request.query_params.get("entityfinid")
+        subentity = self.request.query_params.get("subentity")
+        require_query_scope(entity, entityfinid)
+        try:
+            entity_id = int(entity)
+            entityfinid_id = int(entityfinid)
+            subentity_id = int(subentity) if subentity not in (None, "", "null") else None
+            if subentity_id == 0:
+                subentity_id = None
+        except (TypeError, ValueError):
+            raise_scope_type_error()
+        return entity_id, entityfinid_id, subentity_id
+
+    def _get_header(self, pk: int):
+        entity_id, entityfinid_id, subentity_id = self._scope_ids()
+        qs = ReceiptVoucherHeader.objects.filter(entity_id=entity_id, entityfinid_id=entityfinid_id).only("id", "entity_id")
+        if subentity_id is None:
+            qs = qs.filter(subentity__isnull=True)
+        else:
+            qs = qs.filter(subentity_id=subentity_id)
+        return get_object_or_404(qs, pk=pk)
 
 
 class ReceiptVoucherListCreateAPIView(generics.ListCreateAPIView):
@@ -331,11 +358,11 @@ class ReceiptVoucherRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyA
         return super().destroy(request, *args, **kwargs)
 
 
-class ReceiptVoucherConfirmAPIView(APIView):
+class ReceiptVoucherConfirmAPIView(_ReceiptVoucherScopedActionMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
-        header = ReceiptVoucherHeader.objects.only("id", "entity_id").get(pk=pk)
+        header = self._get_header(pk)
         _require_receipt_permission(request.user, entity_id=header.entity_id, action="confirm")
         try:
             result = ReceiptVoucherService.confirm_voucher(pk, confirmed_by_id=request.user.id)
@@ -348,11 +375,11 @@ class ReceiptVoucherConfirmAPIView(APIView):
         })
 
 
-class ReceiptVoucherPostAPIView(APIView):
+class ReceiptVoucherPostAPIView(_ReceiptVoucherScopedActionMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
-        header = ReceiptVoucherHeader.objects.only("id", "entity_id").get(pk=pk)
+        header = self._get_header(pk)
         _require_receipt_permission(request.user, entity_id=header.entity_id, action="post")
         try:
             result = ReceiptVoucherService.post_voucher(pk, posted_by_id=request.user.id)
@@ -365,11 +392,11 @@ class ReceiptVoucherPostAPIView(APIView):
         })
 
 
-class ReceiptVoucherApprovalAPIView(APIView):
+class ReceiptVoucherApprovalAPIView(_ReceiptVoucherScopedActionMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
-        header = ReceiptVoucherHeader.objects.only("id", "entity_id").get(pk=pk)
+        header = self._get_header(pk)
         serializer = ReceiptVoucherApprovalActionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         action = serializer.validated_data["action"]
@@ -396,11 +423,11 @@ class ReceiptVoucherApprovalAPIView(APIView):
         })
 
 
-class ReceiptVoucherCancelAPIView(APIView):
+class ReceiptVoucherCancelAPIView(_ReceiptVoucherScopedActionMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
-        header = ReceiptVoucherHeader.objects.only("id", "entity_id").get(pk=pk)
+        header = self._get_header(pk)
         _require_receipt_permission(request.user, entity_id=header.entity_id, action="cancel")
         serializer = ReceiptVoucherCancelActionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -416,11 +443,11 @@ class ReceiptVoucherCancelAPIView(APIView):
         }, status=status.HTTP_200_OK)
 
 
-class ReceiptVoucherUnpostAPIView(APIView):
+class ReceiptVoucherUnpostAPIView(_ReceiptVoucherScopedActionMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
-        header = ReceiptVoucherHeader.objects.only("id", "entity_id").get(pk=pk)
+        header = self._get_header(pk)
         _require_receipt_permission(request.user, entity_id=header.entity_id, action="unpost")
         try:
             result = ReceiptVoucherService.unpost_voucher(pk, unposted_by_id=request.user.id)

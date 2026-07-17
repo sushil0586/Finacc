@@ -111,7 +111,11 @@ def _ensure_backdated_disposal(*, asset: FixedAsset, disposal_date: date, rule: 
 
 def _append_note(existing: str | None, line: str) -> str:
     existing_text = (existing or "").strip()
-    return f"{existing_text}\n{line}".strip() if existing_text else line
+    combined = f"{existing_text}\n{line}".strip() if existing_text else line.strip()
+    max_length = FixedAsset._meta.get_field("notes").max_length or 500
+    if len(combined) <= max_length:
+        return combined
+    return combined[-max_length:]
 
 
 def _purchase_intake_review_missing(

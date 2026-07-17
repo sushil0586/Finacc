@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
+from django.http import Http404
 from django.test import TestCase
 from django.utils import timezone
 
@@ -434,6 +435,105 @@ class VoucherWorkflowPolicyTests(TestCase):
         self.assertEqual(header.workflow_payload["_audit_log"][-1]["action"], "UNPOSTED")
         mocked_unpost_voucher.assert_called_once()
 
+    @patch("vouchers.services.voucher_service.VoucherPostingAdapter.unpost_voucher")
+    def test_unpost_voucher_blocks_repeat_unpost_after_return_to_confirmed(self, mocked_unpost_voucher):
+        header = self._header(status=VoucherHeader.Status.CONFIRMED)
+
+        with self.assertRaisesMessage(ValueError, "Only posted vouchers can be unposted."):
+            VoucherService.unpost_voucher(header.id, unposted_by_id=self.user.id)
+
+        mocked_unpost_voucher.assert_not_called()
+
+    @patch("vouchers.services.voucher_service.VoucherPostingAdapter.unpost_voucher")
+    def test_unpost_voucher_blocks_repeat_unpost_after_return_to_draft(self, mocked_unpost_voucher):
+        header = self._header(status=VoucherHeader.Status.DRAFT)
+
+        with self.assertRaisesMessage(ValueError, "Only posted vouchers can be unposted."):
+            VoucherService.unpost_voucher(header.id, unposted_by_id=self.user.id)
+
+        mocked_unpost_voucher.assert_not_called()
+
+    def test_confirm_voucher_returns_already_confirmed_for_repeat_confirm(self):
+        header = self._header(status=VoucherHeader.Status.CONFIRMED)
+
+        result = VoucherService.confirm_voucher(header.id, confirmed_by_id=self.user.id)
+
+        header.refresh_from_db()
+        self.assertEqual(result.message, "Already confirmed.")
+        self.assertEqual(header.status, VoucherHeader.Status.CONFIRMED)
+
+    @patch("vouchers.services.voucher_service.VoucherSettingsService.get_policy")
+    @patch("vouchers.services.voucher_service.VoucherPostingAdapter.post_voucher")
+    def test_post_voucher_returns_already_posted_without_reposting(
+        self,
+        mocked_post_voucher,
+        mocked_get_policy,
+    ):
+        header = self._header(status=VoucherHeader.Status.POSTED)
+        mocked_get_policy.return_value = SimpleNamespace(controls={"require_confirm_before_post": "on"})
+
+        result = VoucherService.post_voucher(header.id, posted_by_id=self.user.id)
+
+        self.assertEqual(result.message, "Already posted.")
+        mocked_post_voucher.assert_not_called()
+
+    def test_submit_voucher_returns_already_submitted_for_repeat_submit(self):
+        header = self._header(
+            workflow_payload={
+                "_approval_state": {
+                    "status": "SUBMITTED",
+                    "submitted_by": self.user.id,
+                }
+            }
+        )
+
+        result = VoucherService.submit_voucher(header.id, submitted_by_id=self.user.id, remarks="Retry")
+
+        self.assertEqual(result.message, "Already submitted.")
+
+    @patch("vouchers.services.voucher_service.VoucherSettingsService.get_policy")
+    def test_approve_voucher_returns_already_approved_for_repeat_approve(self, mocked_get_policy):
+        header = self._header(
+            workflow_payload={
+                "_approval_state": {
+                    "status": "APPROVED",
+                    "submitted_by": self.user.id,
+                    "approved_by": self.approver.id,
+                }
+            }
+        )
+        mocked_get_policy.return_value = SimpleNamespace(
+            controls={
+                "require_submit_before_approve": "on",
+                "same_user_submit_approve": "off",
+            }
+        )
+
+        result = VoucherService.approve_voucher(header.id, approved_by_id=self.approver.id, remarks="Retry")
+
+        self.assertEqual(result.message, "Already approved.")
+
+    def test_reject_voucher_returns_already_rejected_for_repeat_reject(self):
+        header = self._header(
+            workflow_payload={
+                "_approval_state": {
+                    "status": "REJECTED",
+                    "rejected_by": self.approver.id,
+                }
+            }
+        )
+
+        result = VoucherService.reject_voucher(header.id, rejected_by_id=self.approver.id, remarks="Retry")
+
+        self.assertEqual(result.message, "Already rejected.")
+
+    def test_cancel_voucher_returns_already_cancelled_for_repeat_cancel(self):
+        header = self._header(status=VoucherHeader.Status.CANCELLED)
+
+        result = VoucherService.cancel_voucher(header.id, cancelled_by_id=self.user.id, reason="Retry")
+
+        self.assertEqual(result.message, "Already cancelled.")
+
 
 class VoucherWriteSerializerValidationTests(SimpleTestCase):
     def test_journal_voucher_rejects_cash_bank_account(self):
@@ -525,6 +625,41 @@ class VoucherViewUnitTests(SimpleTestCase):
         self.assertEqual(response.data["data"], {"id": 12, "status_name": "Posted"})
         mocked_require.assert_called_once_with(self.header, "post")
         mocked_post.assert_called_once_with(12, posted_by_id=7)
+
+    @patch("vouchers.views.voucher.VoucherService.post_voucher")
+    @patch("vouchers.views.voucher.EffectivePermissionService.permission_codes_for_user", return_value=set())
+    @patch.object(VoucherPostAPIView, "_get_header")
+    def test_post_view_requires_backend_permission_before_service_call(
+        self,
+        mocked_get_header,
+        _mocked_codes,
+        mocked_post,
+    ):
+        mocked_get_header.return_value = self.header
+
+        request = self._build_request("/api/vouchers/vouchers/12/post/?entity=1&entityfinid=1")
+
+        response = VoucherPostAPIView.as_view()(request, pk=12)
+
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("Missing permission", str(response.data))
+        mocked_post.assert_not_called()
+
+    @patch("vouchers.views.voucher.VoucherService.post_voucher")
+    @patch.object(VoucherPostAPIView, "_get_header")
+    def test_post_view_rejects_out_of_scope_header_before_service_call(
+        self,
+        mocked_get_header,
+        mocked_post,
+    ):
+        mocked_get_header.side_effect = Http404()
+
+        request = self._build_request("/api/vouchers/vouchers/12/post/?entity=1&entityfinid=1&subentity=99")
+
+        response = VoucherPostAPIView.as_view()(request, pk=12)
+
+        self.assertEqual(response.status_code, 404)
+        mocked_post.assert_not_called()
 
     @patch("vouchers.views.voucher.VoucherDetailSerializer")
     @patch("vouchers.views.voucher.VoucherService.submit_voucher")

@@ -1530,6 +1530,42 @@ class AssetApiScopeTests(APITestCase):
         self.assertIsNone(self.asset.impairment_posting_batch_id)
         self.assertEqual(entry.status, EntryStatus.REVERSED)
 
+    def test_reverse_impairment_truncates_accumulated_notes_to_field_limit(self):
+        capitalize_response = self.client.post(
+            reverse("assets_api:fixed-asset-capitalize", args=[self.asset.id]),
+            {
+                "counter_ledger_id": self.asset_ledger.id,
+                "capitalization_date": "2026-04-02",
+                "narration": "Capitalize asset",
+            },
+            format="json",
+        )
+        self.assertEqual(capitalize_response.status_code, status.HTTP_200_OK)
+        impair_response = self.client.post(
+            reverse("assets_api:fixed-asset-impair", args=[self.asset.id]),
+            {
+                "impairment_amount": "250.00",
+                "posting_date": "2026-05-01",
+                "narration": "Impair asset",
+            },
+            format="json",
+        )
+        self.assertEqual(impair_response.status_code, status.HTTP_200_OK)
+        self.asset.refresh_from_db()
+        self.asset.notes = "x" * 495
+        self.asset.save(update_fields=["notes"])
+
+        response = self.client.post(
+            reverse("assets_api:fixed-asset-reverse-impairment", args=[self.asset.id]),
+            {"reason": "Impairment entered in error"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.asset.refresh_from_db()
+        self.assertLessEqual(len(self.asset.notes or ""), 500)
+        self.assertIn("Impairment reversed: Impairment entered in error", self.asset.notes or "")
+
     def test_impairment_precheck_blocks_amount_above_nbv(self):
         capitalize_response = self.client.post(
             reverse("assets_api:fixed-asset-capitalize", args=[self.asset.id]),

@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
+import logging
 from typing import Any, Dict, Iterable, List, Optional
 
 from django.db import transaction
 from django.utils import timezone
 
+from entity.models import EntityFinancialYear
 from financial.models import account as FinancialAccount
 from helpers.utils.settlement_runtime import SettlementVoucherRuntimeMixin
 from numbering.models import DocumentType
 from numbering.services.document_number_service import DocumentNumberService
 from sales.services.sales_ar_service import SalesArService
-from sales.models.sales_ar import CustomerBillOpenItem
+from sales.models.sales_ar import CustomerAdvanceBalance, CustomerBillOpenItem
 from sales.models import SalesAdvanceAdjustment
 from posting.adapters.receipt_voucher import ReceiptVoucherPostingAdapter, ReceiptVoucherPostingConfig
 from posting.common.static_accounts import StaticAccountCodes
@@ -37,6 +40,7 @@ from receipts.services.receipt_allocation_service import ReceiptAllocationServic
 
 ZERO2 = Decimal("0.00")
 Q2 = Decimal("0.01")
+logger = logging.getLogger(__name__)
 
 
 def q2(x) -> Decimal:
@@ -52,6 +56,107 @@ class ReceiptVoucherResult:
 class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
     AUTO_WITHHOLDING_TCS_REMARK = "__AUTO_WITHHOLDING_TCS__"
     AUTO_PAISE_ROUND_OFF_REMARK = "__AUTO_PAISE_ROUND_OFF__"
+
+    @staticmethod
+    def _coerce_date(value) -> Optional[date]:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        candidate = getattr(value, "date", None)
+        if callable(candidate):
+            try:
+                return candidate()
+            except TypeError:
+                return None
+        return None
+
+    @staticmethod
+    def _resolve_financial_year(entity_id: int, entityfinid_id: Optional[int], voucher_date) -> Optional[EntityFinancialYear]:
+        posting_day = ReceiptVoucherService._coerce_date(voucher_date)
+        if entityfinid_id:
+            return (
+                EntityFinancialYear.objects
+                .filter(pk=entityfinid_id, entity_id=entity_id)
+                .only(
+                    "id",
+                    "desc",
+                    "year_code",
+                    "finstartyear",
+                    "finendyear",
+                    "period_status",
+                    "is_year_closed",
+                    "books_locked_until",
+                    "gst_locked_until",
+                    "inventory_locked_until",
+                    "ap_ar_locked_until",
+                )
+                .first()
+            )
+        if not entity_id or not posting_day:
+            return None
+        return (
+            EntityFinancialYear.objects
+            .filter(
+                entity_id=entity_id,
+                finstartyear__date__lte=posting_day,
+                finendyear__date__gte=posting_day,
+            )
+            .only(
+                "id",
+                "desc",
+                "year_code",
+                "finstartyear",
+                "finendyear",
+                "period_status",
+                "is_year_closed",
+                "books_locked_until",
+                "gst_locked_until",
+                "inventory_locked_until",
+                "ap_ar_locked_until",
+            )
+            .first()
+        )
+
+    @staticmethod
+    def _assert_voucher_period_open(*, entity_id: int, entityfinid_id: Optional[int], voucher_date, action_label: str) -> None:
+        posting_day = ReceiptVoucherService._coerce_date(voucher_date)
+        fy = ReceiptVoucherService._resolve_financial_year(entity_id, entityfinid_id, voucher_date)
+        if fy is None:
+            return
+
+        fy_label = getattr(fy, "desc", None) or getattr(fy, "year_code", None) or str(fy.id)
+        if bool(getattr(fy, "is_year_closed", False)) or getattr(fy, "period_status", None) == EntityFinancialYear.PeriodStatus.CLOSED:
+            raise ValueError(f"Cannot {action_label}: financial year {fy_label} is closed.")
+
+        for attr, label in (
+            ("books_locked_until", "Books"),
+            ("ap_ar_locked_until", "AP/AR"),
+            ("gst_locked_until", "GST"),
+            ("inventory_locked_until", "Inventory"),
+        ):
+            cutoff = getattr(fy, attr, None)
+            if posting_day and cutoff and posting_day <= cutoff:
+                raise ValueError(
+                    f"Cannot {action_label}: {label} locked up to {cutoff.isoformat()} in financial year {fy_label}."
+                )
+
+    @staticmethod
+    def _log_retry_resume(*, header: ReceiptVoucherHeader, action: str, target: str, target_id: Optional[int]) -> None:
+        logger.info(
+            "receipt_voucher_retry_resume",
+            extra={
+                "action": action,
+                "target": target,
+                "target_id": target_id,
+                "voucher_id": getattr(header, "id", None),
+                "entity_id": getattr(header, "entity_id", None),
+                "subentity_id": getattr(header, "subentity_id", None),
+                "voucher_code": getattr(header, "voucher_code", None),
+            },
+        )
 
     @staticmethod
     def _gross_inclusive_receipt_base(cash_received_amount: Decimal, rate: Decimal) -> Decimal:
@@ -1582,6 +1687,8 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
         if int(h.status) in (int(ReceiptVoucherHeader.Status.POSTED), int(ReceiptVoucherHeader.Status.CANCELLED)):
             raise ValueError("Only draft/confirmed vouchers can be submitted.")
         state = ReceiptVoucherService._workflow_state(h.workflow_payload)
+        if state.get("status") == "SUBMITTED":
+            return ReceiptVoucherResult(h, "Already submitted.")
         state.update({
             "status": "SUBMITTED",
             "submitted_by": submitted_by_id,
@@ -1604,6 +1711,8 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
             raise ValueError("Only draft/confirmed vouchers can be approved.")
         policy = ReceiptSettingsService.get_policy(h.entity_id, h.subentity_id)
         state = ReceiptVoucherService._workflow_state(h.workflow_payload)
+        if state.get("status") == "APPROVED":
+            return ReceiptVoucherResult(h, "Already approved.")
         if (
             str(policy.controls.get("require_submit_before_approve", "off")).lower().strip() == "on"
             and state.get("status") != "SUBMITTED"
@@ -1638,6 +1747,8 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
         if int(h.status) in (int(ReceiptVoucherHeader.Status.POSTED), int(ReceiptVoucherHeader.Status.CANCELLED)):
             raise ValueError("Only draft/confirmed vouchers can be rejected.")
         state = ReceiptVoucherService._workflow_state(h.workflow_payload)
+        if state.get("status") == "REJECTED":
+            return ReceiptVoucherResult(h, "Already rejected.")
         state.update({
             "status": "REJECTED",
             "rejected_by": rejected_by_id,
@@ -1659,7 +1770,14 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
             ReceiptVoucherHeader.objects
             .select_related("entity", "entityfinid", "subentity")
             .prefetch_related("allocations", "adjustments", "advance_adjustments")
+            .select_for_update()
             .get(pk=voucher_id)
+        )
+        ReceiptVoucherService._assert_voucher_period_open(
+            entity_id=h.entity_id,
+            entityfinid_id=h.entityfinid_id,
+            voucher_date=h.voucher_date,
+            action_label="post voucher",
         )
         if int(h.status) == int(ReceiptVoucherHeader.Status.CANCELLED):
             raise ValueError("Cannot post: voucher is cancelled.")
@@ -1854,48 +1972,76 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
                             "note": "Receipt voucher cash allocation",
                         })
                 if cash_lines:
+                    settlement_id = getattr(h, "ap_settlement_id", None)
+                    if settlement_id:
+                        warnings.append("Receipt settlement resumed from existing linked settlement")
+                        ReceiptVoucherService._log_retry_resume(
+                            header=h,
+                            action="post_voucher",
+                            target="customer_settlement",
+                            target_id=int(settlement_id),
+                        )
+                        posted = SalesArService.post_settlement(
+                            settlement_id=int(settlement_id),
+                            posted_by_id=posted_by_id or h.created_by_id,
+                        )
+                    else:
+                        created = SalesArService.create_settlement(
+                            entity_id=h.entity_id,
+                            entityfinid_id=h.entityfinid_id,
+                            subentity_id=h.subentity_id,
+                            customer_id=h.received_from_id,
+                            settlement_type="receipt",
+                            settlement_date=h.voucher_date,
+                            reference_no=h.voucher_code or h.reference_number,
+                            external_voucher_no=h.reference_number,
+                            remarks=h.narration,
+                            lines=cash_lines,
+                            amount=None,
+                        )
+                        posted = SalesArService.post_settlement(
+                            settlement_id=created.settlement.id,
+                            posted_by_id=posted_by_id or h.created_by_id,
+                        )
+                    h.ap_settlement_id = posted.settlement.id
+
+            for adj in live_advance_rows:
+                settlement_id = getattr(adj, "ap_settlement_id", None)
+                if settlement_id:
+                    warnings.append("Advance adjustment settlement resumed from existing linked settlement")
+                    ReceiptVoucherService._log_retry_resume(
+                        header=h,
+                        action="post_voucher",
+                        target="customer_advance_adjustment_settlement",
+                        target_id=int(settlement_id),
+                    )
+                    posted = SalesArService.post_settlement(
+                        settlement_id=int(settlement_id),
+                        posted_by_id=posted_by_id or h.created_by_id,
+                    )
+                else:
                     created = SalesArService.create_settlement(
                         entity_id=h.entity_id,
                         entityfinid_id=h.entityfinid_id,
                         subentity_id=h.subentity_id,
                         customer_id=h.received_from_id,
-                        settlement_type="receipt",
+                        settlement_type="advance_adjustment",
                         settlement_date=h.voucher_date,
                         reference_no=h.voucher_code or h.reference_number,
                         external_voucher_no=h.reference_number,
-                        remarks=h.narration,
-                        lines=cash_lines,
+                        remarks=adj.remarks or h.narration,
+                        lines=[{
+                            "open_item_id": adj.open_item_id,
+                            "amount": q2(adj.adjusted_amount),
+                            "note": "Receipt voucher advance adjustment",
+                        }],
                         amount=None,
+                        advance_balance_id=adj.advance_balance_id,
                     )
                     posted = SalesArService.post_settlement(
                         settlement_id=created.settlement.id,
                         posted_by_id=posted_by_id or h.created_by_id,
                     )
-                    h.ap_settlement_id = posted.settlement.id
-
-            for adj in live_advance_rows:
-                created = SalesArService.create_settlement(
-                    entity_id=h.entity_id,
-                    entityfinid_id=h.entityfinid_id,
-                    subentity_id=h.subentity_id,
-                    customer_id=h.received_from_id,
-                    settlement_type="advance_adjustment",
-                    settlement_date=h.voucher_date,
-                    reference_no=h.voucher_code or h.reference_number,
-                    external_voucher_no=h.reference_number,
-                    remarks=adj.remarks or h.narration,
-                    lines=[{
-                        "open_item_id": adj.open_item_id,
-                        "amount": q2(adj.adjusted_amount),
-                        "note": "Receipt voucher advance adjustment",
-                    }],
-                    amount=None,
-                    advance_balance_id=adj.advance_balance_id,
-                )
-                posted = SalesArService.post_settlement(
-                    settlement_id=created.settlement.id,
-                    posted_by_id=posted_by_id or h.created_by_id,
-                )
                 adj.ap_settlement_id = posted.settlement.id
                 adj.save(update_fields=["ap_settlement", "updated_at"])
 
@@ -1924,8 +2070,11 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
                 ReceiptVoucherHeader.ReceiptType.ADVANCE,
                 ReceiptVoucherHeader.ReceiptType.ON_ACCOUNT,
             } else residual_advance
-            if adv_amount > ZERO2 and not getattr(h, "customer_advance_balance", None):
-                SalesArService.create_advance_balance(
+            existing_advance = getattr(h, "customer_advance_balance", None)
+            if not existing_advance and getattr(h, "id", None):
+                existing_advance = CustomerAdvanceBalance.objects.filter(receipt_voucher_id=h.id).first()
+            if adv_amount > ZERO2 and not existing_advance:
+                existing_advance = SalesArService.create_advance_balance(
                     entity_id=h.entity_id,
                     entityfinid_id=h.entityfinid_id,
                     subentity_id=h.subentity_id,
@@ -1937,6 +2086,16 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
                     amount=adv_amount,
                     receipt_voucher_id=h.id,
                 )
+            elif existing_advance is not None:
+                warnings.append("Receipt advance balance resumed from existing linked balance")
+                ReceiptVoucherService._log_retry_resume(
+                    header=h,
+                    action="post_voucher",
+                    target="customer_advance_balance",
+                    target_id=getattr(existing_advance, "id", None),
+                )
+            if existing_advance is not None:
+                h.customer_advance_balance = existing_advance
 
         try:
             ReceiptVoucherPostingAdapter.post_receipt_voucher(
@@ -1989,7 +2148,14 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
             ReceiptVoucherHeader.objects
             .select_related("entity", "entityfinid", "subentity")
             .prefetch_related("allocations", "adjustments", "advance_adjustments")
+            .select_for_update()
             .get(pk=voucher_id)
+        )
+        ReceiptVoucherService._assert_voucher_period_open(
+            entity_id=h.entity_id,
+            entityfinid_id=h.entityfinid_id,
+            voucher_date=h.voucher_date,
+            action_label="unpost voucher",
         )
         if int(h.status) != int(ReceiptVoucherHeader.Status.POSTED):
             raise ValueError("Only POSTED vouchers can be unposted.")
@@ -2048,7 +2214,13 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
     @staticmethod
     @transaction.atomic
     def cancel_voucher(voucher_id: int, reason: Optional[str] = None, cancelled_by_id: Optional[int] = None) -> ReceiptVoucherResult:
-        h = ReceiptVoucherHeader.objects.get(pk=voucher_id)
+        h = ReceiptVoucherHeader.objects.select_for_update().get(pk=voucher_id)
+        ReceiptVoucherService._assert_voucher_period_open(
+            entity_id=h.entity_id,
+            entityfinid_id=h.entityfinid_id,
+            voucher_date=h.voucher_date,
+            action_label="cancel voucher",
+        )
         if int(h.status) == int(ReceiptVoucherHeader.Status.POSTED):
             raise ValueError("Posted voucher cannot be cancelled in Phase-1.")
         if int(h.status) == int(ReceiptVoucherHeader.Status.CANCELLED):

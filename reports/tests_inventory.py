@@ -329,6 +329,18 @@ class InventoryReportAPITests(APITestCase):
         return product
 
     def test_inventory_meta_returns_report_catalog_and_filter_choices(self):
+        alternate_hsn = HsnSac.objects.create(
+            entity=self.entity,
+            code='8472',
+            description='Office machines',
+            is_service=False,
+        )
+        ProductGstRate.objects.create(
+            product=self.product,
+            hsn=alternate_hsn,
+            valid_from='2025-02-01',
+            isdefault=False,
+        )
         response = self.client.get(reverse('reports_api:inventory-meta'), {'entity': self.entity.id})
         self.assertEqual(response.status_code, 200)
         data = response.json()
@@ -343,6 +355,15 @@ class InventoryReportAPITests(APITestCase):
         self.assertEqual(len(data['locations']), 1)
         self.assertIn('filter_relations', data)
         self.assertIn('product_category_hsn', data['filter_relations'])
+        product_relations = [
+            relation
+            for relation in data['filter_relations']['product_category_hsn']
+            if relation['product_id'] == self.product.id
+        ]
+        self.assertEqual(
+            sorted(relation['hsn_id'] for relation in product_relations if relation['hsn_id'] is not None),
+            sorted([self.hsn.id, alternate_hsn.id]),
+        )
 
     def test_inventory_stock_summary_returns_rows_and_totals(self):
         response = self.client.get(reverse('reports_api:inventory-stock-summary'), self._scope())
