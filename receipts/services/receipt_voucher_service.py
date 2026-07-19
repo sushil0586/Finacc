@@ -1768,8 +1768,9 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
     def post_voucher(voucher_id: int, posted_by_id: Optional[int] = None) -> ReceiptVoucherResult:
         h = (
             ReceiptVoucherHeader.objects
-            .select_related("entity", "entityfinid", "subentity")
             .prefetch_related("allocations", "adjustments", "advance_adjustments")
+            # Avoid joining nullable FKs while taking a row lock. PostgreSQL
+            # rejects FOR UPDATE on the nullable side of an outer join.
             .select_for_update()
             .get(pk=voucher_id)
         )
@@ -2146,8 +2147,9 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
     def unpost_voucher(voucher_id: int, unposted_by_id: Optional[int] = None) -> ReceiptVoucherResult:
         h = (
             ReceiptVoucherHeader.objects
-            .select_related("entity", "entityfinid", "subentity")
             .prefetch_related("allocations", "adjustments", "advance_adjustments")
+            # Avoid joining nullable FKs while taking a row lock. PostgreSQL
+            # rejects FOR UPDATE on the nullable side of an outer join.
             .select_for_update()
             .get(pk=voucher_id)
         )

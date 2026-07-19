@@ -36,10 +36,10 @@ class PurchaseInvoiceNavService:
       - subentity (including NULL vs non-NULL)
       - doc_type
       - doc_code
+      - line mode for in-screen navigation
       - allowed statuses
 
-    Navigation is intentionally computed across combined goods+service invoices
-    so doc sequence stays contiguous regardless of current screen mode.
+    Cross-mode fallbacks are handled by the dedicated cross-mode navigation API.
     """
 
     # Navigation should move across saved vouchers in sequence, including the
@@ -147,7 +147,7 @@ class PurchaseInvoiceNavService:
             doc_type=int(instance.doc_type),
             doc_code=str(instance.doc_code),
             allowed_statuses=allowed_statuses,
-            line_mode=None,
+            line_mode=line_mode,
         )
         all_code_qs = PurchaseInvoiceNavService._scope_qs(
             entity_id=instance.entity_id,
@@ -156,7 +156,7 @@ class PurchaseInvoiceNavService:
             doc_type=int(instance.doc_type),
             doc_code=None,
             allowed_statuses=allowed_statuses,
-            line_mode=None,
+            line_mode=line_mode,
         )
 
         current_seq = PurchaseInvoiceNavService._sequence_no(instance)

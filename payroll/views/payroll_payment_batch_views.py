@@ -208,7 +208,7 @@ class PayrollPaymentBatchExportAPIView(PayrollScopedAPIView):
         response = HttpResponse(result.file_content, content_type=result.content_type)
         response["Content-Disposition"] = f'attachment; filename="{result.file_name}"'
         response["X-Payroll-Payment-Batch-Id"] = str(result.batch.id)
-        response["X-Payroll-Payment-Batch-Status"] = result.batch.status
+        response["X-Payroll-Payment-Batch-Status"] = str(result.batch.status)
         return response
 
 

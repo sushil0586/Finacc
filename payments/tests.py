@@ -452,6 +452,71 @@ class PurchaseApServiceUnitTests(SimpleTestCase):
         self.assertEqual(result.message, "Draft settlement cancelled.")
         save_spy.assert_called_once_with(update_fields=["status", "updated_at"])
 
+    @patch("purchase.services.purchase_ap_service.PurchaseApAllocationService.allocatable_map")
+    @patch("purchase.services.purchase_ap_service.PurchaseSettingsService.get_policy")
+    @patch("purchase.services.purchase_ap_service.VendorSettlement.objects")
+    def test_post_settlement_warn_mode_caps_over_allocated_line_and_returns_warning(
+        self,
+        mocked_objects,
+        mock_get_policy,
+        mock_allocatable_map,
+    ):
+        item_save = MagicMock()
+        line_save = MagicMock()
+        settlement_save = MagicMock()
+        open_item = SimpleNamespace(
+            id=501,
+            is_open=True,
+            outstanding_amount=Decimal("100.00"),
+            original_amount=Decimal("100.00"),
+            settled_amount=Decimal("0.00"),
+            last_settled_at=None,
+            save=item_save,
+        )
+        line = SimpleNamespace(
+            open_item=open_item,
+            amount=Decimal("120.00"),
+            applied_amount_signed=Decimal("0.00"),
+            save=line_save,
+        )
+        settlement = SimpleNamespace(
+            id=91,
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            vendor_id=9,
+            advance_balance_id=None,
+            status=VendorSettlement.Status.DRAFT,
+            settlement_type="payment_voucher",
+            total_amount=Decimal("0.00"),
+            posted_at=None,
+            posted_by_id=None,
+            lines=SimpleNamespace(
+                select_related=lambda *args, **kwargs: SimpleNamespace(
+                    select_for_update=lambda: SimpleNamespace(order_by=lambda *a, **k: [line])
+                )
+            ),
+            save=settlement_save,
+        )
+        mocked_objects.select_for_update.return_value.get.return_value = settlement
+        mock_get_policy.return_value = SimpleNamespace(controls={"over_settlement_rule": "warn"})
+        mock_allocatable_map.return_value = {501: Decimal("80.00")}
+
+        result = PurchaseApService.post_settlement(settlement_id=91, posted_by_id=7)
+
+        self.assertEqual(result.applied_total, Decimal("80.00"))
+        self.assertIn("Settlement posted with warnings:", result.message)
+        self.assertIn("Line for open item 501 exceeds allocatable amount.", result.message)
+        self.assertEqual(open_item.settled_amount, Decimal("80.00"))
+        self.assertEqual(open_item.outstanding_amount, Decimal("20.00"))
+        self.assertTrue(open_item.is_open)
+        self.assertEqual(line.applied_amount_signed, Decimal("80.00"))
+        item_save.assert_called_once()
+        line_save.assert_called_once()
+        settlement_save.assert_called_once_with(
+            update_fields=["total_amount", "status", "posted_at", "posted_by", "updated_at"]
+        )
+
     @patch.object(PaymentVoucherService, "_fresh_allocation_rows", return_value=[SimpleNamespace(open_item_id=55, settled_amount=Decimal("116000.00"))])
     @patch("payments.services.payment_voucher_service.PaymentVoucherPostingAdapter.post_payment_voucher")
     @patch("payments.services.payment_voucher_service.PaymentSettingsService.get_policy")
@@ -683,6 +748,145 @@ class PurchaseApServiceUnitTests(SimpleTestCase):
         self.assertEqual(mock_post_settlement.call_args_list[0].kwargs["settlement_id"], 201)
         self.assertEqual(mock_post_settlement.call_args_list[1].kwargs["settlement_id"], 202)
         self.assertEqual(mock_logger.info.call_count, 2)
+        mock_post_adapter.assert_called_once()
+
+    @patch.object(PaymentVoucherService, "_auto_fifo_allocations")
+    @patch.object(PaymentVoucherService, "_fresh_allocation_rows", return_value=[])
+    @patch("payments.services.payment_voucher_service.PaymentVoucherPostingAdapter.post_payment_voucher")
+    @patch("payments.services.payment_voucher_service.PaymentSettingsService.get_policy")
+    @patch("payments.services.payment_voucher_service.PaymentVoucherHeader.objects")
+    def test_post_voucher_manual_allocation_policy_does_not_auto_allocate_against_bill(
+        self,
+        mock_header_objects,
+        mock_get_policy,
+        mock_post_adapter,
+        _mock_fresh_allocations,
+        mock_auto_fifo_allocations,
+    ):
+        header = SimpleNamespace(
+            id=91,
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            status=PaymentVoucherHeader.Status.CONFIRMED,
+            payment_type=PaymentVoucherHeader.PaymentType.AGAINST_BILL,
+            voucher_date="2026-07-18",
+            voucher_code="PPV-91",
+            reference_number="UTR-MANUAL",
+            narration="manual allocation policy",
+            paid_to_id=99,
+            cash_paid_amount=Decimal("590.00"),
+            total_adjustment_amount=Decimal("0.00"),
+            settlement_effective_amount=Decimal("590.00"),
+            settlement_effective_amount_base_currency=Decimal("590.00"),
+            exchange_rate=Decimal("1.000000"),
+            created_by_id=5,
+            ap_settlement_id=None,
+            approved_at=None,
+            approved_by_id=None,
+            workflow_payload={},
+            adjustments=SimpleNamespace(all=lambda: [], values=lambda *args, **kwargs: []),
+            allocations=SimpleNamespace(all=lambda: []),
+            advance_adjustments=SimpleNamespace(all=lambda: []),
+            save=MagicMock(),
+        )
+        mock_header_objects.select_related.return_value.prefetch_related.return_value.get.return_value = header
+        mock_get_policy.return_value = SimpleNamespace(controls={
+            "require_allocation_on_post": "hard",
+            "sync_ap_settlement_on_post": "on",
+            "allocation_amount_match_rule": "hard",
+            "require_confirm_before_post": "on",
+            "payment_maker_checker": "off",
+            "over_settlement_rule": "block",
+            "allocation_policy": "manual",
+        })
+
+        with patch.object(PaymentVoucherService, "_validate_advance_adjustments", return_value=None), \
+             patch.object(PaymentVoucherService, "_validate_allocations", return_value=[]):
+            with self.assertRaisesMessage(ValueError, "Allocations are required for AGAINST_BILL posting."):
+                PaymentVoucherService.post_voucher.__wrapped__(voucher_id=91, posted_by_id=9)
+
+        mock_auto_fifo_allocations.assert_not_called()
+        mock_post_adapter.assert_not_called()
+
+    @patch.object(PaymentVoucherService, "_fresh_allocation_rows")
+    @patch.object(PaymentVoucherService, "_auto_fifo_allocations")
+    @patch("payments.services.payment_voucher_service.PaymentVoucherPostingAdapter.post_payment_voucher")
+    @patch("payments.services.payment_voucher_service.PurchaseApService.post_settlement")
+    @patch("payments.services.payment_voucher_service.PurchaseApService.create_settlement")
+    @patch("payments.services.payment_voucher_service.PaymentSettingsService.get_policy")
+    @patch("payments.services.payment_voucher_service.PaymentVoucherAllocation.objects.create")
+    @patch("payments.services.payment_voucher_service.PaymentVoucherHeader.objects")
+    def test_post_voucher_fifo_allocation_policy_auto_allocates_against_bill_before_post(
+        self,
+        mock_header_objects,
+        mock_allocation_create,
+        mock_get_policy,
+        mock_create_settlement,
+        mock_post_settlement,
+        mock_post_adapter,
+        mock_auto_fifo_allocations,
+        mock_fresh_allocations,
+    ):
+        created_allocation = SimpleNamespace(open_item_id=55, settled_amount=Decimal("590.00"))
+        header = SimpleNamespace(
+            id=92,
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            status=PaymentVoucherHeader.Status.CONFIRMED,
+            payment_type=PaymentVoucherHeader.PaymentType.AGAINST_BILL,
+            voucher_date="2026-07-18",
+            voucher_code="PPV-92",
+            reference_number="UTR-FIFO",
+            narration="fifo allocation policy",
+            paid_to_id=99,
+            cash_paid_amount=Decimal("590.00"),
+            total_adjustment_amount=Decimal("0.00"),
+            settlement_effective_amount=Decimal("590.00"),
+            settlement_effective_amount_base_currency=Decimal("590.00"),
+            exchange_rate=Decimal("1.000000"),
+            created_by_id=5,
+            ap_settlement_id=None,
+            approved_at=None,
+            approved_by_id=None,
+            workflow_payload={},
+            adjustments=SimpleNamespace(all=lambda: [], values=lambda *args, **kwargs: []),
+            allocations=SimpleNamespace(all=lambda: []),
+            advance_adjustments=SimpleNamespace(all=lambda: []),
+            save=MagicMock(),
+        )
+        mock_header_objects.select_related.return_value.prefetch_related.return_value.get.return_value = header
+        mock_get_policy.return_value = SimpleNamespace(controls={
+            "require_allocation_on_post": "hard",
+            "sync_ap_settlement_on_post": "on",
+            "allocation_amount_match_rule": "hard",
+            "require_confirm_before_post": "on",
+            "payment_maker_checker": "off",
+            "over_settlement_rule": "block",
+            "allocation_policy": "fifo",
+            "sync_advance_balance_on_post": "off",
+        })
+        mock_auto_fifo_allocations.return_value = [
+            {"open_item": 55, "settled_amount": Decimal("590.00"), "is_full_settlement": True, "is_advance_adjustment": False}
+        ]
+        mock_fresh_allocations.side_effect = [[], [created_allocation], [created_allocation]]
+        mock_create_settlement.return_value = SimpleNamespace(settlement=SimpleNamespace(id=301))
+        mock_post_settlement.return_value = SimpleNamespace(settlement=SimpleNamespace(id=401))
+
+        with patch.object(PaymentVoucherService, "_validate_advance_adjustments", return_value=None), \
+             patch.object(PaymentVoucherService, "_validate_allocations", return_value=[]):
+            res = PaymentVoucherService.post_voucher.__wrapped__(voucher_id=92, posted_by_id=9)
+
+        self.assertEqual(res.message, "Posted.")
+        mock_auto_fifo_allocations.assert_called_once()
+        mock_allocation_create.assert_called_once_with(
+            payment_voucher=header,
+            open_item_id=55,
+            settled_amount=Decimal("590.00"),
+            is_full_settlement=True,
+            is_advance_adjustment=False,
+        )
         mock_post_adapter.assert_called_once()
 
     @patch("payments.services.payment_voucher_service.VendorAdvanceBalance.objects")

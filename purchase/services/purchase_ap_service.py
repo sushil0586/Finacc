@@ -463,6 +463,7 @@ class PurchaseApService:
         over_rule = str(policy.controls.get("over_settlement_rule", "block")).lower().strip()
         if over_rule not in {"block", "warn"}:
             over_rule = "block"
+        settlement_type = str(getattr(settlement, "settlement_type", "") or "").strip().lower()
 
         lines = list(
             settlement.lines.select_related("open_item")
@@ -481,6 +482,7 @@ class PurchaseApService:
         )
 
         applied_total = ZERO2
+        warnings: list[str] = []
         advance_balance = None
         available_advance = ZERO2
         if settlement.advance_balance_id:
@@ -491,28 +493,39 @@ class PurchaseApService:
             if not item.is_open or abs(q2(item.outstanding_amount)) <= TOL:
                 if over_rule == "block":
                     raise ValueError(f"Open item {item.id} is already settled.")
+                warnings.append(f"Open item {item.id} is already settled.")
                 continue
 
             remaining_abs = q2(abs(item.outstanding_amount))
             allocatable_abs = q2(allocatable_remaining.get(int(item.id), ZERO2))
             requested_abs = q2(ln.amount)
 
+            # Credit-note adjustment settlements are the source of truth for consuming
+            # the linked invoice and the credit note itself. Do not pre-block them with
+            # the projection that already subtracts open credit notes from positive AP rows.
+            if settlement_type == str(VendorSettlement.SettlementType.CREDIT_NOTE_ADJUSTMENT).lower():
+                allocatable_abs = remaining_abs
+
             apply_abs = requested_abs
             if allocatable_abs <= ZERO2:
                 if over_rule == "block":
                     raise ValueError(f"Open item {item.id} is not allocatable after credit-note adjustment.")
+                warnings.append(f"Open item {item.id} is not allocatable after credit-note adjustment.")
                 continue
             if requested_abs - allocatable_abs > TOL:
                 if over_rule == "block":
                     raise ValueError(f"Line for open item {item.id} exceeds allocatable amount.")
+                warnings.append(f"Line for open item {item.id} exceeds allocatable amount.")
                 apply_abs = allocatable_abs
             if requested_abs - remaining_abs > TOL and apply_abs > remaining_abs:
                 if over_rule == "block":
                     raise ValueError(f"Line for open item {item.id} exceeds outstanding.")
+                warnings.append(f"Line for open item {item.id} exceeds outstanding.")
                 apply_abs = min(apply_abs, remaining_abs)
             if advance_balance is not None and apply_abs - available_advance > TOL:
                 if over_rule == "block":
                     raise ValueError(f"Advance balance {advance_balance.id} is insufficient for line open item {item.id}.")
+                warnings.append(f"Advance balance {advance_balance.id} is insufficient for line open item {item.id}.")
                 apply_abs = available_advance
 
             if apply_abs <= ZERO2:
@@ -557,7 +570,10 @@ class PurchaseApService:
         settlement.posted_by_id = posted_by_id
         settlement.save(update_fields=["total_amount", "status", "posted_at", "posted_by", "updated_at"])
 
-        return SettlementPostResult(settlement=settlement, applied_total=applied_total, message="Settlement posted.")
+        message = "Settlement posted."
+        if warnings:
+            message = f"Settlement posted with warnings: {'; '.join(warnings)}"
+        return SettlementPostResult(settlement=settlement, applied_total=applied_total, message=message)
 
     @staticmethod
     @transaction.atomic

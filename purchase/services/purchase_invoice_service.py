@@ -1156,9 +1156,13 @@ class PurchaseInvoiceService:
         lines: List[Dict[str, Any]],
         derived: DerivedRegime,
         instance: Optional[PurchaseInvoiceHeader] = None,
+        *,
+        require_at_least_one_line: bool = True,
     ) -> None:
-        if not lines:
+        if not lines and require_at_least_one_line:
             raise ValueError("At least one line is required.")
+        if not lines:
+            return
 
         header_taxability = attrs.get(
             "default_taxability",
@@ -2489,13 +2493,21 @@ class PurchaseInvoiceService:
         )
 
         PurchaseInvoiceService.validate_header(validated_data)
-        PurchaseInvoiceService.validate_lines_structural(validated_data, lines_client, derived)
 
         policy = PurchaseSettingsService.get_policy(
             entity_id=(validated_data["entity"].id if hasattr(validated_data.get("entity"), "id") else validated_data.get("entity")),
             subentity_id=(validated_data.get("subentity").id if hasattr(validated_data.get("subentity"), "id") else validated_data.get("subentity")),
         )
+        require_lines_level = policy.level("require_lines_on_confirm", "hard")
         mismatch_level = policy.level("line_amount_mismatch", "hard")
+        require_at_least_one_line = require_lines_level == "hard"
+
+        PurchaseInvoiceService.validate_lines_structural(
+            validated_data,
+            lines_client,
+            derived,
+            require_at_least_one_line=require_at_least_one_line,
+        )
 
         # authoritative lines
         lines_auth: List[Dict[str, Any]] = []
@@ -2536,7 +2548,7 @@ class PurchaseInvoiceService:
         totals = PurchaseInvoiceService.compute_totals_with_charges(db_lines, db_charges)
         preview_grand_total = grand_total_hint if grand_total_hint is not None else totals["grand_total_base"]
         PurchaseInvoiceService.assert_no_duplicate_supplier_invoice(
-            instance=None,
+            instance=header,
             attrs=validated_data,
             grand_total=preview_grand_total,
         )
@@ -2578,6 +2590,8 @@ class PurchaseInvoiceService:
     @transaction.atomic
     def update_with_lines(instance: PurchaseInvoiceHeader, validated_data: Dict[str, Any]) -> PurchaseInvoiceHeader:
         old_scope_key = GstTdsService._scope_key_for_header(instance)
+        if getattr(instance, "pk", None):
+            instance = PurchaseInvoiceHeader.objects.select_for_update().get(pk=instance.pk)
         round_off_explicit = "round_off" in validated_data
         grand_total_hint = validated_data.get("grand_total") if "grand_total" in validated_data else None
         lines_provided = "lines" in validated_data
@@ -2621,8 +2635,6 @@ class PurchaseInvoiceService:
         )
 
         PurchaseInvoiceService.validate_header(validated_data, instance=instance)
-        if lines_provided:
-            PurchaseInvoiceService.validate_lines_structural(validated_data, lines_client, derived, instance=instance)
 
         for k, v in validated_data.items():
             setattr(instance, k, v)
@@ -2636,9 +2648,18 @@ class PurchaseInvoiceService:
         }
 
         policy = PurchaseSettingsService.get_policy(instance.entity_id, instance.subentity_id)
+        require_lines_level = policy.level("require_lines_on_confirm", "hard")
         mismatch_level = policy.level("line_amount_mismatch", "hard")
+        require_at_least_one_line = require_lines_level == "hard"
 
         if lines_provided:
+            PurchaseInvoiceService.validate_lines_structural(
+                validated_data,
+                lines_client,
+                derived,
+                instance=instance,
+                require_at_least_one_line=require_at_least_one_line,
+            )
             # authoritative lines
             lines_auth: List[Dict[str, Any]] = []
             for i, ln in enumerate(lines_client, start=1):

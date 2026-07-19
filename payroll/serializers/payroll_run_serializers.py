@@ -207,7 +207,6 @@ class PayrollRunDetailSerializer(PayrollRunListSerializer):
             "payment_handoff_policy_context",
             "posting_policy_context",
             "approval_note",
-            "requested_by",
             "status_reason_code",
             "status_comment",
             "config_snapshot",

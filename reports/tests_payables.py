@@ -3010,6 +3010,98 @@ class PayableReportAPITests(APITestCase):
         self.assertEqual(rows[0]["note_type"], "credit")
         self.assertEqual(rows[0]["_trace"]["source_model"], "purchase.PurchaseInvoiceHeader")
 
+    def test_vendor_note_register_document_drilldown_uses_note_routes(self):
+        debit_note = self._create_purchase_header(
+            vendor=self.vendor,
+            vendor_ledger=self.vendor_ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.DEBIT_NOTE,
+            bill_date=date(2025, 4, 18),
+            due_date=date(2025, 4, 18),
+            doc_code="PDN",
+            doc_no=1004,
+            purchase_number="PI-PDN-1004",
+            supplier_invoice_number="SUP-DN-001",
+            amount=Decimal("60.00"),
+            ref_document=self.invoice,
+        )
+        self._create_open_item(
+            header=debit_note,
+            vendor=self.vendor,
+            vendor_ledger=self.vendor_ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.DEBIT_NOTE,
+            bill_date=date(2025, 4, 18),
+            due_date=date(2025, 4, 18),
+            purchase_number="PI-PDN-1004",
+            supplier_invoice_number="SUP-DN-001",
+            amount=Decimal("60.00"),
+        )
+
+        response = self.client.get(
+            reverse("reports_api:vendor-note-register"),
+            self._base_scope(from_date="2025-04-01", to_date="2025-04-30"),
+        )
+        self.assertEqual(response.status_code, 200)
+        rows = response.json()["rows"]
+        credit_row = next(row for row in rows if row["note_type"] == "credit")
+        debit_row = next(row for row in rows if row["note_type"] == "debit")
+
+        self.assertEqual(
+            credit_row["_meta"]["drilldown"]["document"]["route"],
+            "/purchasecreditnoteinvoice",
+        )
+        self.assertEqual(
+            debit_row["_meta"]["drilldown"]["document"]["route"],
+            "/purchasedebitnoteinvoice",
+        )
+
+    def test_vendor_note_register_service_note_document_drilldown_uses_service_note_route(self):
+        service_credit = self._create_purchase_header(
+            vendor=self.vendor,
+            vendor_ledger=self.vendor_ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.CREDIT_NOTE,
+            bill_date=date(2025, 4, 20),
+            due_date=date(2025, 4, 20),
+            doc_code="PCN",
+            doc_no=1005,
+            purchase_number="PI-PCN-1005",
+            supplier_invoice_number="SUP-CN-SVC-001",
+            amount=Decimal("40.00"),
+            ref_document=self.invoice,
+        )
+        PurchaseInvoiceLine.objects.create(
+            header=service_credit,
+            line_no=1,
+            is_service=True,
+            purchase_behavior="expense",
+            product_desc="Service reversal",
+            qty=Decimal("1.0000"),
+            rate=Decimal("40.00"),
+            taxable_value=Decimal("40.00"),
+            line_total=Decimal("40.00"),
+        )
+        self._create_open_item(
+            header=service_credit,
+            vendor=self.vendor,
+            vendor_ledger=self.vendor_ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.CREDIT_NOTE,
+            bill_date=date(2025, 4, 20),
+            due_date=date(2025, 4, 20),
+            purchase_number="PI-PCN-1005",
+            supplier_invoice_number="SUP-CN-SVC-001",
+            amount=Decimal("40.00"),
+        )
+
+        response = self.client.get(
+            reverse("reports_api:vendor-note-register"),
+            self._base_scope(from_date="2025-04-01", to_date="2025-04-30", note_type="credit"),
+        )
+        self.assertEqual(response.status_code, 200)
+        row = next(row for row in response.json()["rows"] if row["note_number"] == "PI-PCN-1005")
+        self.assertEqual(
+            row["_meta"]["drilldown"]["document"]["route"],
+            "/purchaseservicecreditnoteinvoice",
+        )
+
     def test_cancelled_purchase_documents_are_excluded_from_outstanding_default(self):
         cancelled_invoice = self._create_purchase_header(
             vendor=self.vendor,

@@ -201,6 +201,44 @@ class PurchaseInvoiceLookupViewTests(SimpleTestCase):
                 },
             )
 
+
+class PurchaseInvoiceConcurrencyHardeningTests(SimpleTestCase):
+    def setUp(self):
+        super().setUp()
+        self.factory = APIRequestFactory()
+        self.user = get_user_model()()
+        self.header = SimpleNamespace(
+            id=10,
+            doc_type=int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
+            status=int(PurchaseInvoiceHeader.Status.POSTED),
+            purchase_number="PINV-10",
+            doc_no=10,
+            bill_date=None,
+        )
+
+    @patch("purchase.services.purchase_invoice_service.GstTdsService._scope_key_for_header")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceHeader.objects")
+    def test_update_with_lines_reloads_instance_with_select_for_update(self, mock_header_objects, mock_scope_key):
+        mock_scope_key.return_value = ("entity", 1)
+
+        stale_instance = SimpleNamespace(
+            pk=41,
+            id=41,
+            status=int(PurchaseInvoiceHeader.Status.DRAFT),
+        )
+        locked_instance = SimpleNamespace(
+            pk=41,
+            id=41,
+            status=int(PurchaseInvoiceHeader.Status.CANCELLED),
+        )
+        mock_header_objects.select_for_update.return_value.get.return_value = locked_instance
+
+        with self.assertRaisesMessage(ValueError, "Cancelled purchase invoices cannot be edited."):
+            PurchaseInvoiceService.update_with_lines.__wrapped__(stale_instance, {})
+
+        mock_header_objects.select_for_update.assert_called_once_with()
+        mock_header_objects.select_for_update.return_value.get.assert_called_once_with(pk=41)
+
     def test_lookup_view_uses_offset_for_next_page(self):
         mocked_queryset = MagicMock()
         mocked_queryset.count.return_value = 2
@@ -278,8 +316,8 @@ class PurchaseDetailMetaContractTests(TestCase):
             "tds_base_amount": Decimal("0.00"),
             "tds_amount": Decimal("0.00"),
             "tds_reason": None,
-            "entity_id": 1,
-            "entityfinid_id": 1,
+            "entity_id": getattr(getattr(self, "entity", None), "id", 1),
+            "entityfinid_id": getattr(getattr(self, "entityfin", None), "id", 1),
             "subentity_id": None,
             "vendor_id": 1,
             "bill_date": None,
@@ -291,6 +329,7 @@ class PurchaseDetailMetaContractTests(TestCase):
         return SimpleNamespace(**defaults)
 
     def setUp(self):
+        super().setUp()
         self.factory = APIRequestFactory()
         self.user = get_user_model().objects.create_user(
             username="purchase_detail_meta_user",
@@ -306,6 +345,15 @@ class PurchaseDetailMetaContractTests(TestCase):
             finendyear=timezone.make_aware(datetime(2027, 3, 31)),
             createdby=self.user,
         )
+        self.get_policy_patcher = patch(
+            "purchase.services.purchase_invoice_service.PurchaseSettingsService.get_policy",
+            return_value=SimpleNamespace(post_gst_tds_on_invoice=True),
+        )
+        self.get_policy_patcher.start()
+
+    def tearDown(self):
+        self.get_policy_patcher.stop()
+        super().tearDown()
 
     @patch("purchase.views.purchase_meta.InvoiceCustomFieldService.get_defaults_map", return_value={})
     @patch.object(PurchaseInvoiceDetailFormMetaAPIView, "_gst_tds_contract_summary", return_value=None)
@@ -457,8 +505,8 @@ class PurchaseComplianceStatusContractTests(TestCase):
             "tds_base_amount": Decimal("0.00"),
             "tds_amount": Decimal("0.00"),
             "tds_reason": None,
-            "entity_id": 1,
-            "entityfinid_id": 1,
+            "entity_id": getattr(getattr(self, "entity", None), "id", 1),
+            "entityfinid_id": getattr(getattr(self, "entityfin", None), "id", 1),
             "subentity_id": None,
             "vendor_id": 1,
             "bill_date": None,
@@ -470,6 +518,7 @@ class PurchaseComplianceStatusContractTests(TestCase):
         return SimpleNamespace(**defaults)
 
     def setUp(self):
+        super().setUp()
         self.factory = APIRequestFactory()
         self.user = get_user_model().objects.create_user(
             username="purchase_compliance_user",
@@ -493,6 +542,15 @@ class PurchaseComplianceStatusContractTests(TestCase):
             effective_from=date(2026, 4, 1),
             is_active=True,
         )
+        self.get_policy_patcher = patch(
+            "purchase.services.purchase_invoice_service.PurchaseSettingsService.get_policy",
+            return_value=SimpleNamespace(post_gst_tds_on_invoice=True),
+        )
+        self.get_policy_patcher.start()
+
+    def tearDown(self):
+        self.get_policy_patcher.stop()
+        super().tearDown()
 
     @patch.object(PurchaseInvoiceComplianceStatusAPIView, "_parse_scope")
     def test_invoice_compliance_status_surfaces_purchase_readiness_flags(self, mock_parse_scope):
@@ -725,6 +783,7 @@ class PurchaseFiledPeriodAmendmentTests(TestCase):
                 "allow_unpost_posted": "on",
             },
             delete_policy="draft_only",
+            level=lambda key, default="hard": default,
         )
         mock_amendment_window.return_value = SimpleNamespace(
             amendment_required=True,
@@ -744,6 +803,73 @@ class PurchaseFiledPeriodAmendmentTests(TestCase):
         self.assertEqual(flags["locked_correction_modes"], ["full_reversal", "reduce", "increase"])
         self.assertEqual(flags["locked_correction_date"], "2026-05-01")
         self.assertIn("current-period correction draft", flags["locked_correction_message"])
+
+    @patch("purchase.views.purchase_meta.PurchaseInvoiceService.amendment_window_for_header")
+    @patch("purchase.views.purchase_meta.PurchaseSettingsService.get_policy")
+    def test_detail_action_flags_surface_itc_and_2b_actions_for_warn_level_draft(self, mock_get_policy, mock_amendment_window):
+        def level(key, default="hard"):
+            if key == "itc_action_status_gate":
+                return "warn"
+            if key == "two_b_action_status_gate":
+                return "warn"
+            return default
+
+        mock_get_policy.return_value = SimpleNamespace(
+            controls={
+                "allow_edit_confirmed": "on",
+                "allow_unpost_posted": "on",
+            },
+            delete_policy="draft_only",
+            level=level,
+        )
+        mock_amendment_window.return_value = SimpleNamespace(
+            amendment_required=False,
+            correction_date=None,
+        )
+        header = SimpleNamespace(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            status=int(PurchaseInvoiceHeader.Status.DRAFT),
+            doc_type=int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
+            get_status_display=lambda: "Draft",
+        )
+
+        flags = PurchaseInvoiceDetailFormMetaAPIView()._invoice_action_flags(header)
+
+        self.assertTrue(flags["can_itc_actions"])
+        self.assertTrue(flags["can_manage_itc"])
+        self.assertTrue(flags["can_update_2b_status"])
+        self.assertTrue(flags["can_update_2b"])
+
+    @patch("purchase.views.purchase_meta.PurchaseInvoiceService.amendment_window_for_header")
+    @patch("purchase.views.purchase_meta.PurchaseSettingsService.get_policy")
+    def test_detail_action_flags_keep_itc_and_2b_actions_blocked_for_hard_level_draft(self, mock_get_policy, mock_amendment_window):
+        mock_get_policy.return_value = SimpleNamespace(
+            controls={
+                "allow_edit_confirmed": "on",
+                "allow_unpost_posted": "on",
+            },
+            delete_policy="draft_only",
+            level=lambda key, default="hard": "hard" if key in {"itc_action_status_gate", "two_b_action_status_gate"} else default,
+        )
+        mock_amendment_window.return_value = SimpleNamespace(
+            amendment_required=False,
+            correction_date=None,
+        )
+        header = SimpleNamespace(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            status=int(PurchaseInvoiceHeader.Status.DRAFT),
+            doc_type=int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
+            get_status_display=lambda: "Draft",
+        )
+
+        flags = PurchaseInvoiceDetailFormMetaAPIView()._invoice_action_flags(header)
+
+        self.assertFalse(flags["can_itc_actions"])
+        self.assertFalse(flags["can_manage_itc"])
+        self.assertFalse(flags["can_update_2b_status"])
+        self.assertFalse(flags["can_update_2b"])
 
     def test_append_correction_audit_event_links_original_and_correction_documents(self):
         original = PurchaseInvoiceHeader.objects.create(
@@ -800,10 +926,10 @@ class PurchaseFiledPeriodAmendmentTests(TestCase):
     @patch("purchase.services.purchase_invoice_actions.PurchaseInvoiceActions.confirm")
     @patch("purchase.services.purchase_invoice_actions.PurchaseNoteFactory.create_note_from_invoice")
     @patch("purchase.services.purchase_invoice_actions.PurchaseInvoiceService.amendment_window_for_header")
-    @patch("purchase.services.purchase_invoice_actions.PurchaseInvoiceActions._get")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseInvoiceActions._get_for_update")
     def test_cancel_posted_locked_invoice_creates_current_period_reversal_credit_note(
         self,
-        mock_get,
+        mock_get_for_update,
         mock_amendment_window,
         mock_create_note,
         mock_confirm,
@@ -819,7 +945,7 @@ class PurchaseFiledPeriodAmendmentTests(TestCase):
         )
         note = SimpleNamespace(id=91)
         posted_note = SimpleNamespace(id=91, status=int(PurchaseInvoiceHeader.Status.POSTED))
-        mock_get.return_value = header
+        mock_get_for_update.return_value = header
         mock_amendment_window.return_value = SimpleNamespace(
             amendment_required=True,
             lock_until=date(2026, 4, 30),
@@ -1033,7 +1159,7 @@ class PurchaseInvoiceViewUnitTests(SimpleTestCase):
         self.assertNotIn(" DISTINCT ", sql)
 
     @patch("purchase.services.purchase_invoice_nav_service.PurchaseInvoiceNavService._scope_qs")
-    def test_prev_next_uses_combined_goods_service_scope(self, mocked_scope_qs):
+    def test_prev_next_uses_current_line_mode_scope(self, mocked_scope_qs):
         mocked_scope_qs.return_value.filter.return_value.order_by.return_value.first.return_value = None
         instance = SimpleNamespace(
             id=1006,
@@ -1056,7 +1182,7 @@ class PurchaseInvoiceViewUnitTests(SimpleTestCase):
             "doc_type": int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
             "doc_code": "PINV",
             "allowed_statuses": PurchaseInvoiceNavService.DEFAULT_ALLOWED_STATUSES,
-            "line_mode": None,
+            "line_mode": "service",
         })
         self.assertEqual(second_call, {
             "entity_id": 10,
@@ -1065,7 +1191,7 @@ class PurchaseInvoiceViewUnitTests(SimpleTestCase):
             "doc_type": int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
             "doc_code": None,
             "allowed_statuses": PurchaseInvoiceNavService.DEFAULT_ALLOWED_STATUSES,
-            "line_mode": None,
+            "line_mode": "service",
         })
 
     @patch("purchase.services.purchase_invoice_nav_service.PurchaseInvoiceNavService._scope_qs")
@@ -1205,9 +1331,11 @@ class PurchaseInvoiceViewUnitTests(SimpleTestCase):
         self.assertIn("commercial_profile", select_related["vendor"])
         mocked_require_permission.assert_called_once()
 
+    @patch("purchase.services.purchase_invoice_service.PurchaseSettingsService.get_policy")
     @patch("purchase.services.purchase_invoice_service.PurchaseWithholdingService.compute_tds")
-    def test_auto_mode_fails_when_no_section_resolved(self, mock_compute):
+    def test_auto_mode_fails_when_no_section_resolved(self, mock_compute, mock_get_policy):
         header = self._make_header(withholding_enabled=True, tds_is_manual=False, tds_section_id=None)
+        mock_get_policy.return_value = SimpleNamespace(post_gst_tds_on_invoice=True)
 
         mock_compute.return_value = WithholdingResult(
             enabled=True,
@@ -2760,6 +2888,12 @@ class PurchaseApiSmokeTests(APITestCase):
     def test_charge_type_detail_missing_id_returns_404(self):
         resp = self.client.get("/api/purchase/charge-types/999999/?entity=1")
         self.assertEqual(resp.status_code, 404)
+
+    def test_normalize_policy_controls_keeps_credit_note_consumption_mode(self):
+        normalized = PurchaseSettingsService.normalize_policy_controls(
+            {"credit_note_consumption_mode": "fifo"}
+        )
+        self.assertEqual(normalized, {"credit_note_consumption_mode": "fifo"})
 
 
 class _ListManager:
@@ -5581,31 +5715,30 @@ class PurchaseStatutoryServiceTests(TestCase):
         header_qs = MagicMock()
         header_qs.filter.return_value = header_qs
         header_qs.aggregate.side_effect = [
-            {"t": Decimal("10.00")},  # deducted_it
-            {"t": Decimal("5.00")},   # deducted_gst
+            {"deducted_it": Decimal("10.00"), "deducted_gst": Decimal("5.00")},
         ]
         mock_header_objects.filter.return_value = header_qs
 
         challan_qs = MagicMock()
         challan_qs.filter.return_value = challan_qs
-        challan_qs.filter.return_value.aggregate.side_effect = [
-            {"t": Decimal("8.00")},  # deposited
-            {"t": Decimal("0.50")},  # deposited_interest
-            {"t": Decimal("0.25")},  # deposited_late_fee
-            {"t": Decimal("0.10")},  # deposited_penalty
-            {"t": Decimal("2.00")},  # draft challan
-        ]
+        challan_qs.aggregate.return_value = {
+            "deposited": Decimal("8.00"),
+            "deposited_interest": Decimal("0.50"),
+            "deposited_late_fee": Decimal("0.25"),
+            "deposited_penalty": Decimal("0.10"),
+            "draft_challan": Decimal("2.00"),
+        }
         mock_challan_objects.filter.return_value = challan_qs
 
         return_qs = MagicMock()
         return_qs.filter.return_value = return_qs
-        return_qs.filter.return_value.aggregate.side_effect = [
-            {"t": Decimal("6.00")},  # filed
-            {"t": Decimal("0.40")},  # filed_interest
-            {"t": Decimal("0.20")},  # filed_late_fee
-            {"t": Decimal("0.05")},  # filed_penalty
-            {"t": Decimal("1.00")},  # draft return
-        ]
+        return_qs.aggregate.return_value = {
+            "filed": Decimal("6.00"),
+            "filed_interest": Decimal("0.40"),
+            "filed_late_fee": Decimal("0.20"),
+            "filed_penalty": Decimal("0.05"),
+            "draft_return": Decimal("1.00"),
+        }
         mock_return_objects.filter.return_value = return_qs
 
         data = PurchaseStatutoryService.reconciliation_summary(
@@ -5643,24 +5776,24 @@ class PurchaseStatutoryServiceTests(TestCase):
 
         challan_qs = MagicMock()
         challan_qs.filter.return_value = challan_qs
-        challan_qs.filter.return_value.aggregate.side_effect = [
-            {"t": Decimal("8.00")},
-            {"t": Decimal("0.00")},
-            {"t": Decimal("0.00")},
-            {"t": Decimal("0.00")},
-            {"t": Decimal("0.00")},
-        ]
+        challan_qs.aggregate.return_value = {
+            "deposited": Decimal("8.00"),
+            "deposited_interest": Decimal("0.00"),
+            "deposited_late_fee": Decimal("0.00"),
+            "deposited_penalty": Decimal("0.00"),
+            "draft_challan": Decimal("0.00"),
+        }
         mock_challan_objects.filter.return_value = challan_qs
 
         return_qs = MagicMock()
         return_qs.filter.return_value = return_qs
-        return_qs.filter.return_value.aggregate.side_effect = [
-            {"t": Decimal("9.00")},
-            {"t": Decimal("0.00")},
-            {"t": Decimal("0.00")},
-            {"t": Decimal("0.00")},
-            {"t": Decimal("0.00")},
-        ]
+        return_qs.aggregate.return_value = {
+            "filed": Decimal("9.00"),
+            "filed_interest": Decimal("0.00"),
+            "filed_late_fee": Decimal("0.00"),
+            "filed_penalty": Decimal("0.00"),
+            "draft_return": Decimal("0.00"),
+        }
         mock_return_objects.filter.return_value = return_qs
 
         data = PurchaseStatutoryService.reconciliation_summary(
@@ -5687,30 +5820,30 @@ class PurchaseStatutoryServiceTests(TestCase):
         header_qs = MagicMock()
         header_qs.filter.return_value = header_qs
         header_qs.aggregate.side_effect = [
-            {"t": Decimal("11.00")},
+            {"deducted": Decimal("11.00")},
         ]
         mock_header_objects.filter.return_value = header_qs
 
         challan_qs = MagicMock()
         challan_qs.filter.return_value = challan_qs
-        challan_qs.aggregate.side_effect = [
-            {"t": Decimal("8.00")},
-            {"t": Decimal("0.50")},
-            {"t": Decimal("0.20")},
-            {"t": Decimal("0.10")},
-            {"t": Decimal("1.00")},
-        ]
+        challan_qs.aggregate.return_value = {
+            "deposited": Decimal("8.00"),
+            "deposited_interest": Decimal("0.50"),
+            "deposited_late_fee": Decimal("0.20"),
+            "deposited_penalty": Decimal("0.10"),
+            "draft_challan": Decimal("1.00"),
+        }
         mock_challan_objects.filter.return_value = challan_qs
 
         return_qs = MagicMock()
         return_qs.filter.return_value = return_qs
-        return_qs.aggregate.side_effect = [
-            {"t": Decimal("6.00")},
-            {"t": Decimal("0.40")},
-            {"t": Decimal("0.10")},
-            {"t": Decimal("0.05")},
-            {"t": Decimal("2.00")},
-        ]
+        return_qs.aggregate.return_value = {
+            "filed": Decimal("6.00"),
+            "filed_interest": Decimal("0.40"),
+            "filed_late_fee": Decimal("0.10"),
+            "filed_penalty": Decimal("0.05"),
+            "draft_return": Decimal("2.00"),
+        }
         mock_return_objects.filter.return_value = return_qs
 
         data = PurchaseStatutoryService.reconciliation_summary(
@@ -5729,7 +5862,7 @@ class PurchaseStatutoryServiceTests(TestCase):
         header_qs.filter.assert_any_call(subentity_id=9)
         header_qs.filter.assert_any_call(bill_date__gte=date(2026, 4, 1))
         header_qs.filter.assert_any_call(bill_date__lte=date(2026, 4, 30))
-        header_qs.aggregate.assert_called_once_with(t=Sum("tds_amount"))
+        header_qs.aggregate.assert_called_once_with(deducted=Sum("tds_amount"))
 
         challan_qs.filter.assert_any_call(subentity_id=9)
         challan_qs.filter.assert_any_call(challan_date__gte=date(2026, 4, 1))
@@ -5753,30 +5886,30 @@ class PurchaseStatutoryServiceTests(TestCase):
         header_qs = MagicMock()
         header_qs.filter.return_value = header_qs
         header_qs.aggregate.side_effect = [
-            {"t": Decimal("18.00")},
+            {"deducted": Decimal("18.00")},
         ]
         mock_header_objects.filter.return_value = header_qs
 
         challan_qs = MagicMock()
         challan_qs.filter.return_value = challan_qs
-        challan_qs.aggregate.side_effect = [
-            {"t": Decimal("9.00")},
-            {"t": Decimal("0.00")},
-            {"t": Decimal("0.00")},
-            {"t": Decimal("0.00")},
-            {"t": Decimal("4.00")},
-        ]
+        challan_qs.aggregate.return_value = {
+            "deposited": Decimal("9.00"),
+            "deposited_interest": Decimal("0.00"),
+            "deposited_late_fee": Decimal("0.00"),
+            "deposited_penalty": Decimal("0.00"),
+            "draft_challan": Decimal("4.00"),
+        }
         mock_challan_objects.filter.return_value = challan_qs
 
         return_qs = MagicMock()
         return_qs.filter.return_value = return_qs
-        return_qs.aggregate.side_effect = [
-            {"t": Decimal("7.00")},
-            {"t": Decimal("0.00")},
-            {"t": Decimal("0.00")},
-            {"t": Decimal("0.00")},
-            {"t": Decimal("1.00")},
-        ]
+        return_qs.aggregate.return_value = {
+            "filed": Decimal("7.00"),
+            "filed_interest": Decimal("0.00"),
+            "filed_late_fee": Decimal("0.00"),
+            "filed_penalty": Decimal("0.00"),
+            "draft_return": Decimal("1.00"),
+        }
         mock_return_objects.filter.return_value = return_qs
 
         data = PurchaseStatutoryService.reconciliation_summary(
@@ -5794,7 +5927,7 @@ class PurchaseStatutoryServiceTests(TestCase):
         self.assertEqual(data["pending_deposit"], "9.00")
         self.assertEqual(data["pending_filing"], "2.00")
 
-        header_qs.aggregate.assert_called_once_with(t=Sum("gst_tds_amount"))
+        header_qs.aggregate.assert_called_once_with(deducted=Sum("gst_tds_amount"))
         challan_qs.filter.assert_any_call(tax_type=PurchaseStatutoryChallan.TaxType.GST_TDS)
         return_qs.filter.assert_any_call(tax_type=PurchaseStatutoryReturn.TaxType.GST_TDS)
 
@@ -8391,6 +8524,26 @@ class PurchaseApiPermissionTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
         mock_cancel.assert_not_called()
+
+
+class PurchaseActionConcurrencyHardeningTests(SimpleTestCase):
+    @patch("purchase.services.purchase_invoice_actions.PurchaseSettingsService.get_policy")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseInvoiceActions._get_for_update")
+    def test_confirm_uses_locked_header_fetch(self, mock_get_for_update, mock_get_policy):
+        header = SimpleNamespace(
+            id=81,
+            entity_id=1,
+            subentity_id=None,
+            entityfinid_id=1,
+            status=int(PurchaseInvoiceHeader.Status.POSTED),
+        )
+        mock_get_for_update.return_value = header
+        mock_get_policy.return_value = SimpleNamespace(level=lambda *args, **kwargs: "hard")
+
+        result = PurchaseInvoiceActions.confirm.__wrapped__(81, confirmed_by_id=9)
+
+        self.assertEqual(result.message, "Already posted.")
+        mock_get_for_update.assert_called_once_with(81)
 
 
 class VendorSettlementValidationViewTests(SimpleTestCase):

@@ -1193,6 +1193,22 @@ class PurchaseApiEndToEndTests(APITestCase):
         self.assertEqual(create_resp.status_code, status.HTTP_400_BAD_REQUEST, create_resp.json())
         self.assertIn("At least one line is required.", str(create_resp.json()))
 
+    def test_purchase_invoice_create_allows_draft_without_lines_when_policy_is_off(self):
+        PurchaseSettingsService.upsert_settings(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            updates={"policy_controls": {"require_lines_on_confirm": "off"}},
+        )
+
+        payload = self._invoice_payload(lines=[], supplier_invoice_number="INV-NO-LINES-OFF")
+        create_resp = self.client.post("/api/purchase/purchase-invoices/", payload, format="json")
+
+        self.assertEqual(create_resp.status_code, status.HTTP_201_CREATED, create_resp.json())
+        body = create_resp.json()
+        self.assertEqual(body["status"], int(PurchaseInvoiceHeader.Status.DRAFT))
+        self.assertEqual(body["grand_total"], "0.00")
+        self.assertEqual(len(body.get("lines", [])), 0)
+
     def test_purchase_invoice_create_rejects_mixed_taxability_when_setting_disabled(self):
         PurchaseSettingsService.upsert_settings(
             entity_id=self.entity.id,

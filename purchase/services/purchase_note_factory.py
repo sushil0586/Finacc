@@ -306,8 +306,10 @@ class PurchaseNoteFactory:
                     line_no=ln.line_no,
 
                     product=ln.product,
+                    purchase_account=ln.purchase_account,
                     product_desc=ln.product_desc,
                     is_service=ln.is_service,
+                    purchase_behavior=getattr(ln, "purchase_behavior", None),
                     hsn_sac=ln.hsn_sac,
                     batch_number=getattr(ln, "batch_number", "") or "",
                     manufacture_date=getattr(ln, "manufacture_date", None),
@@ -315,6 +317,7 @@ class PurchaseNoteFactory:
 
                     uom=ln.uom,
                     qty=ln.qty,
+                    free_qty=getattr(ln, "free_qty", 0),
                     rate=ln.rate,
 
                     taxability=ln.taxability,

@@ -22,7 +22,7 @@ To add a new payables report:
 from collections import OrderedDict
 from copy import deepcopy
 
-from purchase.models.purchase_core import PurchaseInvoiceLine
+from purchase.models.purchase_core import PurchaseInvoiceHeader, PurchaseInvoiceLine
 
 
 PAYABLE_REPORT_DEFAULTS = {
@@ -1226,9 +1226,22 @@ def _purchase_document_route(document_id):
         source_id = int(document_id or 0)
     except (TypeError, ValueError):
         source_id = 0
-    if source_id and PurchaseInvoiceLine.objects.filter(header_id=source_id, is_service=True).exists():
-        return "/purchaseserviceinvoice"
-    return "/purchaseinvoice"
+    if not source_id:
+        return "/purchaseinvoice"
+
+    header = (
+        PurchaseInvoiceHeader.objects.filter(id=source_id)
+        .only("id", "doc_type")
+        .first()
+    )
+    is_service = PurchaseInvoiceLine.objects.filter(header_id=source_id, is_service=True).exists()
+    doc_type = getattr(header, "doc_type", None)
+
+    if doc_type == PurchaseInvoiceHeader.DocType.CREDIT_NOTE:
+        return "/purchaseservicecreditnoteinvoice" if is_service else "/purchasecreditnoteinvoice"
+    if doc_type == PurchaseInvoiceHeader.DocType.DEBIT_NOTE:
+        return "/purchaseservicedebitnoteinvoice" if is_service else "/purchasedebitnoteinvoice"
+    return "/purchaseserviceinvoice" if is_service else "/purchaseinvoice"
 
 
 def build_payables_drilldown(target_code, *, params, label=None, kind=None, path=None, report_code=None):

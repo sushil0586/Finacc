@@ -186,6 +186,17 @@ class PurchaseInvoiceActions:
             .get(pk=pk)
         )
 
+    @staticmethod
+    def _get_for_update(pk: int) -> PurchaseInvoiceHeader:
+        return (
+            PurchaseInvoiceHeader.objects
+            .prefetch_related("lines", "tax_summaries", "charges")
+            # Avoid joining nullable FKs while taking a row lock. PostgreSQL
+            # rejects FOR UPDATE on the nullable side of an outer join.
+            .select_for_update()
+            .get(pk=pk)
+        )
+
     # ----------------------------
     # Number allocation helpers
     # ----------------------------
@@ -239,7 +250,7 @@ class PurchaseInvoiceActions:
     @staticmethod
     @transaction.atomic
     def confirm(pk: int, confirmed_by_id: Optional[int] = None) -> ActionResult:
-        h = PurchaseInvoiceActions._get(pk)
+        h = PurchaseInvoiceActions._get_for_update(pk)
         policy = PurchaseSettingsService.get_policy(h.entity_id, h.subentity_id)
 
         if int(h.status) == int(Status.CANCELLED):
@@ -296,7 +307,7 @@ class PurchaseInvoiceActions:
           - set POSTED
           - later: integrate GL/Stock posting engine here
         """
-        h = PurchaseInvoiceActions._get(pk)
+        h = PurchaseInvoiceActions._get_for_update(pk)
 
         if int(h.status) == int(Status.CANCELLED):
             raise ValueError("Cannot post: document is cancelled.")
@@ -350,7 +361,7 @@ class PurchaseInvoiceActions:
     @staticmethod
     @transaction.atomic
     def unpost(pk: int, unposted_by_id: Optional[int] = None, reason: Optional[str] = None) -> ActionResult:
-        h = PurchaseInvoiceActions._get(pk)
+        h = PurchaseInvoiceActions._get_for_update(pk)
         old_scope_key = GstTdsService._scope_key_for_header(h)
         purchase_doc = PurchaseInvoiceActions._purchase_doc_label(h)
         if int(h.status) != int(Status.POSTED):
@@ -489,7 +500,7 @@ class PurchaseInvoiceActions:
     @staticmethod
     @transaction.atomic
     def cancel(pk: int, cancelled_by_id: Optional[int] = None, reason: Optional[str] = None) -> ActionResult:
-        h = PurchaseInvoiceActions._get(pk)
+        h = PurchaseInvoiceActions._get_for_update(pk)
         old_scope_key = GstTdsService._scope_key_for_header(h)
 
         if int(h.status) == int(Status.POSTED):
