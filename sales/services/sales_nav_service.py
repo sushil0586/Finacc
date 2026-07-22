@@ -41,6 +41,7 @@ class SalesInvoiceNavService:
     _TRAILING_NUMBER_PATTERN = re.compile(r"(\d+)\s*$")
 
     DEFAULT_ALLOWED_STATUSES = (
+        int(SalesInvoiceHeader.Status.DRAFT),
         int(SalesInvoiceHeader.Status.CONFIRMED),
         int(SalesInvoiceHeader.Status.POSTED),
         int(SalesInvoiceHeader.Status.CANCELLED),
@@ -141,7 +142,7 @@ class SalesInvoiceNavService:
             doc_type=int(instance.doc_type),
             doc_code=str(instance.doc_code),
             allowed_statuses=allowed_statuses,
-            line_mode=None,
+            line_mode=line_mode,
         )
         all_code_qs = SalesInvoiceNavService._scope_qs(
             entity_id=instance.entity_id,
@@ -150,7 +151,7 @@ class SalesInvoiceNavService:
             doc_type=int(instance.doc_type),
             doc_code=None,
             allowed_statuses=allowed_statuses,
-            line_mode=None,
+            line_mode=line_mode,
         )
 
         current_seq = SalesInvoiceNavService._sequence_no(instance)

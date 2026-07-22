@@ -55,6 +55,20 @@ class PaymentVoucherService(SettlementVoucherRuntimeMixin):
     AUTO_WITHHOLDING_TDS_REMARK = "__AUTO_WITHHOLDING_TDS__"
 
     @staticmethod
+    def _doc_number_exists_in_scope(voucher: PaymentVoucherHeader, doc_no: int) -> bool:
+        qs = PaymentVoucherHeader.objects.filter(
+            entity_id=voucher.entity_id,
+            entityfinid_id=voucher.entityfinid_id,
+            doc_code=voucher.doc_code,
+            doc_no=doc_no,
+        ).exclude(pk=voucher.pk)
+        if voucher.subentity_id is None:
+            qs = qs.filter(subentity__isnull=True)
+        else:
+            qs = qs.filter(subentity_id=voucher.subentity_id)
+        return qs.exists()
+
+    @staticmethod
     def _coerce_date(value) -> Optional[date]:
         if value is None:
             return None
@@ -1140,7 +1154,7 @@ class PaymentVoucherService(SettlementVoucherRuntimeMixin):
     @staticmethod
     @transaction.atomic
     def confirm_voucher(voucher_id: int, confirmed_by_id: Optional[int] = None) -> PaymentVoucherResult:
-        h = PaymentVoucherHeader.objects.select_related("entity", "entityfinid", "subentity").get(pk=voucher_id)
+        h = PaymentVoucherHeader.objects.select_for_update().get(pk=voucher_id)
 
         if int(h.status) == int(PaymentVoucherHeader.Status.CANCELLED):
             raise ValueError("Cannot confirm: voucher is cancelled.")
@@ -1153,14 +1167,21 @@ class PaymentVoucherService(SettlementVoucherRuntimeMixin):
 
         if not h.doc_no or not h.voucher_code:
             dt_id = PaymentVoucherService._doc_type_id_for_payment(h.doc_code)
-            allocated = DocumentNumberService.allocate_final(
-                entity_id=h.entity_id,
-                entityfinid_id=h.entityfinid_id,
-                subentity_id=h.subentity_id,
-                doc_type_id=dt_id,
-                doc_code=h.doc_code,
-                on_date=h.voucher_date,
-            )
+            allocated = None
+            for _ in range(25):
+                candidate = DocumentNumberService.allocate_final(
+                    entity_id=h.entity_id,
+                    entityfinid_id=h.entityfinid_id,
+                    subentity_id=h.subentity_id,
+                    doc_type_id=dt_id,
+                    doc_code=h.doc_code,
+                    on_date=h.voucher_date,
+                )
+                if not PaymentVoucherService._doc_number_exists_in_scope(h, candidate.doc_no):
+                    allocated = candidate
+                    break
+            if allocated is None:
+                raise ValueError("Unable to allocate a unique payment voucher number for the current scope.")
             h.doc_no = allocated.doc_no
             h.voucher_code = allocated.display_no
 

@@ -129,6 +129,8 @@ class PurchaseSettingsAPIView(APIView):
             value = int(raw_value)
         except (TypeError, ValueError):
             raise ValidationError({field_name: f"{field_name} must be an integer."})
+        if required and value <= 0:
+            raise ValidationError({field_name: f"{field_name} must be a positive integer."})
         return None if field_name == "subentity_id" and value == 0 else value
 
     def _qp(self, request, new_key: str, legacy_key: str):

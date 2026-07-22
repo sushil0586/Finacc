@@ -113,6 +113,42 @@ class PaymentVoucherReferenceWarningTests(SimpleTestCase):
 class PaymentVoucherServiceTests(SimpleTestCase):
     databases = {"default"}
 
+    @patch("payments.services.payment_voucher_service.PaymentVoucherService._doc_type_id_for_payment", return_value=9)
+    @patch("payments.services.payment_voucher_service.DocumentNumberService.allocate_final")
+    @patch("payments.services.payment_voucher_service.PaymentVoucherHeader.objects")
+    def test_confirm_voucher_skips_already_used_doc_number(self, mock_header_objects, mock_allocate_final, mock_doc_type_id):
+        header = SimpleNamespace(
+            pk=51,
+            id=51,
+            entity_id=10,
+            entityfinid_id=8,
+            subentity_id=8,
+            status=PaymentVoucherHeader.Status.DRAFT,
+            doc_code="PPV",
+            doc_no=None,
+            voucher_code=None,
+            voucher_date=date(2026, 7, 22),
+            approved_by_id=None,
+            save=MagicMock(),
+        )
+        mock_header_objects.select_for_update.return_value.get.return_value = header
+        conflict_qs = mock_header_objects.filter.return_value.exclude.return_value.filter.return_value
+        conflict_qs.exists.side_effect = [True, False]
+        mock_allocate_final.side_effect = [
+            SimpleNamespace(doc_no=1544, display_no="PPV-PPV-2026-01544"),
+            SimpleNamespace(doc_no=1545, display_no="PPV-PPV-2026-01545"),
+        ]
+
+        result = PaymentVoucherService.confirm_voucher.__wrapped__(voucher_id=51)
+
+        self.assertEqual(result.message, "Confirmed.")
+        self.assertEqual(header.doc_no, 1545)
+        self.assertEqual(header.voucher_code, "PPV-PPV-2026-01545")
+        self.assertEqual(header.status, PaymentVoucherHeader.Status.CONFIRMED)
+        self.assertEqual(mock_allocate_final.call_count, 2)
+        mock_doc_type_id.assert_called_once_with("PPV")
+        header.save.assert_called()
+
     @patch("payments.services.payment_voucher_service.PaymentVoucherHeader.objects")
     def test_submit_voucher_returns_already_submitted_for_repeat_submit(self, mock_header_objects):
         header = SimpleNamespace(
@@ -1472,6 +1508,33 @@ class PaymentVoucherViewValidationTests(SimpleTestCase):
         self.assertEqual(response.data["returned_count"], 2)
         self.assertEqual(response.data["limit"], 250)
         self.assertTrue(response.data["has_more"])
+
+    @patch("payments.views.payment_voucher.PaymentVoucherLookupAPIView.get_serializer")
+    @patch("payments.views.payment_voucher._require_payment_permission")
+    @patch("payments.views.payment_voucher.PaymentVoucherHeader.objects")
+    def test_lookup_view_prioritizes_exact_business_number_matches(
+        self,
+        mocked_objects,
+        _mocked_require_permission,
+        mocked_get_serializer,
+    ):
+        queryset = MagicMock()
+        queryset.filter.return_value = queryset
+        queryset.select_related.return_value = queryset
+        queryset.annotate.return_value = queryset
+        queryset.order_by.return_value = queryset
+        queryset.count.return_value = 1
+        queryset.__getitem__.return_value = [SimpleNamespace(id=1264)]
+        mocked_objects.filter.return_value = queryset
+        mocked_get_serializer.return_value.data = [{"id": 1264}]
+
+        request = self._request("/api/payments/payment-vouchers/lookup/?entity=1&entityfinid=2&search=1264")
+
+        response = PaymentVoucherLookupAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        queryset.annotate.assert_called_once()
+        queryset.order_by.assert_called_with("search_rank", "-voucher_date", "-id")
 
     @patch("errorlogger.drf_exception_handler.ErrorLog.objects.create")
     @patch("payments.views.payment_voucher.PaymentVoucherHeader.objects")

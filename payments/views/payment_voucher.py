@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from django.db.models import Prefetch, Q
+from django.db.models import Case, IntegerField, Prefetch, Q, Value, When
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, permissions, serializers, status
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -267,6 +267,19 @@ class PaymentVoucherLookupAPIView(generics.GenericAPIView):
                 | Q(paid_to__accountname__icontains=search)
                 | Q(paid_from__accountname__icontains=search)
             )
+            qs = qs.annotate(
+                search_rank=Case(
+                    When(voucher_code__iexact=search, then=Value(0)),
+                    When(doc_no__iexact=search, then=Value(1)),
+                    When(reference_number__iexact=search, then=Value(2)),
+                    When(voucher_code__istartswith=search, then=Value(3)),
+                    When(doc_no__istartswith=search, then=Value(4)),
+                    When(reference_number__istartswith=search, then=Value(5)),
+                    default=Value(6),
+                    output_field=IntegerField(),
+                )
+            )
+            return qs.order_by("search_rank", "-voucher_date", "-id")
         return qs.order_by("-voucher_date", "-id")
 
     def get(self, request, *args, **kwargs):

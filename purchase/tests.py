@@ -2709,6 +2709,12 @@ class PurchaseApiSmokeTests(APITestCase):
         self.assertIn("current_doc_numbers", resp.data)
         self.assertEqual(mock_get_current_doc_no.call_count, 3)
 
+    def test_settings_get_rejects_zero_scope_ids_with_400(self):
+        resp = self.client.get("/api/purchase/settings/?entity=0&entityfinid=0")
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["entity_id"], "entity_id must be a positive integer.")
+
     @patch("purchase.views.purchase_settings.PurchaseSettingsAPIView._payload", return_value={"ok": True})
     @patch("purchase.views.purchase_settings.PurchaseSettingsService.upsert_settings")
     def test_settings_patch_triggers_meta_cache_invalidation(

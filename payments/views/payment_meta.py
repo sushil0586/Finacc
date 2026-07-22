@@ -380,6 +380,8 @@ class PaymentSettingsMetaAPIView(PaymentMetaBaseAPIView):
                 "subentities": self._subentities(entity_id),
                 "settings": {
                     "default_doc_code_payment": settings_obj.default_doc_code_payment,
+                    "enable_round_off": settings_obj.enable_round_off,
+                    "round_grand_total_to": settings_obj.round_grand_total_to,
                     "default_workflow_action": settings_obj.default_workflow_action,
                     "policy_controls": policy.controls,
                 },

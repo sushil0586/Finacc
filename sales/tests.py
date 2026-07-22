@@ -2662,6 +2662,29 @@ class SalesInvoiceViewUnitTests(SimpleTestCase):
         self.assertEqual(result["previous"]["invoice_number"], "SI/2026/1007")
         self.assertEqual(result["next"]["id"], 95)
 
+    def test_nav_default_allowed_statuses_include_draft(self):
+        self.assertIn(int(SalesInvoiceHeader.Status.DRAFT), SalesInvoiceNavService.DEFAULT_ALLOWED_STATUSES)
+
+    @patch("sales.services.sales_nav_service.SalesInvoiceNavService._scope_qs")
+    def test_prev_next_passes_line_mode_into_scoped_queries(self, mocked_scope_qs):
+        mocked_scope_qs.side_effect = [MagicMock(), []]
+        instance = SimpleNamespace(
+            id=90,
+            doc_no=1008,
+            invoice_number="SV/2026/1008",
+            entity_id=10,
+            entityfinid_id=2026,
+            subentity_id=None,
+            doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+            doc_code="SV",
+        )
+
+        SalesInvoiceNavService.get_prev_next_for_instance(instance, line_mode="service")
+
+        self.assertEqual(mocked_scope_qs.call_count, 2)
+        self.assertEqual(mocked_scope_qs.call_args_list[0].kwargs["line_mode"], "service")
+        self.assertEqual(mocked_scope_qs.call_args_list[1].kwargs["line_mode"], "service")
+
     @patch("sales.services.sales_settings_service.SalesSettingsService._last_saved_doc_in_scope")
     @patch("sales.services.sales_settings_service.DocumentNumberService.peek_preview")
     @patch("sales.services.sales_settings_service.DocumentType.objects.filter")
