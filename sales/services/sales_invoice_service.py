@@ -56,12 +56,14 @@ ZERO2 = Decimal("0.00")
 ZERO4 = Decimal("0.0000")
 Q2 = Decimal("0.01")
 Q4 = Decimal("0.0001")
+TOL = Decimal("0.02")
 GSTIN_RE = re.compile(r"^[0-9A-Z]{15}$")
 SALES_POLICY_DEFAULTS = {
     "allow_edit_confirmed": "on",
     "allow_unpost_posted": "on",
     "confirm_lock_check": "hard",
     "require_lines_on_confirm": "hard",
+    "line_amount_mismatch": "hard",
     "auto_compliance_failure_mode": "warn",
 }
 
@@ -78,6 +80,10 @@ def q4(x) -> Decimal:
         return Decimal(x or 0).quantize(Q4, rounding=ROUND_HALF_UP)
     except Exception:
         return ZERO4
+
+
+def near(a, b, tol=TOL) -> bool:
+    return abs(q2(a) - q2(b)) <= tol
 
 
 @dataclass
@@ -1919,6 +1925,10 @@ class SalesInvoiceService:
     @staticmethod
     def upsert_lines(*, header, incoming_lines, user, allow_delete: bool) -> None:
         incoming_lines = incoming_lines or []
+        controls = SalesInvoiceService._policy_controls(header)
+        mismatch_level = str(controls.get("line_amount_mismatch", "hard")).lower().strip()
+        if mismatch_level not in {"off", "warn", "hard"}:
+            mismatch_level = "hard"
 
         # âœ… Always compute max from DB (ignores any deferred manager weirdness)
         max_ln = int(header.lines.aggregate(m=Max("line_no")).get("m") or 0)
@@ -1989,6 +1999,12 @@ class SalesInvoiceService:
 
                 line.updated_by = user
                 SalesInvoiceService.compute_line_amounts(header, line)
+                SalesInvoiceService.verify_client_vs_authoritative(
+                    row,
+                    line,
+                    row_ln or int(line.line_no or 0) or 1,
+                    mismatch_level=mismatch_level,
+                )
 
                 try:
                     line.full_clean()
@@ -2026,6 +2042,12 @@ class SalesInvoiceService:
 
             SalesInvoiceService.apply_line_inputs(line, row, default_taxability=int(header.taxability or SalesInvoiceHeader.Taxability.TAXABLE))
             SalesInvoiceService.compute_line_amounts(header, line)
+            SalesInvoiceService.verify_client_vs_authoritative(
+                row,
+                line,
+                desired_ln,
+                mismatch_level=mismatch_level,
+            )
 
             try:
                 line.full_clean()
@@ -2170,6 +2192,29 @@ class SalesInvoiceService:
         line.discount_amount = disc  # normalize
 
         line.line_total = q2(taxable + cgst + sgst + igst + cess_amt)
+
+    @staticmethod
+    def verify_client_vs_authoritative(
+        client_line: Dict[str, Any],
+        auth_line: SalesInvoiceLine,
+        idx: int,
+        mismatch_level: str = "hard",
+    ) -> None:
+        checks = [
+            ("taxable_value", getattr(auth_line, "taxable_value", ZERO2)),
+            ("cgst_amount", getattr(auth_line, "cgst_amount", ZERO2)),
+            ("sgst_amount", getattr(auth_line, "sgst_amount", ZERO2)),
+            ("igst_amount", getattr(auth_line, "igst_amount", ZERO2)),
+            ("cess_amount", getattr(auth_line, "cess_amount", ZERO2)),
+            ("line_total", getattr(auth_line, "line_total", ZERO2)),
+        ]
+        errors = {}
+        for field_name, expected_value in checks:
+            if field_name in client_line and client_line[field_name] is not None:
+                if not near(client_line[field_name], expected_value):
+                    errors[field_name] = f"Line {idx}: sent {q2(client_line[field_name])} but expected {q2(expected_value)}"
+        if errors and mismatch_level == "hard":
+            raise ValueError(errors)
 
     @staticmethod
     def compute_charge_amounts(*, header: SalesInvoiceHeader, row: dict) -> ChargeComputed:

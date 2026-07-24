@@ -14,11 +14,13 @@ logger = logging.getLogger(__name__)
 
 SALES_META_NAMESPACES = [
     "sales.invoice_form_meta",
+    "sales.invoice_customers_meta",
     "sales.settings_meta",
 ]
 
 PURCHASE_META_NAMESPACES = [
     "purchase.invoice_form_meta",
+    "purchase.invoice_vendors_meta",
     "purchase.settings_meta",
 ]
 

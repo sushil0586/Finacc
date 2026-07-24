@@ -31,6 +31,7 @@ from sales.serializers.sales_compliance_serializers import (
     ExtendEWayValidityActionSerializer,
     GenerateIRNAndEWayActionSerializer,
 )
+from sales.serializers.sales_invoice_serializers import SalesInvoiceHeaderSerializer, SalesInvoiceLookupSerializer
 from sales.serializers.eway_serializers import GenerateEWayRequestSerializer
 from withholding.services import WithholdingResult
 from withholding.models import WithholdingBaseRule
@@ -75,6 +76,21 @@ from posting.common.static_accounts import StaticAccountCodes
 
 
 class SalesInvoiceServiceUnitTests(SimpleTestCase):
+    def test_lookup_serializer_exposes_stable_draft_lookup_identity(self):
+        invoice = SalesInvoiceHeader(
+            id=42,
+            doc_code="SINV",
+            doc_type=SalesInvoiceHeader.DocType.TAX_INVOICE,
+            invoice_number="",
+            reference="",
+            status=SalesInvoiceHeader.Status.DRAFT,
+            customer_name="Draft Customer",
+        )
+
+        data = SalesInvoiceLookupSerializer(invoice).data
+
+        self.assertEqual(data["lookup_identity"], "DRAFT-42")
+
     def test_sanitize_header_data_inputs_removes_backend_controlled_totals(self):
         payload = {
             "bill_date": date(2026, 4, 1),
@@ -110,6 +126,78 @@ class SalesInvoiceServiceUnitTests(SimpleTestCase):
         clean = SalesInvoiceService._sanitize_header_data_inputs(payload)
 
         self.assertEqual(clean, payload)
+
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._policy_controls")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService.get_settings")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService")
+    def test_run_auto_compliance_confirm_triggers_irn_when_setting_enabled(
+        self,
+        mocked_compliance_cls,
+        mocked_get_settings,
+        mocked_policy_controls,
+    ):
+        header = SimpleNamespace(
+            entity_id=1,
+            subentity_id=2,
+            entityfinid_id=3,
+            seller_gstin="22AAAAA0000A1Z5",
+            customer_gstin="27ABCDE1234F1Z5",
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B,
+            is_einvoice_applicable=True,
+            is_eway_applicable=False,
+        )
+        user = SimpleNamespace(id=7)
+        mocked_get_settings.return_value = SimpleNamespace(
+            enable_einvoice=True,
+            enable_eway=False,
+            auto_generate_einvoice_on_confirm=True,
+            auto_generate_einvoice_on_post=False,
+            auto_generate_eway_on_confirm=False,
+            auto_generate_eway_on_post=False,
+        )
+        mocked_policy_controls.return_value = {"auto_compliance_failure_mode": "warn"}
+        mocked_service = mocked_compliance_cls.return_value
+
+        SalesInvoiceService._run_auto_compliance(header=header, user=user, stage="confirm")
+
+        mocked_service.ensure_rows.assert_called_once_with()
+        mocked_service.generate_irn.assert_called_once_with()
+
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._policy_controls")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService.get_settings")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService")
+    def test_run_auto_compliance_post_triggers_irn_when_setting_enabled(
+        self,
+        mocked_compliance_cls,
+        mocked_get_settings,
+        mocked_policy_controls,
+    ):
+        header = SimpleNamespace(
+            entity_id=1,
+            subentity_id=2,
+            entityfinid_id=3,
+            seller_gstin="22AAAAA0000A1Z5",
+            customer_gstin="27ABCDE1234F1Z5",
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B,
+            is_einvoice_applicable=True,
+            is_eway_applicable=False,
+        )
+        user = SimpleNamespace(id=7)
+        mocked_get_settings.return_value = SimpleNamespace(
+            enable_einvoice=True,
+            enable_eway=False,
+            auto_generate_einvoice_on_confirm=False,
+            auto_generate_einvoice_on_post=True,
+            auto_generate_eway_on_confirm=False,
+            auto_generate_eway_on_post=False,
+        )
+        mocked_policy_controls.return_value = {"auto_compliance_failure_mode": "warn"}
+        mocked_service = mocked_compliance_cls.return_value
+
+        SalesInvoiceService._run_auto_compliance(header=header, user=user, stage="post")
+
+        mocked_service.ensure_rows.assert_called_once_with()
+        mocked_service.generate_irn.assert_called_once_with()
 
 
 class SalesArServiceUnitTests(SimpleTestCase):
@@ -2684,6 +2772,26 @@ class SalesInvoiceViewUnitTests(SimpleTestCase):
         self.assertEqual(mocked_scope_qs.call_count, 2)
         self.assertEqual(mocked_scope_qs.call_args_list[0].kwargs["line_mode"], "service")
         self.assertEqual(mocked_scope_qs.call_args_list[1].kwargs["line_mode"], "service")
+
+    @patch("sales.serializers.sales_invoice_serializers.SalesSettingsService.get_policy")
+    def test_header_serializer_action_flags_disable_delete_when_policy_is_never(self, mocked_get_policy):
+        mocked_get_policy.return_value = SimpleNamespace(
+            controls={},
+            delete_policy="never",
+        )
+        header = SimpleNamespace(
+            id=10,
+            status=int(SalesInvoiceHeader.Status.DRAFT),
+            entity_id=1,
+            subentity_id=None,
+            entityfinid_id=2026,
+            get_status_display=lambda: "Draft",
+        )
+
+        serializer = SalesInvoiceHeaderSerializer(context={})
+        flags = serializer.get_action_flags(header)
+
+        self.assertFalse(flags["can_delete"])
 
     @patch("sales.services.sales_settings_service.SalesSettingsService._last_saved_doc_in_scope")
     @patch("sales.services.sales_settings_service.DocumentNumberService.peek_preview")

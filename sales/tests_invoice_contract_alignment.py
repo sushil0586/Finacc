@@ -661,6 +661,38 @@ class SalesInvoiceContractAlignmentTests(APITestCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(mocked_get_choices.call_count, 2)
 
+    @override_settings(META_CACHE_ENABLED=True, META_CACHE_FORM_TTL_SECONDS=600, META_CACHE_VERSION="test")
+    def test_sales_customers_meta_cache_invalidates_on_account_create(self):
+        response = self.client.get(
+            reverse("sales-invoice-customers-meta"),
+            {"entity": self.entity.id, "subentity": self.subentity.id},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        initial_ids = {row["id"] for row in response.data["customers"]}
+        self.assertNotIn(self.customer.id + 1, initial_ids)
+
+        create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "accountname": "Fresh Sales Customer",
+                "createdby": self.user,
+            },
+            ledger_overrides={
+                "name": "Fresh Sales Customer",
+                "is_party": True,
+            },
+        )
+
+        response = self.client.get(
+            reverse("sales-invoice-customers-meta"),
+            {"entity": self.entity.id, "subentity": self.subentity.id},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        customer_names = {row["accountname"] for row in response.data["customers"]}
+        self.assertIn("Fresh Sales Customer", customer_names)
+
     @override_settings(
         META_CACHE_ENABLED=True,
         META_CACHE_FORM_TTL_SECONDS=600,

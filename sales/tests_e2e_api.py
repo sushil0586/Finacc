@@ -412,6 +412,78 @@ class SalesApiEndToEndTests(APITestCase):
         self.assertEqual(delete_resp.status_code, status.HTTP_400_BAD_REQUEST, delete_resp.json())
         self.assertIn("Only draft sale invoices can be deleted", str(delete_resp.json()))
 
+    def test_create_sales_invoice_rejects_line_amount_mismatch_when_policy_is_hard(self):
+        settings_obj = SalesSettingsService.get_settings(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            entityfinid_id=self.entityfin.id,
+        )
+        settings_obj.policy_controls = {"line_amount_mismatch": "hard"}
+        settings_obj.save(update_fields=["policy_controls"])
+
+        mismatched_line = self._goods_line_payload()
+        mismatched_line["taxable_value"] = "999.00"
+        payload = self._invoice_payload(lines=[mismatched_line], reference="SO-MISMATCH-HARD")
+
+        response = self.client.post("/api/sales/invoices/", payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, response.json())
+        self.assertIn("Line 1: sent 999.00 but expected 1000.00", str(response.json()))
+
+    def test_create_sales_invoice_normalizes_line_amount_mismatch_when_policy_is_off(self):
+        settings_obj = SalesSettingsService.get_settings(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            entityfinid_id=self.entityfin.id,
+        )
+        settings_obj.policy_controls = {"line_amount_mismatch": "off"}
+        settings_obj.save(update_fields=["policy_controls"])
+
+        mismatched_line = self._goods_line_payload()
+        mismatched_line["taxable_value"] = "999.00"
+        payload = self._invoice_payload(lines=[mismatched_line], reference="SO-MISMATCH-OFF")
+
+        response = self.client.post("/api/sales/invoices/", payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.json())
+        body = response.json()
+        self.assertEqual(len(body["lines"]), 1)
+        self.assertEqual(Decimal(str(body["lines"][0]["taxable_value"])), Decimal("1000.00"))
+        self.assertEqual(Decimal(str(body["lines"][0]["igst_amount"])), Decimal("180.00"))
+        self.assertEqual(Decimal(str(body["lines"][0]["line_total"])), Decimal("1180.00"))
+
+        line = SalesInvoiceLine.objects.get(header_id=body["id"], line_no=1)
+        self.assertEqual(line.taxable_value, Decimal("1000.00"))
+        self.assertEqual(line.igst_amount, Decimal("180.00"))
+        self.assertEqual(line.line_total, Decimal("1180.00"))
+
+    def test_create_sales_invoice_normalizes_line_amount_mismatch_when_policy_is_warn(self):
+        settings_obj = SalesSettingsService.get_settings(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            entityfinid_id=self.entityfin.id,
+        )
+        settings_obj.policy_controls = {"line_amount_mismatch": "warn"}
+        settings_obj.save(update_fields=["policy_controls"])
+
+        mismatched_line = self._goods_line_payload()
+        mismatched_line["taxable_value"] = "999.00"
+        payload = self._invoice_payload(lines=[mismatched_line], reference="SO-MISMATCH-WARN")
+
+        response = self.client.post("/api/sales/invoices/", payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.json())
+        body = response.json()
+        self.assertEqual(len(body["lines"]), 1)
+        self.assertEqual(Decimal(str(body["lines"][0]["taxable_value"])), Decimal("1000.00"))
+        self.assertEqual(Decimal(str(body["lines"][0]["igst_amount"])), Decimal("180.00"))
+        self.assertEqual(Decimal(str(body["lines"][0]["line_total"])), Decimal("1180.00"))
+
+        line = SalesInvoiceLine.objects.get(header_id=body["id"], line_no=1)
+        self.assertEqual(line.taxable_value, Decimal("1000.00"))
+        self.assertEqual(line.igst_amount, Decimal("180.00"))
+        self.assertEqual(line.line_total, Decimal("1180.00"))
+
     @patch("sales.services.sales_invoice_service.SalesInvoiceService._run_auto_compliance")
     @patch("sales.services.sales_invoice_service.SalesArService.sync_open_item_for_header")
     @patch("sales.services.sales_invoice_service.SalesInvoicePostingAdapter.post_sales_invoice")
@@ -674,7 +746,7 @@ class SalesApiEndToEndTests(APITestCase):
         self.assertIn("Confirmed invoice editing is disabled by sales policy.", str(patch_resp.json()))
 
     @patch("sales.services.sales_invoice_service.SalesInvoicePostingAdapter.post_sales_invoice")
-    def test_post_requires_confirmed_invoice(self, _mocked_post_adapter):
+    def test_post_endpoint_allows_direct_post_and_returns_posted_invoice(self, _mocked_post_adapter):
         created = self._create_invoice(reference="SO-POST-BLOCK")
         invoice_id = created["id"]
 

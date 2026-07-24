@@ -304,11 +304,22 @@ class SalesInvoiceLookupAPIView(_SalesScopeMixin, APIView):
         if customer_id:
             qs = qs.filter(customer_id=customer_id)
         if search:
+            draft_id = None
+            if search.isdigit():
+                draft_id = int(search)
+            else:
+                upper_search = search.upper()
+                if upper_search.startswith("DRAFT-"):
+                    suffix = upper_search.split("DRAFT-", 1)[1].strip()
+                    if suffix.isdigit():
+                        draft_id = int(suffix)
             qs = qs.filter(
                 Q(invoice_number__icontains=search)
+                | Q(reference__icontains=search)
                 | Q(customer_name__icontains=search)
                 | Q(customer__accountname__icontains=search)
                 | Q(doc_code__icontains=search)
+                | (Q(id=draft_id) if draft_id else Q())
             )
 
         return qs.select_related(None).select_related(
@@ -320,6 +331,7 @@ class SalesInvoiceLookupAPIView(_SalesScopeMixin, APIView):
             "doc_code",
             "doc_type",
             "invoice_number",
+            "reference",
             "status",
             "customer_id",
             "customer_name",

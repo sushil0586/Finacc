@@ -26,6 +26,19 @@ from sales.serializers.sales_compliance_serializers import (
 )
 
 
+def _sales_lookup_identity(obj: SalesInvoiceHeader) -> str:
+    invoice_number = str(getattr(obj, "invoice_number", "") or "").strip()
+    if invoice_number:
+        return invoice_number
+    reference = str(getattr(obj, "reference", "") or "").strip()
+    if reference:
+        return reference
+    object_id = getattr(obj, "id", None)
+    if object_id not in (None, "", 0, "0"):
+        return f"DRAFT-{object_id}"
+    return ""
+
+
 
 class SalesInvoiceLineSerializer(serializers.ModelSerializer):
     productDesc = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=200)
@@ -253,6 +266,7 @@ class SalesInvoiceLookupSerializer(serializers.ModelSerializer):
     total_value = serializers.SerializerMethodField()
     subentity_name = serializers.CharField(source="subentity.subentityname", read_only=True)
     branch_name = serializers.CharField(source="subentity.subentityname", read_only=True)
+    lookup_identity = serializers.SerializerMethodField()
 
     class Meta:
         model = SalesInvoiceHeader
@@ -263,6 +277,8 @@ class SalesInvoiceLookupSerializer(serializers.ModelSerializer):
             "doc_type",
             "doc_type_name",
             "invoice_number",
+            "reference",
+            "lookup_identity",
             "status",
             "status_name",
             "customer_name",
@@ -279,6 +295,9 @@ class SalesInvoiceLookupSerializer(serializers.ModelSerializer):
 
     def get_total_value(self, obj) -> Decimal:
         return getattr(obj, "grand_total", None) or Decimal("0.00")
+
+    def get_lookup_identity(self, obj) -> str:
+        return _sales_lookup_identity(obj)
 
 
 class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
@@ -332,6 +351,7 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
     tax_regime_name = serializers.CharField(source="get_tax_regime_display", read_only=True)
     supply_category_name = serializers.CharField(source="get_supply_category_display", read_only=True)
     navigation = serializers.SerializerMethodField()
+    lookup_identity = serializers.SerializerMethodField()
     customer_display_name = serializers.CharField(source="customer.effective_accounting_name", read_only=True)
     customer_accountcode = serializers.IntegerField(source="customer.effective_accounting_code", read_only=True)
     customer_ledger_id = serializers.IntegerField(read_only=True)
@@ -339,6 +359,50 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
     custom_fields = serializers.JSONField(source="custom_fields_json", required=False)
     action_flags = serializers.SerializerMethodField()
     compliance_action_flags = serializers.SerializerMethodField()
+
+    @staticmethod
+    def _merge_client_line_amount_fields(validated_lines, raw_lines):
+        if not isinstance(validated_lines, list) or not isinstance(raw_lines, list):
+            return validated_lines
+
+        amount_fields = (
+            "taxable_value",
+            "cgst_amount",
+            "sgst_amount",
+            "igst_amount",
+            "cess_amount",
+            "line_total",
+        )
+        raw_by_id = {}
+        raw_by_line_no = {}
+        for raw in raw_lines:
+            if not isinstance(raw, dict):
+                continue
+            raw_id = raw.get("id")
+            raw_line_no = raw.get("line_no")
+            if raw_id not in (None, "", 0, "0"):
+                raw_by_id[str(raw_id)] = raw
+            if raw_line_no not in (None, "", 0, "0"):
+                raw_by_line_no[str(raw_line_no)] = raw
+
+        for idx, row in enumerate(validated_lines):
+            if not isinstance(row, dict):
+                continue
+            matched_raw = None
+            row_id = row.get("id")
+            row_line_no = row.get("line_no")
+            if row_id not in (None, "", 0, "0"):
+                matched_raw = raw_by_id.get(str(row_id))
+            if matched_raw is None and row_line_no not in (None, "", 0, "0"):
+                matched_raw = raw_by_line_no.get(str(row_line_no))
+            if matched_raw is None and idx < len(raw_lines) and isinstance(raw_lines[idx], dict):
+                matched_raw = raw_lines[idx]
+            if not isinstance(matched_raw, dict):
+                continue
+            for field_name in amount_fields:
+                if field_name in matched_raw and field_name not in row:
+                    row[field_name] = matched_raw[field_name]
+        return validated_lines
 
     class Meta:
         model = SalesInvoiceHeader
@@ -353,6 +417,7 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             "doc_type_name",
             "doc_no",
             "invoice_number",
+            "lookup_identity",
             "original_invoice",
             "note_reason",
             "affects_inventory",
@@ -512,6 +577,9 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             line_mode=self.context.get("line_mode"),
         )
 
+    def get_lookup_identity(self, obj) -> str:
+        return _sales_lookup_identity(obj)
+
     def get_compliance_action_flags(self, obj):
         return SalesComplianceService.compliance_action_flags(obj)
 
@@ -529,6 +597,12 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
         is_confirmed = int(obj.status) == int(SalesInvoiceHeader.Status.CONFIRMED)
         is_posted = int(obj.status) == int(SalesInvoiceHeader.Status.POSTED)
         is_cancelled = int(obj.status) == int(SalesInvoiceHeader.Status.CANCELLED)
+        delete_allowed = False
+        if not is_cancelled:
+            if policy.delete_policy == "draft_only":
+                delete_allowed = is_draft
+            elif policy.delete_policy == "non_posted":
+                delete_allowed = not is_posted
 
         return build_document_action_flags(
             status_value=int(obj.status),
@@ -541,6 +615,7 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             allow_unpost_posted=allow_unpost_posted,
             include_reverse=True,
             include_rebuild_tax_summary=True,
+            can_delete=delete_allowed,
             extra={"can_post": is_draft or is_confirmed},
         )
 
@@ -719,6 +794,8 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
         request = self.context["request"]
         lines = validated_data.pop("lines", [])
         charges = validated_data.pop("charges", [])
+        raw_lines = request.data.get("lines", []) if isinstance(getattr(request, "data", None), dict) else []
+        lines = self._merge_client_line_amount_fields(lines, raw_lines)
 
         if not lines:
             raise serializers.ValidationError({"lines": "At least one line is required."})
@@ -747,6 +824,9 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
         request = self.context["request"]
         lines = validated_data.pop("lines", None)
         charges = validated_data.pop("charges", None)
+        raw_lines = request.data.get("lines", None) if isinstance(getattr(request, "data", None), dict) else None
+        if lines is not None:
+            lines = self._merge_client_line_amount_fields(lines, raw_lines)
 
         # do not allow moving scope
         validated_data.pop("entity", None)

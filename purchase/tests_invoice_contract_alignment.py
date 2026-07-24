@@ -247,6 +247,38 @@ class PurchaseInvoiceContractAlignmentTests(APITestCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(mocked_compile_choices.call_count, 2)
 
+    @override_settings(META_CACHE_ENABLED=True, META_CACHE_FORM_TTL_SECONDS=600, META_CACHE_VERSION="test")
+    def test_purchase_vendors_meta_cache_invalidates_on_account_create(self):
+        response = self.client.get(
+            reverse("purchase-invoice-vendors-meta"),
+            {"entity": self.entity.id, "subentity": self.subentity.id, "entityfinid": self.entityfin.id},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        initial_names = {row["accountname"] for row in response.data["vendors"]}
+        self.assertNotIn("Fresh Purchase Vendor", initial_names)
+
+        create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "accountname": "Fresh Purchase Vendor",
+                "createdby": self.user,
+            },
+            ledger_overrides={
+                "name": "Fresh Purchase Vendor",
+                "is_party": True,
+            },
+        )
+
+        response = self.client.get(
+            reverse("purchase-invoice-vendors-meta"),
+            {"entity": self.entity.id, "subentity": self.subentity.id, "entityfinid": self.entityfin.id},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        vendor_names = {row["accountname"] for row in response.data["vendors"]}
+        self.assertIn("Fresh Purchase Vendor", vendor_names)
+
     @override_settings(
         META_CACHE_ENABLED=False,
         META_CACHE_FORM_TTL_SECONDS=600,

@@ -340,7 +340,6 @@ class ReceiptSettingsAPIView(ScopedEntitlementMixin, APIView):
         entity_id, subentity_id, entityfinid_id = self._scope(request, require_entityfinid=True)
         return Response(self._payload(entity_id=entity_id, subentity_id=subentity_id, entityfinid_id=entityfinid_id))
 
-    @transaction.atomic
     def patch(self, request):
         entity_id, subentity_id, entityfinid_id = self._scope(request, require_entityfinid=False)
         if not isinstance(request.data, dict):
@@ -350,41 +349,42 @@ class ReceiptSettingsAPIView(ScopedEntitlementMixin, APIView):
         settings_updates = nested_settings if nested_settings is not None else request.data
         self._validate_settings_updates(settings_updates)
 
-        try:
-            updated = ReceiptSettingsService.upsert_settings(
-                entity_id=entity_id,
-                subentity_id=subentity_id,
-                updates={k: v for k, v in settings_updates.items() if k in EDITABLE_FIELDS},
-            )
-        except ValueError as exc:
-            raise ValidationError({"detail": str(exc)})
+        with transaction.atomic():
+            try:
+                updated = ReceiptSettingsService.upsert_settings(
+                    entity_id=entity_id,
+                    subentity_id=subentity_id,
+                    updates={k: v for k, v in settings_updates.items() if k in EDITABLE_FIELDS},
+                )
+            except ValueError as exc:
+                raise ValidationError({"detail": str(exc)})
 
-        if "numbering_series" in request.data:
-            rows = request.data.get("numbering_series") or []
-            if not entityfinid_id:
-                raise ValidationError({"entityfinid": "entityfinid is required when updating numbering_series."})
-            if not isinstance(rows, list):
-                raise ValidationError({"numbering_series": "Provide a list of numbering series rows."})
-            self._update_numbering_series(
-                rows,
-                entity_id=entity_id,
-                entityfinid_id=entityfinid_id,
-                subentity_id=subentity_id,
-                settings_obj=updated,
-                user_id=getattr(request.user, "id", None),
-            )
+            if "numbering_series" in request.data:
+                rows = request.data.get("numbering_series") or []
+                if not entityfinid_id:
+                    raise ValidationError({"entityfinid": "entityfinid is required when updating numbering_series."})
+                if not isinstance(rows, list):
+                    raise ValidationError({"numbering_series": "Provide a list of numbering series rows."})
+                self._update_numbering_series(
+                    rows,
+                    entity_id=entity_id,
+                    entityfinid_id=entityfinid_id,
+                    subentity_id=subentity_id,
+                    settings_obj=updated,
+                    user_id=getattr(request.user, "id", None),
+                )
 
-        if "lock_periods" in request.data:
-            rows = request.data.get("lock_periods") or []
-            if not isinstance(rows, list):
-                raise ValidationError({"lock_periods": "Provide a list of lock periods."})
-            self._replace_lock_periods(rows, entity_id=entity_id, subentity_id=subentity_id)
+            if "lock_periods" in request.data:
+                rows = request.data.get("lock_periods") or []
+                if not isinstance(rows, list):
+                    raise ValidationError({"lock_periods": "Provide a list of lock periods."})
+                self._replace_lock_periods(rows, entity_id=entity_id, subentity_id=subentity_id)
 
-        if "choice_overrides" in request.data:
-            rows = request.data.get("choice_overrides") or []
-            if not isinstance(rows, list):
-                raise ValidationError({"choice_overrides": "Provide a list of choice overrides."})
-            self._replace_choice_overrides(rows, entity_id=entity_id, subentity_id=subentity_id)
+            if "choice_overrides" in request.data:
+                rows = request.data.get("choice_overrides") or []
+                if not isinstance(rows, list):
+                    raise ValidationError({"choice_overrides": "Provide a list of choice overrides."})
+                self._replace_choice_overrides(rows, entity_id=entity_id, subentity_id=subentity_id)
 
         entityfinid_for_response = entityfinid_id or self._parse_int(request.query_params.get("entityfinid"), "entityfinid", required=False)
         return Response(self._payload(entity_id=entity_id, subentity_id=subentity_id, entityfinid_id=entityfinid_for_response), status=status.HTTP_200_OK)
