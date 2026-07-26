@@ -504,6 +504,11 @@ class PurchaseInvoiceActions:
         old_scope_key = GstTdsService._scope_key_for_header(h)
 
         if int(h.status) == int(Status.POSTED):
+            if int(getattr(h, "doc_type", 0) or 0) != int(PurchaseInvoiceHeader.DocType.TAX_INVOICE):
+                raise ValueError(
+                    "Posted purchase notes cannot be cancelled directly. "
+                    "Unpost the note if policy allows, or create a counter-correction document instead."
+                )
             window = PurchaseInvoiceService.amendment_window_for_header(h)
             if not window.amendment_required:
                 raise ValueError("Posted document cannot be cancelled. Create a Credit Note instead.")

@@ -162,6 +162,13 @@ def _exclude_cancelled_open_items(qs):
     return qs.exclude(header__status=SalesInvoiceHeader.Status.CANCELLED)
 
 
+def _resolved_open_item_exposure(*, original_amount, applied_amount, is_open=True, stored_outstanding=ZERO, stored_settled=ZERO):
+    applied = q2(applied_amount or ZERO)
+    if not is_open and q2(stored_outstanding or ZERO) == ZERO and applied == ZERO:
+        return q2(stored_settled or original_amount), ZERO
+    return applied, q2(original_amount - applied)
+
+
 def _sales_invoice_route(*, invoice_id: int | None) -> str:
     if not invoice_id:
         return "/saleinvoice"
@@ -237,8 +244,13 @@ def _asof_open_item_balances(*, entity_id, entityfin_id, subentity_id, upto_date
         qs = qs.filter(customer_id__in=customer_ids)
     rows = []
     for item in qs:
-        settled = line_map.get(item.id, ZERO)
-        outstanding = q2(item.original_amount - settled)
+        settled, outstanding = _resolved_open_item_exposure(
+            original_amount=item.original_amount,
+            applied_amount=line_map.get(item.id, ZERO),
+            is_open=item.is_open,
+            stored_outstanding=item.outstanding_amount,
+            stored_settled=item.settled_amount,
+        )
         rows.append((item, settled, outstanding))
     return rows
 
@@ -345,12 +357,18 @@ def _customer_outstanding_open_item_maps(*, entity_id, entityfin_id, subentity_i
         bill_date__lte=upto_date,
         customer_id__in=customer_ids,
     )
-    rows = qs.values_list("id", "customer_id", "original_amount", "due_date")
+    rows = qs.values_list("id", "customer_id", "original_amount", "due_date", "is_open", "outstanding_amount", "settled_amount")
     net_map = defaultdict(lambda: ZERO)
     credit_source_map = defaultdict(lambda: ZERO)
     overdue_map = defaultdict(lambda: ZERO)
-    for item_id, cust_id, original_amount, due_date in rows.iterator(chunk_size=2000):
-        outstanding = q2(original_amount - line_map.get(item_id, ZERO))
+    for item_id, cust_id, original_amount, due_date, is_open, stored_outstanding, stored_settled in rows.iterator(chunk_size=2000):
+        _settled, outstanding = _resolved_open_item_exposure(
+            original_amount=original_amount,
+            applied_amount=line_map.get(item_id, ZERO),
+            is_open=is_open,
+            stored_outstanding=stored_outstanding,
+            stored_settled=stored_settled,
+        )
         net_map[cust_id] = q2(net_map[cust_id] + outstanding)
         if outstanding < ZERO:
             credit_source_map[cust_id] = q2(credit_source_map[cust_id] + abs(outstanding))
@@ -432,14 +450,23 @@ def _receivable_aging_summary_open_items(*, entity_id, entityfin_id, subentity_i
     )
     rows = []
     credit_pool = defaultdict(lambda: ZERO)
-    for item_id, cust_id, bill_date, due_date, original_amount in qs.values_list(
+    for item_id, cust_id, bill_date, due_date, original_amount, is_open, stored_outstanding, stored_settled in qs.values_list(
         "id",
         "customer_id",
         "bill_date",
         "due_date",
         "original_amount",
+        "is_open",
+        "outstanding_amount",
+        "settled_amount",
     ).iterator(chunk_size=2000):
-        outstanding = q2(original_amount - line_map.get(item_id, ZERO))
+        _settled, outstanding = _resolved_open_item_exposure(
+            original_amount=original_amount,
+            applied_amount=line_map.get(item_id, ZERO),
+            is_open=is_open,
+            stored_outstanding=stored_outstanding,
+            stored_settled=stored_settled,
+        )
         if outstanding > ZERO:
             rows.append(
                 (
@@ -1128,7 +1155,15 @@ def build_customer_outstanding_report(
         "from_date": from_date,
         "to_date": to_date,
         "rows": paged_rows,
-        "totals": {k: f"{q2(v):.2f}" for k, v in totals.items()},
+        "totals": {
+            "opening_balance": f"{q2(totals['opening_balance']):.2f}",
+            "invoice_amount": f"{q2(totals['invoice_amount']):.2f}",
+            "receipt_amount": f"{q2(totals['receipt_amount']):.2f}",
+            "credit_note": f"{q2(totals['credit_note']):.2f}",
+            "net_outstanding": f"{q2(totals['net_outstanding']):.2f}",
+            "overdue_amount": f"{q2(totals['overdue_amount']):.2f}",
+            "unapplied_receipt": f"{q2(totals['unapplied_receipt']):.2f}",
+        },
         "pagination": {"page": page, "page_size": page_size, "total_rows": total_rows},
         "summary": {"customer_count": total_rows},
         **_report_meta_payload(),
@@ -1476,8 +1511,13 @@ def build_open_items_report(
     customer_ids = set(qs.values_list("customer_id", flat=True).distinct())
 
     for item in qs.iterator(chunk_size=1000):
-        settled = q2(line_map.get(item.id, ZERO))
-        outstanding = q2(item.original_amount - settled)
+        settled, outstanding = _resolved_open_item_exposure(
+            original_amount=item.original_amount,
+            applied_amount=line_map.get(item.id, ZERO),
+            is_open=item.is_open,
+            stored_outstanding=item.outstanding_amount,
+            stored_settled=item.settled_amount,
+        )
         if outstanding < ZERO:
             credit_balance_amount = q2(credit_balance_amount + abs(outstanding))
             continue
@@ -1574,7 +1614,11 @@ def build_open_items_report(
         "subentity_id": subentity_id,
         "as_of_date": resolved_as_of,
         "rows": paged_rows,
-        "totals": {k: f"{q2(v):.2f}" for k, v in totals.items()},
+        "totals": {
+            "original_amount": f"{q2(totals['original_amount']):.2f}",
+            "settled_amount": f"{q2(totals['settled_amount']):.2f}",
+            "outstanding_amount": f"{q2(totals['outstanding_amount']):.2f}",
+        },
         "pagination": {"page": page, "page_size": page_size, "total_rows": total_rows},
         "summary": {
             "open_item_count": total_rows,

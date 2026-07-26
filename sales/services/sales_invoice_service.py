@@ -960,6 +960,11 @@ class SalesInvoiceService:
         s = str(code).strip()
         return s.zfill(2) if s.isdigit() and s else s
 
+    @staticmethod
+    def _has_meaningful_state_code(value: Optional[str]) -> bool:
+        code = str(value or "").strip()
+        return bool(code and code != "0")
+
     @classmethod
     def _refresh_party_snapshots(cls, *, header: SalesInvoiceHeader) -> None:
         """
@@ -972,13 +977,13 @@ class SalesInvoiceService:
                 header.customer_name = (getattr(cust, "legalname", None) or getattr(cust, "accountname", None) or "").strip()
             if not cls._is_valid_gstin(header.customer_gstin):
                 header.customer_gstin = cls._normalize_gstin(account_gstno(cust))
-            if not (header.customer_state_code or "").strip():
+            if not cls._has_meaningful_state_code(header.customer_state_code):
                 header.customer_state_code = cls._state_code_from_state_obj(account_region_state(cust))
 
         if ent:
             if not cls._is_valid_gstin(header.seller_gstin):
                 header.seller_gstin = cls._normalize_gstin(entity_primary_gstin(ent))
-            if not (header.seller_state_code or "").strip():
+            if not cls._has_meaningful_state_code(header.seller_state_code):
                 header.seller_state_code = cls._state_code_from_state_obj(entity_primary_state(ent))
 
         # Derive POS from bill-to/ship-to/customer when missing.

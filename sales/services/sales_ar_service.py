@@ -167,6 +167,7 @@ class SalesArService:
         item.outstanding_amount = ZERO2
         item.last_settled_at = timezone.now()
         item.save(update_fields=["is_open", "outstanding_amount", "last_settled_at", "updated_at"])
+        SalesArService._sync_header_from_open_item(item)
 
     @staticmethod
     @transaction.atomic
@@ -355,6 +356,8 @@ class SalesArService:
         item.save()
 
         SalesArService._auto_adjust_credit_note_if_enabled(header=header, cn_item=item)
+        item.refresh_from_db()
+        SalesArService._sync_header_from_open_item(item)
         return item
 
     @staticmethod

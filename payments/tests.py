@@ -113,6 +113,31 @@ class PaymentVoucherReferenceWarningTests(SimpleTestCase):
 class PaymentVoucherServiceTests(SimpleTestCase):
     databases = {"default"}
 
+    @patch("payments.services.payment_voucher_service.PaymentVoucherHeader.objects")
+    def test_confirm_voucher_returns_already_confirmed_for_repeat_confirm(self, mock_header_objects):
+        header = SimpleNamespace(
+            id=51,
+            entity_id=10,
+            entityfinid_id=8,
+            subentity_id=8,
+            status=PaymentVoucherHeader.Status.CONFIRMED,
+            doc_code="PPV",
+            doc_no=1545,
+            voucher_code="PPV-PPV-2026-01545",
+            voucher_date=date(2026, 7, 22),
+            approved_by_id=None,
+            save=MagicMock(),
+        )
+        mock_header_objects.select_for_update.return_value.get.return_value = header
+
+        result = PaymentVoucherService.confirm_voucher.__wrapped__(voucher_id=51, confirmed_by_id=9)
+
+        self.assertEqual(result.message, "Already confirmed.")
+        self.assertEqual(header.approved_by_id, 9)
+        header.save.assert_called_once_with(
+            update_fields=["doc_code", "doc_no", "voucher_code", "approved_by", "updated_at"]
+        )
+
     @patch("payments.services.payment_voucher_service.PaymentVoucherService._doc_type_id_for_payment", return_value=9)
     @patch("payments.services.payment_voucher_service.DocumentNumberService.allocate_final")
     @patch("payments.services.payment_voucher_service.PaymentVoucherHeader.objects")
@@ -198,7 +223,7 @@ class PaymentVoucherServiceTests(SimpleTestCase):
             entityfinid_id=2,
             voucher_date=date(2026, 4, 15),
         )
-        mock_header_objects.select_related.return_value.prefetch_related.return_value.select_for_update.return_value.get.return_value = header
+        mock_header_objects.prefetch_related.return_value.select_for_update.return_value.get.return_value = header
         mock_resolve_year.return_value = SimpleNamespace(
             id=2,
             desc="FY 2026-27",
@@ -223,7 +248,7 @@ class PaymentVoucherServiceTests(SimpleTestCase):
             entityfinid_id=2,
             voucher_date=date(2026, 4, 15),
         )
-        mock_header_objects.select_related.return_value.prefetch_related.return_value.select_for_update.return_value.get.return_value = header
+        mock_header_objects.prefetch_related.return_value.select_for_update.return_value.get.return_value = header
         mock_resolve_year.return_value = SimpleNamespace(
             id=2,
             desc="FY 2026-27",
@@ -264,6 +289,49 @@ class PaymentVoucherServiceTests(SimpleTestCase):
         with self.assertRaisesMessage(ValueError, "Cannot cancel voucher: Books locked up to 2026-04-30 in financial year FY 2026-27."):
             PaymentVoucherService.cancel_voucher.__wrapped__(voucher_id=53, cancelled_by_id=9)
 
+    @patch("payments.services.payment_voucher_service.PaymentVoucherHeader.objects")
+    def test_cancel_voucher_returns_already_cancelled_for_repeat_cancel(self, mock_header_objects):
+        header = SimpleNamespace(
+            status=PaymentVoucherHeader.Status.CANCELLED,
+            voucher_date=date(2026, 4, 15),
+            entity_id=1,
+            entityfinid_id=2,
+        )
+        mock_header_objects.select_for_update.return_value.get.return_value = header
+
+        result = PaymentVoucherService.cancel_voucher.__wrapped__(voucher_id=53, cancelled_by_id=9)
+
+        self.assertEqual(result.message, "Already cancelled.")
+
+    @patch("payments.services.payment_voucher_service.PaymentVoucherHeader.objects")
+    def test_post_voucher_returns_already_posted_for_repeat_post(self, mock_header_objects):
+        header = SimpleNamespace(
+            id=54,
+            entity_id=1,
+            entityfinid_id=2,
+            voucher_date=date(2026, 4, 15),
+            status=PaymentVoucherHeader.Status.POSTED,
+        )
+        mock_header_objects.prefetch_related.return_value.select_for_update.return_value.get.return_value = header
+
+        result = PaymentVoucherService.post_voucher.__wrapped__(voucher_id=54, posted_by_id=9)
+
+        self.assertEqual(result.message, "Already posted.")
+
+    @patch("payments.services.payment_voucher_service.PaymentVoucherHeader.objects")
+    def test_unpost_voucher_blocks_repeat_unpost_after_return_to_confirmed(self, mock_header_objects):
+        header = SimpleNamespace(
+            id=55,
+            entity_id=1,
+            entityfinid_id=2,
+            voucher_date=date(2026, 4, 15),
+            status=PaymentVoucherHeader.Status.CONFIRMED,
+        )
+        mock_header_objects.prefetch_related.return_value.select_for_update.return_value.get.return_value = header
+
+        with self.assertRaisesMessage(ValueError, "Only POSTED vouchers can be unposted."):
+            PaymentVoucherService.unpost_voucher.__wrapped__(voucher_id=55, unposted_by_id=9)
+
     @patch.object(PaymentVoucherService, "_fresh_allocation_rows", return_value=[])
     @patch("payments.services.payment_voucher_service.PaymentVoucherPostingAdapter.post_payment_voucher")
     @patch("payments.services.payment_voucher_service.PaymentSettingsService.get_policy")
@@ -300,7 +368,7 @@ class PaymentVoucherServiceTests(SimpleTestCase):
             save=MagicMock(),
         )
 
-        mock_header_objects.select_related.return_value.prefetch_related.return_value.select_for_update.return_value.get.return_value = header
+        mock_header_objects.prefetch_related.return_value.select_for_update.return_value.get.return_value = header
 
         mock_get_policy.return_value = SimpleNamespace(controls={
             "require_allocation_on_post": "off",
@@ -334,7 +402,7 @@ class PaymentVoucherServiceTests(SimpleTestCase):
             advance_adjustments=SimpleNamespace(all=lambda: []),
             save=MagicMock(),
         )
-        mock_header_objects.select_related.return_value.prefetch_related.return_value.select_for_update.return_value.get.return_value = header
+        mock_header_objects.prefetch_related.return_value.select_for_update.return_value.get.return_value = header
         mock_get_policy.return_value = SimpleNamespace(controls={"unpost_target_status": "confirmed"})
 
         res = PaymentVoucherService.unpost_voucher.__wrapped__(voucher_id=12, unposted_by_id=9)
@@ -400,7 +468,7 @@ class PaymentVoucherServiceTests(SimpleTestCase):
             advance_adjustments=SimpleNamespace(all=lambda: []),
             save=MagicMock(),
         )
-        mock_header_objects.select_related.return_value.prefetch_related.return_value.get.return_value = header
+        mock_header_objects.prefetch_related.return_value.select_for_update.return_value.get.return_value = header
         mock_get_policy.return_value = SimpleNamespace(controls={
             "require_allocation_on_post": "hard",
             "sync_ap_settlement_on_post": "off",

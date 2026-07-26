@@ -26,19 +26,6 @@ from sales.serializers.sales_compliance_serializers import (
 )
 
 
-def _sales_lookup_identity(obj: SalesInvoiceHeader) -> str:
-    invoice_number = str(getattr(obj, "invoice_number", "") or "").strip()
-    if invoice_number:
-        return invoice_number
-    reference = str(getattr(obj, "reference", "") or "").strip()
-    if reference:
-        return reference
-    object_id = getattr(obj, "id", None)
-    if object_id not in (None, "", 0, "0"):
-        return f"DRAFT-{object_id}"
-    return ""
-
-
 
 class SalesInvoiceLineSerializer(serializers.ModelSerializer):
     productDesc = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=200)
@@ -266,7 +253,6 @@ class SalesInvoiceLookupSerializer(serializers.ModelSerializer):
     total_value = serializers.SerializerMethodField()
     subentity_name = serializers.CharField(source="subentity.subentityname", read_only=True)
     branch_name = serializers.CharField(source="subentity.subentityname", read_only=True)
-    lookup_identity = serializers.SerializerMethodField()
 
     class Meta:
         model = SalesInvoiceHeader
@@ -277,8 +263,6 @@ class SalesInvoiceLookupSerializer(serializers.ModelSerializer):
             "doc_type",
             "doc_type_name",
             "invoice_number",
-            "reference",
-            "lookup_identity",
             "status",
             "status_name",
             "customer_name",
@@ -295,9 +279,6 @@ class SalesInvoiceLookupSerializer(serializers.ModelSerializer):
 
     def get_total_value(self, obj) -> Decimal:
         return getattr(obj, "grand_total", None) or Decimal("0.00")
-
-    def get_lookup_identity(self, obj) -> str:
-        return _sales_lookup_identity(obj)
 
 
 class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
@@ -351,7 +332,6 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
     tax_regime_name = serializers.CharField(source="get_tax_regime_display", read_only=True)
     supply_category_name = serializers.CharField(source="get_supply_category_display", read_only=True)
     navigation = serializers.SerializerMethodField()
-    lookup_identity = serializers.SerializerMethodField()
     customer_display_name = serializers.CharField(source="customer.effective_accounting_name", read_only=True)
     customer_accountcode = serializers.IntegerField(source="customer.effective_accounting_code", read_only=True)
     customer_ledger_id = serializers.IntegerField(read_only=True)
@@ -417,7 +397,6 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             "doc_type_name",
             "doc_no",
             "invoice_number",
-            "lookup_identity",
             "original_invoice",
             "note_reason",
             "affects_inventory",
@@ -576,9 +555,6 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             obj,
             line_mode=self.context.get("line_mode"),
         )
-
-    def get_lookup_identity(self, obj) -> str:
-        return _sales_lookup_identity(obj)
 
     def get_compliance_action_flags(self, obj):
         return SalesComplianceService.compliance_action_flags(obj)

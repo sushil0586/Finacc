@@ -14,12 +14,14 @@ from financial.profile_access import account_gstno
 from financial.services import apply_normalized_profile_payload, create_account_with_synced_ledger
 from geography.models import City, Country, District, State
 from reports.services.receivables import (
+    build_collections_history_report,
     build_customer_outstanding_report,
     build_open_items_report,
     build_receivable_aging_report,
 )
 from sales.models.sales_ar import CustomerAdvanceBalance, CustomerBillOpenItem
 from sales.models.sales_core import SalesInvoiceHeader, SalesInvoiceLine
+from sales.services.sales_ar_service import SalesArService
 
 
 class ReceivablesRouteContractTests(TestCase):
@@ -468,3 +470,191 @@ class ReceivablesRouteContractTests(TestCase):
         self.assertEqual(report["summary"]["customer_count"], 1)
         self.assertEqual([row["customer_name"] for row in report["rows"]], ["Service Customer"])
         self.assertEqual(report["totals"]["net_outstanding"], "118.00")
+
+    def test_open_items_and_collections_history_reflect_posted_manual_settlement(self):
+        invoice = self._create_service_invoice()
+        open_item = CustomerBillOpenItem.objects.get(header=invoice)
+
+        create_res = SalesArService.create_settlement(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            customer_id=self.customer.id,
+            settlement_type="receipt",
+            settlement_date=datetime(2025, 4, 20).date(),
+            reference_no="SET-001",
+            external_voucher_no="RCPT-001",
+            remarks="Manual receipt",
+            lines=[{"open_item_id": open_item.id, "amount": Decimal("30.00"), "note": "Part receipt"}],
+            amount=None,
+        )
+        SalesArService.post_settlement(settlement_id=create_res.settlement.id, posted_by_id=self.user.id)
+
+        open_items = build_open_items_report(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            customer_id=self.customer.id,
+            as_of_date="2025-04-30",
+        )
+        row = next(row for row in open_items["rows"] if row["invoice_number"] == invoice.invoice_number)
+        self.assertEqual(row["settled_amount"], "30.00")
+        self.assertEqual(row["outstanding_amount"], "88.00")
+        self.assertEqual(open_items["totals"]["settled_amount"], "30.00")
+        self.assertEqual(open_items["totals"]["outstanding_amount"], "88.00")
+
+        history = build_collections_history_report(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            customer_id=self.customer.id,
+            from_date="2025-04-01",
+            to_date="2025-04-30",
+        )
+        self.assertEqual(history["summary"]["settlement_count"], 1)
+        self.assertEqual(history["summary"]["receipt_count"], 1)
+        self.assertEqual(history["totals"]["total_amount"], "30.00")
+        history_row = history["rows"][0]
+        self.assertEqual(history_row["reference_no"], "SET-001")
+        self.assertEqual(history_row["total_amount"], "30.00")
+        self.assertEqual(history_row["settlement_lines"][0]["invoice_number"], invoice.invoice_number)
+        self.assertEqual(history_row["settlement_lines"][0]["applied_amount_signed"], "30.00")
+
+    def test_cancelled_settlement_stops_affecting_open_items_and_is_hidden_from_history(self):
+        invoice = self._create_service_invoice()
+        open_item = CustomerBillOpenItem.objects.get(header=invoice)
+
+        create_res = SalesArService.create_settlement(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            customer_id=self.customer.id,
+            settlement_type="receipt",
+            settlement_date=datetime(2025, 4, 21).date(),
+            reference_no="SET-CANCEL-001",
+            external_voucher_no="RCPT-CANCEL-001",
+            remarks="Receipt to cancel",
+            lines=[{"open_item_id": open_item.id, "amount": Decimal("40.00"), "note": "To be cancelled"}],
+            amount=None,
+        )
+        SalesArService.post_settlement(settlement_id=create_res.settlement.id, posted_by_id=self.user.id)
+        SalesArService.cancel_settlement(settlement_id=create_res.settlement.id, cancelled_by_id=self.user.id)
+
+        open_items = build_open_items_report(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            customer_id=self.customer.id,
+            as_of_date="2025-04-30",
+        )
+        row = next(row for row in open_items["rows"] if row["invoice_number"] == invoice.invoice_number)
+        self.assertEqual(row["settled_amount"], "0.00")
+        self.assertEqual(row["outstanding_amount"], "118.00")
+        self.assertEqual(open_items["totals"]["settled_amount"], "0.00")
+        self.assertEqual(open_items["totals"]["outstanding_amount"], "118.00")
+
+        history = build_collections_history_report(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            customer_id=self.customer.id,
+            from_date="2025-04-01",
+            to_date="2025-04-30",
+        )
+        self.assertEqual(history["summary"]["settlement_count"], 0)
+        self.assertEqual(history["rows"], [])
+
+    def test_reversed_service_invoice_stops_contributing_to_open_items_and_customer_outstanding(self):
+        invoice = self._create_service_invoice()
+        SalesArService.close_open_item_for_header(invoice)
+        invoice.refresh_from_db()
+        invoice.status = SalesInvoiceHeader.Status.CONFIRMED
+        invoice.is_posting_reversed = True
+        invoice.outstanding_amount = Decimal("0.00")
+        invoice.save(update_fields=["status", "is_posting_reversed", "outstanding_amount", "updated_at"])
+
+        open_items = build_open_items_report(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            customer_id=self.customer.id,
+            as_of_date="2025-04-30",
+        )
+        self.assertEqual(open_items["rows"], [])
+        self.assertEqual(open_items["totals"]["outstanding_amount"], "0.00")
+
+        outstanding = build_customer_outstanding_report(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            as_of_date="2025-04-30",
+        )
+        self.assertEqual(len(outstanding["rows"]), 1)
+        self.assertEqual(outstanding["rows"][0]["customer_name"], "Service Customer")
+        self.assertEqual(outstanding["rows"][0]["invoice_amount"], "118.00")
+        self.assertEqual(outstanding["rows"][0]["net_outstanding"], "0.00")
+        self.assertEqual(outstanding["totals"]["net_outstanding"], "0.00")
+
+    def test_cancelled_service_invoice_is_hidden_from_open_items_and_customer_outstanding(self):
+        invoice = self._create_service_invoice()
+        SalesArService.close_open_item_for_header(invoice)
+        invoice.refresh_from_db()
+        invoice.status = SalesInvoiceHeader.Status.CANCELLED
+        invoice.outstanding_amount = Decimal("0.00")
+        invoice.save(update_fields=["status", "outstanding_amount", "updated_at"])
+
+        open_items = build_open_items_report(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            customer_id=self.customer.id,
+            as_of_date="2025-04-30",
+        )
+        self.assertEqual(open_items["rows"], [])
+        self.assertEqual(open_items["totals"]["outstanding_amount"], "0.00")
+
+        outstanding = build_customer_outstanding_report(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            as_of_date="2025-04-30",
+        )
+        self.assertEqual(outstanding["rows"], [])
+        self.assertEqual(outstanding["totals"]["net_outstanding"], "0.00")
+
+    def test_reversed_service_invoice_is_hidden_from_receivable_aging_invoice_view(self):
+        invoice = self._create_service_invoice()
+        SalesArService.close_open_item_for_header(invoice)
+        invoice.refresh_from_db()
+        invoice.status = SalesInvoiceHeader.Status.CONFIRMED
+        invoice.is_posting_reversed = True
+        invoice.outstanding_amount = Decimal("0.00")
+        invoice.save(update_fields=["status", "is_posting_reversed", "outstanding_amount", "updated_at"])
+
+        report = build_receivable_aging_report(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            as_of_date="2025-04-30",
+            view="invoice",
+        )
+        self.assertEqual(report["rows"], [])
+        self.assertEqual(report["totals"]["balance"], "0.00")
+
+    def test_cancelled_service_invoice_is_hidden_from_receivable_aging_invoice_view(self):
+        invoice = self._create_service_invoice()
+        SalesArService.close_open_item_for_header(invoice)
+        invoice.refresh_from_db()
+        invoice.status = SalesInvoiceHeader.Status.CANCELLED
+        invoice.outstanding_amount = Decimal("0.00")
+        invoice.save(update_fields=["status", "outstanding_amount", "updated_at"])
+
+        report = build_receivable_aging_report(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            as_of_date="2025-04-30",
+            view="invoice",
+        )
+        self.assertEqual(report["rows"], [])
+        self.assertEqual(report["totals"]["balance"], "0.00")

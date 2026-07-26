@@ -22,7 +22,7 @@ from numbering.models import DocumentNumberSeries, DocumentType
 from payments.models import PaymentMode, PaymentVoucherAdjustment, PaymentVoucherHeader
 from posting.models import Entry, EntryStatus, InventoryMove, JournalLine, PostingBatch, TxnType
 from purchase.models.gstr2b_models import Gstr2bImportBatch, Gstr2bImportRow
-from purchase.models.purchase_ap import VendorAdvanceBalance, VendorBillOpenItem
+from purchase.models.purchase_ap import VendorAdvanceBalance, VendorBillOpenItem, VendorSettlement
 from purchase.models import PurchaseLockPeriod
 from purchase.models.purchase_core import PurchaseInvoiceHeader, PurchaseInvoiceLine, PurchaseTaxSummary
 from purchase.services.purchase_settings_service import PurchaseSettingsService
@@ -1429,6 +1429,60 @@ class PurchaseApiEndToEndTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, response.json())
         self.assertIn("Line 1: sent 999.00 but expected 1000.00", str(response.json()))
 
+    def test_purchase_invoice_create_normalizes_line_amount_mismatch_when_policy_is_warn(self):
+        PurchaseSettingsService.upsert_settings(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            updates={"policy_controls": {"line_amount_mismatch": "warn"}},
+        )
+
+        mismatched_line = self._goods_line_payload()
+        mismatched_line["taxable_value"] = "999.00"
+        mismatched_line["igst_amount"] = "999.00"
+        mismatched_line["line_total"] = "1998.00"
+        payload = self._invoice_payload(lines=[mismatched_line], supplier_invoice_number="INV-MISMATCH-WARN")
+
+        response = self.client.post("/api/purchase/purchase-invoices/", payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.json())
+        body = response.json()
+        self.assertEqual(Decimal(str(body["total_taxable"])), Decimal("1000.00"))
+        self.assertEqual(Decimal(str(body["total_igst"])), Decimal("180.00"))
+        self.assertEqual(Decimal(str(body["grand_total"])), Decimal("1180.00"))
+
+        header = PurchaseInvoiceHeader.objects.get(pk=body["id"])
+        line = header.lines.get(line_no=1)
+        self.assertEqual(line.taxable_value, Decimal("1000.00"))
+        self.assertEqual(line.igst_amount, Decimal("180.00"))
+        self.assertEqual(line.line_total, Decimal("1180.00"))
+
+    def test_purchase_invoice_create_normalizes_line_amount_mismatch_when_policy_is_off(self):
+        PurchaseSettingsService.upsert_settings(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            updates={"policy_controls": {"line_amount_mismatch": "off"}},
+        )
+
+        mismatched_line = self._goods_line_payload()
+        mismatched_line["taxable_value"] = "999.00"
+        mismatched_line["igst_amount"] = "999.00"
+        mismatched_line["line_total"] = "1998.00"
+        payload = self._invoice_payload(lines=[mismatched_line], supplier_invoice_number="INV-MISMATCH-OFF")
+
+        response = self.client.post("/api/purchase/purchase-invoices/", payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.json())
+        body = response.json()
+        self.assertEqual(Decimal(str(body["total_taxable"])), Decimal("1000.00"))
+        self.assertEqual(Decimal(str(body["total_igst"])), Decimal("180.00"))
+        self.assertEqual(Decimal(str(body["grand_total"])), Decimal("1180.00"))
+
+        header = PurchaseInvoiceHeader.objects.get(pk=body["id"])
+        line = header.lines.get(line_no=1)
+        self.assertEqual(line.taxable_value, Decimal("1000.00"))
+        self.assertEqual(line.igst_amount, Decimal("180.00"))
+        self.assertEqual(line.line_total, Decimal("1180.00"))
+
     def test_purchase_invoice_confirm_is_blocked_when_lock_policy_is_hard(self):
         PurchaseSettingsService.upsert_settings(
             entity_id=self.entity.id,
@@ -1453,6 +1507,74 @@ class PurchaseApiEndToEndTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, response.json())
         self.assertIn("Purchase period locked.", str(response.json()))
+
+    def test_purchase_invoice_confirm_is_allowed_when_lock_policy_is_off(self):
+        PurchaseSettingsService.upsert_settings(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            updates={"policy_controls": {"confirm_lock_check": "off"}},
+        )
+
+        created = self._create_invoice(supplier_invoice_number="INV-CONFIRM-LOCKED-OFF")
+        invoice_id = created["id"]
+        PurchaseLockPeriod.objects.create(
+            entity=self.entity,
+            subentity=self.subentity,
+            lock_date=date(2026, 4, 30),
+            reason="April closed",
+        )
+
+        response = self.client.post(
+            f"/api/purchase/purchase-invoices/{invoice_id}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.json())
+        body = response.json()["data"]
+        self.assertEqual(body["status"], int(PurchaseInvoiceHeader.Status.CONFIRMED))
+        self.assertEqual(body["doc_no"], 1001)
+        self.assertTrue(body["purchase_number"])
+
+    @patch("purchase.services.purchase_invoice_actions.GstTdsService.sync_contract_ledger_for_header")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseApService.sync_open_item_for_header")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseAssetIntakeService.sync_asset_intakes_for_posted_header")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseInvoicePostingAdapter.post_purchase_invoice")
+    def test_purchase_invoice_post_is_blocked_when_period_is_locked(
+        self,
+        mocked_post_adapter,
+        mocked_sync_asset_intakes,
+        mocked_sync_open_item,
+        mocked_sync_contract_ledger,
+    ):
+        created = self._create_invoice(supplier_invoice_number="INV-POST-LOCKED")
+        invoice_id = created["id"]
+
+        confirm_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{invoice_id}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(confirm_resp.status_code, status.HTTP_200_OK, confirm_resp.json())
+
+        PurchaseLockPeriod.objects.create(
+            entity=self.entity,
+            subentity=self.subentity,
+            lock_date=date(2026, 4, 30),
+            reason="April closed",
+        )
+
+        post_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{invoice_id}/post/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(post_resp.status_code, status.HTTP_400_BAD_REQUEST, post_resp.json())
+        self.assertIn("Purchase period locked.", str(post_resp.json()))
+        mocked_post_adapter.assert_not_called()
+        mocked_sync_asset_intakes.assert_not_called()
+        mocked_sync_open_item.assert_not_called()
+        mocked_sync_contract_ledger.assert_called()
 
     def test_purchase_invoice_unpost_is_blocked_when_policy_disables_it(self):
         PurchaseSettingsService.upsert_settings(
@@ -1526,6 +1648,25 @@ class PurchaseApiEndToEndTests(APITestCase):
         self.assertEqual(Decimal(str(line["igst_amount"])), Decimal("180.00"))
         self.assertEqual(Decimal(str(line["line_total"])), Decimal("1180.00"))
 
+    def test_confirmed_purchase_invoice_can_be_found_by_purchase_number_search(self):
+        created = self._create_invoice(supplier_invoice_number="INV-SEARCH")
+        invoice_id = created["id"]
+
+        confirm_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{invoice_id}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(confirm_resp.status_code, status.HTTP_200_OK, confirm_resp.json())
+        purchase_number = confirm_resp.json()["data"]["purchase_number"]
+
+        search_resp = self.client.get(
+            f"/api/purchase/purchase-invoices/search/{self._scope_qs()}&search={purchase_number}"
+        )
+        self.assertEqual(search_resp.status_code, status.HTTP_200_OK, search_resp.json())
+        rows = search_resp.json()
+        self.assertTrue(any(row["purchase_number"] == purchase_number for row in rows), search_resp.json())
+
     def test_confirm_allocates_number_and_delete_policy_allows_only_draft_delete(self):
         created = self._create_invoice(supplier_invoice_number="INV-CONFIRM")
         invoice_id = created["id"]
@@ -1584,6 +1725,31 @@ class PurchaseApiEndToEndTests(APITestCase):
         )
         self.assertEqual(cancel_resp.status_code, status.HTTP_200_OK, cancel_resp.json())
         self.assertEqual(cancel_resp.json()["data"]["status"], int(PurchaseInvoiceHeader.Status.CANCELLED))
+
+    def test_cancel_marks_confirmed_purchase_invoice_cancelled(self):
+        created = self._create_invoice(supplier_invoice_number="INV-CANCEL-CONFIRMED")
+        invoice_id = created["id"]
+
+        confirm_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{invoice_id}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(confirm_resp.status_code, status.HTTP_200_OK, confirm_resp.json())
+
+        cancel_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{invoice_id}/cancel/{self._scope_qs()}",
+            {"reason": "Confirmed purchase cancel"},
+            format="json",
+        )
+        self.assertEqual(cancel_resp.status_code, status.HTTP_200_OK, cancel_resp.json())
+        self.assertEqual(cancel_resp.json()["data"]["status"], int(PurchaseInvoiceHeader.Status.CANCELLED))
+
+        header = PurchaseInvoiceHeader.objects.get(pk=invoice_id)
+        self.assertEqual(header.status, PurchaseInvoiceHeader.Status.CANCELLED)
+        self.assertIsNotNone(header.cancelled_at)
+        self.assertEqual(getattr(header.cancelled_by, "id", None), self.user.id)
+        self.assertEqual(header.cancel_reason, "Confirmed purchase cancel")
 
     def test_repeated_cancel_call_is_idempotent_for_cancelled_purchase_invoice(self):
         created = self._create_invoice(supplier_invoice_number="INV-CANCEL-IDEMPOTENT")
@@ -2202,6 +2368,579 @@ class PurchaseApiEndToEndTests(APITestCase):
         self.assertEqual(mocked_sync_open_item.call_count, 2)
         self.assertTrue(mocked_sync_contract_ledger.called)
 
+    @patch("purchase.services.purchase_invoice_actions.GstTdsService.sync_contract_ledger_for_header")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseApService.sync_open_item_for_header")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseAssetIntakeService.sync_asset_intakes_for_posted_header")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseInvoicePostingAdapter.post_purchase_invoice")
+    def test_confirmed_purchase_credit_note_can_be_cancelled_without_reverse_flow(
+        self,
+        mocked_post_adapter,
+        mocked_sync_asset_intakes,
+        mocked_sync_open_item,
+        mocked_sync_contract_ledger,
+    ):
+        created = self._create_invoice(supplier_invoice_number="INV-CN-CONF-CANCEL")
+        invoice_id = created["id"]
+
+        self.assertEqual(
+            self.client.post(
+                f"/api/purchase/purchase-invoices/{invoice_id}/create-credit-note/{self._scope_qs()}",
+                {"note_reason": PurchaseInvoiceHeader.NoteReason.PRICE_DIFFERENCE},
+                format="json",
+            ).status_code,
+            status.HTTP_201_CREATED,
+        )
+        note_id = PurchaseInvoiceHeader.objects.exclude(pk=invoice_id).latest("id").id
+
+        confirm_note_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{note_id}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(confirm_note_resp.status_code, status.HTTP_200_OK, confirm_note_resp.json())
+
+        cancel_note_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{note_id}/cancel/{self._scope_qs()}",
+            {"reason": "Confirmed purchase credit note cancel"},
+            format="json",
+        )
+        self.assertEqual(cancel_note_resp.status_code, status.HTTP_200_OK, cancel_note_resp.json())
+        self.assertEqual(cancel_note_resp.json()["data"]["status"], int(PurchaseInvoiceHeader.Status.CANCELLED))
+
+        note_header = PurchaseInvoiceHeader.objects.get(pk=note_id)
+        self.assertEqual(note_header.status, PurchaseInvoiceHeader.Status.CANCELLED)
+        self.assertIsNotNone(note_header.cancelled_at)
+        self.assertEqual(note_header.cancel_reason, "Confirmed purchase credit note cancel")
+        mocked_post_adapter.assert_not_called()
+        mocked_sync_asset_intakes.assert_not_called()
+        mocked_sync_open_item.assert_not_called()
+        self.assertTrue(mocked_sync_contract_ledger.called)
+
+    @patch("purchase.services.purchase_invoice_actions.GstTdsService.sync_contract_ledger_for_header")
+    @patch("purchase.services.purchase_invoice_actions.PostingService.post")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseAssetIntakeService.revert_asset_intakes_for_unpost")
+    @patch("purchase.services.purchase_invoice_actions.GstTdsService._scope_key_for_header", return_value=("scope",))
+    @patch("purchase.services.purchase_invoice_actions.GstTdsService.sync_contract_ledger_for_header")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseApService.sync_open_item_for_header")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseAssetIntakeService.sync_asset_intakes_for_posted_header")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseInvoicePostingAdapter.post_purchase_invoice")
+    def test_unpost_posted_purchase_credit_note_marks_confirmed_and_updates_entry(
+        self,
+        mocked_post_adapter,
+        mocked_sync_asset_intakes,
+        mocked_sync_open_item,
+        mocked_post_sync_contract_ledger,
+        mocked_scope_key,
+        mocked_posting_service_post,
+        mocked_revert_asset_intakes,
+        mocked_unpost_sync_contract_ledger,
+    ):
+        created = self._create_invoice(supplier_invoice_number="INV-CN-UNPOST")
+        invoice_id = created["id"]
+
+        create_note_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{invoice_id}/create-credit-note/{self._scope_qs()}",
+            {
+                "note_reason": PurchaseInvoiceHeader.NoteReason.PRICE_DIFFERENCE,
+                "reason": "Value correction",
+            },
+            format="json",
+        )
+        self.assertEqual(create_note_resp.status_code, status.HTTP_201_CREATED, create_note_resp.json())
+        note_id = create_note_resp.json()["data"]["id"]
+
+        self.assertEqual(
+            self.client.post(
+                f"/api/purchase/purchase-invoices/{note_id}/confirm/{self._scope_qs()}",
+                {},
+                format="json",
+            ).status_code,
+            status.HTTP_200_OK,
+        )
+        self.assertEqual(
+            self.client.post(
+                f"/api/purchase/purchase-invoices/{note_id}/post/{self._scope_qs()}",
+                {},
+                format="json",
+            ).status_code,
+            status.HTTP_200_OK,
+        )
+
+        header = PurchaseInvoiceHeader.objects.get(pk=note_id)
+        open_item = VendorBillOpenItem.objects.create(
+            header=header,
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            vendor=self.vendor,
+            vendor_ledger_id=self.vendor.ledger_id,
+            doc_type=int(header.doc_type),
+            bill_date=header.bill_date,
+            due_date=header.due_date,
+            purchase_number=header.purchase_number,
+            supplier_invoice_number=header.supplier_invoice_number,
+            original_amount=Decimal("-1180.00"),
+            gross_amount=Decimal("-1180.00"),
+            tds_deducted=Decimal("0.00"),
+            gst_tds_deducted=Decimal("0.00"),
+            net_payable_amount=Decimal("-1180.00"),
+            settled_amount=Decimal("0.00"),
+            outstanding_amount=Decimal("-1180.00"),
+            is_open=True,
+        )
+        batch = PostingBatch.objects.create(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.PURCHASE_CREDIT_NOTE,
+            txn_id=header.id,
+            voucher_no=header.purchase_number,
+            revision=1,
+            is_active=True,
+            created_by=self.user,
+        )
+        entry = Entry.objects.create(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.PURCHASE_CREDIT_NOTE,
+            txn_id=header.id,
+            voucher_no=header.purchase_number,
+            voucher_date=header.bill_date,
+            posting_date=header.posting_date or header.bill_date,
+            status=EntryStatus.POSTED,
+            posted_at=timezone.now(),
+            posted_by=self.user,
+            posting_batch=batch,
+            narration="Posted purchase credit note",
+            created_by=self.user,
+        )
+        JournalLine.objects.create(
+            entry=entry,
+            posting_batch=batch,
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.PURCHASE_CREDIT_NOTE,
+            txn_id=header.id,
+            voucher_no=header.purchase_number,
+            accounthead=self.credit_head,
+            drcr=True,
+            amount=Decimal("1180.00"),
+            description="Vendor debit for purchase credit note",
+            posting_date=header.posting_date or header.bill_date,
+            posted_at=timezone.now(),
+            created_by=self.user,
+        )
+        JournalLine.objects.create(
+            entry=entry,
+            posting_batch=batch,
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.PURCHASE_CREDIT_NOTE,
+            txn_id=header.id,
+            voucher_no=header.purchase_number,
+            accounthead=self.debit_head,
+            drcr=False,
+            amount=Decimal("1180.00"),
+            description="Purchase credit note reversal",
+            posting_date=header.posting_date or header.bill_date,
+            posted_at=timezone.now(),
+            created_by=self.user,
+        )
+
+        unpost_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{note_id}/unpost/{self._scope_qs()}",
+            {"reason": "Credit note correction"},
+            format="json",
+        )
+        self.assertEqual(unpost_resp.status_code, status.HTTP_200_OK, unpost_resp.json())
+        self.assertEqual(unpost_resp.json()["data"]["status"], int(PurchaseInvoiceHeader.Status.CONFIRMED))
+
+        header.refresh_from_db()
+        entry.refresh_from_db()
+        self.assertEqual(header.status, PurchaseInvoiceHeader.Status.CONFIRMED)
+        self.assertIsNone(header.posted_at)
+        self.assertIsNone(header.posted_by_id)
+        self.assertFalse(VendorBillOpenItem.objects.filter(pk=open_item.id).exists())
+        self.assertEqual(entry.status, EntryStatus.REVERSED)
+        self.assertEqual(entry.narration, "Reversed: Credit note correction")
+        mocked_posting_service_post.assert_called_once()
+        mocked_revert_asset_intakes.assert_called_once()
+        self.assertTrue(mocked_unpost_sync_contract_ledger.called)
+        self.assertTrue(mocked_scope_key.called)
+
+    @patch("purchase.services.purchase_invoice_actions.GstTdsService.sync_contract_ledger_for_header")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseApService.sync_open_item_for_header")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseAssetIntakeService.sync_asset_intakes_for_posted_header")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseInvoicePostingAdapter.post_purchase_invoice")
+    def test_cancel_posted_purchase_credit_note_is_blocked(
+        self,
+        mocked_post_adapter,
+        mocked_sync_asset_intakes,
+        mocked_sync_open_item,
+        mocked_sync_contract_ledger,
+    ):
+        created = self._create_invoice(supplier_invoice_number="INV-CN-CANCEL-POSTED")
+        invoice_id = created["id"]
+
+        create_note_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{invoice_id}/create-credit-note/{self._scope_qs()}",
+            {
+                "note_reason": PurchaseInvoiceHeader.NoteReason.PRICE_DIFFERENCE,
+                "reason": "Value correction",
+            },
+            format="json",
+        )
+        self.assertEqual(create_note_resp.status_code, status.HTTP_201_CREATED, create_note_resp.json())
+        note_id = create_note_resp.json()["data"]["id"]
+
+        self.assertEqual(
+            self.client.post(
+                f"/api/purchase/purchase-invoices/{note_id}/confirm/{self._scope_qs()}",
+                {},
+                format="json",
+            ).status_code,
+            status.HTTP_200_OK,
+        )
+        self.assertEqual(
+            self.client.post(
+                f"/api/purchase/purchase-invoices/{note_id}/post/{self._scope_qs()}",
+                {},
+                format="json",
+            ).status_code,
+            status.HTTP_200_OK,
+        )
+
+        cancel_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{note_id}/cancel/{self._scope_qs()}",
+            {"reason": "Should block posted note cancel"},
+            format="json",
+        )
+        self.assertEqual(cancel_resp.status_code, status.HTTP_400_BAD_REQUEST, cancel_resp.json())
+        self.assertIn("Posted purchase notes cannot be cancelled directly.", str(cancel_resp.json()))
+
+        note_header = PurchaseInvoiceHeader.objects.get(pk=note_id)
+        self.assertEqual(note_header.status, PurchaseInvoiceHeader.Status.POSTED)
+        self.assertIsNotNone(note_header.posted_at)
+
+    @patch("purchase.services.purchase_invoice_actions.GstTdsService.sync_contract_ledger_for_header")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseAssetIntakeService.sync_asset_intakes_for_posted_header")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseInvoicePostingAdapter.post_purchase_invoice")
+    def test_purchase_debit_note_post_creates_positive_open_item(
+        self,
+        mocked_post_adapter,
+        mocked_sync_asset_intakes,
+        mocked_sync_contract_ledger,
+    ):
+        created = self._create_invoice(supplier_invoice_number="INV-DN-OPEN-ITEM")
+        invoice_id = created["id"]
+
+        create_note_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{invoice_id}/create-debit-note/{self._scope_qs()}",
+            {
+                "note_reason": PurchaseInvoiceHeader.NoteReason.PRICE_DIFFERENCE,
+                "reason": "Purchase debit increase",
+            },
+            format="json",
+        )
+        self.assertEqual(create_note_resp.status_code, status.HTTP_201_CREATED, create_note_resp.json())
+        note_body = create_note_resp.json()["data"]
+        note_id = note_body["id"]
+        self.assertEqual(note_body["doc_type"], int(PurchaseInvoiceHeader.DocType.DEBIT_NOTE))
+        self.assertEqual(note_body["ref_document"], invoice_id)
+        self.assertFalse(note_body["affects_inventory"])
+
+        confirm_note_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{note_id}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(confirm_note_resp.status_code, status.HTTP_200_OK, confirm_note_resp.json())
+
+        post_note_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{note_id}/post/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(post_note_resp.status_code, status.HTTP_200_OK, post_note_resp.json())
+        self.assertEqual(post_note_resp.json()["data"]["status"], int(PurchaseInvoiceHeader.Status.POSTED))
+
+        note_header = PurchaseInvoiceHeader.objects.get(pk=note_id)
+        self.assertEqual(note_header.doc_type, PurchaseInvoiceHeader.DocType.DEBIT_NOTE)
+        self.assertEqual(note_header.ref_document_id, invoice_id)
+        self.assertEqual(note_header.note_reason, PurchaseInvoiceHeader.NoteReason.PRICE_DIFFERENCE)
+        self.assertFalse(note_header.affects_inventory)
+
+        note_open_item = VendorBillOpenItem.objects.get(header_id=note_id)
+        self.assertEqual(note_open_item.gross_amount, Decimal("1180.00"))
+        self.assertEqual(note_open_item.net_payable_amount, Decimal("1180.00"))
+        self.assertEqual(note_open_item.outstanding_amount, Decimal("1180.00"))
+        self.assertTrue(note_open_item.is_open)
+
+        mocked_post_adapter.assert_called_once()
+        mocked_sync_asset_intakes.assert_called_once()
+        self.assertTrue(mocked_sync_contract_ledger.called)
+
+    @patch("purchase.services.purchase_invoice_actions.GstTdsService.sync_contract_ledger_for_header")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseApService.sync_open_item_for_header")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseAssetIntakeService.sync_asset_intakes_for_posted_header")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseInvoicePostingAdapter.post_purchase_invoice")
+    def test_confirmed_purchase_debit_note_can_be_cancelled_without_reverse_flow(
+        self,
+        mocked_post_adapter,
+        mocked_sync_asset_intakes,
+        mocked_sync_open_item,
+        mocked_sync_contract_ledger,
+    ):
+        created = self._create_invoice(supplier_invoice_number="INV-DN-CONF-CANCEL")
+        invoice_id = created["id"]
+
+        create_note_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{invoice_id}/create-debit-note/{self._scope_qs()}",
+            {
+                "note_reason": PurchaseInvoiceHeader.NoteReason.PRICE_DIFFERENCE,
+                "reason": "Purchase debit correction",
+            },
+            format="json",
+        )
+        self.assertEqual(create_note_resp.status_code, status.HTTP_201_CREATED, create_note_resp.json())
+        note_id = create_note_resp.json()["data"]["id"]
+
+        confirm_note_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{note_id}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(confirm_note_resp.status_code, status.HTTP_200_OK, confirm_note_resp.json())
+
+        cancel_note_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{note_id}/cancel/{self._scope_qs()}",
+            {"reason": "Confirmed purchase debit note cancel"},
+            format="json",
+        )
+        self.assertEqual(cancel_note_resp.status_code, status.HTTP_200_OK, cancel_note_resp.json())
+        self.assertEqual(cancel_note_resp.json()["data"]["status"], int(PurchaseInvoiceHeader.Status.CANCELLED))
+
+        note_header = PurchaseInvoiceHeader.objects.get(pk=note_id)
+        self.assertEqual(note_header.status, PurchaseInvoiceHeader.Status.CANCELLED)
+        self.assertIsNotNone(note_header.cancelled_at)
+        self.assertEqual(note_header.cancel_reason, "Confirmed purchase debit note cancel")
+        mocked_post_adapter.assert_not_called()
+        mocked_sync_asset_intakes.assert_not_called()
+        mocked_sync_open_item.assert_not_called()
+        self.assertTrue(mocked_sync_contract_ledger.called)
+
+    @patch("purchase.services.purchase_invoice_actions.GstTdsService.sync_contract_ledger_for_header")
+    @patch("purchase.services.purchase_invoice_actions.PostingService.post")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseAssetIntakeService.revert_asset_intakes_for_unpost")
+    @patch("purchase.services.purchase_invoice_actions.GstTdsService._scope_key_for_header", return_value=("scope",))
+    @patch("purchase.services.purchase_invoice_actions.GstTdsService.sync_contract_ledger_for_header")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseApService.sync_open_item_for_header")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseAssetIntakeService.sync_asset_intakes_for_posted_header")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseInvoicePostingAdapter.post_purchase_invoice")
+    def test_unpost_posted_purchase_debit_note_marks_confirmed_and_updates_entry(
+        self,
+        mocked_post_adapter,
+        mocked_sync_asset_intakes,
+        mocked_sync_open_item,
+        mocked_post_sync_contract_ledger,
+        mocked_scope_key,
+        mocked_posting_service_post,
+        mocked_revert_asset_intakes,
+        mocked_unpost_sync_contract_ledger,
+    ):
+        created = self._create_invoice(supplier_invoice_number="INV-DN-UNPOST")
+        invoice_id = created["id"]
+
+        create_note_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{invoice_id}/create-debit-note/{self._scope_qs()}",
+            {
+                "note_reason": PurchaseInvoiceHeader.NoteReason.PRICE_DIFFERENCE,
+                "reason": "Value uplift",
+            },
+            format="json",
+        )
+        self.assertEqual(create_note_resp.status_code, status.HTTP_201_CREATED, create_note_resp.json())
+        note_id = create_note_resp.json()["data"]["id"]
+
+        self.assertEqual(
+            self.client.post(
+                f"/api/purchase/purchase-invoices/{note_id}/confirm/{self._scope_qs()}",
+                {},
+                format="json",
+            ).status_code,
+            status.HTTP_200_OK,
+        )
+        self.assertEqual(
+            self.client.post(
+                f"/api/purchase/purchase-invoices/{note_id}/post/{self._scope_qs()}",
+                {},
+                format="json",
+            ).status_code,
+            status.HTTP_200_OK,
+        )
+
+        header = PurchaseInvoiceHeader.objects.get(pk=note_id)
+        open_item = VendorBillOpenItem.objects.create(
+            header=header,
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            vendor=self.vendor,
+            vendor_ledger_id=self.vendor.ledger_id,
+            doc_type=int(header.doc_type),
+            bill_date=header.bill_date,
+            due_date=header.due_date,
+            purchase_number=header.purchase_number,
+            supplier_invoice_number=header.supplier_invoice_number,
+            original_amount=Decimal("1180.00"),
+            gross_amount=Decimal("1180.00"),
+            tds_deducted=Decimal("0.00"),
+            gst_tds_deducted=Decimal("0.00"),
+            net_payable_amount=Decimal("1180.00"),
+            settled_amount=Decimal("0.00"),
+            outstanding_amount=Decimal("1180.00"),
+            is_open=True,
+        )
+        batch = PostingBatch.objects.create(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.PURCHASE_DEBIT_NOTE,
+            txn_id=header.id,
+            voucher_no=header.purchase_number,
+            revision=1,
+            is_active=True,
+            created_by=self.user,
+        )
+        entry = Entry.objects.create(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.PURCHASE_DEBIT_NOTE,
+            txn_id=header.id,
+            voucher_no=header.purchase_number,
+            voucher_date=header.bill_date,
+            posting_date=header.posting_date or header.bill_date,
+            status=EntryStatus.POSTED,
+            posted_at=timezone.now(),
+            posted_by=self.user,
+            posting_batch=batch,
+            narration="Posted purchase debit note",
+            created_by=self.user,
+        )
+        JournalLine.objects.create(
+            entry=entry,
+            posting_batch=batch,
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.PURCHASE_DEBIT_NOTE,
+            txn_id=header.id,
+            voucher_no=header.purchase_number,
+            accounthead=self.debit_head,
+            drcr=True,
+            amount=Decimal("1180.00"),
+            description="Purchase debit note expense debit",
+            posting_date=header.posting_date or header.bill_date,
+            posted_at=timezone.now(),
+            created_by=self.user,
+        )
+        JournalLine.objects.create(
+            entry=entry,
+            posting_batch=batch,
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.PURCHASE_DEBIT_NOTE,
+            txn_id=header.id,
+            voucher_no=header.purchase_number,
+            accounthead=self.credit_head,
+            drcr=False,
+            amount=Decimal("1180.00"),
+            description="Vendor credit for purchase debit note",
+            posting_date=header.posting_date or header.bill_date,
+            posted_at=timezone.now(),
+            created_by=self.user,
+        )
+
+        unpost_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{note_id}/unpost/{self._scope_qs()}",
+            {"reason": "Debit note correction"},
+            format="json",
+        )
+        self.assertEqual(unpost_resp.status_code, status.HTTP_200_OK, unpost_resp.json())
+        self.assertEqual(unpost_resp.json()["data"]["status"], int(PurchaseInvoiceHeader.Status.CONFIRMED))
+
+        header.refresh_from_db()
+        entry.refresh_from_db()
+        self.assertEqual(header.status, PurchaseInvoiceHeader.Status.CONFIRMED)
+        self.assertIsNone(header.posted_at)
+        self.assertIsNone(header.posted_by_id)
+        self.assertFalse(VendorBillOpenItem.objects.filter(pk=open_item.id).exists())
+        self.assertEqual(entry.status, EntryStatus.REVERSED)
+        self.assertEqual(entry.narration, "Reversed: Debit note correction")
+        mocked_posting_service_post.assert_called_once()
+        mocked_revert_asset_intakes.assert_called_once()
+        self.assertTrue(mocked_unpost_sync_contract_ledger.called)
+        self.assertTrue(mocked_scope_key.called)
+
+    @patch("purchase.services.purchase_invoice_actions.GstTdsService.sync_contract_ledger_for_header")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseApService.sync_open_item_for_header")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseAssetIntakeService.sync_asset_intakes_for_posted_header")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseInvoicePostingAdapter.post_purchase_invoice")
+    def test_cancel_posted_purchase_debit_note_is_blocked(
+        self,
+        mocked_post_adapter,
+        mocked_sync_asset_intakes,
+        mocked_sync_open_item,
+        mocked_sync_contract_ledger,
+    ):
+        created = self._create_invoice(supplier_invoice_number="INV-DN-CANCEL-POSTED")
+        invoice_id = created["id"]
+
+        create_note_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{invoice_id}/create-debit-note/{self._scope_qs()}",
+            {
+                "note_reason": PurchaseInvoiceHeader.NoteReason.PRICE_DIFFERENCE,
+                "reason": "Value uplift",
+            },
+            format="json",
+        )
+        self.assertEqual(create_note_resp.status_code, status.HTTP_201_CREATED, create_note_resp.json())
+        note_id = create_note_resp.json()["data"]["id"]
+
+        self.assertEqual(
+            self.client.post(
+                f"/api/purchase/purchase-invoices/{note_id}/confirm/{self._scope_qs()}",
+                {},
+                format="json",
+            ).status_code,
+            status.HTTP_200_OK,
+        )
+        self.assertEqual(
+            self.client.post(
+                f"/api/purchase/purchase-invoices/{note_id}/post/{self._scope_qs()}",
+                {},
+                format="json",
+            ).status_code,
+            status.HTTP_200_OK,
+        )
+
+        cancel_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{note_id}/cancel/{self._scope_qs()}",
+            {"reason": "Should block posted note cancel"},
+            format="json",
+        )
+        self.assertEqual(cancel_resp.status_code, status.HTTP_400_BAD_REQUEST, cancel_resp.json())
+        self.assertIn("Posted purchase notes cannot be cancelled directly.", str(cancel_resp.json()))
+
+        note_header = PurchaseInvoiceHeader.objects.get(pk=note_id)
+        self.assertEqual(note_header.status, PurchaseInvoiceHeader.Status.POSTED)
+        self.assertIsNotNone(note_header.posted_at)
+
     def test_price_difference_note_does_not_consume_quantity_return_capacity(self):
         created = self._create_invoice(supplier_invoice_number="INV-CN-LIFECYCLE")
         invoice_id = created["id"]
@@ -2367,6 +3106,33 @@ class PurchaseApiEndToEndTests(APITestCase):
         )
         self.assertEqual(second_resp.status_code, status.HTTP_400_BAD_REQUEST, second_resp.json())
         self.assertIn("duplicate_note_guard", second_resp.json())
+
+    def test_create_debit_note_for_locked_period_invoice_uses_current_open_period_date(self):
+        created = self._create_invoice(supplier_invoice_number="INV-FILED-DN")
+        invoice_id = created["id"]
+
+        PurchaseLockPeriod.objects.create(
+            entity=self.entity,
+            subentity=self.subentity,
+            lock_date=date(2026, 4, 30),
+            reason="April GST filed",
+        )
+
+        response = self.client.post(
+            f"/api/purchase/purchase-invoices/{invoice_id}/create-debit-note/{self._scope_qs()}",
+            {
+                "note_reason": PurchaseInvoiceHeader.NoteReason.PRICE_DIFFERENCE,
+                "reason": "Filed period debit correction",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.json())
+        body = response.json()["data"]
+        expected_bill_date = timezone.localdate().strftime("%d-%m-%Y")
+        self.assertEqual(body["bill_date"], expected_bill_date)
+        self.assertEqual(body["posting_date"], expected_bill_date)
+        self.assertEqual(body["ref_document"], invoice_id)
+        self.assertEqual(body["doc_type"], int(PurchaseInvoiceHeader.DocType.DEBIT_NOTE))
 
     def test_unpost_requires_posted_purchase_invoice(self):
         created = self._create_invoice(supplier_invoice_number="INV-UNPOST-BLOCK")
@@ -2790,6 +3556,109 @@ class PurchaseApiEndToEndTests(APITestCase):
         self.assertEqual(statement_resp.status_code, status.HTTP_200_OK, statement_resp.json())
         totals = statement_resp.json()["totals"]
         self.assertEqual(Decimal(str(totals["outstanding_total"])), Decimal("370.00"))
+
+    @patch("purchase.services.purchase_invoice_actions.GstTdsService.sync_contract_ledger_for_header")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseAssetIntakeService.sync_asset_intakes_for_posted_header")
+    @patch("purchase.services.purchase_invoice_actions.PurchaseInvoicePostingAdapter.post_purchase_invoice")
+    def test_posted_credit_note_auto_adjust_reduces_original_open_item_and_consumes_note(
+        self,
+        mocked_post_adapter,
+        mocked_sync_asset_intakes,
+        mocked_sync_contract_ledger,
+    ):
+        PurchaseSettingsService.upsert_settings(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            updates={
+                "policy_controls": {
+                    "settlement_mode": "basic",
+                    "allocation_policy": "manual",
+                    "auto_adjust_credit_notes": "on",
+                }
+            },
+        )
+
+        created = self._create_invoice(supplier_invoice_number="INV-AUTO-CN-001")
+        invoice_id = created["id"]
+
+        self.assertEqual(
+            self.client.post(
+                f"/api/purchase/purchase-invoices/{invoice_id}/confirm/{self._scope_qs()}",
+                {},
+                format="json",
+            ).status_code,
+            status.HTTP_200_OK,
+        )
+        self.assertEqual(
+            self.client.post(
+                f"/api/purchase/purchase-invoices/{invoice_id}/post/{self._scope_qs()}",
+                {},
+                format="json",
+            ).status_code,
+            status.HTTP_200_OK,
+        )
+
+        original_open_item = VendorBillOpenItem.objects.get(header_id=invoice_id)
+        self.assertEqual(original_open_item.original_amount, Decimal("1180.00"))
+        self.assertEqual(original_open_item.outstanding_amount, Decimal("1180.00"))
+        self.assertTrue(original_open_item.is_open)
+
+        note_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{invoice_id}/create-credit-note/{self._scope_qs()}",
+            {
+                "note_reason": PurchaseInvoiceHeader.NoteReason.PRICE_DIFFERENCE,
+                "reason": "Auto adjust value correction",
+            },
+            format="json",
+        )
+        self.assertEqual(note_resp.status_code, status.HTTP_201_CREATED, note_resp.json())
+        note_id = note_resp.json()["data"]["id"]
+
+        self.assertEqual(
+            self.client.post(
+                f"/api/purchase/purchase-invoices/{note_id}/confirm/{self._scope_qs()}",
+                {},
+                format="json",
+            ).status_code,
+            status.HTTP_200_OK,
+        )
+        self.assertEqual(
+            self.client.post(
+                f"/api/purchase/purchase-invoices/{note_id}/post/{self._scope_qs()}",
+                {},
+                format="json",
+            ).status_code,
+            status.HTTP_200_OK,
+        )
+
+        original_open_item.refresh_from_db()
+        note_open_item = VendorBillOpenItem.objects.get(header_id=note_id)
+        settlement = VendorSettlement.objects.get(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            vendor=self.vendor,
+            settlement_type=VendorSettlement.SettlementType.CREDIT_NOTE_ADJUSTMENT,
+            reference_no=f"AUTO-CN-{note_id}",
+        )
+        settlement_lines = list(settlement.lines.order_by("id"))
+
+        self.assertEqual(settlement.status, VendorSettlement.Status.POSTED)
+        self.assertEqual(settlement.total_amount, Decimal("2360.00"))
+        self.assertEqual(len(settlement_lines), 2)
+        self.assertEqual({line.open_item_id for line in settlement_lines}, {original_open_item.id, note_open_item.id})
+
+        self.assertEqual(original_open_item.settled_amount, Decimal("1180.00"))
+        self.assertEqual(original_open_item.outstanding_amount, Decimal("0.00"))
+        self.assertFalse(original_open_item.is_open)
+
+        self.assertEqual(note_open_item.settled_amount, Decimal("-1180.00"))
+        self.assertEqual(note_open_item.outstanding_amount, Decimal("0.00"))
+        self.assertFalse(note_open_item.is_open)
+
+        self.assertEqual(mocked_post_adapter.call_count, 2)
+        self.assertEqual(mocked_sync_asset_intakes.call_count, 2)
+        self.assertTrue(mocked_sync_contract_ledger.called)
 
     @patch("purchase.services.purchase_invoice_actions.GstTdsService.sync_contract_ledger_for_header")
     @patch("purchase.services.purchase_invoice_actions.PurchaseAssetIntakeService.sync_asset_intakes_for_posted_header")
@@ -3270,7 +4139,10 @@ class PurchaseApiEndToEndTests(APITestCase):
         PurchaseSettingsService.upsert_settings(
             entity_id=self.entity.id,
             subentity_id=self.subentity.id,
-            updates={"policy_controls": {"settlement_mode": "off", "allocation_policy": "manual"}},
+            updates={
+                "policy_controls": {"settlement_mode": "off", "allocation_policy": "manual"},
+                "post_gst_tds_on_invoice": True,
+            },
         )
         section = WithholdingSection.objects.create(
             tax_type=WithholdingTaxType.TDS,
@@ -3371,7 +4243,10 @@ class PurchaseApiEndToEndTests(APITestCase):
         PurchaseSettingsService.upsert_settings(
             entity_id=self.entity.id,
             subentity_id=self.subentity.id,
-            updates={"policy_controls": {"settlement_mode": "off", "allocation_policy": "manual"}},
+            updates={
+                "policy_controls": {"settlement_mode": "off", "allocation_policy": "manual"},
+                "post_gst_tds_on_invoice": True,
+            },
         )
         section = WithholdingSection.objects.create(
             tax_type=WithholdingTaxType.TDS,

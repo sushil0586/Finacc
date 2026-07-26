@@ -1844,9 +1844,8 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
             not allocation_rows
             and h.receipt_type == ReceiptVoucherHeader.ReceiptType.AGAINST_INVOICE
             and total_support_amount > ZERO2
+            and allocation_policy == "fifo"
         )
-        if should_auto_allocate and allocation_policy not in {"fifo", "manual"}:
-            should_auto_allocate = False
         if should_auto_allocate:
             fifo_rows = ReceiptVoucherService._auto_fifo_allocations(
                 entity_id=h.entity_id,

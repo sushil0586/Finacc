@@ -462,6 +462,19 @@ class VoucherWorkflowPolicyTests(TestCase):
         self.assertEqual(result.message, "Already confirmed.")
         self.assertEqual(header.status, VoucherHeader.Status.CONFIRMED)
 
+    def test_confirm_voucher_returns_already_posted_for_posted_voucher(self):
+        header = self._header(status=VoucherHeader.Status.POSTED)
+
+        result = VoucherService.confirm_voucher(header.id, confirmed_by_id=self.user.id)
+
+        self.assertEqual(result.message, "Already posted.")
+
+    def test_confirm_voucher_blocks_cancelled_voucher(self):
+        header = self._header(status=VoucherHeader.Status.CANCELLED)
+
+        with self.assertRaisesMessage(ValueError, "Cancelled vouchers cannot be confirmed."):
+            VoucherService.confirm_voucher(header.id, confirmed_by_id=self.user.id)
+
     @patch("vouchers.services.voucher_service.VoucherSettingsService.get_policy")
     @patch("vouchers.services.voucher_service.VoucherPostingAdapter.post_voucher")
     def test_post_voucher_returns_already_posted_without_reposting(
@@ -490,6 +503,18 @@ class VoucherWorkflowPolicyTests(TestCase):
         result = VoucherService.submit_voucher(header.id, submitted_by_id=self.user.id, remarks="Retry")
 
         self.assertEqual(result.message, "Already submitted.")
+
+    def test_submit_voucher_blocks_posted_voucher(self):
+        header = self._header(status=VoucherHeader.Status.POSTED)
+
+        with self.assertRaisesMessage(ValueError, "Posted vouchers cannot be submitted."):
+            VoucherService.submit_voucher(header.id, submitted_by_id=self.user.id, remarks="Retry")
+
+    def test_submit_voucher_blocks_cancelled_voucher(self):
+        header = self._header(status=VoucherHeader.Status.CANCELLED)
+
+        with self.assertRaisesMessage(ValueError, "Cancelled vouchers cannot be submitted."):
+            VoucherService.submit_voucher(header.id, submitted_by_id=self.user.id, remarks="Retry")
 
     @patch("vouchers.services.voucher_service.VoucherSettingsService.get_policy")
     def test_approve_voucher_returns_already_approved_for_repeat_approve(self, mocked_get_policy):
@@ -533,6 +558,12 @@ class VoucherWorkflowPolicyTests(TestCase):
         result = VoucherService.cancel_voucher(header.id, cancelled_by_id=self.user.id, reason="Retry")
 
         self.assertEqual(result.message, "Already cancelled.")
+
+    def test_cancel_voucher_blocks_posted_voucher(self):
+        header = self._header(status=VoucherHeader.Status.POSTED)
+
+        with self.assertRaisesMessage(ValueError, "Posted voucher cannot be cancelled. Unpost it first."):
+            VoucherService.cancel_voucher(header.id, cancelled_by_id=self.user.id, reason="Retry")
 
 
 class VoucherWriteSerializerValidationTests(SimpleTestCase):
