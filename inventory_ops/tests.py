@@ -388,6 +388,23 @@ class InventoryOpsTests(APITestCase):
         self.assertIn('reference_no', response.json())
         self.assertIn('narration', response.json())
 
+    def test_create_transfer_requires_source_and_destination_locations(self):
+        payload = self._transfer_payload()
+        payload['source_location'] = None
+
+        missing_source = self.client.post(reverse('inventory_ops:inventory-transfers'), payload, format='json')
+
+        self.assertEqual(missing_source.status_code, 400)
+        self.assertEqual(missing_source.json()['source_location'][0], 'Source location is required.')
+
+        payload = self._transfer_payload()
+        payload['destination_location'] = None
+
+        missing_destination = self.client.post(reverse('inventory_ops:inventory-transfers'), payload, format='json')
+
+        self.assertEqual(missing_destination.status_code, 400)
+        self.assertEqual(missing_destination.json()['destination_location'][0], 'Destination location is required.')
+
     def test_transfer_post_unpost_and_cancel_flow(self):
         created = self.client.post(reverse('inventory_ops:inventory-transfers'), self._transfer_payload(), format='json')
         self.assertEqual(created.status_code, 201)
@@ -585,6 +602,15 @@ class InventoryOpsTests(APITestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn('reference_no', response.json())
         self.assertIn('narration', response.json())
+
+    def test_create_adjustment_wraps_service_validation_errors(self):
+        payload = self._adjustment_payload()
+        payload['location'] = 999999
+
+        response = self.client.post(reverse('inventory_ops:inventory-adjustments'), payload, format='json')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()['detail'], 'Selected location does not belong to the entity/subentity scope.')
 
     def test_adjustment_post_unpost_and_cancel_flow(self):
         created = self.client.post(reverse('inventory_ops:inventory-adjustments'), self._adjustment_payload(), format='json')

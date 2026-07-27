@@ -837,7 +837,10 @@ class InventoryAdjustmentCreateAPIView(_BaseInventoryOpsAPIView):
             subentity_id=payload.get("subentity"),
         )
         self.assert_permission(request, payload["entity"], "inventory.adjustment.create")
-        result = InventoryAdjustmentService.create_adjustment(payload=payload, user_id=request.user.id, auto_post=False)
+        try:
+            result = InventoryAdjustmentService.create_adjustment(payload=payload, user_id=request.user.id, auto_post=False)
+        except (ValueError, ValidationError) as exc:
+            _raise_inventory_validation(exc)
         return Response(
             {
                 "report_code": "inventory_adjustment_entry",

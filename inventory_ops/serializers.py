@@ -204,7 +204,13 @@ class InventoryTransferCreateSerializer(serializers.Serializer):
     lines = InventoryTransferLineSerializer(many=True)
 
     def validate(self, attrs):
-        if int(attrs["source_location"]) == int(attrs["destination_location"]):
+        source_location = attrs.get("source_location")
+        destination_location = attrs.get("destination_location")
+        if source_location in (None, ""):
+            raise serializers.ValidationError({"source_location": "Source location is required."})
+        if destination_location in (None, ""):
+            raise serializers.ValidationError({"destination_location": "Destination location is required."})
+        if int(source_location) == int(destination_location):
             raise serializers.ValidationError("Source and destination locations must be different.")
         if not attrs["lines"]:
             raise serializers.ValidationError("At least one transfer line is required.")
