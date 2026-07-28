@@ -176,6 +176,19 @@ def _get_scoped_route_for_bom(*, entity_id: int, subentity_id: Optional[int], ro
     return route
 
 
+def _validate_bom_material_rows(materials) -> None:
+    seen_products = set()
+    for row in materials or []:
+        material_product_id = row.get("material_product")
+        if not material_product_id:
+            continue
+        if material_product_id in seen_products:
+            raise ValidationError(
+                {"materials": "Duplicate material rows are not allowed in a BOM. Merge the quantities into a single line."}
+            )
+        seen_products.add(material_product_id)
+
+
 def _assert_master_visible_in_context(*, record_subentity_id: Optional[int], context_subentity_id: Optional[int], label: str) -> None:
     if context_subentity_id is None:
         return
@@ -480,6 +493,7 @@ class ManufacturingRouteListCreateAPIView(_BaseManufacturingAPIView, generics.Li
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
+        _validate_bom_material_rows(payload.get("materials"))
         entity_id = payload["entity"]
         self.enforce_scope(request, entity_id=entity_id, entityfinid_id=None, subentity_id=payload.get("subentity"))
         self.assert_any_permission(request, entity_id, ("manufacturing.route.create", "manufacturing.bom.create"))
@@ -693,6 +707,7 @@ class ManufacturingBOMDetailAPIView(_BaseManufacturingAPIView, generics.Retrieve
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
+        _validate_bom_material_rows(payload.get("materials"))
         _assert_field_is_unchanged(field_name="entity", current_value=bom.entity_id, payload_value=payload["entity"], label="Entity")
         _assert_field_is_unchanged(field_name="subentity", current_value=bom.subentity_id, payload_value=payload.get("subentity"), label="BOM scope")
         bom.subentity_id = payload.get("subentity")

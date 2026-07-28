@@ -2683,6 +2683,61 @@ class PurchaseApiEndToEndTests(APITestCase):
         mocked_sync_asset_intakes.assert_called_once()
         self.assertTrue(mocked_sync_contract_ledger.called)
 
+    def test_purchase_note_creation_rederives_tax_regime_from_states(self):
+        exempt_line = self._goods_line_payload()
+        exempt_line.update(
+            {
+                "taxability": int(PurchaseInvoiceHeader.Taxability.EXEMPT),
+                "gst_rate": "0.00",
+                "cgst_percent": "0.00",
+                "sgst_percent": "0.00",
+                "igst_percent": "0.00",
+                "cgst_amount": "0.00",
+                "sgst_amount": "0.00",
+                "igst_amount": "0.00",
+                "line_total": "1000.00",
+                "is_itc_eligible": False,
+            }
+        )
+        created = self._create_invoice(
+            supplier_invoice_number="INV-NOTE-REGIME",
+            lines=[exempt_line],
+            supplier_state=self.state_other.id,
+            place_of_supply_state=self.state_other.id,
+            tax_regime=int(PurchaseInvoiceHeader.TaxRegime.INTER),
+            is_igst=True,
+        )
+        invoice_id = created["id"]
+        header = PurchaseInvoiceHeader.objects.get(pk=invoice_id)
+        header.supplier_state = self.state_home
+        header.place_of_supply_state = self.state_home
+        header.tax_regime = int(PurchaseInvoiceHeader.TaxRegime.INTER)
+        header.is_igst = True
+        header.save(
+            update_fields=[
+                "supplier_state",
+                "place_of_supply_state",
+                "tax_regime",
+                "is_igst",
+            ]
+        )
+
+        create_note_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{invoice_id}/create-credit-note/{self._scope_qs()}",
+            {
+                "note_reason": PurchaseInvoiceHeader.NoteReason.PRICE_DIFFERENCE,
+                "reason": "Regime should follow state comparison",
+            },
+            format="json",
+        )
+        self.assertEqual(create_note_resp.status_code, status.HTTP_201_CREATED, create_note_resp.json())
+        note_body = create_note_resp.json()["data"]
+        self.assertEqual(note_body["vendor_state"], self.state_home.id)
+        self.assertEqual(note_body["supplier_state"], self.state_home.id)
+        self.assertEqual(note_body["place_of_supply_state"], self.state_home.id)
+        self.assertEqual(note_body["tax_regime"], int(PurchaseInvoiceHeader.TaxRegime.INTRA))
+        self.assertFalse(note_body["is_igst"])
+
     @patch("purchase.services.purchase_invoice_actions.GstTdsService.sync_contract_ledger_for_header")
     @patch("purchase.services.purchase_invoice_actions.PurchaseApService.sync_open_item_for_header")
     @patch("purchase.services.purchase_invoice_actions.PurchaseAssetIntakeService.sync_asset_intakes_for_posted_header")

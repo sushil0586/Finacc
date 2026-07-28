@@ -173,6 +173,16 @@ class PurchaseNoteFactory:
             on_date=correction_date,
         )
 
+        derived_regime = PurchaseInvoiceService.derive_tax_regime(
+            {
+                "entity": src.entity,
+                "subentity": src.subentity,
+                "vendor_state": src.vendor_state,
+                "supplier_state": src.supplier_state,
+                "place_of_supply_state": src.place_of_supply_state,
+            }
+        )
+
         # Create note header (DRAFT by default)
         note = PurchaseInvoiceHeader.objects.create(
             # identity
@@ -198,8 +208,8 @@ class PurchaseNoteFactory:
             # tax settings
             supply_category=src.supply_category,
             default_taxability=src.default_taxability,
-            tax_regime=src.tax_regime,
-            is_igst=src.is_igst,
+            tax_regime=derived_regime.tax_regime,
+            is_igst=derived_regime.is_igst,
             supplier_state=src.supplier_state,
             place_of_supply_state=src.place_of_supply_state,
 

@@ -19,7 +19,7 @@ from numbering.models import DocumentNumberSeries
 from posting.common.static_accounts import StaticAccountCodes
 from posting.models import EntityStaticAccountMap, InventoryMove, JournalLine, StaticAccount, TxnType
 from rbac.models import Permission, Role, RolePermission, UserRoleAssignment
-from manufacturing.models import ManufacturingOperationStatus, ManufacturingSettings
+from manufacturing.models import DEFAULT_MANUFACTURING_ADDITIONAL_COST_TYPES, ManufacturingOperationStatus, ManufacturingSettings
 
 
 @override_settings(ROOT_URLCONF="FA.urls", AUTH_PASSWORD_VALIDATORS=[])
@@ -484,6 +484,46 @@ class ManufacturingPhaseOneTests(APITestCase):
         self.assertIn("code", response.json())
         self.assertIn("name", response.json())
         self.assertIn("description", response.json())
+
+    def test_bom_create_rejects_duplicate_material_rows(self):
+        payload = self._bom_payload()
+        payload["materials"].append(
+            {
+                "material_product": self.bulk_sugar.id,
+                "qty": "1.0000",
+                "waste_percent": "0.0000",
+                "note": "Duplicate bulk sugar",
+            }
+        )
+
+        response = self.client.post(reverse("manufacturing:manufacturing-boms"), payload, format="json")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("materials", response.json())
+
+    def test_bom_update_rejects_duplicate_material_rows(self):
+        create_resp = self.client.post(reverse("manufacturing:manufacturing-boms"), self._bom_payload(), format="json")
+        self.assertEqual(create_resp.status_code, 201)
+        bom_id = create_resp.json()["id"]
+
+        payload = self._bom_payload()
+        payload["materials"].append(
+            {
+                "material_product": self.bulk_sugar.id,
+                "qty": "2.0000",
+                "waste_percent": "0.0000",
+                "note": "Duplicate bulk sugar",
+            }
+        )
+
+        response = self.client.put(
+            reverse("manufacturing:manufacturing-bom-detail", kwargs={"pk": bom_id}),
+            payload,
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("materials", response.json())
 
     def test_bom_rejects_route_from_other_subentity_scope(self):
         local_route = self.client.post(reverse("manufacturing:manufacturing-routes"), self._route_payload(), format="json")
@@ -1347,6 +1387,48 @@ class ManufacturingPhaseOneTests(APITestCase):
         post_resp = self.client.post(reverse("manufacturing:manufacturing-work-order-post", kwargs={"pk": work_order_id}), {}, format="json")
         self.assertEqual(post_resp.status_code, 400)
         self.assertIn("Manufacturing Additional Cost Expense", str(post_resp.json()))
+
+    def test_fully_capitalized_additional_cost_does_not_require_expense_mapping(self):
+        bom = self.client.post(reverse("manufacturing:manufacturing-boms"), self._bom_payload(), format="json").json()
+        settings_obj, _ = ManufacturingSettings.objects.get_or_create(entity=self.entity, subentity=self.subentity)
+        settings_obj.policy_controls = {
+            **(settings_obj.policy_controls or {}),
+            "capitalized_additional_cost_types": list(DEFAULT_MANUFACTURING_ADDITIONAL_COST_TYPES),
+        }
+        settings_obj.save(update_fields=["policy_controls"])
+
+        EntityStaticAccountMap.objects.filter(
+            entity=self.entity,
+            static_account__code=StaticAccountCodes.MANUFACTURING_ADDITIONAL_COST_EXPENSE,
+        ).delete()
+
+        payload = self._work_order_payload(bom["id"])
+        payload["additional_costs"] = [
+            {"cost_type": "LABOUR", "amount": "30.0000", "note": "Packing labour"},
+            {"cost_type": "OVERHEAD", "amount": "20.0000", "note": "Factory overhead"},
+        ]
+        payload["outputs"].append(
+            {
+                "finished_product": self.sugar_dust.id,
+                "output_type": "BYPRODUCT",
+                "planned_qty": "1.0000",
+                "actual_qty": "1.0000",
+                "estimated_recovery_unit_value": "10.0000",
+                "batch_number": "",
+                "expiry_date": None,
+            }
+        )
+        work_order_resp = self.client.post(reverse("manufacturing:manufacturing-work-orders"), payload, format="json")
+        self.assertEqual(work_order_resp.status_code, 201)
+        work_order_id = work_order_resp.json()["work_order"]["id"]
+
+        post_resp = self.client.post(reverse("manufacturing:manufacturing-work-order-post", kwargs={"pk": work_order_id}), {}, format="json")
+        self.assertEqual(post_resp.status_code, 200)
+        posted = post_resp.json()["work_order"]
+        self.assertEqual(float(posted["capitalized_additional_cost_snapshot"]), 50.0)
+        self.assertEqual(float(posted["expensed_additional_cost_snapshot"]), 0.0)
+        self.assertEqual(float(posted["net_production_cost_snapshot"]), 510.0)
+        self.assertEqual(float(posted["actual_unit_cost_snapshot"]), 51.0)
 
     def test_standard_cost_output_valuation_posts_variances_to_configured_ledgers(self):
         bom = self.client.post(reverse("manufacturing:manufacturing-boms"), self._bom_payload(), format="json").json()

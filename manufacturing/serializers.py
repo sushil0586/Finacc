@@ -149,6 +149,14 @@ class ManufacturingBOMWriteSerializer(serializers.Serializer):
     def validate(self, attrs):
         if not attrs["materials"]:
             raise serializers.ValidationError("At least one material line is required.")
+        seen_products = set()
+        for row in attrs["materials"]:
+            material_product_id = row.get("material_product")
+            if material_product_id in seen_products:
+                raise serializers.ValidationError(
+                    {"materials": "Duplicate material rows are not allowed in a BOM. Merge the quantities into a single line."}
+                )
+            seen_products.add(material_product_id)
         attrs["code"] = (attrs.get("code") or "").strip().upper()
         attrs["name"] = (attrs.get("name") or "").strip()
         attrs["description"] = (attrs.get("description") or "").strip()

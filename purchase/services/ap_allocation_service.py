@@ -3,6 +3,8 @@ from __future__ import annotations
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Dict, List, Optional
 
+from django.db.models import Q
+
 from purchase.models.purchase_ap import VendorBillOpenItem
 from purchase.services.purchase_settings_service import PurchaseSettingsService
 
@@ -32,7 +34,9 @@ class PurchaseApAllocationService:
         if subentity_id is None:
             qs = qs.filter(subentity__isnull=True)
         else:
-            qs = qs.filter(subentity_id=subentity_id)
+            # Keep allocation projection aligned with the broader AP/payment
+            # scope rules: a branch context must still see entity-scope rows.
+            qs = qs.filter(Q(subentity_id=subentity_id) | Q(subentity__isnull=True))
         if is_open:
             qs = qs.filter(is_open=True)
         return qs.order_by("due_date", "bill_date", "id")

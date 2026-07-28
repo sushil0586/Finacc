@@ -392,11 +392,19 @@ class ManufacturingWorkOrderService:
         return value
 
     @staticmethod
-    def _required_posting_codes(*, settings_obj: ManufacturingSettings) -> tuple[str, ...]:
+    def _required_posting_codes(
+        *,
+        settings_obj: ManufacturingSettings,
+        additional_cost_rows: list[ManufacturingWorkOrderAdditionalCost] | None = None,
+    ) -> tuple[str, ...]:
         codes = list(ManufacturingWorkOrderService.MANUFACTURING_POSTING_CODES)
         if ManufacturingWorkOrderService._output_valuation_basis(settings_obj) == ManufacturingWorkOrderService.OUTPUT_VALUATION_STANDARD_COST:
             codes.extend(ManufacturingWorkOrderService.MANUFACTURING_VARIANCE_POSTING_CODES)
-        if len(ManufacturingWorkOrderService._capitalized_additional_cost_types(settings_obj)) < len(ManufacturingWorkOrderService.ALL_ADDITIONAL_COST_TYPES):
+        _, expensed_additional_costs = ManufacturingWorkOrderService._split_additional_costs(
+            settings_obj=settings_obj,
+            additional_costs=additional_cost_rows,
+        )
+        if expensed_additional_costs:
             codes.append(StaticAccountCodes.MANUFACTURING_ADDITIONAL_COST_EXPENSE)
         return tuple(codes)
 
@@ -1058,8 +1066,16 @@ class ManufacturingWorkOrderService:
         return jl_inputs
 
     @staticmethod
-    def _validate_posting_setup(*, entity_id: int, settings_obj: ManufacturingSettings) -> None:
-        required_codes = ManufacturingWorkOrderService._required_posting_codes(settings_obj=settings_obj)
+    def _validate_posting_setup(
+        *,
+        entity_id: int,
+        settings_obj: ManufacturingSettings,
+        additional_cost_rows: list[ManufacturingWorkOrderAdditionalCost] | None = None,
+    ) -> None:
+        required_codes = ManufacturingWorkOrderService._required_posting_codes(
+            settings_obj=settings_obj,
+            additional_cost_rows=additional_cost_rows,
+        )
         missing_labels = [
             ManufacturingWorkOrderService.MANUFACTURING_POSTING_LABELS[code]
             for code in required_codes
@@ -1173,15 +1189,19 @@ class ManufacturingWorkOrderService:
         if work_order.status == ManufacturingWorkOrderStatus.POSTED:
             return ManufacturingWorkOrderResult(work_order=work_order, entry_id=work_order.posting_entry_id)
 
+        materials = list(work_order.materials.all().select_related("material_product"))
+        outputs = list(work_order.outputs.all().select_related("finished_product"))
+        additional_costs = list(work_order.additional_costs.all())
         settings_obj = _get_settings(entity_id=work_order.entity_id, subentity_id=work_order.subentity_id)
-        ManufacturingWorkOrderService._validate_posting_setup(entity_id=work_order.entity_id, settings_obj=settings_obj)
+        ManufacturingWorkOrderService._validate_posting_setup(
+            entity_id=work_order.entity_id,
+            settings_obj=settings_obj,
+            additional_cost_rows=additional_costs,
+        )
         reserved_stock: dict[tuple[int, int, str], Decimal] = {}
         im_inputs: list[IMInput] = []
         total_issue_value = Decimal("0.00")
 
-        materials = list(work_order.materials.all().select_related("material_product"))
-        outputs = list(work_order.outputs.all().select_related("finished_product"))
-        additional_costs = list(work_order.additional_costs.all())
         open_operations = work_order.operations.exclude(status__in=[ManufacturingOperationStatus.COMPLETED, ManufacturingOperationStatus.SKIPPED])
         if not materials:
             raise ValidationError({"materials": "At least one material line is required."})
