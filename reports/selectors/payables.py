@@ -9,11 +9,13 @@ N+1 settlement lookups and to keep vendor-level aggregation database-side.
 """
 
 from collections import defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
+from django.db import connection
 from django.db.models import (
     Case,
+    Exists,
     DateField,
     DecimalField,
     ExpressionWrapper,
@@ -21,7 +23,6 @@ from django.db.models import (
     Max,
     OuterRef,
     Q,
-    Subquery,
     Sum,
     Value,
     When,
@@ -29,6 +30,7 @@ from django.db.models import (
     Prefetch,
 )
 from django.db.models.functions import Abs, Coalesce
+from django.utils import timezone
 
 from financial.models import AccountAddress, account
 from payments.models.payment_core import PaymentVoucherHeader
@@ -40,6 +42,7 @@ from purchase.models.purchase_ap import (
     VendorSettlementLine,
 )
 from purchase.models.purchase_core import PurchaseInvoiceHeader
+from purchase.models.purchase_core import PurchaseInvoiceLine
 from reports.selectors.financial import normalize_scope_ids, resolve_date_window
 
 ZERO = Decimal("0.00")
@@ -85,13 +88,16 @@ def vendor_queryset(
     search=None,
     gst_registered=None,
     msme=None,
-    include_untyped=True,
+    include_untyped=False,
 ):
     """Return vendor masters eligible for AP reports within the entity scope."""
     qs = account.objects.filter(entity_id=entity_id)
     party_type_filter = Q(commercial_profile__partytype__in=["Vendor", "Both"])
     if include_untyped:
-        party_type_filter |= Q(commercial_profile__partytype__isnull=True) | Q(commercial_profile__partytype="")
+        party_type_filter |= (
+            Q(ledger__is_party=True)
+            & (Q(commercial_profile__partytype__isnull=True) | Q(commercial_profile__partytype=""))
+        )
     qs = qs.filter(party_type_filter)
     if vendor_id:
         qs = qs.filter(id=vendor_id)
@@ -208,34 +214,41 @@ def advance_adjusted_sums(*, entity_id, entityfin_id, subentity_id, upto_date):
     return {row["advance_balance_id"]: q2(row["applied"] or ZERO) for row in rows}
 
 
-def _open_item_balance_queryset(*, entity_id, entityfin_id, subentity_id, upto_date, vendor_ids=None, search=None):
-    settled_sq = VendorSettlementLine.objects.filter(
-        open_item_id=OuterRef("pk"),
-        settlement__status=VendorSettlement.Status.POSTED,
-        settlement__settlement_date__lte=upto_date,
-        settlement__entity_id=entity_id,
-    )
-    if entityfin_id:
-        settled_sq = settled_sq.filter(settlement__entityfinid_id=entityfin_id)
-    if subentity_id is not None:
-        settled_sq = settled_sq.filter(Q(settlement__subentity_id=subentity_id) | Q(settlement__subentity__isnull=True))
-    settled_sq = settled_sq.values("open_item_id").annotate(
-        total=Coalesce(Sum("applied_amount_signed"), Value(ZERO, output_field=AMOUNT_FIELD))
-    ).values("total")[:1]
-
+def _open_item_balance_queryset(
+    *,
+    entity_id,
+    entityfin_id,
+    subentity_id,
+    upto_date,
+    vendor_ids=None,
+    search=None,
+    lightweight=False,
+):
+    base_qs = VendorBillOpenItem.objects.all()
+    if not lightweight:
+        base_qs = base_qs.select_related(
+            "vendor",
+            "vendor__ledger",
+            "vendor__commercial_profile",
+            "vendor__compliance_profile",
+            "subentity",
+            "header",
+        )
     qs = scope_filter(
-        VendorBillOpenItem.objects.select_related("vendor", "vendor__ledger", "vendor__commercial_profile", "vendor__compliance_profile", "subentity", "header"),
+        base_qs,
         entity_id=entity_id,
         entityfin_id=entityfin_id,
         subentity_id=subentity_id,
     )
     qs = _exclude_cancelled_open_items(qs).filter(
         bill_date__lte=upto_date,
-    ).filter(
-        Q(vendor__commercial_profile__partytype__in=["Vendor", "Both"])
-        | Q(vendor__commercial_profile__partytype__isnull=True)
-        | Q(vendor__commercial_profile__partytype="")
     )
+    if not (lightweight and vendor_ids and not search):
+        qs = qs.filter(
+            Q(vendor__commercial_profile__partytype__in=["Vendor", "Both"])
+            | Q(vendor__commercial_profile__partytype__isnull=True)
+            | Q(vendor__commercial_profile__partytype="")
+        )
     if vendor_ids:
         qs = qs.filter(vendor_id__in=list(vendor_ids))
     if search:
@@ -248,59 +261,111 @@ def _open_item_balance_queryset(*, entity_id, entityfin_id, subentity_id, upto_d
             | Q(purchase_number__icontains=token)
             | Q(supplier_invoice_number__icontains=token)
         )
-    return qs.only(
-        "id",
-        "header_id",
-        "vendor_id",
-        "vendor__id",
-        "vendor__ledger_id",
-        "vendor__accountname",
-        "vendor__legalname",
-        "vendor__ledger__ledger_code",
-        "vendor__commercial_profile__creditlimit",
-        "vendor__commercial_profile__creditdays",
-        "vendor__commercial_profile__currency",
-        "vendor__compliance_profile__gstno",
-        "vendor__compliance_profile__msme",
-        "vendor__compliance_profile__msme_status",
-        "vendor__compliance_profile__udyam_no",
-        "vendor__compliance_profile__has_written_payment_terms",
-        "vendor__compliance_profile__msme_credit_days",
-        "vendor__commercial_profile__agent",
-        "subentity_id",
-        "subentity__subentityname",
-        "header__id",
-        "header__doc_type",
-        "header__currency_code",
-        "doc_type",
-        "bill_date",
-        "due_date",
-        "purchase_number",
-        "supplier_invoice_number",
-        "original_amount",
-    ).annotate(
-        settled_asof=Coalesce(Subquery(settled_sq, output_field=AMOUNT_FIELD), Value(ZERO, output_field=AMOUNT_FIELD)),
-        outstanding_asof=ExpressionWrapper(F("original_amount") - F("settled_asof"), output_field=AMOUNT_FIELD),
-    )
+    if lightweight:
+        qs = qs.only(
+            "id",
+            "header_id",
+            "vendor_id",
+            "bill_date",
+            "due_date",
+            "purchase_number",
+            "supplier_invoice_number",
+            "original_amount",
+            "settled_amount",
+            "outstanding_amount",
+            "is_open",
+        )
+    else:
+        qs = qs.only(
+            "id",
+            "header_id",
+            "vendor_id",
+            "vendor__id",
+            "vendor__ledger_id",
+            "vendor__accountname",
+            "vendor__legalname",
+            "vendor__ledger__ledger_code",
+            "vendor__ledger__name",
+            "vendor__commercial_profile__creditlimit",
+            "vendor__commercial_profile__creditdays",
+            "vendor__commercial_profile__currency",
+            "vendor__compliance_profile__gstno",
+            "vendor__compliance_profile__msme",
+            "vendor__compliance_profile__msme_status",
+            "vendor__compliance_profile__udyam_no",
+            "vendor__compliance_profile__has_written_payment_terms",
+            "vendor__compliance_profile__msme_credit_days",
+            "vendor__commercial_profile__agent",
+            "subentity_id",
+            "subentity__subentityname",
+            "header__id",
+            "header__doc_type",
+            "header__currency_code",
+            "doc_type",
+            "bill_date",
+            "due_date",
+            "purchase_number",
+            "supplier_invoice_number",
+            "original_amount",
+            "settled_amount",
+            "outstanding_amount",
+            "is_open",
+        )
+    if upto_date >= timezone.localdate():
+        return qs.filter(is_open=True).annotate(
+            settled_asof=Coalesce(F("settled_amount"), Value(ZERO, output_field=AMOUNT_FIELD)),
+            outstanding_asof=Coalesce(F("outstanding_amount"), Value(ZERO, output_field=AMOUNT_FIELD)),
+        )
 
-
-def _advance_balance_queryset(*, entity_id, entityfin_id, subentity_id, upto_date, vendor_ids=None):
-    adjusted_sq = VendorSettlement.objects.filter(
-        advance_balance_id=OuterRef("pk"),
-        status=VendorSettlement.Status.POSTED,
-        settlement_date__lte=upto_date,
-        entity_id=entity_id,
+    asof_settled_filter = (
+        Q(settlement_lines__settlement__status=VendorSettlement.Status.POSTED)
+        & Q(settlement_lines__settlement__settlement_date__lte=upto_date)
+        & Q(settlement_lines__settlement__entity_id=entity_id)
     )
     if entityfin_id:
-        adjusted_sq = adjusted_sq.filter(entityfinid_id=entityfin_id)
+        asof_settled_filter &= Q(settlement_lines__settlement__entityfinid_id=entityfin_id)
     if subentity_id is not None:
-        adjusted_sq = adjusted_sq.filter(Q(subentity_id=subentity_id) | Q(subentity__isnull=True))
-    adjusted_sq = adjusted_sq.values("advance_balance_id").annotate(
-        total=Coalesce(Sum("total_amount"), Value(ZERO, output_field=AMOUNT_FIELD))
-    ).values("total")[:1]
+        asof_settled_filter &= (
+            Q(settlement_lines__settlement__subentity_id=subentity_id)
+            | Q(settlement_lines__settlement__subentity__isnull=True)
+        )
 
+    future_settled_filter = (
+        Q(settlement_lines__settlement__status=VendorSettlement.Status.POSTED)
+        & Q(settlement_lines__settlement__settlement_date__gt=upto_date)
+        & Q(settlement_lines__settlement__entity_id=entity_id)
+    )
+    if entityfin_id:
+        future_settled_filter &= Q(settlement_lines__settlement__entityfinid_id=entityfin_id)
+    if subentity_id is not None:
+        future_settled_filter &= (
+            Q(settlement_lines__settlement__subentity_id=subentity_id)
+            | Q(settlement_lines__settlement__subentity__isnull=True)
+        )
+
+    return qs.annotate(
+        settled_asof_lines=Coalesce(
+            Sum("settlement_lines__applied_amount_signed", filter=asof_settled_filter),
+            Value(ZERO, output_field=AMOUNT_FIELD),
+        ),
+        settled_after_asof=Coalesce(
+            Sum("settlement_lines__applied_amount_signed", filter=future_settled_filter),
+            Value(ZERO, output_field=AMOUNT_FIELD),
+        ),
+        settled_asof=ExpressionWrapper(F("settled_asof_lines"), output_field=AMOUNT_FIELD),
+        outstanding_asof=ExpressionWrapper(
+            F("original_amount") - F("settled_asof_lines"),
+            output_field=AMOUNT_FIELD,
+        ),
+    )
+
+
+def _advance_balance_queryset(*, entity_id, entityfin_id, subentity_id, upto_date, vendor_ids=None, lightweight=False):
+    base_qs = VendorAdvanceBalance.objects.all()
+    if not lightweight:
+        base_qs = base_qs.select_related("vendor", "vendor__ledger", "subentity", "payment_voucher")
     qs = scope_filter(
-        VendorAdvanceBalance.objects.select_related("vendor", "vendor__ledger", "subentity", "payment_voucher"),
+        base_qs,
         entity_id=entity_id,
         entityfin_id=entityfin_id,
         subentity_id=subentity_id,
@@ -308,20 +373,62 @@ def _advance_balance_queryset(*, entity_id, entityfin_id, subentity_id, upto_dat
     qs = qs.exclude(payment_voucher__status=PaymentVoucherHeader.Status.CANCELLED)
     if vendor_ids:
         qs = qs.filter(vendor_id__in=list(vendor_ids))
-    return qs.only(
-        "id",
-        "vendor_id",
-        "vendor__id",
-        "vendor__ledger_id",
-        "subentity_id",
-        "subentity__subentityname",
-        "payment_voucher_id",
-        "credit_date",
-        "reference_no",
-        "original_amount",
-    ).annotate(
-        adjusted_asof=Coalesce(Subquery(adjusted_sq, output_field=AMOUNT_FIELD), Value(ZERO, output_field=AMOUNT_FIELD)),
-        outstanding_asof=ExpressionWrapper(F("original_amount") - F("adjusted_asof"), output_field=AMOUNT_FIELD),
+    if lightweight:
+        qs = qs.only(
+            "id",
+            "vendor_id",
+            "credit_date",
+            "reference_no",
+            "original_amount",
+            "adjusted_amount",
+            "outstanding_amount",
+            "is_open",
+        )
+    else:
+        qs = qs.only(
+            "id",
+            "vendor_id",
+            "vendor__id",
+            "vendor__ledger_id",
+            "subentity_id",
+            "subentity__subentityname",
+            "payment_voucher_id",
+            "credit_date",
+            "reference_no",
+            "original_amount",
+            "adjusted_amount",
+            "outstanding_amount",
+            "is_open",
+        )
+    if upto_date >= timezone.localdate():
+        return qs.filter(is_open=True).annotate(
+            adjusted_asof=Coalesce(F("adjusted_amount"), Value(ZERO, output_field=AMOUNT_FIELD)),
+            outstanding_asof=Coalesce(F("outstanding_amount"), Value(ZERO, output_field=AMOUNT_FIELD)),
+        )
+
+    future_adjusted_filter = (
+        Q(settlements__status=VendorSettlement.Status.POSTED)
+        & Q(settlements__settlement_date__gt=upto_date)
+        & Q(settlements__entity_id=entity_id)
+    )
+    if entityfin_id:
+        future_adjusted_filter &= Q(settlements__entityfinid_id=entityfin_id)
+    if subentity_id is not None:
+        future_adjusted_filter &= (
+            Q(settlements__subentity_id=subentity_id)
+            | Q(settlements__subentity__isnull=True)
+        )
+
+    return qs.annotate(
+        adjusted_after_asof=Coalesce(
+            Sum("settlements__total_amount", filter=future_adjusted_filter),
+            Value(ZERO, output_field=AMOUNT_FIELD),
+        ),
+        adjusted_asof=ExpressionWrapper(F("adjusted_amount") - F("adjusted_after_asof"), output_field=AMOUNT_FIELD),
+        outstanding_asof=ExpressionWrapper(
+            F("outstanding_amount") + F("adjusted_after_asof"),
+            output_field=AMOUNT_FIELD,
+        ),
     )
 
 
@@ -353,6 +460,119 @@ def iter_asof_open_item_balances(*, entity_id, entityfin_id, subentity_id, upto_
         yield item, q2(item.settled_asof), q2(item.outstanding_asof)
 
 
+def iter_asof_open_item_balance_summary_rows(*, entity_id, entityfin_id, subentity_id, upto_date, vendor_ids=None, search=None):
+    """Yield lightweight open-item balance rows for summary-mode AP aging."""
+    qs = (
+        _open_item_balance_queryset(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            upto_date=upto_date,
+            vendor_ids=vendor_ids,
+            search=search,
+            lightweight=True,
+        )
+        .annotate(summary_due_date=Coalesce("due_date", "bill_date"))
+        .values(
+            "id",
+            "vendor_id",
+            "bill_date",
+            "due_date",
+            "settled_asof",
+            "outstanding_asof",
+        )
+        .order_by("vendor_id", "summary_due_date", "bill_date", "id")
+    )
+    for row in qs.iterator(chunk_size=2000):
+        yield row
+
+
+def open_item_vendor_aging_bucket_summary(*, entity_id, entityfin_id, subentity_id, upto_date, vendor_ids=None, search=None):
+    """Aggregate AP aging buckets per vendor database-side for summary mode."""
+    if vendor_ids is not None and not list(vendor_ids):
+        return {}
+
+    where_parts = [
+        "oi.entity_id = %s",
+        "oi.entityfinid_id = %s",
+        "oi.bill_date <= %s",
+        "hdr.status <> %s",
+    ]
+    params = [entity_id, entityfin_id, upto_date, PurchaseInvoiceHeader.Status.CANCELLED]
+
+    if subentity_id is not None:
+        where_parts.append("(oi.subentity_id = %s OR oi.subentity_id IS NULL)")
+        params.append(subentity_id)
+    if vendor_ids:
+        vendor_ids_list = list(vendor_ids)
+        placeholders = ", ".join(["%s"] * len(vendor_ids_list))
+        where_parts.append(f"oi.vendor_id IN ({placeholders})")
+        params.extend(vendor_ids_list)
+
+    settle_filter_parts = [
+        "st.status = %s",
+        "st.settlement_date <= %s",
+        "st.entity_id = %s",
+    ]
+    settle_params = [VendorSettlement.Status.POSTED, upto_date, entity_id]
+    if entityfin_id:
+        settle_filter_parts.append("st.entityfinid_id = %s")
+        settle_params.append(entityfin_id)
+    if subentity_id is not None:
+        settle_filter_parts.append("(st.subentity_id = %s OR st.subentity_id IS NULL)")
+        settle_params.append(subentity_id)
+
+    sql = f"""
+        SELECT
+            vendor_id,
+            COALESCE(SUM(CASE WHEN outstanding_asof > 0 AND summary_due_date >= %s THEN outstanding_asof ELSE 0 END), 0) AS current,
+            COALESCE(SUM(CASE WHEN outstanding_asof > 0 AND summary_due_date < %s AND summary_due_date >= %s THEN outstanding_asof ELSE 0 END), 0) AS bucket_1_30,
+            COALESCE(SUM(CASE WHEN outstanding_asof > 0 AND summary_due_date < %s AND summary_due_date >= %s THEN outstanding_asof ELSE 0 END), 0) AS bucket_31_60,
+            COALESCE(SUM(CASE WHEN outstanding_asof > 0 AND summary_due_date < %s AND summary_due_date >= %s THEN outstanding_asof ELSE 0 END), 0) AS bucket_61_90,
+            COALESCE(SUM(CASE WHEN outstanding_asof > 0 AND summary_due_date < %s THEN outstanding_asof ELSE 0 END), 0) AS bucket_90_plus,
+            COALESCE(SUM(CASE WHEN outstanding_asof < 0 THEN ABS(outstanding_asof) ELSE 0 END), 0) AS credit_total
+        FROM (
+            SELECT
+                oi.vendor_id,
+                COALESCE(oi.due_date, oi.bill_date) AS summary_due_date,
+                (oi.original_amount - COALESCE(SUM(
+                    CASE WHEN {" AND ".join(settle_filter_parts)} THEN sl.applied_amount_signed ELSE 0 END
+                ), 0)) AS outstanding_asof
+            FROM purchase_vendorbillopenitem oi
+            INNER JOIN purchase_purchaseinvoiceheader hdr ON hdr.id = oi.header_id
+            LEFT JOIN purchase_vendorsettlementline sl ON sl.open_item_id = oi.id
+            LEFT JOIN purchase_vendorsettlement st ON st.id = sl.settlement_id
+            WHERE {" AND ".join(where_parts)}
+            GROUP BY oi.id
+        ) bucketed
+        GROUP BY vendor_id
+    """
+    bucket_params = [
+        upto_date,
+        upto_date,
+        upto_date - timedelta(days=30),
+        upto_date - timedelta(days=30),
+        upto_date - timedelta(days=60),
+        upto_date - timedelta(days=60),
+        upto_date - timedelta(days=90),
+        upto_date - timedelta(days=90),
+    ]
+    with connection.cursor() as cursor:
+        cursor.execute(sql, [*bucket_params, *settle_params, *params])
+        rows = cursor.fetchall()
+    return {
+        row[0]: {
+            "current": q2(row[1]),
+            "bucket_1_30": q2(row[2]),
+            "bucket_31_60": q2(row[3]),
+            "bucket_61_90": q2(row[4]),
+            "bucket_90_plus": q2(row[5]),
+            "credit_total": q2(row[6]),
+        }
+        for row in rows
+    }
+
+
 def open_item_vendor_summary(*, entity_id, entityfin_id, subentity_id, upto_date, vendor_ids=None):
     """Aggregate vendor open-item balances database-side for outstanding reporting."""
     qs = _open_item_balance_queryset(
@@ -362,37 +582,24 @@ def open_item_vendor_summary(*, entity_id, entityfin_id, subentity_id, upto_date
         upto_date=upto_date,
         vendor_ids=vendor_ids,
     )
-    rows = qs.values("vendor_id").annotate(
-        outstanding_total=Coalesce(Sum("outstanding_asof"), Value(ZERO, output_field=AMOUNT_FIELD)),
-        credit_total=Coalesce(
-            Sum(
-                Case(
-                    When(outstanding_asof__lt=ZERO, then=Abs(F("outstanding_asof"))),
-                    default=Value(ZERO, output_field=AMOUNT_FIELD),
-                    output_field=AMOUNT_FIELD,
-                )
-            ),
-            Value(ZERO, output_field=AMOUNT_FIELD),
-        ),
-        overdue_total=Coalesce(
-            Sum(
-                Case(
-                    When(Q(outstanding_asof__gt=ZERO) & Q(due_date__lt=upto_date), then=F("outstanding_asof")),
-                    default=Value(ZERO, output_field=AMOUNT_FIELD),
-                    output_field=AMOUNT_FIELD,
-                )
-            ),
-            Value(ZERO, output_field=AMOUNT_FIELD),
-        ),
-    )
-    return {
-        row["vendor_id"]: {
-            "outstanding_total": q2(row["outstanding_total"]),
-            "credit_total": q2(row["credit_total"]),
-            "overdue_total": q2(row["overdue_total"]),
-        }
-        for row in rows
-    }
+    summary = {}
+    for item in qs.iterator(chunk_size=2000):
+        vendor_id = item.vendor_id
+        row = summary.setdefault(
+            vendor_id,
+            {
+                "outstanding_total": ZERO,
+                "credit_total": ZERO,
+                "overdue_total": ZERO,
+            },
+        )
+        outstanding_asof = q2(item.outstanding_asof)
+        row["outstanding_total"] = q2(row["outstanding_total"] + outstanding_asof)
+        if outstanding_asof < ZERO:
+            row["credit_total"] = q2(row["credit_total"] + abs(outstanding_asof))
+        if outstanding_asof > ZERO and item.due_date and item.due_date < upto_date:
+            row["overdue_total"] = q2(row["overdue_total"] + outstanding_asof)
+    return summary
 
 
 def asof_advances(*, entity_id, entityfin_id, subentity_id, upto_date, vendor_ids=None):
@@ -403,6 +610,7 @@ def asof_advances(*, entity_id, entityfin_id, subentity_id, upto_date, vendor_id
         subentity_id=subentity_id,
         upto_date=upto_date,
         vendor_ids=vendor_ids,
+        lightweight=True,
     )
     rows = []
     for adv in qs.iterator(chunk_size=2000):
@@ -419,19 +627,14 @@ def advance_vendor_summary(*, entity_id, entityfin_id, subentity_id, upto_date, 
         upto_date=upto_date,
         vendor_ids=vendor_ids,
     )
-    rows = qs.values("vendor_id").annotate(
-        outstanding_total=Coalesce(
-            Sum(
-                Case(
-                    When(outstanding_asof__gt=ZERO, then=F("outstanding_asof")),
-                    default=Value(ZERO, output_field=AMOUNT_FIELD),
-                    output_field=AMOUNT_FIELD,
-                )
-            ),
-            Value(ZERO, output_field=AMOUNT_FIELD),
-        )
-    )
-    return {row["vendor_id"]: q2(row["outstanding_total"]) for row in rows}
+    summary = {}
+    for advance in qs.iterator(chunk_size=2000):
+        outstanding_asof = q2(advance.outstanding_asof)
+        if outstanding_asof <= ZERO:
+            continue
+        vendor_id = advance.vendor_id
+        summary[vendor_id] = q2(summary.get(vendor_id, ZERO) + outstanding_asof)
+    return summary
 
 
 def posted_payment_totals(*, entity_id, entityfin_id, subentity_id, from_date, to_date):
@@ -456,7 +659,7 @@ def posted_payment_totals(*, entity_id, entityfin_id, subentity_id, from_date, t
     return total_map, last_map
 
 
-def all_last_payment_dates(*, entity_id, entityfin_id, subentity_id, upto_date):
+def all_last_payment_dates(*, entity_id, entityfin_id, subentity_id, upto_date, vendor_ids=None):
     """Last posted payment date per vendor up to the report date."""
     qs = VendorSettlement.objects.filter(
         entity_id=entity_id,
@@ -468,6 +671,8 @@ def all_last_payment_dates(*, entity_id, entityfin_id, subentity_id, upto_date):
         qs = qs.filter(entityfinid_id=entityfin_id)
     if subentity_id is not None:
         qs = qs.filter(Q(subentity_id=subentity_id) | Q(subentity__isnull=True))
+    if vendor_ids:
+        qs = qs.filter(vendor_id__in=list(vendor_ids))
     rows = qs.values("vendor_id").annotate(last_payment_date=Max("settlement_date"))
     return {row["vendor_id"]: row["last_payment_date"] for row in rows}
 
@@ -779,6 +984,8 @@ def note_register_queryset(*, entity_id, entityfin_id=None, subentity_id=None, v
     """Return vendor debit/credit notes with linked references and open-item residuals."""
     qs = PurchaseInvoiceHeader.objects.select_related(
         "vendor",
+        "vendor__compliance_profile",
+        "vendor__commercial_profile",
         "vendor_ledger",
         "ref_document",
         "ap_open_item",
@@ -790,6 +997,10 @@ def note_register_queryset(*, entity_id, entityfin_id=None, subentity_id=None, v
             "vendor__addresses",
             queryset=AccountAddress.objects.filter(isprimary=True, isactive=True).select_related("state"),
             to_attr="prefetched_primary_addresses",
+        )
+    ).annotate(
+        has_service_lines=Exists(
+            PurchaseInvoiceLine.objects.filter(header_id=OuterRef("pk"), is_service=True)
         )
     ).filter(
         entity_id=entity_id,

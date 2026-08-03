@@ -14,6 +14,7 @@ from zipfile import BadZipFile
 
 from catalog.models import ProductBulkJob
 from entity.models import Entity
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 from .bulk_accounts import (
     commit_payload,
@@ -36,7 +37,14 @@ def _entity_from_request(request):
     raw = request.query_params.get("entity") or request.data.get("entity")
     if not raw:
         raise ValidationError({"entity": "entity query param is required."})
-    return get_object_or_404(Entity, pk=int(raw))
+    entity = get_object_or_404(Entity, pk=int(raw))
+    SubscriptionService.assert_entity_access(
+        user=request.user,
+        entity=entity,
+        access_mode=SubscriptionService.ACCESS_MODE_OPERATIONAL,
+        feature_code=SubscriptionLimitCodes.FEATURE_FINANCIAL,
+    )
+    return entity
 
 
 class AccountsBulkTemplateAPIView(APIView):
@@ -44,6 +52,7 @@ class AccountsBulkTemplateAPIView(APIView):
     content_negotiation_class = SafeFormatNegotiation
 
     def get(self, request):
+        _entity_from_request(request)
         fmt = (request.query_params.get("format") or "xlsx").lower()
         if fmt not in ("xlsx", "csv"):
             raise ValidationError({"format": "Use xlsx or csv."})

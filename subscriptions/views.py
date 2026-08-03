@@ -11,6 +11,10 @@ from rbac.services import EffectivePermissionService
 
 from .models import UserEntityAccess
 from .serializers import (
+    SubscriptionAccountActionSerializer,
+    SubscriptionPlanAdminSerializer,
+    SubscriptionPublicPlanSerializer,
+    SubscriptionSnapshotSerializer,
     TenantMembershipCreateSerializer,
     TenantMembershipListResponseSerializer,
     TenantMembershipSerializer,
@@ -21,6 +25,13 @@ from .services import SubscriptionService
 
 
 User = get_user_model()
+
+
+class SubscriptionAccountAdminMixin:
+    permission_classes = [permissions.IsAdminUser]
+
+    def get_account(self, account_id: int):
+        return get_object_or_404(SubscriptionService.account_queryset(), pk=account_id)
 
 
 class TenantMembershipAccessMixin:
@@ -55,6 +66,141 @@ class TenantMembershipAccessMixin:
             for role_value, role_label in UserEntityAccess.Role.choices
             if role_value != UserEntityAccess.Role.OWNER
         ]
+
+
+class PublicSubscriptionPlanListView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        plans = SubscriptionService.get_public_plan_catalog()
+        serializer = SubscriptionPublicPlanSerializer(plans, many=True)
+        return Response({"plans": serializer.data})
+
+
+class CurrentSubscriptionSnapshotView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        snapshot = SubscriptionService.build_subscription_snapshot(user=request.user)
+        serializer = SubscriptionSnapshotSerializer(snapshot)
+        return Response(serializer.data)
+
+
+class SubscriptionAccountAdminDetailView(SubscriptionAccountAdminMixin, APIView):
+    def get(self, request, account_id: int):
+        account = self.get_account(account_id)
+        snapshot = SubscriptionService.build_subscription_snapshot(customer_account=account)
+        serializer = SubscriptionSnapshotSerializer(snapshot)
+        return Response(serializer.data)
+
+
+class SubscriptionAccountPlanChangeView(SubscriptionAccountAdminMixin, APIView):
+    def post(self, request, account_id: int):
+        account = self.get_account(account_id)
+        serializer = SubscriptionAccountActionSerializer(
+            data=request.data,
+            context={"action": "change_plan"},
+        )
+        serializer.is_valid(raise_exception=True)
+        plan = get_object_or_404(SubscriptionService.plan_queryset(), pk=serializer.validated_data["plan_id"])
+        updated_subscription = SubscriptionService.change_plan(
+            customer_account=account,
+            new_plan=plan,
+            changed_by=request.user,
+        )
+        if "status_reason" in serializer.validated_data or "status_notes" in serializer.validated_data:
+            account.status_reason = serializer.validated_data.get("status_reason")
+            account.status_notes = serializer.validated_data.get("status_notes")
+            account.save(update_fields=["status_reason", "status_notes", "updated_at"])
+        snapshot = SubscriptionService.build_subscription_snapshot(customer_account=account)
+        response_serializer = SubscriptionSnapshotSerializer(snapshot)
+        return Response(
+            {
+                "detail": "Subscription plan changed successfully.",
+                "subscription_id": updated_subscription.id,
+                "snapshot": response_serializer.data,
+            }
+        )
+
+
+class SubscriptionAccountCancelView(SubscriptionAccountAdminMixin, APIView):
+    def post(self, request, account_id: int):
+        account = self.get_account(account_id)
+        serializer = SubscriptionAccountActionSerializer(
+            data=request.data,
+            context={"action": "cancel"},
+        )
+        serializer.is_valid(raise_exception=True)
+        canceled = SubscriptionService.cancel_subscription(
+            customer_account=account,
+            canceled_by=request.user,
+        )
+        if "status_reason" in serializer.validated_data or "status_notes" in serializer.validated_data:
+            account.status_reason = serializer.validated_data.get("status_reason")
+            account.status_notes = serializer.validated_data.get("status_notes")
+            account.save(update_fields=["status_reason", "status_notes", "updated_at"])
+        snapshot = SubscriptionService.build_subscription_snapshot(customer_account=account)
+        response_serializer = SubscriptionSnapshotSerializer(snapshot)
+        return Response(
+            {
+                "detail": "Subscription canceled successfully." if canceled else "No active subscription found.",
+                "subscription_id": getattr(canceled, "id", None),
+                "snapshot": response_serializer.data,
+            }
+        )
+
+
+class SubscriptionPlanAdminListCreateView(APIView):
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        plans = SubscriptionService.get_internal_plan_catalog()
+        serializer = SubscriptionPlanAdminSerializer(plans, many=True)
+        return Response({"plans": serializer.data})
+
+    def post(self, request):
+        serializer = SubscriptionPlanAdminSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        plan = serializer.save()
+        response_serializer = SubscriptionPlanAdminSerializer(
+            SubscriptionService.serialize_internal_plan(plan=plan)
+        )
+        return Response(response_serializer.data, status=status.HTTP_201_CREATED)
+
+
+class SubscriptionPlanAdminDetailView(APIView):
+    permission_classes = [permissions.IsAdminUser]
+
+    def get_object(self, plan_id: int):
+        return get_object_or_404(SubscriptionService.plan_queryset(), pk=plan_id)
+
+    def get(self, request, plan_id: int):
+        plan = self.get_object(plan_id)
+        serializer = SubscriptionPlanAdminSerializer(
+            SubscriptionService.serialize_internal_plan(plan=plan)
+        )
+        return Response(serializer.data)
+
+    def patch(self, request, plan_id: int):
+        plan = self.get_object(plan_id)
+        serializer = SubscriptionPlanAdminSerializer(plan, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        updated_plan = serializer.save()
+        response_serializer = SubscriptionPlanAdminSerializer(
+            SubscriptionService.serialize_internal_plan(plan=updated_plan)
+        )
+        return Response(response_serializer.data)
+
+    def delete(self, request, plan_id: int):
+        plan = self.get_object(plan_id)
+        if plan.is_default:
+            return Response(
+                {"detail": "Default plan cannot be deactivated.", "code": "default_plan_protected"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        plan.is_active = False
+        plan.save(update_fields=["is_active", "updated_at"])
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class TenantMembershipListCreateView(TenantMembershipAccessMixin, APIView):

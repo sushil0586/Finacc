@@ -898,11 +898,75 @@ class BankRecoMatchingAPITests(APITestCase):
                 {"run_id": run.id, "bank_line_id": line.id, "action": action, "reason": action},
                 format="json",
             )
-            self.assertEqual(response.status_code, 200)
-            line.refresh_from_db()
-            self.assertEqual(line.exception_status, expected)
+        self.assertEqual(response.status_code, 200)
+        line.refresh_from_db()
+        self.assertEqual(line.exception_status, expected)
         self.assertTrue(BankReconciliationAuditLog.objects.filter(run=run, action="mark_as_bank_error").exists())
         self.assertTrue(BankReconciliationAuditLog.objects.filter(run=run, action="ignore").exists())
+
+    def test_mark_reconciled_succeeds_when_run_scope_is_fully_cleared(self):
+        statement_import, run = self._create_import_and_run(
+            ["2026-04-28,Clean close-out,CLOSE001,,0,400,1400"],
+            closing="1400.00",
+        )
+        self._create_book_line(
+            amount="400.00",
+            posting_date="2026-04-28",
+            description="Clean close-out CLOSE001",
+            voucher_no="RV-CLOSE-1",
+            drcr=True,
+            txn_id=9301,
+        )
+
+        auto_match_response = self.client.post(reverse("bank_reco_api:bank-reco-import-auto-match", args=[statement_import.id]))
+        self.assertEqual(auto_match_response.status_code, 200, auto_match_response.json())
+
+        run_action_response = self.client.post(
+            reverse("bank_reco_api:bank-reco-run-action", args=[run.id]),
+            {"action": "mark_reconciled"},
+            format="json",
+        )
+        self.assertEqual(run_action_response.status_code, 200, run_action_response.json())
+        run.refresh_from_db()
+        self.assertEqual(run.status, "reconciled")
+
+    def test_mark_reconciled_is_blocked_when_same_scope_backlog_still_exists(self):
+        statement_import, run = self._create_import_and_run(
+            ["2026-04-28,Primary close-out,CLOSE002,,0,400,1400"],
+            closing="1400.00",
+        )
+        self._create_book_line(
+            amount="400.00",
+            posting_date="2026-04-28",
+            description="Primary close-out CLOSE002",
+            voucher_no="RV-CLOSE-2",
+            drcr=True,
+            txn_id=9302,
+        )
+        self._create_book_line(
+            amount="125.00",
+            posting_date="2026-04-28",
+            description="Same bank scope unmatched backlog",
+            voucher_no="RV-CLOSE-BLOCK",
+            drcr=True,
+            txn_id=9303,
+        )
+
+        auto_match_response = self.client.post(reverse("bank_reco_api:bank-reco-import-auto-match", args=[statement_import.id]))
+        self.assertEqual(auto_match_response.status_code, 200, auto_match_response.json())
+
+        run_action_response = self.client.post(
+            reverse("bank_reco_api:bank-reco-run-action", args=[run.id]),
+            {"action": "mark_reconciled"},
+            format="json",
+        )
+        self.assertEqual(run_action_response.status_code, 400, run_action_response.json())
+        self.assertIn(
+            "Run cannot be marked reconciled while unmatched bank amounts, unmatched book amounts, or suggested matches still remain.",
+            str(run_action_response.json()),
+        )
+        run.refresh_from_db()
+        self.assertNotEqual(run.status, "reconciled")
 
     def test_unmatched_reports_audit_brs_and_opening_items(self):
         previous_import, previous_run = self._create_import_and_run(["2026-04-01,Opening bank line,OPEN1,,0,1000,2000"], opening="1000.00", closing="2000.00")

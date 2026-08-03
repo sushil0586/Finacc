@@ -10,6 +10,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.entitlements import ScopedEntitlementMixin
 from entity.models import Entity, SubEntity, EntityFinancialYear
 from financial.models import account
 from gst_tds.models import EntityGstTdsConfig, GstTdsContractLedger, GstTdsMasterRule
@@ -18,6 +19,7 @@ from gst_tds.serializers import (
     GstTdsContractLedgerSerializer,
 )
 from rbac.services import EffectivePermissionService
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
 GST_TDS_CONFIG_VIEW_PERMISSIONS = (
@@ -53,8 +55,10 @@ def _require_any_permission(request, entity_id: int, permission_codes: tuple[str
     raise PermissionDenied(f"Missing permission: one of {', '.join(permission_codes)}")
 
 
-class GstTdsConfigAPIView(APIView):
+class GstTdsConfigAPIView(ScopedEntitlementMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
+    subscription_feature_code = SubscriptionLimitCodes.FEATURE_FINANCIAL
+    subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
 
     def _scope(self, request):
         entity_id = _to_int(
@@ -69,6 +73,11 @@ class GstTdsConfigAPIView(APIView):
         )
 
         entity = get_object_or_404(Entity, pk=entity_id)
+        self.enforce_scope(
+            request,
+            entity_id=int(entity.id),
+            subentity_id=int(subentity_id) if subentity_id is not None else None,
+        )
         subentity = None
         if subentity_id is not None:
             subentity = get_object_or_404(SubEntity, pk=subentity_id)
@@ -129,12 +138,20 @@ class GstTdsConfigAPIView(APIView):
     patch = put
 
 
-class GstTdsContractLedgerListAPIView(generics.ListAPIView):
+class GstTdsContractLedgerListAPIView(ScopedEntitlementMixin, generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = GstTdsContractLedgerSerializer
+    subscription_feature_code = SubscriptionLimitCodes.FEATURE_FINANCIAL
+    subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
 
     def get_queryset(self):
         entity_id = _to_int(self.request.query_params.get("entity"), "entity", required=True)
+        self.enforce_scope(
+            self.request,
+            entity_id=int(entity_id),
+            entityfinid_id=_to_int(self.request.query_params.get("entityfinid"), "entityfinid", required=False),
+            subentity_id=_to_int(self.request.query_params.get("subentity"), "subentity", required=False),
+        )
         _require_any_permission(self.request, int(entity_id), GST_TDS_CONFIG_VIEW_PERMISSIONS)
         entityfinid_id = _to_int(self.request.query_params.get("entityfinid"), "entityfinid", required=False)
         subentity_id = _to_int(self.request.query_params.get("subentity"), "subentity", required=False)
@@ -163,14 +180,22 @@ class GstTdsContractLedgerListAPIView(generics.ListAPIView):
         return qs.order_by("vendor_id", "contract_ref", "-updated_at")
 
 
-class GstTdsContractLedgerSummaryAPIView(APIView):
+class GstTdsContractLedgerSummaryAPIView(ScopedEntitlementMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
+    subscription_feature_code = SubscriptionLimitCodes.FEATURE_FINANCIAL
+    subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
 
     def get(self, request):
         entity_id = _to_int(request.query_params.get("entity"), "entity", required=True)
-        _require_any_permission(request, int(entity_id), GST_TDS_CONFIG_VIEW_PERMISSIONS)
         entityfinid_id = _to_int(request.query_params.get("entityfinid"), "entityfinid", required=False)
         subentity_id = _to_int(request.query_params.get("subentity"), "subentity", required=False)
+        self.enforce_scope(
+            request,
+            entity_id=int(entity_id),
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+        )
+        _require_any_permission(request, int(entity_id), GST_TDS_CONFIG_VIEW_PERMISSIONS)
         vendor_id = _to_int(request.query_params.get("vendor"), "vendor", required=False)
         contract_ref = str(request.query_params.get("contract_ref", "") or "").strip()
 

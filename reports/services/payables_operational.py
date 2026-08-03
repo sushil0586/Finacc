@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from django.conf import settings
+
 from financial.models import account
+from helpers.utils.meta_cache import build_meta_cache_key, get_or_set_meta_cache
 from purchase.models.purchase_core import PurchaseInvoiceHeader
 from reports.services.financial.ledger_book import build_ledger_book
 from reports.services.payables_config import (
@@ -19,7 +22,7 @@ from reports.services.payables import (
     _trace_payload,
     _vendor_meta,
     build_ap_aging_report,
-    build_payables_dashboard_summary,
+    build_msme_overdue_report,
     build_vendor_outstanding_report,
 )
 from reports.services.payables_control import (
@@ -29,9 +32,51 @@ from reports.services.payables_control import (
     build_vendor_balance_exception_report,
 )
 from reports.selectors.financial import normalize_scope_ids
-from reports.selectors.payables import note_register_queryset, q2, settlement_history_queryset, vendor_queryset
+from reports.selectors.payables import (
+    asof_advances,
+    asof_open_item_balances,
+    coerce_date,
+    note_register_queryset,
+    q2,
+    settlement_history_queryset,
+    vendor_queryset,
+)
 
 ZERO = Decimal("0.00")
+_CLOSE_PACK_RECON_NAMESPACE = "reports.payables.close_pack_reconciliation"
+_CLOSE_PACK_NAMESPACE = "reports.payables.close_pack"
+_VENDOR_LEDGER_NAMESPACE = "reports.payables.vendor_ledger"
+_NOTE_REGISTER_NAMESPACE = "reports.payables.note_register"
+
+
+def _close_pack_reconciliation_payload(*, entity_id, entityfin_id, subentity_id, as_of_date, page_size):
+    def _builder():
+        return build_ap_gl_reconciliation_report(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            as_of_date=as_of_date,
+            page_size=page_size,
+            include_trace=False,
+        )
+
+    if not getattr(settings, "PAYABLES_CLOSE_PACK_RECON_CACHE_ENABLED", True):
+        return _builder()
+    cache_key = build_meta_cache_key(
+        _CLOSE_PACK_RECON_NAMESPACE,
+        entity_id=entity_id,
+        entityfinid_id=entityfin_id,
+        subentity_id=subentity_id,
+        extra={
+            "as_of_date": str(as_of_date) if as_of_date else None,
+            "page_size": int(page_size),
+        },
+    )
+    return get_or_set_meta_cache(
+        cache_key,
+        _builder,
+        timeout=int(getattr(settings, "PAYABLES_CLOSE_PACK_RECON_CACHE_TTL_SECONDS", 15)),
+    )
 
 
 def _close_pack_top_issues(checks):
@@ -59,6 +104,15 @@ def _note_signed_amount(header, field_name):
     if header.doc_type == PurchaseInvoiceHeader.DocType.CREDIT_NOTE:
         return q2(-abs(value))
     return q2(abs(value))
+
+
+def _purchase_note_route(header):
+    is_service = bool(getattr(header, "has_service_lines", False))
+    if header.doc_type == PurchaseInvoiceHeader.DocType.CREDIT_NOTE:
+        return "/purchaseservicecreditnoteinvoice" if is_service else "/purchasecreditnoteinvoice"
+    if header.doc_type == PurchaseInvoiceHeader.DocType.DEBIT_NOTE:
+        return "/purchaseservicedebitnoteinvoice" if is_service else "/purchasedebitnoteinvoice"
+    return "/purchaseserviceinvoice" if is_service else "/purchaseinvoice"
 
 
 def build_vendor_settlement_history_report(
@@ -281,7 +335,7 @@ def build_vendor_settlement_history_report(
     return payload
 
 
-def build_vendor_note_register(
+def _build_vendor_note_register_uncached(
     *,
     entity_id,
     entityfin_id=None,
@@ -310,10 +364,15 @@ def build_vendor_note_register(
         status=status,
     )
     rows = []
+    vendor_meta_cache = {}
     credit_total = ZERO
     debit_total = ZERO
     net_total = ZERO
     for header in notes.iterator(chunk_size=500):
+        vendor_meta = vendor_meta_cache.get(header.vendor_id)
+        if vendor_meta is None:
+            vendor_meta = _vendor_meta(header.vendor, subentity_name=getattr(header.subentity, "subentityname", None))
+            vendor_meta_cache[header.vendor_id] = vendor_meta
         note_amount = _note_signed_amount(header, "grand_total")
         tax_amount = _note_signed_amount(header, "total_gst")
         taxable_amount = _note_signed_amount(header, "total_taxable")
@@ -324,11 +383,13 @@ def build_vendor_note_register(
             debit_total = q2(debit_total + abs(note_amount))
         net_total = q2(net_total + note_amount)
         drilldown = {
-            "document": _drilldown_item(
-                label="Purchase Document Detail",
-                target="purchase_document_detail",
-                params={"id": header.id, "entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id},
-            ),
+            "document": {
+                "label": "Purchase Document Detail",
+                "target": "purchase_document_detail",
+                "kind": "navigate",
+                "route": _purchase_note_route(header),
+                "params": {"id": header.id, "entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id},
+            },
             "vendor_outstanding": _drilldown_item(
                 label="Vendor Outstanding",
                 target="vendor_outstanding",
@@ -349,7 +410,7 @@ def build_vendor_note_register(
             {
                 **_row_with_meta(
                     {
-                        **_vendor_meta(header.vendor, subentity_name=getattr(header.subentity, "subentityname", None)),
+                        **vendor_meta,
                         "note_id": header.id,
                         "note_number": header.purchase_number or f"{header.doc_code}-{header.doc_no}",
                         "note_date": header.bill_date,
@@ -421,7 +482,70 @@ def build_vendor_note_register(
     return payload
 
 
-def build_vendor_ledger_statement(
+def build_vendor_note_register(
+    *,
+    entity_id,
+    entityfin_id=None,
+    subentity_id=None,
+    vendor_id=None,
+    from_date=None,
+    to_date=None,
+    note_type=None,
+    status=None,
+    include_trace=True,
+    sort_by=None,
+    sort_order="desc",
+    page=1,
+    page_size=100,
+):
+    entity_id, entityfin_id, subentity_id = normalize_scope_ids(entity_id, entityfin_id, subentity_id)
+
+    def _builder():
+        return _build_vendor_note_register_uncached(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            vendor_id=vendor_id,
+            from_date=from_date,
+            to_date=to_date,
+            note_type=note_type,
+            status=status,
+            include_trace=include_trace,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            page=page,
+            page_size=page_size,
+        )
+
+    if not getattr(settings, "PAYABLES_NOTE_REGISTER_CACHE_ENABLED", True):
+        return _builder()
+
+    cache_key = build_meta_cache_key(
+        _NOTE_REGISTER_NAMESPACE,
+        entity_id=entity_id,
+        entityfinid_id=entityfin_id,
+        subentity_id=subentity_id,
+        extra={
+            "vendor_id": vendor_id,
+            "from_date": str(from_date) if from_date else None,
+            "to_date": str(to_date) if to_date else None,
+            "note_type": note_type,
+            "status": status,
+            "include_trace": bool(include_trace),
+            "sort_by": sort_by,
+            "sort_order": sort_order,
+            "page": int(page),
+            "page_size": int(page_size),
+        },
+    )
+    return get_or_set_meta_cache(
+        cache_key,
+        _builder,
+        timeout=int(getattr(settings, "PAYABLES_NOTE_REGISTER_CACHE_TTL_SECONDS", 15)),
+    )
+
+
+def _build_vendor_ledger_statement_uncached(
     *,
     entity_id,
     entityfin_id=None,
@@ -582,7 +706,64 @@ def build_vendor_ledger_statement(
     return payload
 
 
-def build_payables_close_pack(
+def build_vendor_ledger_statement(
+    *,
+    entity_id,
+    entityfin_id=None,
+    subentity_id=None,
+    vendor_id,
+    from_date=None,
+    to_date=None,
+    include_opening=True,
+    include_running_balance=True,
+    include_settlement_drilldowns=True,
+    include_related_reports=True,
+    include_trace=True,
+):
+    entity_id, entityfin_id, subentity_id = normalize_scope_ids(entity_id, entityfin_id, subentity_id)
+
+    def _builder():
+        return _build_vendor_ledger_statement_uncached(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            vendor_id=vendor_id,
+            from_date=from_date,
+            to_date=to_date,
+            include_opening=include_opening,
+            include_running_balance=include_running_balance,
+            include_settlement_drilldowns=include_settlement_drilldowns,
+            include_related_reports=include_related_reports,
+            include_trace=include_trace,
+        )
+
+    if not getattr(settings, "PAYABLES_VENDOR_LEDGER_CACHE_ENABLED", True):
+        return _builder()
+
+    cache_key = build_meta_cache_key(
+        _VENDOR_LEDGER_NAMESPACE,
+        entity_id=entity_id,
+        entityfinid_id=entityfin_id,
+        subentity_id=subentity_id,
+        extra={
+            "vendor_id": int(vendor_id),
+            "from_date": str(from_date) if from_date else None,
+            "to_date": str(to_date) if to_date else None,
+            "include_opening": bool(include_opening),
+            "include_running_balance": bool(include_running_balance),
+            "include_settlement_drilldowns": bool(include_settlement_drilldowns),
+            "include_related_reports": bool(include_related_reports),
+            "include_trace": bool(include_trace),
+        },
+    )
+    return get_or_set_meta_cache(
+        cache_key,
+        _builder,
+        timeout=int(getattr(settings, "PAYABLES_VENDOR_LEDGER_CACHE_TTL_SECONDS", 15)),
+    )
+
+
+def _build_payables_close_pack_uncached(
     *,
     entity_id,
     entityfin_id=None,
@@ -602,17 +783,8 @@ def build_payables_close_pack(
     include_exceptions = "exceptions" in sections and include_top_exceptions
     include_top_vendors_section = "top_vendors" in sections and include_top_vendors
 
-    dashboard = None
-    if include_overview or include_top_vendors_section:
-        dashboard = build_payables_dashboard_summary(
-            entity_id=entity_id,
-            entityfin_id=entityfin_id,
-            subentity_id=subentity_id,
-            as_of_date=as_of_date,
-        )
-
     aging = None
-    if include_aging:
+    if include_aging or include_overview:
         aging = build_ap_aging_report(
             entity_id=entity_id,
             entityfin_id=entityfin_id,
@@ -623,15 +795,47 @@ def build_payables_close_pack(
             include_drilldown=False,
         )
 
+    msme_payload = None
+    if include_overview or include_top_vendors_section:
+        msme_payload = build_msme_overdue_report(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            as_of_date=as_of_date,
+            overdue_only=True,
+            sort_by="msme_days_overdue",
+            sort_order="desc",
+            page=1,
+            page_size=100000,
+            include_trace=False,
+        )
+
+    close_open_items_asof = None
+    close_advances_asof = None
+    if include_validation or include_exceptions:
+        close_open_items_asof = asof_open_item_balances(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            upto_date=coerce_date(as_of_date),
+        )
+        close_advances_asof = asof_advances(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            upto_date=coerce_date(as_of_date),
+        )
+
     reconciliation = None
     if include_reconciliation or include_overview or include_validation:
-        reconciliation = build_ap_gl_reconciliation_report(
+        reconciliation = _close_pack_reconciliation_payload(
             entity_id=entity_id,
             entityfin_id=entityfin_id,
             subentity_id=subentity_id,
             as_of_date=as_of_date,
             page_size=1000 if include_overview or include_validation else 10,
         )
+    reconciliation_rows = (reconciliation or {}).get("rows", [])
 
     validation = None
     if include_validation or include_overview:
@@ -640,6 +844,9 @@ def build_payables_close_pack(
             entityfin_id=entityfin_id,
             subentity_id=subentity_id,
             as_of_date=as_of_date,
+            reconciliation_payload=reconciliation,
+            open_items_asof=close_open_items_asof,
+            advances_asof=close_advances_asof,
         )
 
     exception_report = None
@@ -650,38 +857,29 @@ def build_payables_close_pack(
             subentity_id=subentity_id,
             as_of_date=as_of_date,
             page_size=10,
-        )
-
-    vendor_outstanding = None
-    if include_top_vendors_section:
-        vendor_outstanding = build_vendor_outstanding_report(
-            entity_id=entity_id,
-            entityfin_id=entityfin_id,
-            subentity_id=subentity_id,
-            to_date=as_of_date,
-            include_trace=False,
-            include_drilldown=False,
-            paginate_summary=False,
+            reconciliation_rows=reconciliation_rows,
+            open_items_asof=close_open_items_asof,
+            advances_asof=close_advances_asof,
         )
 
     close_as_of_date = (
         (reconciliation or {}).get("as_of_date")
         or (aging or {}).get("as_of_date")
-        or (dashboard or {}).get("as_of_date")
+        or (msme_payload or {}).get("as_of_date")
         or as_of_date
     )
     validation_checks = (validation or {}).get("checks", [])
-    reconciliation_rows = (reconciliation or {}).get("rows", [])
     top_overdue_vendors = []
     top_outstanding_vendors = []
-    if vendor_outstanding:
+    aging_rows = (aging or {}).get("rows", [])
+    if aging_rows:
         top_overdue_vendors = sorted(
-            vendor_outstanding["rows"],
+            aging_rows,
             key=lambda row: q2(row.get("overdue_amount") or ZERO),
             reverse=True,
         )[:5]
         top_outstanding_vendors = sorted(
-            vendor_outstanding["rows"],
+            aging_rows,
             key=lambda row: q2(row.get("outstanding") or row.get("net_outstanding") or ZERO),
             reverse=True,
         )[:5]
@@ -696,13 +894,13 @@ def build_payables_close_pack(
     }
     if include_overview:
         payload["overview"] = {
-            "total_vendor_outstanding": dashboard["totals"]["vendor_outstanding"],
-            "overdue_outstanding": dashboard["totals"].get("overdue_outstanding", "0.00"),
-            "msme_overdue_amount": dashboard["totals"].get("msme_overdue_amount", "0.00"),
-            "msme_overdue_bill_count": dashboard["summary"].get("msme_overdue_bill_count", 0),
-            "msme_overdue_vendor_count": dashboard["summary"].get("msme_overdue_vendor_count", 0),
-            "msme_oldest_overdue_days": dashboard["summary"].get("msme_oldest_overdue_days", 0),
-            "msme_reporting_note": dashboard["summary"].get("msme_reporting_note", ""),
+            "total_vendor_outstanding": (aging or {}).get("totals", {}).get("outstanding", "0.00"),
+            "overdue_outstanding": (aging or {}).get("totals", {}).get("overdue_amount", "0.00"),
+            "msme_overdue_amount": (msme_payload or {}).get("summary", {}).get("overdue_amount", "0.00"),
+            "msme_overdue_bill_count": (msme_payload or {}).get("summary", {}).get("overdue_bill_count", 0),
+            "msme_overdue_vendor_count": (msme_payload or {}).get("summary", {}).get("overdue_vendor_count", 0),
+            "msme_oldest_overdue_days": (msme_payload or {}).get("summary", {}).get("oldest_overdue_days", 0),
+            "msme_reporting_note": (msme_payload or {}).get("summary", {}).get("reporting_note", ""),
             "open_vendor_count": len(reconciliation_rows),
             "negative_balance_vendor_count": sum(1 for row in reconciliation_rows if q2(row.get("subledger_balance")) < ZERO),
             "stale_advance_count": next((check.get("affected_count", 0) for check in validation_checks if check.get("check_code") == "long_unapplied_advances"), 0),
@@ -736,7 +934,11 @@ def build_payables_close_pack(
         payload["top_vendors"] = {
             "top_overdue_vendors": top_overdue_vendors,
             "top_outstanding_vendors": top_outstanding_vendors,
-            "top_msme_overdue_vendors": dashboard.get("top_msme_overdue_vendors", []),
+            "top_msme_overdue_vendors": sorted(
+                (msme_payload or {}).get("rows", []),
+                key=lambda row: (q2(row.get("balance") or ZERO), q2(row.get("msme_days_overdue") or ZERO)),
+                reverse=True,
+            )[:5],
         }
 
     payload.update(
@@ -765,6 +967,55 @@ def build_payables_close_pack(
         )
     )
     return payload
+
+
+def build_payables_close_pack(
+    *,
+    entity_id,
+    entityfin_id=None,
+    subentity_id=None,
+    as_of_date=None,
+    include_sections=None,
+    include_top_vendors=True,
+    include_top_exceptions=True,
+    expanded_validation=False,
+):
+    entity_id, entityfin_id, subentity_id = normalize_scope_ids(entity_id, entityfin_id, subentity_id)
+    sections = tuple(get_close_pack_section_codes(include_sections))
+
+    def _builder():
+        return _build_payables_close_pack_uncached(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            as_of_date=as_of_date,
+            include_sections=sections,
+            include_top_vendors=include_top_vendors,
+            include_top_exceptions=include_top_exceptions,
+            expanded_validation=expanded_validation,
+        )
+
+    if not getattr(settings, "PAYABLES_CLOSE_PACK_CACHE_ENABLED", True):
+        return _builder()
+
+    cache_key = build_meta_cache_key(
+        _CLOSE_PACK_NAMESPACE,
+        entity_id=entity_id,
+        entityfinid_id=entityfin_id,
+        subentity_id=subentity_id,
+        extra={
+            "as_of_date": str(as_of_date) if as_of_date else None,
+            "sections": list(sections),
+            "include_top_vendors": bool(include_top_vendors),
+            "include_top_exceptions": bool(include_top_exceptions),
+            "expanded_validation": bool(expanded_validation),
+        },
+    )
+    return get_or_set_meta_cache(
+        cache_key,
+        _builder,
+        timeout=int(getattr(settings, "PAYABLES_CLOSE_PACK_CACHE_TTL_SECONDS", 15)),
+    )
 
 
 def close_pack_export_rows(payload):

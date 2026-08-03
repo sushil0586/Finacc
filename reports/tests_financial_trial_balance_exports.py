@@ -24,10 +24,9 @@ class TrialBalanceExportHelperTests(SimpleTestCase):
         self.assertIn("Entity: Acme Pvt Ltd", subtitle)
         self.assertIn("FY: FY 2025-26", subtitle)
         self.assertIn("Subentity: Mumbai Branch", subtitle)
-        self.assertIn("Scope: custom", subtitle)
-        self.assertIn("Group by: accounthead", subtitle)
-        self.assertIn("View: detailed", subtitle)
-        self.assertIn("Posted only: False", subtitle)
+        self.assertIn("Scope: Custom range", subtitle)
+        self.assertIn("Group: Account head", subtitle)
+        self.assertIn("View: Detailed", subtitle)
 
     def test_trial_balance_subtitle_falls_back_to_subentity_id(self):
         subtitle = _trial_balance_subtitle(

@@ -186,6 +186,8 @@ STANDARD_TRADING_TEMPLATE = {
         {"code": 8500, "name": "Bank Charges", "head_code": 8350, "party_type": "Other"},
         {"code": 8504, "name": "Round Off", "head_code": 8350, "party_type": "Other"},
         {"code": 9000, "name": "Opening Stock", "head_code": 9000, "party_type": "Other"},
+        {"code": 9002, "name": "Opening Equity Transfer", "head_code": 6200, "party_type": "Other"},
+        {"code": 9003, "name": "Opening Inventory Carry Forward", "head_code": 9000, "party_type": "Other"},
     ],
 }
 

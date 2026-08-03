@@ -16,6 +16,8 @@ from purchase.serializers.purchase_ap import (
 )
 from purchase.services.purchase_ap_service import PurchaseApService
 from purchase.services.ap_allocation_service import PurchaseApAllocationService
+from purchase.views.rbac import require_purchase_request_permission
+from subscriptions.services import SubscriptionLimitCodes
 from financial.profile_access import account_gstno, account_pan, account_partytype
 
 
@@ -56,6 +58,13 @@ class VendorBillOpenItemListAPIView(generics.ListAPIView):
 
     def get_queryset(self):
         entity_id, entityfinid_id, subentity_id, vendor_id, open_flag = self._scope()
+        require_purchase_request_permission(
+            user=self.request.user,
+            entity_id=entity_id,
+            doc_type=self.request.query_params.get("doc_type"),
+            action="view",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
+        )
         return PurchaseApService.list_open_items(
             entity_id=entity_id,
             entityfinid_id=entityfinid_id,
@@ -105,6 +114,13 @@ class VendorAdvanceBalanceListAPIView(generics.ListAPIView):
 
     def get_queryset(self):
         entity_id, entityfinid_id, subentity_id = _parse_scope(self.request)
+        require_purchase_request_permission(
+            user=self.request.user,
+            entity_id=entity_id,
+            doc_type=self.request.query_params.get("doc_type"),
+            action="view",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
+        )
         vendor = self.request.query_params.get("vendor")
         is_open = self.request.query_params.get("is_open")
         vendor_id = int(vendor) if vendor not in (None, "", "null") else None
@@ -129,6 +145,13 @@ class VendorSettlementListCreateAPIView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         entity_id, entityfinid_id, subentity_id = _parse_scope(self.request)
+        require_purchase_request_permission(
+            user=self.request.user,
+            entity_id=entity_id,
+            doc_type=self.request.query_params.get("doc_type"),
+            action="view",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
+        )
         qs = (
             VendorSettlement.objects
             .filter(entity_id=entity_id, entityfinid_id=entityfinid_id)
@@ -150,6 +173,13 @@ class VendorSettlementListCreateAPIView(generics.ListCreateAPIView):
         inp = VendorSettlementCreateInputSerializer(data=request.data)
         inp.is_valid(raise_exception=True)
         data = inp.validated_data
+        require_purchase_request_permission(
+            user=request.user,
+            entity_id=data["entity"],
+            doc_type=data.get("doc_type"),
+            action="create",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
+        )
 
         try:
             res = PurchaseApService.create_settlement(
@@ -177,6 +207,16 @@ class VendorSettlementPostAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
+        settlement = VendorSettlement.objects.filter(pk=pk).only("id", "entity_id").first()
+        if settlement is None:
+            raise ValidationError({"detail": "Settlement not found."})
+        require_purchase_request_permission(
+            user=request.user,
+            entity_id=settlement.entity_id,
+            doc_type=request.data.get("doc_type") if isinstance(getattr(request, "data", None), dict) else None,
+            action="post",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
+        )
         try:
             res = PurchaseApService.post_settlement(settlement_id=pk, posted_by_id=request.user.id)
         except ValueError as e:
@@ -192,6 +232,16 @@ class VendorSettlementCancelAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
+        settlement = VendorSettlement.objects.filter(pk=pk).only("id", "entity_id").first()
+        if settlement is None:
+            raise ValidationError({"detail": "Settlement not found."})
+        require_purchase_request_permission(
+            user=request.user,
+            entity_id=settlement.entity_id,
+            doc_type=request.data.get("doc_type") if isinstance(getattr(request, "data", None), dict) else None,
+            action="cancel",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
+        )
         try:
             res = PurchaseApService.cancel_settlement(settlement_id=pk, cancelled_by_id=request.user.id)
         except ValueError as e:
@@ -207,6 +257,13 @@ class VendorStatementAPIView(APIView):
 
     def get(self, request):
         entity_id, entityfinid_id, subentity_id = _parse_scope(request)
+        require_purchase_request_permission(
+            user=request.user,
+            entity_id=entity_id,
+            doc_type=request.query_params.get("doc_type"),
+            action="view",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
+        )
         vendor = request.query_params.get("vendor")
         if not vendor:
             raise ValidationError({"vendor": "vendor query param is required."})

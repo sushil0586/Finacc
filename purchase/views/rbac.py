@@ -4,8 +4,10 @@ from typing import Iterable, Optional
 
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
+from entity.models import Entity
 from purchase.models.purchase_core import DocType
 from rbac.services import EffectivePermissionService
+from subscriptions.services import SubscriptionService
 
 
 DOC_PERMISSION_FAMILY = {
@@ -58,10 +60,34 @@ def _has_any_code(available_codes: Iterable[str], required_codes: Iterable[str])
     return any(code in available for code in required_codes)
 
 
-def require_purchase_scope_permission(*, user, entity_id: int, doc_type: int, action: str) -> None:
+def _entity_for_subscription(entity, *, entity_id: int):
+    if hasattr(entity, "customer_account_id"):
+        return entity
+    hydrated = Entity.objects.filter(pk=getattr(entity, "id", entity_id)).first()
+    return hydrated or entity
+
+
+def require_purchase_scope_permission(
+    *,
+    user,
+    entity_id: int,
+    doc_type: int,
+    action: str,
+    access_mode: str | None = None,
+    feature_code: str | None = None,
+) -> None:
     entity = EffectivePermissionService.entity_for_user(user, entity_id)
     if entity is None:
         raise PermissionDenied("You do not have access to this entity.")
+
+    if access_mode or feature_code:
+        entity = _entity_for_subscription(entity, entity_id=entity_id)
+        SubscriptionService.assert_entity_access(
+            user=user,
+            entity=entity,
+            access_mode=access_mode or SubscriptionService.ACCESS_MODE_OPERATIONAL,
+            feature_code=feature_code,
+        )
 
     required_codes = purchase_permission_codes(doc_type, action)
     available_codes = EffectivePermissionService.permission_codes_for_user(user, entity.id)
@@ -79,6 +105,8 @@ def require_purchase_request_permission(
     entity_id: int,
     doc_type: Optional[int],
     action: str,
+    access_mode: str | None = None,
+    feature_code: str | None = None,
 ) -> int:
     normalized_doc_type = normalize_purchase_doc_type(doc_type)
     require_purchase_scope_permission(
@@ -86,5 +114,7 @@ def require_purchase_request_permission(
         entity_id=entity_id,
         doc_type=normalized_doc_type,
         action=action,
+        access_mode=access_mode,
+        feature_code=feature_code,
     )
     return normalized_doc_type

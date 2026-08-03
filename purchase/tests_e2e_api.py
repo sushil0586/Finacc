@@ -395,6 +395,14 @@ class PurchaseApiEndToEndTests(APITestCase):
             "purchase.views.purchase_invoice_actions.require_purchase_request_permission",
             side_effect=lambda **kwargs: int(kwargs.get("doc_type") or PurchaseInvoiceHeader.DocType.TAX_INVOICE),
         )
+        self._attachment_request_permission_patch = patch(
+            "purchase.views.purchase_attachment.require_purchase_request_permission",
+            side_effect=lambda **kwargs: int(kwargs.get("doc_type") or PurchaseInvoiceHeader.DocType.TAX_INVOICE),
+        )
+        self._purchase_ap_request_permission_patch = patch(
+            "purchase.views.purchase_ap.require_purchase_request_permission",
+            side_effect=lambda **kwargs: int(kwargs.get("doc_type") or PurchaseInvoiceHeader.DocType.TAX_INVOICE),
+        )
         self._invoice_actions_scope_permission_patch = patch(
             "purchase.views.purchase_invoice_actions.require_purchase_scope_permission",
             return_value=None,
@@ -408,6 +416,8 @@ class PurchaseApiEndToEndTests(APITestCase):
         self._gstr2b_codes_patch.start()
         self._invoice_request_permission_patch.start()
         self._invoice_actions_request_permission_patch.start()
+        self._attachment_request_permission_patch.start()
+        self._purchase_ap_request_permission_patch.start()
         self._invoice_actions_scope_permission_patch.start()
         self.addCleanup(self._entity_scope_patch.stop)
         self.addCleanup(self._payment_entity_scope_patch.stop)

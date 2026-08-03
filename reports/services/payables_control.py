@@ -334,6 +334,9 @@ def build_vendor_balance_exception_report(
     sort_order="desc",
     page=1,
     page_size=100,
+    reconciliation_rows=None,
+    open_items_asof=None,
+    advances_asof=None,
 ):
     """Return lightweight payable exceptions with drilldown-friendly rows."""
     entity_id, entityfin_id, subentity_id = normalize_scope_ids(entity_id, entityfin_id, subentity_id)
@@ -354,17 +357,19 @@ def build_vendor_balance_exception_report(
     )
     vendor_by_id = {vendor.id: vendor for vendor in vendors}
     vendor_ids = set(vendor_by_id.keys())
-    summary_rows, _summary_totals = _vendor_reconciliation_rows(
-        entity_id=entity_id,
-        entityfin_id=entityfin_id,
-        subentity_id=subentity_id,
-        as_of_date=as_of,
-        vendor_id=vendor_id,
-        vendor_group=vendor_group,
-        region_id=region_id,
-        currency=currency,
-        search=search,
-    )
+    summary_rows = reconciliation_rows
+    if summary_rows is None:
+        summary_rows, _summary_totals = _vendor_reconciliation_rows(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            as_of_date=as_of,
+            vendor_id=vendor_id,
+            vendor_group=vendor_group,
+            region_id=region_id,
+            currency=currency,
+            search=search,
+        )
     summary_by_vendor = {row["vendor_id"]: row for row in summary_rows}
     last_payment_map = all_last_payment_dates(
         entity_id=entity_id,
@@ -372,14 +377,14 @@ def build_vendor_balance_exception_report(
         subentity_id=subentity_id,
         upto_date=as_of,
     )
-    open_items = asof_open_item_balances(
+    open_items = open_items_asof if open_items_asof is not None else asof_open_item_balances(
         entity_id=entity_id,
         entityfin_id=entityfin_id,
         subentity_id=subentity_id,
         upto_date=as_of,
         vendor_ids=vendor_ids,
     )
-    advances = asof_advances(
+    advances = advances_asof if advances_asof is not None else asof_advances(
         entity_id=entity_id,
         entityfin_id=entityfin_id,
         subentity_id=subentity_id,
@@ -563,6 +568,9 @@ def build_payables_close_validation(
     entityfin_id=None,
     subentity_id=None,
     as_of_date=None,
+    reconciliation_payload=None,
+    open_items_asof=None,
+    advances_asof=None,
 ):
     """Return JSON-first payables close readiness checks for a close date."""
     entity_id, entityfin_id, subentity_id = normalize_scope_ids(entity_id, entityfin_id, subentity_id)
@@ -588,7 +596,7 @@ def build_payables_close_validation(
         "sample_references": _sample_refs(unposted_docs, "id", "purchase_number", "bill_date"),
     })
 
-    open_items = asof_open_item_balances(
+    open_items = open_items_asof if open_items_asof is not None else asof_open_item_balances(
         entity_id=entity_id,
         entityfin_id=entityfin_id,
         subentity_id=subentity_id,
@@ -639,7 +647,7 @@ def build_payables_close_validation(
         "sample_references": _sample_refs(zero_rows, "id", "purchase_number", "vendor_id"),
     })
 
-    advances = asof_advances(
+    advances = advances_asof if advances_asof is not None else asof_advances(
         entity_id=entity_id,
         entityfin_id=entityfin_id,
         subentity_id=subentity_id,
@@ -689,7 +697,7 @@ def build_payables_close_validation(
         "sample_references": _sample_refs(integrity_rows, "settlement_id", "open_item_id", "reference_no", "document_number"),
     })
 
-    reconciliation = build_ap_gl_reconciliation_report(
+    reconciliation = reconciliation_payload or build_ap_gl_reconciliation_report(
         entity_id=entity_id,
         entityfin_id=entityfin_id,
         subentity_id=subentity_id,
@@ -778,5 +786,3 @@ def build_payables_close_readiness_summary(*, entity_id, entityfin_id=None, sube
             extra_meta={"dashboard": True, "json_first": True},
         ),
     }
-
-

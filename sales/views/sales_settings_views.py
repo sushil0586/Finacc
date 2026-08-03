@@ -10,7 +10,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from numbering.models import DocumentNumberSeries
-from numbering.services import ensure_document_type, ensure_series, validate_unique_series_pattern
+from numbering.services import ensure_document_types_batch, ensure_series, validate_unique_series_pattern
 from sales.models import SalesChoiceOverride, SalesLockPeriod
 from sales.models.sales_settings import SalesSettings
 from sales.services.sales_choices_service import SalesChoicesService
@@ -188,8 +188,8 @@ class SalesSettingsAPIView(APIView):
         qs = qs.filter(subentity__isnull=True) if subentity_id is None else qs.filter(subentity_id=subentity_id)
         return list(qs.order_by("lock_date", "id").values("id", "lock_date", "reason"))
 
-    def _list_choice_overrides(self, *, entity_id: int, subentity_id: Optional[int]) -> list[dict]:
-        catalog = SalesChoicesService.get_choices(entity_id=entity_id, subentity_id=subentity_id)
+    def _list_choice_overrides(self, *, entity_id: int, subentity_id: Optional[int], catalog: Optional[dict] = None) -> list[dict]:
+        catalog = catalog if catalog is not None else SalesChoicesService.get_choices(entity_id=entity_id, subentity_id=subentity_id)
         valid_keys = self._valid_override_keys(catalog)
         qs = SalesChoiceOverride.objects.filter(entity_id=entity_id)
         qs = qs.filter(subentity__isnull=True) if subentity_id is None else qs.filter(subentity_id=subentity_id)
@@ -242,34 +242,81 @@ class SalesSettingsAPIView(APIView):
                 raise ValidationError({"choice_overrides": f"Invalid override {group}:{key}."})
             SalesChoiceOverride.objects.create(entity_id=entity_id, subentity_id=subentity_id, choice_group=group, choice_key=key, is_enabled=bool(row.get("is_enabled", True)), override_label=row.get("override_label") or "")
 
-    def _get_doc_type(self, doc_key: str, name: str, default_code: str):
-        return ensure_document_type(module="sales", doc_key=doc_key, name=name, default_code=default_code)
+    def _resolve_doc_types(self, settings_obj) -> dict[str, dict[str, Any]]:
+        configs = []
+        for row_key, config in SALES_DOC_TYPES.items():
+            configs.append(
+                {
+                    "row_key": row_key,
+                    "doc_key": config["doc_key"],
+                    "name": config["name"],
+                    "default_code": getattr(settings_obj, config["default_code_field"]) or config["fallback_code"],
+                }
+            )
+        doc_types_by_key = ensure_document_types_batch(
+            module="sales",
+            configs=[
+                {
+                    "doc_key": row["doc_key"],
+                    "name": row["name"],
+                    "default_code": row["default_code"],
+                }
+                for row in configs
+            ],
+        )
+        return {
+            row["row_key"]: {
+                "id": doc_types_by_key[row["doc_key"]].id,
+                "doc_key": row["doc_key"],
+                "name": row["name"],
+            }
+            for row in configs
+            if row["doc_key"] in doc_types_by_key
+        }
 
-    def _series_payload(self, *, entity_id: int, entityfinid_id: int, subentity_id: Optional[int], settings_obj) -> list[dict]:
+    def _series_payload(
+        self,
+        *,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: Optional[int],
+        settings_obj,
+        current_doc_numbers: Optional[dict[str, dict[str, Any]]] = None,
+        doc_type_configs: Optional[dict[str, Any]] = None,
+    ) -> list[dict]:
+        doc_type_configs = doc_type_configs or self._resolve_doc_types(settings_obj)
+        doc_type_ids = [doc_type["id"] for doc_type in doc_type_configs.values()]
+        series_rows = DocumentNumberSeries.objects.filter(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            doc_type_id__in=doc_type_ids,
+        )
+        series_by_key = {
+            (row.doc_type_id, row.doc_code): row
+            for row in series_rows
+        }
         rows = []
         for row_key, config in SALES_DOC_TYPES.items():
             doc_code = getattr(settings_obj, config["default_code_field"]) or config["fallback_code"]
-            doc_type = self._get_doc_type(config["doc_key"], config["name"], doc_code)
-            series = DocumentNumberSeries.objects.filter(
-                entity_id=entity_id,
-                entityfinid_id=entityfinid_id,
-                subentity_id=subentity_id,
-                doc_type_id=doc_type.id,
-                doc_code=doc_code,
-            ).first()
-            preview = SalesSettingsService.get_current_doc_no(
-                entity_id=entity_id,
-                entityfinid_id=entityfinid_id,
-                subentity_id=subentity_id,
-                doc_key=config["doc_key"],
-                doc_code=doc_code,
-            )
+            doc_type = doc_type_configs[row_key]
+            doc_type_id = doc_type["id"]
+            series = series_by_key.get((doc_type_id, doc_code))
+            preview = (current_doc_numbers or {}).get(row_key)
+            if preview is None:
+                preview = SalesSettingsService.get_current_doc_no(
+                    entity_id=entity_id,
+                    entityfinid_id=entityfinid_id,
+                    subentity_id=subentity_id,
+                    doc_key=config["doc_key"],
+                    doc_code=doc_code,
+                )
             rows.append(
                 {
                     "series_key": row_key,
                     "label": config["name"],
                     "doc_key": config["doc_key"],
-                    "doc_type_id": doc_type.id,
+                    "doc_type_id": doc_type_id,
                     "doc_code": doc_code,
                     "prefix": series.prefix if series else doc_code,
                     "suffix": series.suffix if series else "",
@@ -334,21 +381,48 @@ class SalesSettingsAPIView(APIView):
     def _current_doc_numbers(self, *, entity_id: int, entityfinid_id: Optional[int], subentity_id: Optional[int], settings_obj) -> Optional[dict]:
         if not entityfinid_id:
             return None
-        return {
-            "invoice": SalesSettingsService.get_current_doc_no(entity_id=entity_id, entityfinid_id=entityfinid_id, subentity_id=subentity_id, doc_key="sales_invoice", doc_code=settings_obj.default_doc_code_invoice),
-            "credit_note": SalesSettingsService.get_current_doc_no(entity_id=entity_id, entityfinid_id=entityfinid_id, subentity_id=subentity_id, doc_key="sales_credit_note", doc_code=settings_obj.default_doc_code_cn),
-            "debit_note": SalesSettingsService.get_current_doc_no(entity_id=entity_id, entityfinid_id=entityfinid_id, subentity_id=subentity_id, doc_key="sales_debit_note", doc_code=settings_obj.default_doc_code_dn),
-        }
+        return SalesSettingsService.get_current_doc_numbers_batch(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            doc_requests={
+                "invoice": {
+                    "doc_key": "sales_invoice",
+                    "doc_code": settings_obj.default_doc_code_invoice,
+                },
+                "credit_note": {
+                    "doc_key": "sales_credit_note",
+                    "doc_code": settings_obj.default_doc_code_cn,
+                },
+                "debit_note": {
+                    "doc_key": "sales_debit_note",
+                    "doc_code": settings_obj.default_doc_code_dn,
+                },
+            },
+        )
 
     def _payload(self, *, entity_id: int, subentity_id: Optional[int], entityfinid_id: Optional[int]) -> dict:
         settings_obj = SalesSettingsService.get_settings(entity_id, subentity_id, entityfinid_id=entityfinid_id)
         policy_controls = SalesSettingsService.effective_policy_controls(settings_obj)
-        stock_policy = SalesSettingsService.get_stock_policy_payload(
+        resolved_stock_policy = SalesSettingsService.get_stock_policy(
             entity_id=entity_id,
             subentity_id=subentity_id,
             entityfinid_id=entityfinid_id,
         )
+        stock_policy = SalesSettingsService.get_stock_policy_payload(
+            entity_id=entity_id,
+            subentity_id=subentity_id,
+            entityfinid_id=entityfinid_id,
+            resolved_policy=resolved_stock_policy,
+        )
         choice_catalog = SalesChoicesService.get_choices(entity_id=entity_id, subentity_id=subentity_id)
+        doc_type_configs = self._resolve_doc_types(settings_obj) if entityfinid_id else {}
+        current_doc_numbers = self._current_doc_numbers(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            settings_obj=settings_obj,
+        )
         payload = {
             "seller": SalesSettingsService.get_seller_profile(entity_id=entity_id, subentity_id=subentity_id),
             "settings": {
@@ -378,12 +452,23 @@ class SalesSettingsAPIView(APIView):
             "stock_policy": stock_policy,
             "schema": SALES_SETTINGS_SCHEMA,
             "sections": _sections(SALES_SETTINGS_SCHEMA),
-            "current_doc_numbers": self._current_doc_numbers(entity_id=entity_id, entityfinid_id=entityfinid_id, subentity_id=subentity_id, settings_obj=settings_obj),
-            "numbering_series": self._series_payload(entity_id=entity_id, entityfinid_id=entityfinid_id, subentity_id=subentity_id, settings_obj=settings_obj) if entityfinid_id else [],
+            "current_doc_numbers": current_doc_numbers,
+            "numbering_series": self._series_payload(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                settings_obj=settings_obj,
+                current_doc_numbers=current_doc_numbers,
+                doc_type_configs=doc_type_configs,
+            ) if entityfinid_id else [],
             "numbering_series_schema": NUMBERING_SERIES_SCHEMA,
             "lock_periods": self._list_lock_periods(entity_id=entity_id, subentity_id=subentity_id),
             "lock_period_schema": LOCK_PERIOD_SCHEMA,
-            "choice_overrides": self._list_choice_overrides(entity_id=entity_id, subentity_id=subentity_id),
+            "choice_overrides": self._list_choice_overrides(
+                entity_id=entity_id,
+                subentity_id=subentity_id,
+                catalog=choice_catalog,
+            ),
             "choice_override_catalog": choice_catalog,
             "capabilities": {
                 "has_lock_periods": True,

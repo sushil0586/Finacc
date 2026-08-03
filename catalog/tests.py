@@ -37,6 +37,7 @@ from financial.services import create_account_with_synced_ledger
 from posting.models import Entry, EntityStaticAccountMap, InventoryMove, JournalLine, PostingBatch, StaticAccount, TxnType
 from reports.services.financial.trial_balance import build_trial_balance
 from reports.services.inventory.stock_summary import build_inventory_stock_summary
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
 class CatalogPhase1Tests(TestCase):
@@ -162,6 +163,87 @@ class CatalogPhase1Tests(TestCase):
         self.assertTrue(product.is_expiry_tracked)
         self.assertEqual(product.shelf_life_days, 180)
         self.assertEqual(product.expiry_warning_days, 30)
+
+    def test_catalog_product_list_is_blocked_when_inventory_feature_disabled(self):
+        account = SubscriptionService.register_entity_creation(entity=self.entity, owner=self.user)
+        subscription = SubscriptionService.ensure_active_subscription(customer_account=account)
+        inventory_limit = subscription.plan.limits.get(key=SubscriptionLimitCodes.FEATURE_INVENTORY)
+        inventory_limit.bool_value = False
+        inventory_limit.save(update_fields=["bool_value", "updated_at"])
+
+        response = self.client.get(f"/api/catalog/products/?entity={self.entity.id}")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "subscription_feature_disabled")
+        self.assertEqual(response.data["feature_code"], SubscriptionLimitCodes.FEATURE_INVENTORY)
+
+    def test_catalog_product_child_endpoint_is_blocked_when_inventory_feature_disabled(self):
+        account = SubscriptionService.register_entity_creation(entity=self.entity, owner=self.user)
+        product = self._create_product()
+        subscription = SubscriptionService.ensure_active_subscription(customer_account=account)
+        inventory_limit = subscription.plan.limits.get(key=SubscriptionLimitCodes.FEATURE_INVENTORY)
+        inventory_limit.bool_value = False
+        inventory_limit.save(update_fields=["bool_value", "updated_at"])
+
+        response = self.client.get(
+            f"/api/catalog/products/{product.id}/gst-rates/?entity={self.entity.id}"
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "subscription_feature_disabled")
+        self.assertEqual(response.data["feature_code"], SubscriptionLimitCodes.FEATURE_INVENTORY)
+
+    def test_catalog_product_bootstrap_is_blocked_when_inventory_feature_disabled(self):
+        account = SubscriptionService.register_entity_creation(entity=self.entity, owner=self.user)
+        subscription = SubscriptionService.ensure_active_subscription(customer_account=account)
+        inventory_limit = subscription.plan.limits.get(key=SubscriptionLimitCodes.FEATURE_INVENTORY)
+        inventory_limit.bool_value = False
+        inventory_limit.save(update_fields=["bool_value", "updated_at"])
+
+        response = self.client.get(f"/api/catalog/product-page-all/?entity={self.entity.id}")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "subscription_feature_disabled")
+        self.assertEqual(response.data["feature_code"], SubscriptionLimitCodes.FEATURE_INVENTORY)
+
+    def test_catalog_transaction_meta_is_blocked_when_inventory_feature_disabled(self):
+        account = SubscriptionService.register_entity_creation(entity=self.entity, owner=self.user)
+        subscription = SubscriptionService.ensure_active_subscription(customer_account=account)
+        inventory_limit = subscription.plan.limits.get(key=SubscriptionLimitCodes.FEATURE_INVENTORY)
+        inventory_limit.bool_value = False
+        inventory_limit.save(update_fields=["bool_value", "updated_at"])
+
+        response = self.client.get(f"/api/catalog/meta/transaction-products/?entity={self.entity.id}")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "subscription_feature_disabled")
+        self.assertEqual(response.data["feature_code"], SubscriptionLimitCodes.FEATURE_INVENTORY)
+
+    def test_catalog_bulk_export_is_blocked_when_inventory_feature_disabled(self):
+        account = SubscriptionService.register_entity_creation(entity=self.entity, owner=self.user)
+        subscription = SubscriptionService.ensure_active_subscription(customer_account=account)
+        inventory_limit = subscription.plan.limits.get(key=SubscriptionLimitCodes.FEATURE_INVENTORY)
+        inventory_limit.bool_value = False
+        inventory_limit.save(update_fields=["bool_value", "updated_at"])
+
+        response = self.client.get(f"/api/catalog/products/bulk/export/?entity={self.entity.id}&format=xlsx")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "subscription_feature_disabled")
+        self.assertEqual(response.data["feature_code"], SubscriptionLimitCodes.FEATURE_INVENTORY)
+
+    def test_catalog_bulk_template_is_blocked_when_inventory_feature_disabled(self):
+        account = SubscriptionService.register_entity_creation(entity=self.entity, owner=self.user)
+        subscription = SubscriptionService.ensure_active_subscription(customer_account=account)
+        inventory_limit = subscription.plan.limits.get(key=SubscriptionLimitCodes.FEATURE_INVENTORY)
+        inventory_limit.bool_value = False
+        inventory_limit.save(update_fields=["bool_value", "updated_at"])
+
+        response = self.client.get(f"/api/catalog/products/bulk/template/?entity={self.entity.id}&format=xlsx")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "subscription_feature_disabled")
+        self.assertEqual(response.data["feature_code"], SubscriptionLimitCodes.FEATURE_INVENTORY)
 
     def test_service_classification_normalizes_service_and_clears_stock_controls(self):
         serializer = ProductSerializer(
@@ -2103,12 +2185,27 @@ class CatalogBulkHsnCoverageTests(TestCase):
             email="catalog-bulk-hsn@example.com",
             password="testpass123",
         )
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
         self.gst_type = GstRegistrationType.objects.create(Name="Regular HSN", Description="Regular")
         self.entity = Entity.objects.create(
             entityname="Catalog Bulk HSN Entity",
             GstRegitrationType=self.gst_type,
             createdby=self.user,
         )
+
+    def test_bulk_template_is_blocked_when_inventory_feature_disabled(self):
+        account = SubscriptionService.register_entity_creation(entity=self.entity, owner=self.user)
+        subscription = SubscriptionService.ensure_active_subscription(customer_account=account)
+        inventory_limit = subscription.plan.limits.get(key=SubscriptionLimitCodes.FEATURE_INVENTORY)
+        inventory_limit.bool_value = False
+        inventory_limit.save(update_fields=["bool_value", "updated_at"])
+
+        response = self.client.get(f"/api/catalog/hsn-sac/bulk/template/?entity={self.entity.id}&format=xlsx")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "subscription_feature_disabled")
+        self.assertEqual(response.data["feature_code"], SubscriptionLimitCodes.FEATURE_INVENTORY)
 
     def test_validate_payload_rejects_oversized_hsn_rows(self):
         payload = {

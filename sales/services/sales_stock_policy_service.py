@@ -141,10 +141,25 @@ class SalesStockPolicyService:
                 },
             )
         )
-
+        candidate_scope_levels = [scope_level for scope_level, _ in candidates]
+        policies = list(
+            SalesStockPolicy.objects.filter(
+                entity_id=entity_id,
+                scope_level__in=candidate_scope_levels,
+            ).order_by("-id")
+        )
         for scope_level, filters in candidates:
-            policy = SalesStockPolicy.objects.filter(scope_level=scope_level, **filters).order_by("-id").first()
-            if policy:
+            for policy in policies:
+                if policy.scope_level != scope_level:
+                    continue
+                if "entityfinid_id" in filters and policy.entityfinid_id != filters["entityfinid_id"]:
+                    continue
+                if filters.get("entityfinid__isnull") is True and policy.entityfinid_id is not None:
+                    continue
+                if "subentity_id" in filters and policy.subentity_id != filters["subentity_id"]:
+                    continue
+                if filters.get("subentity__isnull") is True and policy.subentity_id is not None:
+                    continue
                 return ResolvedSalesStockPolicy(
                     policy=policy,
                     scope_level=policy.scope_level,

@@ -52,12 +52,22 @@ def _duplicate_reference_warnings(voucher: ReceiptVoucherHeader) -> list[str]:
     duplicates = ReceiptVoucherHeader.objects.filter(
         entity_id=voucher.entity_id,
         entityfinid_id=voucher.entityfinid_id,
-        reference_number__iexact=reference,
+        reference_number=reference,
         received_from_id=voucher.received_from_id,
     ).exclude(pk=voucher.id).order_by("-voucher_date", "-id")
     if getattr(voucher, "subentity_id", None):
         duplicates = duplicates.filter(subentity_id=voucher.subentity_id)
     first = duplicates.only("voucher_code", "doc_code", "doc_no").first()
+    if not first:
+        duplicates = ReceiptVoucherHeader.objects.filter(
+            entity_id=voucher.entity_id,
+            entityfinid_id=voucher.entityfinid_id,
+            reference_number__iexact=reference,
+            received_from_id=voucher.received_from_id,
+        ).exclude(pk=voucher.id).order_by("-voucher_date", "-id")
+        if getattr(voucher, "subentity_id", None):
+            duplicates = duplicates.filter(subentity_id=voucher.subentity_id)
+        first = duplicates.only("voucher_code", "doc_code", "doc_no").first()
     if not first:
         return []
     voucher_label = getattr(first, "voucher_code", None) or f"{getattr(first, 'doc_code', '')}-{getattr(first, 'doc_no', '')}".strip("-")
@@ -183,7 +193,7 @@ class ReceiptVoucherListCreateAPIView(generics.ListCreateAPIView):
 
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
-        if self.request.method.upper() == "GET":
+        if self.request.method.upper() in {"GET", "POST", "PATCH", "PUT"}:
             ctx["skip_preview_numbers"] = True
             ctx["skip_navigation"] = True
         return ctx
@@ -395,6 +405,16 @@ class ReceiptVoucherPostAPIView(_ReceiptVoucherScopedActionMixin, APIView):
 class ReceiptVoucherApprovalAPIView(_ReceiptVoucherScopedActionMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
 
+    @staticmethod
+    def _response_serializer(header: ReceiptVoucherHeader) -> ReceiptVoucherHeaderSerializer:
+        return ReceiptVoucherHeaderSerializer(
+            header,
+            context={
+                "skip_preview_numbers": True,
+                "skip_navigation": True,
+            },
+        )
+
     def post(self, request, pk: int):
         header = self._get_header(pk)
         serializer = ReceiptVoucherApprovalActionSerializer(data=request.data)
@@ -413,7 +433,7 @@ class ReceiptVoucherApprovalAPIView(_ReceiptVoucherScopedActionMixin, APIView):
                 result = ReceiptVoucherService.reject_voucher(pk, rejected_by_id=request.user.id, remarks=remarks)
         except ValueError as e:
             _raise_validation_error(e)
-        out = ReceiptVoucherHeaderSerializer(result.header).data
+        out = self._response_serializer(result.header).data
         return Response({
             "message": result.message,
             **_workflow_feedback(result.message),

@@ -161,56 +161,79 @@ class PurchaseInvoiceNavService:
 
         current_seq = PurchaseInvoiceNavService._sequence_no(instance)
         if current_seq > 0:
-            rows = list(all_code_qs)
-            prev_candidates = [
-                row for row in rows
-                if (
-                    (PurchaseInvoiceNavService._sequence_no(row) < current_seq)
-                    or (
-                        PurchaseInvoiceNavService._sequence_no(row) == current_seq
-                        and int(getattr(row, "id", 0) or 0) < int(getattr(instance, "id", 0) or 0)
-                    )
+            current_doc_no = int(getattr(instance, "doc_no", 0) or 0)
+            if current_doc_no > 0 and hasattr(all_code_qs, "filter"):
+                numbered_qs = all_code_qs.filter(doc_no__gt=0)
+                prev_obj = (
+                    numbered_qs
+                    .filter(Q(doc_no__lt=current_doc_no) | Q(doc_no=current_doc_no, id__lt=instance.id))
+                    .order_by("-doc_no", "-id")
+                    .first()
                 )
-            ]
-            next_candidates = [
-                row for row in rows
-                if (
-                    (PurchaseInvoiceNavService._sequence_no(row) > current_seq)
-                    or (
-                        PurchaseInvoiceNavService._sequence_no(row) == current_seq
+                next_obj = (
+                    numbered_qs
+                    .filter(Q(doc_no__gt=current_doc_no) | Q(doc_no=current_doc_no, id__gt=instance.id))
+                    .order_by("doc_no", "id")
+                    .first()
+                )
+                if next_obj is None:
+                    next_obj = (
+                        all_code_qs
+                        .filter(Q(doc_no__isnull=True) | Q(doc_no__lte=0), id__gt=instance.id)
+                        .order_by("id")
+                        .first()
+                    )
+            else:
+                rows = list(all_code_qs)
+                prev_candidates = [
+                    row for row in rows
+                    if (
+                        (PurchaseInvoiceNavService._sequence_no(row) < current_seq)
+                        or (
+                            PurchaseInvoiceNavService._sequence_no(row) == current_seq
+                            and int(getattr(row, "id", 0) or 0) < int(getattr(instance, "id", 0) or 0)
+                        )
+                    )
+                ]
+                next_candidates = [
+                    row for row in rows
+                    if (
+                        (PurchaseInvoiceNavService._sequence_no(row) > current_seq)
+                        or (
+                            PurchaseInvoiceNavService._sequence_no(row) == current_seq
+                            and int(getattr(row, "id", 0) or 0) > int(getattr(instance, "id", 0) or 0)
+                        )
+                    )
+                ]
+                unnumbered_forward_candidates = [
+                    row for row in rows
+                    if (
+                        PurchaseInvoiceNavService._sequence_no(row) <= 0
                         and int(getattr(row, "id", 0) or 0) > int(getattr(instance, "id", 0) or 0)
                     )
-                )
-            ]
-            unnumbered_forward_candidates = [
-                row for row in rows
-                if (
-                    PurchaseInvoiceNavService._sequence_no(row) <= 0
-                    and int(getattr(row, "id", 0) or 0) > int(getattr(instance, "id", 0) or 0)
-                )
-            ]
-            prev_obj = max(
-                prev_candidates,
-                key=lambda row: (
-                    PurchaseInvoiceNavService._sequence_no(row),
-                    int(getattr(row, "id", 0) or 0),
-                ),
-                default=None,
-            )
-            next_obj = min(
-                next_candidates,
-                key=lambda row: (
-                    PurchaseInvoiceNavService._sequence_no(row),
-                    int(getattr(row, "id", 0) or 0),
-                ),
-                default=None,
-            )
-            if next_obj is None:
-                next_obj = min(
-                    unnumbered_forward_candidates,
-                    key=lambda row: int(getattr(row, "id", 0) or 0),
+                ]
+                prev_obj = max(
+                    prev_candidates,
+                    key=lambda row: (
+                        PurchaseInvoiceNavService._sequence_no(row),
+                        int(getattr(row, "id", 0) or 0),
+                    ),
                     default=None,
                 )
+                next_obj = min(
+                    next_candidates,
+                    key=lambda row: (
+                        PurchaseInvoiceNavService._sequence_no(row),
+                        int(getattr(row, "id", 0) or 0),
+                    ),
+                    default=None,
+                )
+                if next_obj is None:
+                    next_obj = min(
+                        unnumbered_forward_candidates,
+                        key=lambda row: int(getattr(row, "id", 0) or 0),
+                        default=None,
+                    )
         else:
             # Fallback for unnumbered current record (e.g., draft opened directly).
             prev_obj = all_code_qs.filter(id__lt=instance.id).order_by("-id").first()

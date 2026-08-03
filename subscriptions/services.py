@@ -1,4 +1,5 @@
 from datetime import timedelta
+from decimal import Decimal
 from django.apps import apps
 
 from django.db.models import Q
@@ -22,6 +23,7 @@ class SubscriptionLimitCodes:
     MAX_ENTITY_USERS = "max_entity_users"
     FEATURE_FINANCIAL = "feature_financial"
     FEATURE_INVENTORY = "feature_inventory"
+    FEATURE_MANUFACTURING = "feature_manufacturing"
     FEATURE_PURCHASE = "feature_purchase"
     FEATURE_SALES = "feature_sales"
     FEATURE_REPORTING = "feature_reporting"
@@ -40,12 +42,24 @@ class SubscriptionService:
 
     DEFAULT_PLAN_CODE = "starter"
     DEFAULT_PLAN_NAME = "Starter"
+    DEFAULT_TRIAL_DAYS = 14
+    DEFAULT_CORE_FEATURE_FLAGS = (
+        SubscriptionLimitCodes.FEATURE_FINANCIAL,
+        SubscriptionLimitCodes.FEATURE_INVENTORY,
+        SubscriptionLimitCodes.FEATURE_MANUFACTURING,
+        SubscriptionLimitCodes.FEATURE_PURCHASE,
+        SubscriptionLimitCodes.FEATURE_SALES,
+        SubscriptionLimitCodes.FEATURE_REPORTING,
+        SubscriptionLimitCodes.FEATURE_RBAC,
+        SubscriptionLimitCodes.FEATURE_PAYROLL,
+        SubscriptionLimitCodes.FEATURE_ASSETS,
+    )
 
     LIMIT_CATALOG = {
         SubscriptionLimitCodes.MAX_ENTITIES: {
             "label": "Maximum Entities",
             "limit_type": PlanLimit.LimitType.INTEGER,
-            "default": 1,
+            "default": 20,
         },
         SubscriptionLimitCodes.MAX_ENTITY_USERS: {
             "label": "Maximum Tenant Users",
@@ -59,6 +73,11 @@ class SubscriptionService:
         },
         SubscriptionLimitCodes.FEATURE_INVENTORY: {
             "label": "Inventory Module",
+            "limit_type": PlanLimit.LimitType.BOOLEAN,
+            "default": True,
+        },
+        SubscriptionLimitCodes.FEATURE_MANUFACTURING: {
+            "label": "Manufacturing Module",
             "limit_type": PlanLimit.LimitType.BOOLEAN,
             "default": True,
         },
@@ -85,13 +104,25 @@ class SubscriptionService:
         SubscriptionLimitCodes.FEATURE_PAYROLL: {
             "label": "Payroll Module",
             "limit_type": PlanLimit.LimitType.BOOLEAN,
-            "default": False,
+            "default": True,
         },
         SubscriptionLimitCodes.FEATURE_ASSETS: {
             "label": "Assets Module",
             "limit_type": PlanLimit.LimitType.BOOLEAN,
-            "default": False,
+            "default": True,
         },
+    }
+
+    FEATURE_MESSAGE_MAP = {
+        SubscriptionLimitCodes.FEATURE_FINANCIAL: "Financial module is not included in the current plan.",
+        SubscriptionLimitCodes.FEATURE_INVENTORY: "Inventory module is not included in the current plan.",
+        SubscriptionLimitCodes.FEATURE_MANUFACTURING: "Manufacturing module is not included in the current plan.",
+        SubscriptionLimitCodes.FEATURE_PURCHASE: "Purchase module is not included in the current plan.",
+        SubscriptionLimitCodes.FEATURE_SALES: "Sales module is not included in the current plan.",
+        SubscriptionLimitCodes.FEATURE_REPORTING: "Reporting module is not included in the current plan.",
+        SubscriptionLimitCodes.FEATURE_RBAC: "RBAC module is not included in the current plan.",
+        SubscriptionLimitCodes.FEATURE_PAYROLL: "Payroll module is not included in the current plan.",
+        SubscriptionLimitCodes.FEATURE_ASSETS: "Assets module is not included in the current plan.",
     }
 
     TENANT_MANAGE_ROLES = {
@@ -113,12 +144,12 @@ class SubscriptionService:
 
     @classmethod
     @transaction.atomic
-    def handle_signup(cls, *, user, intent=None):
-        return cls.ensure_customer_account(user=user, intent=intent)
+    def handle_signup(cls, *, user, intent=None, plan_code=None):
+        return cls.ensure_customer_account(user=user, intent=intent, plan_code=plan_code)
 
     @classmethod
     @transaction.atomic
-    def ensure_customer_account(cls, *, user, intent=None):
+    def ensure_customer_account(cls, *, user, intent=None, plan_code=None):
         account = (
             CustomerAccount.objects.filter(owner=user, is_active=True)
             .order_by("id")
@@ -139,7 +170,7 @@ class SubscriptionService:
                 primary_contact_email=getattr(user, "email", None) or None,
                 billing_contact_name=cls._default_contact_name(user),
                 billing_email=getattr(user, "email", None) or None,
-                metadata=cls._build_account_metadata(intent=intent),
+                metadata=cls._build_account_metadata(intent=intent, plan_code=plan_code),
             )
             created = True
 
@@ -182,15 +213,21 @@ class SubscriptionService:
                     "updated_at",
                 ])
 
-        elif intent:
+        elif intent or plan_code:
             metadata = dict(account.metadata or {})
-            if metadata.get("signup_intent") != intent:
+            changed = False
+            if intent and metadata.get("signup_intent") != intent:
                 metadata["signup_intent"] = intent
+                changed = True
+            if plan_code and metadata.get("selected_plan_code") != plan_code:
+                metadata["selected_plan_code"] = plan_code
+                changed = True
+            if changed:
                 account.metadata = metadata
                 account.save(update_fields=["metadata", "updated_at"])
 
         cls.ensure_owner_membership(customer_account=account, user=user)
-        cls.ensure_active_subscription(customer_account=account, intent=intent)
+        cls.ensure_active_subscription(customer_account=account, intent=intent, plan_code=plan_code)
 
         return account
 
@@ -551,7 +588,7 @@ class SubscriptionService:
 
     @classmethod
     @transaction.atomic
-    def ensure_active_subscription(cls, *, customer_account, intent=None):
+    def ensure_active_subscription(cls, *, customer_account, intent=None, plan_code=None):
         active_subscription = (
             customer_account.subscriptions.filter(
                 is_active=True,
@@ -566,52 +603,93 @@ class SubscriptionService:
                 ],
             )
             .select_related("plan")
+            .prefetch_related("plan__limits")
             .order_by("-started_at", "-id")
             .first()
         )
 
         if active_subscription:
+            cls.ensure_plan_limit_catalog(plan=active_subscription.plan)
+            cls._normalize_default_plan_limits(plan=active_subscription.plan)
             cls._normalize_subscription_state(active_subscription)
 
-
-        if (
-            active_subscription
-            and active_subscription.status in {CustomerSubscription.Status.EXPIRED, CustomerSubscription.Status.CANCELED}
-            and not active_subscription.auto_renew
-        ):
-            return active_subscription
-
         if active_subscription and active_subscription.is_current:
-            if intent:
+            if intent or plan_code:
                 metadata = dict(active_subscription.metadata or {})
-                if metadata.get("signup_intent") != intent:
+                changed = False
+                if intent and metadata.get("signup_intent") != intent:
                     metadata["signup_intent"] = intent
+                    changed = True
+                if plan_code and metadata.get("selected_plan_code") != plan_code:
+                    metadata["selected_plan_code"] = plan_code
+                    changed = True
+                if changed:
                     active_subscription.metadata = metadata
                     active_subscription.save(update_fields=["metadata", "updated_at"])
+            if intent is None and plan_code is None:
+                customer_account._cached_active_subscription = active_subscription
             return active_subscription
 
-        plan = cls.get_or_create_default_plan()
+        terminal_subscription = (
+            customer_account.subscriptions.filter(
+                is_active=True,
+                status__in=[
+                    CustomerSubscription.Status.EXPIRED,
+                    CustomerSubscription.Status.CANCELED,
+                ],
+                auto_renew=False,
+            )
+            .select_related("plan")
+            .prefetch_related("plan__limits")
+            .order_by("-started_at", "-id")
+            .first()
+        )
+
+        if terminal_subscription:
+            cls.ensure_plan_limit_catalog(plan=terminal_subscription.plan)
+            cls._normalize_default_plan_limits(plan=terminal_subscription.plan)
+            if intent is None and plan_code is None:
+                customer_account._cached_active_subscription = terminal_subscription
+            return terminal_subscription
+
+        plan = cls.get_selectable_plan(code=plan_code) if plan_code else cls.get_or_create_default_plan()
 
         now = timezone.now()
         trial_days = plan.trial_days or 0
+        effective_trial_days = trial_days
+        if intent == cls.INTENT_TRIAL and effective_trial_days <= 0:
+            effective_trial_days = cls.DEFAULT_TRIAL_DAYS
 
-        return CustomerSubscription.objects.create(
+        created_subscription = CustomerSubscription.objects.create(
             customer_account=customer_account,
             plan=plan,
             status=(
                 CustomerSubscription.Status.TRIALING
-                if trial_days > 0 or intent == cls.INTENT_TRIAL
+                if effective_trial_days > 0 or intent == cls.INTENT_TRIAL
                 else CustomerSubscription.Status.ACTIVE
             ),
             started_at=now,
-            trial_ends_at=(now + timedelta(days=trial_days)) if trial_days > 0 else None,
+            trial_ends_at=(now + timedelta(days=effective_trial_days)) if effective_trial_days > 0 else None,
             current_period_start=now,
-            metadata=cls._build_subscription_metadata(intent=intent),
+            metadata=cls._build_subscription_metadata(intent=intent, plan_code=plan_code or plan.code),
         )
+        if intent is None and plan_code is None:
+            customer_account._cached_active_subscription = created_subscription
+        return created_subscription
 
     @classmethod
     @transaction.atomic
     def change_plan(cls, *, customer_account, new_plan, changed_by=None):
+        if not getattr(new_plan, "is_active", False):
+            raise ValidationError(
+                {
+                    "detail": "Selected subscription plan is inactive.",
+                    "code": "subscription_plan_inactive",
+                    "plan_id": getattr(new_plan, "id", None),
+                    "plan_code": getattr(new_plan, "code", None),
+                }
+            )
+
         now = timezone.now()
 
         current = (
@@ -632,6 +710,7 @@ class SubscriptionService:
         )
 
         if current and current.plan_id == new_plan.id and current.is_current:
+            customer_account._cached_active_subscription = current
             return current
 
         if current:
@@ -649,7 +728,12 @@ class SubscriptionService:
                 ]
             )
 
-        return CustomerSubscription.objects.create(
+        account_metadata = dict(customer_account.metadata or {})
+        account_metadata["selected_plan_code"] = new_plan.code
+        customer_account.metadata = account_metadata
+        customer_account.save(update_fields=["metadata", "updated_at"])
+
+        new_subscription = CustomerSubscription.objects.create(
             customer_account=customer_account,
             plan=new_plan,
             status=CustomerSubscription.Status.ACTIVE,
@@ -657,8 +741,12 @@ class SubscriptionService:
             current_period_start=now,
             metadata={
                 "changed_by": getattr(changed_by, "id", None),
+                "selected_plan_code": new_plan.code,
             },
         )
+        customer_account._cached_active_subscription = new_subscription
+        return new_subscription
+
 
     @classmethod
     @transaction.atomic
@@ -704,6 +792,7 @@ class SubscriptionService:
                 "updated_at",
             ]
         )
+        customer_account._cached_active_subscription = subscription
         return subscription
 
     @classmethod
@@ -723,42 +812,123 @@ class SubscriptionService:
             SubscriptionPlan.objects.filter(pk=plan.pk).update(is_default=True)
 
         cls.ensure_plan_limit_catalog(plan=plan)
+        cls._normalize_default_plan_limits(plan=plan)
 
         return plan
+
+    @classmethod
+    def _normalize_default_plan_limits(cls, *, plan):
+        if getattr(plan, "_default_plan_limits_normalized", False):
+            return
+        if plan.code != cls.DEFAULT_PLAN_CODE:
+            plan._default_plan_limits_normalized = True
+            return
+
+        limits_by_key = {limit.key: limit for limit in plan.limits.all()}
+        max_entities_limit = limits_by_key.get(SubscriptionLimitCodes.MAX_ENTITIES)
+        if not max_entities_limit or max_entities_limit.is_unlimited:
+            plan._default_plan_limits_normalized = True
+            return
+
+        target_value = cls.LIMIT_CATALOG[SubscriptionLimitCodes.MAX_ENTITIES]["default"]
+        legacy_values = {1, 10}
+        if max_entities_limit.int_value in legacy_values and max_entities_limit.int_value != target_value:
+            max_entities_limit.int_value = target_value
+            max_entities_limit.save(update_fields=["int_value", "updated_at"])
+
+        plan._default_plan_limits_normalized = True
 
     @classmethod
     def get_current_subscription(cls, *, customer_account):
         return cls.ensure_active_subscription(customer_account=customer_account)
 
     @classmethod
-    def get_plan_limit(cls, *, customer_account, key):
-        subscription = cls.ensure_active_subscription(customer_account=customer_account)
+    def _resolve_customer_account_for_snapshot(cls, *, customer_account=None, user=None, entity=None):
+        if customer_account is not None:
+            return customer_account
+        if entity is not None:
+            return cls._customer_account_for_entity(entity)
+        if user is None:
+            raise ValidationError({"detail": "A user, entity, or customer account is required."})
 
-        limit = subscription.plan.limits.filter(key=key).first()
-        if not limit:
-            definition = cls.LIMIT_CATALOG.get(key)
-            return None if not definition else definition.get("default")
+        membership = (
+            cls.active_memberships_queryset(user=user)
+            .select_related("customer_account")
+            .order_by("customer_account_id", "id")
+            .first()
+        )
+        if membership is not None:
+            return membership.customer_account
 
-        return limit.value
+        account = (
+            CustomerAccount.objects.filter(owner=user, is_active=True)
+            .order_by("id")
+            .first()
+        )
+        if account is not None:
+            return account
+
+        return cls.ensure_customer_account(user=user)
 
     @classmethod
-    def get_all_plan_limits(cls, *, customer_account):
-        subscription = cls.ensure_active_subscription(customer_account=customer_account)
+    def _plan_limits_map(cls, *, subscription):
+        plan = subscription.plan
+        cached = getattr(plan, "_cached_plan_limits_map", None)
+        if cached is not None and not getattr(plan, "_limits_cache_stale", False):
+            return cached
 
         limits = {}
-        for key, definition in cls.LIMIT_CATALOG.items():
-            limits[key] = definition.get("default")
-        for limit in subscription.plan.limits.all():
+        # Read directly from PlanLimit so entitlement checks see recent limit
+        # toggles even when the plan instance was prefetched earlier.
+        for limit in PlanLimit.objects.filter(plan=plan).order_by("key"):
             limits[limit.key] = limit.value
+
+        plan._cached_plan_limits_map = limits
+        plan._limits_cache_stale = False
         return limits
 
     @classmethod
-    def get_feature_flags(cls, *, customer_account):
-        limits = cls.get_all_plan_limits(customer_account=customer_account)
+    def _all_plan_limits_from_subscription(cls, *, subscription):
+        limits = {}
+        for key, definition in cls.LIMIT_CATALOG.items():
+            limits[key] = definition.get("default")
+        limits.update(cls._plan_limits_map(subscription=subscription))
+        return limits
+
+    @classmethod
+    def _feature_flags_from_limits(cls, *, limits):
         return {
             key: bool(limits.get(key))
             for key in cls.LIMIT_CATALOG
             if cls.LIMIT_CATALOG[key]["limit_type"] == PlanLimit.LimitType.BOOLEAN
+        }
+
+    @classmethod
+    def get_plan_limit(cls, *, customer_account, key):
+        subscription = cls.ensure_active_subscription(customer_account=customer_account)
+        limits = cls._plan_limits_map(subscription=subscription)
+        if key in limits:
+            return limits[key]
+        definition = cls.LIMIT_CATALOG.get(key)
+        return None if not definition else definition.get("default")
+
+    @classmethod
+    def get_all_plan_limits(cls, *, customer_account):
+        subscription = cls.ensure_active_subscription(customer_account=customer_account)
+        return cls._all_plan_limits_from_subscription(subscription=subscription)
+
+    @classmethod
+    def get_feature_flags(cls, *, customer_account):
+        limits = cls.get_all_plan_limits(customer_account=customer_account)
+        return cls._feature_flags_from_limits(limits=limits)
+
+    @classmethod
+    def _permissions_from_membership(cls, *, membership):
+        return {
+            "can_manage_tenant": bool(membership and membership.role in cls.TENANT_MANAGE_ROLES),
+            "can_manage_billing": bool(membership and membership.role in cls.BILLING_MANAGE_ROLES),
+            "can_invite_members": bool(membership and membership.role in cls.TENANT_INVITE_ROLES),
+            "can_create_entities": bool(membership and membership.role in cls.ENTITY_CREATE_ROLES),
         }
 
     @classmethod
@@ -770,6 +940,24 @@ class SubscriptionService:
 
     @classmethod
     def ensure_plan_limit_catalog(cls, *, plan):
+        if getattr(plan, "_plan_limit_catalog_ensured", False):
+            return False
+        existing_limits = {limit.key: limit for limit in plan.limits.all()}
+        catalog_complete = (
+            len(existing_limits) >= len(cls.LIMIT_CATALOG)
+            and all(key in existing_limits for key in cls.LIMIT_CATALOG)
+        )
+        if catalog_complete:
+            needs_repair = any(
+                existing_limits[key].label != definition["label"]
+                or existing_limits[key].limit_type != definition["limit_type"]
+                for key, definition in cls.LIMIT_CATALOG.items()
+            )
+            if not needs_repair:
+                plan._plan_limit_catalog_ensured = True
+                return False
+
+        changed = False
         for key, definition in cls.LIMIT_CATALOG.items():
             defaults = {
                 "label": definition["label"],
@@ -781,43 +969,202 @@ class SubscriptionService:
                 defaults["bool_value"] = definition["default"]
             else:
                 defaults["text_value"] = definition["default"]
-            limit, created = PlanLimit.objects.get_or_create(
-                plan=plan,
-                key=key,
-                defaults=defaults,
-            )
-            if not created:
-                changed = False
+            limit = existing_limits.get(key)
+            if limit is None:
+                limit = PlanLimit.objects.create(
+                    plan=plan,
+                    key=key,
+                    **defaults,
+                )
+                existing_limits[key] = limit
+                changed = True
+            else:
+                limit_changed = False
                 if limit.label != definition["label"]:
                     limit.label = definition["label"]
-                    changed = True
+                    limit_changed = True
                 if limit.limit_type != definition["limit_type"]:
                     limit.limit_type = definition["limit_type"]
-                    changed = True
-                if changed:
+                    limit_changed = True
+                if limit_changed:
                     limit.save(update_fields=["label", "limit_type", "updated_at"])
+                    changed = True
+        plan._plan_limit_catalog_ensured = True
+        if changed:
+            setattr(plan, "_limits_cache_stale", True)
+        return changed
+
+    @classmethod
+    def get_public_plan_catalog(cls):
+        plans = (
+            SubscriptionPlan.objects.filter(
+                is_active=True,
+                is_public=True,
+                is_selectable_for_signup=True,
+            )
+            .prefetch_related("limits")
+            .order_by("sort_order", "price_amount", "created_at")
+        )
+
+        return [cls._serialize_plan_catalog_entry(plan) for plan in plans]
+
+    @classmethod
+    def plan_queryset(cls):
+        return SubscriptionPlan.objects.all().prefetch_related("limits").order_by("sort_order", "price_amount", "created_at")
+
+    @classmethod
+    def get_internal_plan_catalog(cls):
+        return [cls.serialize_internal_plan(plan=plan) for plan in cls.plan_queryset()]
+
+    @classmethod
+    def account_queryset(cls):
+        return CustomerAccount.objects.all().select_related("owner").prefetch_related("subscriptions__plan")
+
+    @classmethod
+    def _serialize_internal_limit_entry(cls, limit):
+        return {
+            "id": limit.id,
+            "key": limit.key,
+            "label": limit.label,
+            "limit_type": limit.limit_type,
+            "int_value": limit.int_value,
+            "bool_value": limit.bool_value,
+            "text_value": limit.text_value,
+            "is_unlimited": limit.is_unlimited,
+            "value": limit.value,
+            "metadata": limit.metadata or {},
+        }
+
+    @classmethod
+    def serialize_internal_plan(cls, *, plan):
+        catalog_changed = cls.ensure_plan_limit_catalog(plan=plan)
+        if catalog_changed:
+            raw_limits = list(plan.limits.order_by("key"))
+        else:
+            raw_limits = sorted(plan.limits.all(), key=lambda limit: limit.key)
+        return {
+            **cls._serialize_plan_catalog_entry(plan),
+            "is_active": plan.is_active,
+            "external_price_id": plan.external_price_id,
+            "billing_provider": plan.billing_provider,
+            "created_at": plan.created_at,
+            "updated_at": plan.updated_at,
+            "raw_limits": [
+                cls._serialize_internal_limit_entry(limit)
+                for limit in raw_limits
+            ],
+        }
+
+    @classmethod
+    @transaction.atomic
+    def create_or_update_plan(cls, *, data, plan=None):
+        limit_rows = data.pop("raw_limits", None)
+        if plan is None:
+            plan = SubscriptionPlan.objects.create(**data)
+        else:
+            for field, value in data.items():
+                setattr(plan, field, value)
+            plan.save()
+
+        cls.ensure_plan_limit_catalog(plan=plan)
+        if limit_rows is not None:
+            cls.upsert_plan_limits(plan=plan, limit_rows=limit_rows)
+        plan.refresh_from_db()
+        return plan
+
+    @classmethod
+    @transaction.atomic
+    def upsert_plan_limits(cls, *, plan, limit_rows):
+        for row in limit_rows:
+            payload = dict(row)
+            key = payload.pop("key")
+            payload.setdefault("label", cls.LIMIT_CATALOG.get(key, {}).get("label", key.replace("_", " ").title()))
+            payload.setdefault("metadata", {})
+            limit, _ = PlanLimit.objects.get_or_create(
+                plan=plan,
+                key=key,
+                defaults=payload,
+            )
+            for field, value in payload.items():
+                setattr(limit, field, value)
+            limit.full_clean()
+            limit.save()
+        return plan
+
+    @classmethod
+    def get_selectable_plan(cls, *, code):
+        plan = (
+            SubscriptionPlan.objects.filter(
+                code=code,
+                is_active=True,
+                is_public=True,
+                is_selectable_for_signup=True,
+            )
+            .prefetch_related("limits")
+            .first()
+        )
+        if not plan:
+            raise ValidationError(
+                {
+                    "detail": "Selected subscription plan is unavailable.",
+                    "code": "subscription_plan_unavailable",
+                    "plan_code": code,
+                }
+            )
+        cls.ensure_plan_limit_catalog(plan=plan)
+        return plan
+
+    @classmethod
+    def _serialize_plan_catalog_entry(cls, plan):
+        cls.ensure_plan_limit_catalog(plan=plan)
+        limits = {limit.key: limit for limit in plan.limits.all()}
+        feature_flags = {
+            key: bool(limits[key].value) if key in limits else bool(definition.get("default"))
+            for key, definition in cls.LIMIT_CATALOG.items()
+            if definition["limit_type"] == PlanLimit.LimitType.BOOLEAN
+        }
+        numeric_limits = {
+            key: (
+                None
+                if key in limits and limits[key].is_unlimited
+                else (limits[key].value if key in limits else definition.get("default"))
+            )
+            for key, definition in cls.LIMIT_CATALOG.items()
+            if definition["limit_type"] == PlanLimit.LimitType.INTEGER
+        }
+        return {
+            "id": plan.id,
+            "code": plan.code,
+            "name": plan.name,
+            "description": plan.description,
+            "tier": plan.tier,
+            "billing_interval": plan.billing_interval,
+            "price_amount": plan.price_amount,
+            "currency": plan.currency,
+            "trial_days": plan.trial_days,
+            "is_default": plan.is_default,
+            "is_public": plan.is_public,
+            "is_selectable_for_signup": plan.is_selectable_for_signup,
+            "sort_order": plan.sort_order,
+            "features": feature_flags,
+            "limits": numeric_limits,
+            "metadata": plan.metadata or {},
+        }
 
     @classmethod
     def build_subscription_snapshot(cls, *, customer_account=None, user=None, entity=None):
-        if customer_account is None:
-            if entity is not None:
-                customer_account = cls._customer_account_for_entity(entity)
-            elif user is not None:
-                customer_account = cls.ensure_customer_account(user=user)
-            else:
-                raise ValidationError({"detail": "A user, entity, or customer account is required."})
+        customer_account = cls._resolve_customer_account_for_snapshot(
+            customer_account=customer_account,
+            user=user,
+            entity=entity,
+        )
 
         subscription = cls.ensure_active_subscription(customer_account=customer_account)
-
-        max_entities = cls.get_plan_limit(
-            customer_account=customer_account,
-            key=SubscriptionLimitCodes.MAX_ENTITIES,
-        )
-        max_entity_users = cls.get_plan_limit(
-            customer_account=customer_account,
-            key=SubscriptionLimitCodes.MAX_ENTITY_USERS,
-        )
-        feature_flags = cls.get_feature_flags(customer_account=customer_account)
+        all_limits = cls._all_plan_limits_from_subscription(subscription=subscription)
+        max_entities = all_limits.get(SubscriptionLimitCodes.MAX_ENTITIES)
+        max_entity_users = all_limits.get(SubscriptionLimitCodes.MAX_ENTITY_USERS)
+        feature_flags = cls._feature_flags_from_limits(limits=all_limits)
+        membership = cls.get_account_membership(user=user, customer_account=customer_account) if user else None
 
         entities_used = Entity.objects.filter(
             customer_account=customer_account,
@@ -830,6 +1177,24 @@ class SubscriptionService:
         ).filter(
             Q(expires_at__isnull=True) | Q(expires_at__gt=timezone.now())
         ).count()
+
+        trial_days_remaining = None
+        if subscription.status == CustomerSubscription.Status.TRIALING and subscription.trial_ends_at:
+            remaining_delta = subscription.trial_ends_at - timezone.now()
+            trial_days_remaining = max(remaining_delta.days, 0)
+
+        block_reasons = {
+            "customer_account": cls._build_account_block_reasons(customer_account=customer_account),
+            "subscription": cls._build_subscription_block_reasons(subscription=subscription),
+            "limits": cls._build_limit_block_reasons(
+                max_entities=max_entities,
+                entities_used=entities_used,
+                max_entity_users=max_entity_users,
+                account_users_used=account_users_used,
+            ),
+        }
+        feature_summary = cls._build_feature_summary(feature_flags=feature_flags)
+        locked_features = cls._build_locked_features(feature_summary=feature_summary)
 
         snapshot = {
             "customer_account": {
@@ -854,11 +1219,11 @@ class SubscriptionService:
                 "setup_accessible": customer_account.is_setup_accessible,
                 "operational_accessible": customer_account.is_operationally_active,
                 "billing_accessible": customer_account.is_billing_accessible,
-                "permissions": {
-                    "can_manage_tenant": cls.can_manage_tenant(user=user, customer_account=customer_account) if user else None,
-                    "can_manage_billing": cls.can_manage_billing(user=user, customer_account=customer_account) if user else None,
-                    "can_invite_members": cls.can_invite_members(user=user, customer_account=customer_account) if user else None,
-                    "can_create_entities": cls.can_create_entities(user=user, customer_account=customer_account) if user else None,
+                "permissions": cls._permissions_from_membership(membership=membership) if user else {
+                    "can_manage_tenant": None,
+                    "can_manage_billing": None,
+                    "can_invite_members": None,
+                    "can_create_entities": None,
                 },
             },
             "subscription": {
@@ -872,22 +1237,39 @@ class SubscriptionService:
                 "billing_accessible": subscription.is_billing_accessible,
                 "started_at": subscription.started_at,
                 "trial_ends_at": subscription.trial_ends_at,
+                "trial_days_remaining": trial_days_remaining,
                 "current_period_start": subscription.current_period_start,
                 "current_period_end": subscription.current_period_end,
                 "ended_at": subscription.ended_at,
                 "metadata": subscription.metadata or {},
             },
+            "plan": cls._serialize_plan_catalog_entry(subscription.plan),
             "limits": {
                 SubscriptionLimitCodes.MAX_ENTITIES: max_entities,
                 SubscriptionLimitCodes.MAX_ENTITY_USERS: max_entity_users,
             },
             "features": feature_flags,
+            "feature_summary": feature_summary,
+            "locked_features": locked_features,
             "usage": {
                 "entities_used": entities_used,
                 "entities_remaining": cls._remaining(max_entities, entities_used),
                 "account_users_used": account_users_used,
                 "account_users_remaining": cls._remaining(max_entity_users, account_users_used),
             },
+            "quota_summary": {
+                "entities": {
+                    "used": entities_used,
+                    "limit": max_entities,
+                    "remaining": cls._remaining(max_entities, entities_used),
+                },
+                "account_users": {
+                    "used": account_users_used,
+                    "limit": max_entity_users,
+                    "remaining": cls._remaining(max_entity_users, account_users_used),
+                },
+            },
+            "block_reasons": block_reasons,
         }
 
         return snapshot
@@ -939,23 +1321,147 @@ class SubscriptionService:
         )
 
     @classmethod
-    def _build_account_metadata(cls, *, intent=None):
-        return {"signup_intent": intent or cls.INTENT_STANDARD}
+    def _build_account_metadata(cls, *, intent=None, plan_code=None):
+        metadata = {"signup_intent": intent or cls.INTENT_STANDARD}
+        if plan_code:
+            metadata["selected_plan_code"] = plan_code
+        return metadata
 
     @classmethod
-    def _build_subscription_metadata(cls, *, intent=None):
-        return {"signup_intent": intent or cls.INTENT_STANDARD}
+    def _build_subscription_metadata(cls, *, intent=None, plan_code=None):
+        metadata = {"signup_intent": intent or cls.INTENT_STANDARD}
+        if plan_code:
+            metadata["selected_plan_code"] = plan_code
+        return metadata
 
     @staticmethod
     def _remaining(limit, used):
         if limit is None:
             return None
         return max(limit - used, 0)
+
     @staticmethod
-    def _remaining(limit, used):
-        if limit is None:
-            return None
-        return max(limit - used, 0)
+    def _build_account_block_reasons(*, customer_account):
+        reasons = []
+        if not customer_account.is_active:
+            reasons.append(
+                {
+                    "code": "customer_account_soft_deleted",
+                    "message": "Customer account is inactive.",
+                    "scope": "customer_account",
+                }
+            )
+        if customer_account.status == CustomerAccount.Status.SUSPENDED:
+            reasons.append(
+                {
+                    "code": "customer_account_suspended",
+                    "message": "Customer account is suspended.",
+                    "scope": "customer_account",
+                }
+            )
+        if customer_account.status == CustomerAccount.Status.CLOSED:
+            reasons.append(
+                {
+                    "code": "customer_account_closed",
+                    "message": "Customer account is closed.",
+                    "scope": "customer_account",
+                }
+            )
+        return reasons
+
+    @staticmethod
+    def _build_subscription_block_reasons(*, subscription):
+        reasons = []
+        if subscription.status == CustomerSubscription.Status.PAUSED:
+            reasons.append(
+                {
+                    "code": "subscription_paused",
+                    "message": "Subscription is paused.",
+                    "scope": "subscription",
+                }
+            )
+        if subscription.status == CustomerSubscription.Status.EXPIRED:
+            reasons.append(
+                {
+                    "code": "subscription_expired",
+                    "message": "Subscription has expired.",
+                    "scope": "subscription",
+                }
+            )
+        if subscription.status == CustomerSubscription.Status.CANCELED:
+            reasons.append(
+                {
+                    "code": "subscription_canceled",
+                    "message": "Subscription is canceled.",
+                    "scope": "subscription",
+                }
+            )
+        return reasons
+
+    @staticmethod
+    def _build_limit_block_reasons(*, max_entities, entities_used, max_entity_users, account_users_used):
+        reasons = []
+        if max_entities is not None and entities_used >= max_entities:
+            reasons.append(
+                {
+                    "code": "max_entities_reached",
+                    "message": "Entity creation quota has been reached.",
+                    "scope": "limit",
+                    "limit_code": SubscriptionLimitCodes.MAX_ENTITIES,
+                    "limit": max_entities,
+                    "current": entities_used,
+                }
+            )
+        if max_entity_users is not None and account_users_used >= max_entity_users:
+            reasons.append(
+                {
+                    "code": "max_entity_users_reached",
+                    "message": "Tenant user quota has been reached.",
+                    "scope": "limit",
+                    "limit_code": SubscriptionLimitCodes.MAX_ENTITY_USERS,
+                    "limit": max_entity_users,
+                    "current": account_users_used,
+                }
+            )
+        return reasons
+
+    @classmethod
+    def _build_feature_summary(cls, *, feature_flags):
+        summary = {}
+        for key, enabled in feature_flags.items():
+            summary[key] = {
+                "enabled": bool(enabled),
+                "label": cls.LIMIT_CATALOG.get(key, {}).get("label", key),
+                "block_reason": (
+                    None
+                    if enabled
+                    else {
+                        "code": "subscription_feature_disabled",
+                        "message": cls.FEATURE_MESSAGE_MAP.get(
+                            key,
+                            "Feature is not included in the current plan.",
+                        ),
+                        "feature_code": key,
+                        "scope": "feature",
+                    }
+                ),
+            }
+        return summary
+
+    @staticmethod
+    def _build_locked_features(*, feature_summary):
+        locked = []
+        for key, row in feature_summary.items():
+            if row.get("enabled"):
+                continue
+            locked.append(
+                {
+                    "feature_code": key,
+                    "label": row.get("label"),
+                    "block_reason": row.get("block_reason"),
+                }
+            )
+        return locked
 
     @classmethod
     def _normalize_subscription_state(cls, subscription):

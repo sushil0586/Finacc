@@ -693,6 +693,69 @@ class SalesInvoiceContractAlignmentTests(APITestCase):
         customer_names = {row["accountname"] for row in response.data["customers"]}
         self.assertIn("Fresh Sales Customer", customer_names)
 
+    def test_sales_customers_meta_includes_customer_and_both_but_excludes_vendor_only(self):
+        shared_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=5002,
+            name="Shared Party",
+            accounthead=self.customer_head,
+            createdby=self.user,
+        )
+        shared_account = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "ledger": shared_ledger,
+                "accountname": "Shared Party",
+                "createdby": self.user,
+            },
+            ledger_overrides={"ledger_code": 5002, "accounthead": self.customer_head, "is_party": True},
+        )
+        AccountCommercialProfile.objects.update_or_create(
+            account=shared_account,
+            defaults={
+                "entity": self.entity,
+                "partytype": "Both",
+                "createdby": self.user,
+            },
+        )
+
+        vendor_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=5003,
+            name="Vendor Only",
+            accounthead=self.customer_head,
+            createdby=self.user,
+        )
+        vendor_only = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "ledger": vendor_ledger,
+                "accountname": "Vendor Only",
+                "createdby": self.user,
+            },
+            ledger_overrides={"ledger_code": 5003, "accounthead": self.customer_head, "is_party": True},
+        )
+        AccountCommercialProfile.objects.update_or_create(
+            account=vendor_only,
+            defaults={
+                "entity": self.entity,
+                "partytype": "Vendor",
+                "createdby": self.user,
+            },
+        )
+
+        response = self.client.get(
+            reverse("sales-invoice-customers-meta"),
+            {"entity": self.entity.id, "subentity": self.subentity.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        names = {row["accountname"] for row in response.data["customers"]}
+        self.assertIn("Alpha Retail", names)
+        self.assertIn("Shared Party", names)
+        self.assertNotIn("Vendor Only", names)
+
     @override_settings(
         META_CACHE_ENABLED=True,
         META_CACHE_FORM_TTL_SECONDS=600,

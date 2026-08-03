@@ -90,28 +90,41 @@ class StaticAccountResolver:
         if self._cache is None:
             self._cache = {}
 
-    def get_account_id(self, code: str, *, required: bool = True) -> Optional[int]:
-        if code in self._cache:
-            return self._cache[code]["account_id"]
+    def _prime_cache(self) -> None:
+        if self._cache:
+            return
 
-        row = (
+        rows = (
             EntityStaticAccountMap.objects
-            .filter(entity_id=self.entity_id, static_account__code=code, static_account__is_active=True, is_active=True)
-            .values("account_id", "ledger_id")
-            .first()
+            .filter(
+                entity_id=self.entity_id,
+                static_account__is_active=True,
+                is_active=True,
+            )
+            .values(
+                "static_account__code",
+                "account_id",
+                "ledger_id",
+            )
         )
-        if not row:
+        for row in rows:
+            code = row.get("static_account__code")
+            if not code or code in self._cache:
+                continue
+            self._cache[code] = {
+                "account_id": int(row["account_id"]) if row.get("account_id") else None,
+                "ledger_id": int(row["ledger_id"]) if row.get("ledger_id") else None,
+            }
+
+    def get_account_id(self, code: str, *, required: bool = True) -> Optional[int]:
+        self._prime_cache()
+        if code not in self._cache:
             if required:
                 raise ValueError(
                     f"StaticAccount '{code}' not mapped for entity_id={self.entity_id}. "
                     f"Add mapping in Posting admin."
                 )
             return None
-
-        self._cache[code] = {
-            "account_id": int(row["account_id"]) if row.get("account_id") else None,
-            "ledger_id": int(row["ledger_id"]) if row.get("ledger_id") else None,
-        }
         return self._cache[code]["account_id"]
 
     def get_ledger_id(self, code: str, *, required: bool = True) -> Optional[int]:

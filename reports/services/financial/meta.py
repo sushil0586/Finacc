@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from financial.models import account
-from financial.profile_access import account_partytype
 from entity.models import EntityFinancialYear, SubEntity
 from posting.models import EntryStatus, EntityStaticAccountMap, TxnType
 
@@ -440,13 +439,13 @@ def _account_kind_map(entity_id: int) -> dict[int, str]:
     return static_kind_by_account
 
 
-def _infer_account_kind(row, *, static_kind_by_account: dict[int, str]) -> str:
-    explicit_kind = static_kind_by_account.get(row.id)
+def _infer_account_kind(*, account_id: int, party_type: str | None, account_name: str | None, ledger_name: str | None, static_kind_by_account: dict[int, str]) -> str:
+    explicit_kind = static_kind_by_account.get(account_id)
     if explicit_kind:
         return explicit_kind
-    if str(account_partytype(row) or "").lower() == "bank":
+    if str(party_type or "").lower() == "bank":
         return "bank"
-    label = f"{getattr(row, 'accountname', '')} {getattr(getattr(row, 'ledger', None), 'name', '')}".lower()
+    label = f"{account_name or ''} {ledger_name or ''}".lower()
     if "cash" in label:
         return "cash"
     if "bank" in label:
@@ -458,17 +457,32 @@ def _account_option_payload(entity_id: int) -> dict[str, list[dict]]:
     static_kind_by_account = _account_kind_map(entity_id)
     rows = list(
         account.objects.filter(entity_id=entity_id, isactive=True)
-        .select_related("ledger")
         .order_by("accountname", "id")
+        .values(
+            "id",
+            "accountname",
+            "ledger__name",
+            "ledger__ledger_code",
+            "commercial_profile__partytype",
+        )
     )
     options = []
     for row in rows:
+        account_id = row["id"]
+        account_name = row.get("accountname")
+        ledger_name = row.get("ledger__name")
         options.append(
             {
-                "id": row.id,
-                "name": getattr(row.ledger, "name", None) or row.accountname or f"Account {row.id}",
-                "code": getattr(row.ledger, "ledger_code", None),
-                "account_type": _infer_account_kind(row, static_kind_by_account=static_kind_by_account),
+                "id": account_id,
+                "name": ledger_name or account_name or f"Account {account_id}",
+                "code": row.get("ledger__ledger_code"),
+                "account_type": _infer_account_kind(
+                    account_id=account_id,
+                    party_type=row.get("commercial_profile__partytype"),
+                    account_name=account_name,
+                    ledger_name=ledger_name,
+                    static_kind_by_account=static_kind_by_account,
+                ),
             }
         )
 

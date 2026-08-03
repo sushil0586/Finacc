@@ -14,6 +14,7 @@ from purchase.services.purchase_invoice_actions import PurchaseInvoiceActions
 from purchase.services.purchase_invoice_service import PurchaseInvoiceService
 from purchase.services.purchase_note_factory import PurchaseNoteFactory
 from purchase.views.rbac import require_purchase_request_permission, require_purchase_scope_permission
+from subscriptions.services import SubscriptionLimitCodes
 
 
 def _raise_validation_error(err: ValueError) -> None:
@@ -94,7 +95,14 @@ def _gst_tds_contract_summary_block(header):
 
 
 def _response_payload(message: str, header):
-    data = PurchaseInvoiceHeaderSerializer(header).data
+    data = PurchaseInvoiceHeaderSerializer(
+        header,
+        context={
+            "skip_navigation": True,
+            "skip_preview_numbers": True,
+            "skip_gst_tds_contract_summary": True,
+        },
+    ).data
     summary = _gst_tds_contract_summary_block(header)
     if summary is not None:
         data["gst_tds_contract_summary"] = summary
@@ -115,6 +123,7 @@ class PurchaseInvoiceConfirmAPIView(APIView):
             entity_id=header.entity_id,
             doc_type=header.doc_type,
             action="post",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
         )
         try:
             result = PurchaseInvoiceActions.confirm(pk, confirmed_by_id=request.user.id)
@@ -133,6 +142,7 @@ class PurchaseInvoicePostAPIView(APIView):
             entity_id=header.entity_id,
             doc_type=header.doc_type,
             action="post",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
         )
         try:
             result = PurchaseInvoiceActions.post(pk, posted_by_id=request.user.id)
@@ -151,6 +161,7 @@ class PurchaseInvoiceUnpostAPIView(APIView):
             entity_id=header.entity_id,
             doc_type=header.doc_type,
             action="unpost",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
         )
         reason = (request.data.get("reason") or "").strip() or None
         try:
@@ -170,6 +181,7 @@ class PurchaseInvoiceCancelAPIView(APIView):
             entity_id=header.entity_id,
             doc_type=header.doc_type,
             action="cancel",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
         )
         if (
             int(getattr(header, "doc_type", 0)) == int(DocType.TAX_INVOICE)
@@ -181,12 +193,14 @@ class PurchaseInvoiceCancelAPIView(APIView):
                 entity_id=header.entity_id,
                 doc_type=DocType.CREDIT_NOTE,
                 action="create",
+                feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
             )
             require_purchase_scope_permission(
                 user=request.user,
                 entity_id=header.entity_id,
                 doc_type=DocType.CREDIT_NOTE,
                 action="post",
+                feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
             )
         reason = (request.data.get("reason") or "").strip() or None
         try:
@@ -206,6 +220,7 @@ class PurchaseInvoiceRebuildTaxSummaryAPIView(APIView):
             entity_id=header.entity_id,
             doc_type=header.doc_type,
             action="rebuild_tax_summary",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
         )
         try:
             result = PurchaseInvoiceActions.rebuild_tax_summary(pk)
@@ -225,6 +240,7 @@ class PurchaseInvoiceCreateCreditNoteAPIView(APIView):
             entity_id=header.entity_id,
             doc_type=DocType.CREDIT_NOTE,
             action="create",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
         )
         note_reason = (request.data.get("note_reason") or PurchaseInvoiceHeader.NoteReason.QUANTITY_RETURN).strip()
         reason = (request.data.get("reason") or "").strip() or None
@@ -255,6 +271,7 @@ class PurchaseInvoiceCreateDebitNoteAPIView(APIView):
             entity_id=header.entity_id,
             doc_type=DocType.DEBIT_NOTE,
             action="create",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
         )
         note_reason = (request.data.get("note_reason") or PurchaseInvoiceHeader.NoteReason.QUANTITY_RETURN).strip()
         reason = (request.data.get("reason") or "").strip() or None
@@ -287,6 +304,7 @@ class PurchaseInvoiceITCBlockAPIView(APIView):
             entity_id=header.entity_id,
             doc_type=header.doc_type,
             action="itc",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
         )
         ser = ItcBlockSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
@@ -310,6 +328,7 @@ class PurchaseInvoiceITCPendingAPIView(APIView):
             entity_id=header.entity_id,
             doc_type=header.doc_type,
             action="itc",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
         )
         try:
             result = PurchaseInvoiceActions.mark_itc_pending(pk, acted_by_id=request.user.id)
@@ -327,6 +346,7 @@ class PurchaseInvoiceITCUnblockAPIView(APIView):
             entity_id=header.entity_id,
             doc_type=header.doc_type,
             action="itc",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
         )
         ser = ItcUnblockSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
@@ -347,6 +367,7 @@ class PurchaseInvoiceITCClaimAPIView(APIView):
             entity_id=header.entity_id,
             doc_type=header.doc_type,
             action="itc",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
         )
         ser = ItcClaimSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
@@ -370,6 +391,7 @@ class PurchaseInvoiceITCReverseAPIView(APIView):
             entity_id=header.entity_id,
             doc_type=header.doc_type,
             action="itc",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
         )
         reason = (request.data.get("reason") or "").strip() or None
         try:
@@ -390,6 +412,7 @@ class PurchaseInvoice2BMatchStatusAPIView(APIView):
             entity_id=header.entity_id,
             doc_type=header.doc_type,
             action="gstr2b",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
         )
         ser = Match2BSerializer(data=request.data)
         ser.is_valid(raise_exception=True)

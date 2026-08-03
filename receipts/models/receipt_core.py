@@ -133,6 +133,10 @@ class ReceiptVoucherHeader(TrackingModel):
         indexes = [
             models.Index(fields=["entity", "entityfinid", "voucher_date"], name="ix_receipt_ent_fin_date"),
             models.Index(fields=["entity", "entityfinid", "received_from"], name="ix_receipt_ent_fin_customer"),
+            models.Index(
+                fields=["entity", "entityfinid", "received_from", "subentity", "reference_number"],
+                name="ix_rec_ref_warn_scope",
+            ),
             models.Index(fields=["entity", "entityfinid", "received_from_ledger"], name="ix_receipt_ent_fin_cust_led"),
             models.Index(fields=["entity", "entityfinid", "status"], name="ix_receipt_ent_fin_status"),
             models.Index(fields=["entity", "entityfinid", "subentity", "voucher_date"], name="ix_rec_entfin_sub_dt"),

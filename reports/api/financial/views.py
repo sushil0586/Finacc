@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from django.conf import settings
 from django.http import HttpResponse
 from reportlab.lib.pagesizes import A3, A4, landscape
 from rest_framework import permissions
@@ -9,6 +10,14 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.entitlements import ScopedEntitlementMixin
+from helpers.utils.meta_cache import (
+    CACHE_EVENT_DISABLED,
+    REPORTS_META_NAMESPACES,
+    build_meta_cache_key,
+    emit_meta_cache_event,
+    get_meta_namespace_version,
+    get_or_set_meta_cache,
+)
 from reports.api.financial.export_utils import (
     ExportSection,
     attach_export_actions as _attach_financial_actions,
@@ -2335,13 +2344,46 @@ class FinancialReportsMetaAPIView(ScopedEntitlementMixin, APIView):
     subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
     subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
 
+    def _get_cached_meta(self, *, entity_id: int, loader):
+        namespace = REPORTS_META_NAMESPACES[0]
+        if not getattr(settings, "META_CACHE_ENABLED", True):
+            emit_meta_cache_event(
+                CACHE_EVENT_DISABLED,
+                namespace=namespace,
+                entity_id=entity_id,
+                entityfinid_id=None,
+                subentity_id=None,
+            )
+            return loader()
+
+        namespace_version = get_meta_namespace_version(
+            namespace,
+            base_version=str(getattr(settings, "META_CACHE_VERSION", "1")),
+        )
+        versioned_namespace = f"{namespace}:v{namespace_version}"
+        cache_key = build_meta_cache_key(
+            versioned_namespace,
+            entity_id=entity_id,
+            entityfinid_id=None,
+            subentity_id=None,
+            extra={},
+        )
+        return get_or_set_meta_cache(
+            cache_key,
+            loader,
+            timeout=int(getattr(settings, "META_CACHE_TTL_SECONDS", 300)),
+        )
+
     def get(self, request):
         entity_id = request.query_params.get("entity")
         if not entity_id:
             return Response({"detail": "entity is required."}, status=400)
         entity_id = int(entity_id)
         self.enforce_scope(request, entity_id=entity_id)
-        payload = build_financial_report_meta(entity_id)
+        payload = self._get_cached_meta(
+            entity_id=entity_id,
+            loader=lambda: build_financial_report_meta(entity_id),
+        )
         payload["reporting_policy"] = resolve_financial_reporting_policy(entity_id)
         return Response(payload)
 

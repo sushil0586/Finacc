@@ -3,10 +3,13 @@ from __future__ import annotations
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, permissions
+from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.entitlements import ScopedEntitlementMixin
 from entity.models import Godown
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 from .models import RetailCloseBatch, RetailConfig, RetailSession, RetailTicket
 from .serializers import (
@@ -22,12 +25,38 @@ from .serializers import (
 from .services import RetailSessionService, RetailTicketCompletionService
 
 
-class RetailMetaAPIView(APIView):
+class RetailScopedAPIView(ScopedEntitlementMixin, APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    subscription_feature_code = SubscriptionLimitCodes.FEATURE_SALES
+    subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
+
+    def _parse_scope(self, request):
+        entity_id = request.query_params.get("entity", request.data.get("entity"))
+        if entity_id in (None, "", "null", "None"):
+            raise ValidationError({"entity": "This value is required."})
+        try:
+            entity_id = int(entity_id)
+        except (TypeError, ValueError):
+            raise ValidationError({"entity": "Must be an integer."})
+
+        subentity_raw = request.query_params.get("subentity", request.data.get("subentity"))
+        subentity_id = None
+        if subentity_raw not in (None, "", "null", "None"):
+            try:
+                subentity_id = int(subentity_raw)
+            except (TypeError, ValueError):
+                raise ValidationError({"subentity": "Must be an integer."})
+
+        self.enforce_scope(request, entity_id=entity_id, subentity_id=subentity_id)
+        return entity_id, subentity_id
+
+
+class RetailMetaAPIView(RetailScopedAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        entity_id = int(request.query_params.get("entity"))
-        subentity_id = request.query_params.get("subentity")
+        entity_id, subentity_value = self._parse_scope(request)
+        subentity_id = str(subentity_value) if subentity_value is not None else request.query_params.get("subentity")
         config = RetailConfig.objects.filter(entity_id=entity_id)
         godowns = Godown.objects.filter(entity_id=entity_id, is_active=True)
         if subentity_id not in (None, ""):
@@ -63,12 +92,12 @@ class RetailMetaAPIView(APIView):
         )
 
 
-class RetailTicketListCreateAPIView(generics.ListCreateAPIView):
+class RetailTicketListCreateAPIView(RetailScopedAPIView, generics.ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        entity_id = int(self.request.query_params.get("entity"))
-        subentity_id = self.request.query_params.get("subentity")
+        entity_id, subentity_value = self._parse_scope(self.request)
+        subentity_id = str(subentity_value) if subentity_value is not None else self.request.query_params.get("subentity")
         queryset = RetailTicket.objects.filter(entity_id=entity_id).select_related("location", "customer", "session").prefetch_related("lines")
         if subentity_id in (None, ""):
             return queryset.filter(subentity__isnull=True).order_by("-bill_date", "-id")[:25]
@@ -121,13 +150,18 @@ class RetailTicketCompleteAPIView(APIView):
         return Response(RetailTicketReadSerializer(completed).data)
 
 
-class RetailSessionOpenAPIView(APIView):
+class RetailSessionOpenAPIView(RetailScopedAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
         serializer = RetailSessionOpenWriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
+        self.enforce_scope(
+            request,
+            entity_id=int(payload["entity"]),
+            subentity_id=payload.get("subentity"),
+        )
         session = RetailSessionService.open_session(
             entity_id=payload["entity"],
             entityfin_id=payload.get("entityfinid"),
@@ -140,7 +174,7 @@ class RetailSessionOpenAPIView(APIView):
         return Response(RetailSessionReadSerializer(session).data, status=201)
 
 
-class RetailSessionCloseAPIView(APIView):
+class RetailSessionCloseAPIView(RetailScopedAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
@@ -149,6 +183,11 @@ class RetailSessionCloseAPIView(APIView):
         session = get_object_or_404(
             RetailSession.objects.select_related("location", "close_batch").prefetch_related("tickets"),
             pk=pk,
+        )
+        self.enforce_scope(
+            request,
+            entity_id=int(session.entity_id),
+            subentity_id=int(session.subentity_id) if session.subentity_id else None,
         )
         closed = RetailSessionService.close_session(
             session,
@@ -159,13 +198,13 @@ class RetailSessionCloseAPIView(APIView):
         return Response(RetailSessionReadSerializer(closed).data)
 
 
-class RetailCloseBatchListAPIView(generics.ListAPIView):
+class RetailCloseBatchListAPIView(RetailScopedAPIView, generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = RetailCloseBatchReadSerializer
 
     def get_queryset(self):
-        entity_id = int(self.request.query_params.get("entity"))
-        subentity_id = self.request.query_params.get("subentity")
+        entity_id, subentity_value = self._parse_scope(self.request)
+        subentity_id = str(subentity_value) if subentity_value is not None else self.request.query_params.get("subentity")
         location_id = self.request.query_params.get("location")
         queryset = RetailCloseBatch.objects.filter(entity_id=entity_id).select_related("session", "location")
         if subentity_id in (None, ""):
@@ -181,10 +220,19 @@ class RetailCloseBatchListAPIView(generics.ListAPIView):
         return Response({"rows": serializer.data})
 
 
-class RetailCloseBatchDetailAPIView(generics.RetrieveAPIView):
+class RetailCloseBatchDetailAPIView(RetailScopedAPIView, generics.RetrieveAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = RetailCloseBatchDetailSerializer
     queryset = (
         RetailCloseBatch.objects.select_related("session", "location")
         .prefetch_related("ticket_links__ticket__customer")
     )
+
+    def get_object(self):
+        obj = super().get_object()
+        self.enforce_scope(
+            self.request,
+            entity_id=int(obj.entity_id),
+            subentity_id=int(obj.subentity_id) if obj.subentity_id else None,
+        )
+        return obj

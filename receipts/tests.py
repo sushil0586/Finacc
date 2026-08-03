@@ -8,11 +8,13 @@ from unittest.mock import MagicMock, patch
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.http import Http404
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
+from django.core.cache import cache
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity
+from helpers.utils.meta_cache import RECEIPT_META_NAMESPACES, bump_meta_namespaces
 from numbering.models import DocumentNumberSeries, DocumentType
 from numbering.seeding import NumberingSeedService
 from receipts.models import ReceiptVoucherHeader
@@ -20,7 +22,7 @@ from receipts.serializers.receipt_voucher import ReceiptVoucherHeaderSerializer
 from receipts.services.receipt_voucher_service import ReceiptVoucherService
 from receipts.services.receipt_settings_service import ReceiptSettingsService
 from receipts.views.receipt_exports import ReceiptVoucherPDFAPIView
-from receipts.views.receipt_meta import ReceiptVoucherDetailFormMetaAPIView
+from receipts.views.receipt_meta import ReceiptVoucherDetailFormMetaAPIView, ReceiptVoucherFormMetaAPIView
 from receipts.views.receipt_voucher import (
     ReceiptVoucherApprovalAPIView,
     ReceiptVoucherCancelAPIView,
@@ -30,8 +32,10 @@ from receipts.views.receipt_voucher import (
     _duplicate_reference_warnings,
 )
 from receipts.views.receipt_settings import ReceiptSettingsAPIView
+from receipts.views.receipt_choices import ReceiptCompiledChoicesAPIView
 from posting.adapters.receipt_voucher import ReceiptVoucherPostingAdapter
-from withholding.models import WithholdingBaseRule
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
+from withholding.models import TcsComputation, WithholdingBaseRule
 
 User = get_user_model()
 
@@ -83,41 +87,6 @@ class PaymentPostingAdapterTests(SimpleTestCase):
         self.assertIn("Customer Customer-A", jl[1].description)
         self.assertIn("Into Cash In Hand", jl[0].description)
 
-
-class ReceiptVoucherReferenceWarningTests(SimpleTestCase):
-    def _header(self):
-        return SimpleNamespace(
-            id=1,
-            voucher_code="RV-1",
-            cash_received_amount=Decimal("100.00"),
-            received_in_id=10,
-            received_from_id=20,
-            received_in=SimpleNamespace(accountname="Cash In Hand", ledger_id=10),
-            received_from=SimpleNamespace(accountname="Customer-A", ledger_id=20),
-        )
-
-    @patch("receipts.views.receipt_voucher.ReceiptVoucherHeader.objects")
-    def test_duplicate_reference_warning_includes_existing_voucher_code(self, mocked_objects):
-        mocked_objects.filter.return_value.exclude.return_value.order_by.return_value.filter.return_value.only.return_value.first.return_value = SimpleNamespace(
-            voucher_code="RV-2002",
-            doc_code="RV",
-            doc_no=2002,
-        )
-        voucher = SimpleNamespace(
-            id=99,
-            entity_id=1,
-            entityfinid_id=1,
-            subentity_id=5,
-            received_from_id=77,
-            reference_number="UTR-001",
-        )
-
-        warnings = _duplicate_reference_warnings(voucher)
-
-        self.assertEqual(warnings, [
-            "Reference already appears on voucher RV-2002. Please double-check before proceeding."
-        ])
-
     def test_receipt_posting_error_explains_bank_charges_double_counting(self):
         header = self._header()
         adjustments = [
@@ -140,8 +109,164 @@ class ReceiptVoucherReferenceWarningTests(SimpleTestCase):
             )
 
 
+class ReceiptVoucherReferenceWarningTests(SimpleTestCase):
+    @patch("receipts.views.receipt_voucher.ReceiptVoucherHeader.objects")
+    def test_duplicate_reference_warning_includes_existing_voucher_code(self, mocked_objects):
+        exact_qs = mocked_objects.filter.return_value.exclude.return_value.order_by.return_value
+        exact_qs.filter.return_value.only.return_value.first.return_value = SimpleNamespace(
+            voucher_code="RV-2002",
+            doc_code="RV",
+            doc_no=2002,
+        )
+        voucher = SimpleNamespace(
+            id=99,
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=5,
+            received_from_id=77,
+            reference_number="UTR-001",
+        )
+
+        warnings = _duplicate_reference_warnings(voucher)
+
+        self.assertEqual(warnings, [
+            "Reference already appears on voucher RV-2002. Please double-check before proceeding."
+        ])
+
+    @patch("receipts.views.receipt_voucher.ReceiptVoucherHeader.objects")
+    def test_duplicate_reference_warning_falls_back_to_case_insensitive_match(self, mocked_objects):
+        exact_filter = MagicMock(name="exact_filter")
+        fallback_filter = MagicMock(name="fallback_filter")
+        mocked_objects.filter.side_effect = [exact_filter, fallback_filter]
+
+        exact_qs = exact_filter.exclude.return_value.order_by.return_value
+        exact_qs.filter.return_value.only.return_value.first.return_value = None
+        fallback_qs = fallback_filter.exclude.return_value.order_by.return_value
+        fallback_qs.filter.return_value.only.return_value.first.return_value = SimpleNamespace(
+            voucher_code="RV-2003",
+            doc_code="RV",
+            doc_no=2003,
+        )
+        voucher = SimpleNamespace(
+            id=99,
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=5,
+            received_from_id=77,
+            reference_number="utr-001",
+        )
+
+        warnings = _duplicate_reference_warnings(voucher)
+
+        self.assertEqual(warnings, [
+            "Reference already appears on voucher RV-2003. Please double-check before proceeding."
+        ])
+        self.assertEqual(mocked_objects.filter.call_count, 2)
+
+
+@override_settings(META_CACHE_ENABLED=True, META_CACHE_TTL_SECONDS=600, META_CACHE_VERSION="test")
+class ReceiptVoucherFormMetaCacheTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.factory = APIRequestFactory()
+        self.user = User.objects.create_user(
+            username="receipt_form_meta_cache_user",
+            email="receipt_form_meta_cache_user@example.com",
+            password="pass@12345",
+        )
+
+    def _request(self):
+        request = self.factory.get("/api/receipts/meta/voucher-form/?entity=10&entityfinid=11&subentity=12")
+        force_authenticate(request, user=self.user)
+        return request
+
+    @patch.object(ReceiptVoucherFormMetaAPIView, "enforce_scope")
+    @patch.object(ReceiptVoucherFormMetaAPIView, "_voucher_form_meta")
+    def test_reuses_cached_voucher_form_payload(self, mocked_form_meta, _mocked_enforce_scope):
+        mocked_form_meta.return_value = {"entity_id": 10, "customers": [{"id": 1}]}
+
+        view = ReceiptVoucherFormMetaAPIView.as_view()
+        first = view(self._request())
+        second = view(self._request())
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.data, second.data)
+        mocked_form_meta.assert_called_once_with(10, 11, 12)
+
+    @patch.object(ReceiptVoucherFormMetaAPIView, "enforce_scope")
+    @patch.object(ReceiptVoucherFormMetaAPIView, "_voucher_form_meta")
+    def test_namespace_bump_invalidates_cached_voucher_form_payload(self, mocked_form_meta, _mocked_enforce_scope):
+        mocked_form_meta.side_effect = [
+            {"entity_id": 10, "customers": [{"id": 1}]},
+            {"entity_id": 10, "customers": [{"id": 2}]},
+        ]
+
+        view = ReceiptVoucherFormMetaAPIView.as_view()
+        first = view(self._request())
+        bump_meta_namespaces(RECEIPT_META_NAMESPACES)
+        second = view(self._request())
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertNotEqual(first.data, second.data)
+        self.assertEqual(mocked_form_meta.call_count, 2)
+
 class ReceiptVoucherServiceTests(SimpleTestCase):
     databases = {"default"}
+
+    @patch("receipts.services.receipt_voucher_service.upsert_tcs_computation")
+    @patch("receipts.services.receipt_voucher_service.TcsComputation.objects")
+    def test_sync_runtime_tcs_skips_upsert_for_disabled_receipt_without_existing_computation(
+        self,
+        mock_tcs_objects,
+        mock_upsert_tcs,
+    ):
+        header = SimpleNamespace(
+            id=91,
+            entity_id=10,
+            entityfinid_id=8,
+            subentity_id=None,
+            receipt_type="ADVANCE",
+            status=ReceiptVoucherHeader.Status.DRAFT,
+            workflow_payload={},
+        )
+        mock_tcs_objects.filter.return_value.only.return_value.first.return_value = None
+
+        ReceiptVoucherService._sync_runtime_tcs_computation(header)
+
+        mock_upsert_tcs.assert_not_called()
+
+    @patch("receipts.services.receipt_voucher_service.upsert_tcs_computation")
+    @patch("receipts.services.receipt_voucher_service.TcsComputation.objects")
+    def test_sync_runtime_tcs_preserves_existing_computation_when_receipt_becomes_disabled(
+        self,
+        mock_tcs_objects,
+        mock_upsert_tcs,
+    ):
+        header = SimpleNamespace(
+            id=92,
+            entity_id=10,
+            entityfinid_id=8,
+            subentity_id=None,
+            receipt_type="ADVANCE",
+            status=ReceiptVoucherHeader.Status.DRAFT,
+            workflow_payload={},
+            voucher_code="RV-92",
+            doc_code="RV",
+            doc_no=92,
+            voucher_date=date(2026, 8, 2),
+            received_from_id=55,
+        )
+        mock_tcs_objects.filter.return_value.only.return_value.first.return_value = SimpleNamespace(id=501)
+
+        ReceiptVoucherService._sync_runtime_tcs_computation(header)
+
+        mock_upsert_tcs.assert_called_once()
+        self.assertEqual(
+            mock_upsert_tcs.call_args.kwargs["status"],
+            TcsComputation.Status.REVERSED,
+        )
 
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._sync_runtime_tcs_computation")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherHeader.objects")
@@ -180,11 +305,14 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
             status=ReceiptVoucherHeader.Status.DRAFT,
             workflow_payload={"_approval_state": {"status": "SUBMITTED", "submitted_by": 7}},
         )
-        mock_header_objects.select_for_update.return_value.get.return_value = header
+        snapshot_qs = MagicMock()
+        snapshot_qs.filter.return_value.first.return_value = header
+        mock_header_objects.only.return_value = snapshot_qs
 
         result = ReceiptVoucherService.submit_voucher.__wrapped__(voucher_id=11, submitted_by_id=7, remarks="Retry")
 
         self.assertEqual(result.message, "Already submitted.")
+        mock_header_objects.select_for_update.assert_not_called()
 
     @patch("receipts.services.receipt_voucher_service.ReceiptSettingsService.get_policy")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherHeader.objects")
@@ -195,12 +323,15 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
             status=ReceiptVoucherHeader.Status.CONFIRMED,
             workflow_payload={"_approval_state": {"status": "APPROVED", "submitted_by": 7, "approved_by": 8}},
         )
-        mock_header_objects.select_for_update.return_value.get.return_value = header
+        snapshot_qs = MagicMock()
+        snapshot_qs.filter.return_value.first.return_value = header
+        mock_header_objects.only.return_value = snapshot_qs
         mock_get_policy.return_value = SimpleNamespace(controls={})
 
         result = ReceiptVoucherService.approve_voucher.__wrapped__(voucher_id=11, approved_by_id=8, remarks="Retry")
 
         self.assertEqual(result.message, "Already approved.")
+        mock_header_objects.select_for_update.assert_not_called()
 
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherHeader.objects")
     def test_reject_voucher_returns_already_rejected_for_repeat_reject(self, mock_header_objects):
@@ -208,11 +339,41 @@ class ReceiptVoucherServiceTests(SimpleTestCase):
             status=ReceiptVoucherHeader.Status.CONFIRMED,
             workflow_payload={"_approval_state": {"status": "REJECTED", "rejected_by": 8}},
         )
-        mock_header_objects.select_for_update.return_value.get.return_value = header
+        snapshot_qs = MagicMock()
+        snapshot_qs.filter.return_value.first.return_value = header
+        mock_header_objects.only.return_value = snapshot_qs
 
         result = ReceiptVoucherService.reject_voucher.__wrapped__(voucher_id=11, rejected_by_id=8, remarks="Retry")
 
         self.assertEqual(result.message, "Already rejected.")
+        mock_header_objects.select_for_update.assert_not_called()
+
+
+class ReceiptChoicesEntitlementTests(TestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.user = User.objects.create_user(
+            username="receipt-choices-user",
+            email="receipt-choices@example.com",
+            password="pass@12345",
+        )
+        self.entity = Entity.objects.create(entityname="Receipt Choices Entity", createdby=self.user)
+
+    def test_receipt_choices_are_blocked_when_financial_feature_disabled(self):
+        account = SubscriptionService.register_entity_creation(entity=self.entity, owner=self.user)
+        subscription = SubscriptionService.ensure_active_subscription(customer_account=account)
+        financial_limit = subscription.plan.limits.get(key=SubscriptionLimitCodes.FEATURE_FINANCIAL)
+        financial_limit.bool_value = False
+        financial_limit.save(update_fields=["bool_value", "updated_at"])
+
+        request = self.factory.get(f"/api/receipts/choices/?entity={self.entity.id}")
+        force_authenticate(request, user=self.user)
+
+        response = ReceiptCompiledChoicesAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "subscription_feature_disabled")
+        self.assertEqual(response.data["feature_code"], SubscriptionLimitCodes.FEATURE_FINANCIAL)
 
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._resolve_financial_year")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherHeader.objects")
@@ -1660,6 +1821,111 @@ class ReceiptVoucherViewValidationTests(SimpleTestCase):
         self.assertIn("remarks", response.data)
         mocked_error_log.assert_called_once()
 
+    @patch("receipts.views.receipt_voucher._require_receipt_permission")
+    @patch("receipts.views.receipt_voucher.ReceiptVoucherService.submit_voucher")
+    @patch("receipts.views.receipt_voucher.ReceiptVoucherHeaderSerializer")
+    @patch("receipts.views.receipt_voucher.ReceiptVoucherHeader.objects")
+    def test_approval_view_returns_already_submitted_feedback_for_stale_tab_submit(
+        self,
+        mocked_header_objects,
+        mocked_serializer,
+        mocked_submit_voucher,
+        _mocked_require_permission,
+    ):
+        queryset = MagicMock()
+        queryset.only.return_value = queryset
+        queryset.filter.return_value = queryset
+        mocked_header_objects.filter.return_value = queryset
+        with patch("receipts.views.receipt_voucher.get_object_or_404", return_value=SimpleNamespace(id=9, entity_id=1)):
+            mocked_serializer.return_value.data = {
+                "id": 9,
+                "approval_status": "SUBMITTED",
+                "approval_status_name": "Submitted",
+            }
+            mocked_submit_voucher.return_value = SimpleNamespace(
+                message="Already submitted.",
+                header=SimpleNamespace(id=9),
+            )
+            request = self._request("/api/receipts/receipt-vouchers/9/approval/?entity=1&entityfinid=2", {"action": "submit"})
+
+            response = ReceiptVoucherApprovalAPIView.as_view()(request, pk=9)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["message"], "Already submitted.")
+        self.assertEqual(response.data["approval_status"], "SUBMITTED")
+        self.assertEqual(response.data["approval_status_name"], "Submitted")
+        _, kwargs = mocked_serializer.call_args
+        self.assertEqual(kwargs["context"]["skip_preview_numbers"], True)
+        self.assertEqual(kwargs["context"]["skip_navigation"], True)
+
+    @patch("receipts.views.receipt_voucher._require_receipt_permission")
+    @patch("receipts.views.receipt_voucher.ReceiptVoucherService.approve_voucher")
+    @patch("receipts.views.receipt_voucher.ReceiptVoucherHeaderSerializer")
+    @patch("receipts.views.receipt_voucher.ReceiptVoucherHeader.objects")
+    def test_approval_view_returns_already_approved_feedback_for_stale_tab_approve(
+        self,
+        mocked_header_objects,
+        mocked_serializer,
+        mocked_approve_voucher,
+        _mocked_require_permission,
+    ):
+        queryset = MagicMock()
+        queryset.only.return_value = queryset
+        queryset.filter.return_value = queryset
+        mocked_header_objects.filter.return_value = queryset
+        with patch("receipts.views.receipt_voucher.get_object_or_404", return_value=SimpleNamespace(id=9, entity_id=1)):
+            mocked_serializer.return_value.data = {
+                "id": 9,
+                "approval_status": "APPROVED",
+                "approval_status_name": "Approved",
+            }
+            mocked_approve_voucher.return_value = SimpleNamespace(
+                message="Already approved.",
+                header=SimpleNamespace(id=9),
+            )
+            request = self._request("/api/receipts/receipt-vouchers/9/approval/?entity=1&entityfinid=2", {"action": "approve"})
+
+            response = ReceiptVoucherApprovalAPIView.as_view()(request, pk=9)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["message"], "Already approved.")
+        self.assertEqual(response.data["approval_status"], "APPROVED")
+        self.assertEqual(response.data["approval_status_name"], "Approved")
+
+    @patch("receipts.views.receipt_voucher._require_receipt_permission")
+    @patch("receipts.views.receipt_voucher.ReceiptVoucherService.reject_voucher")
+    @patch("receipts.views.receipt_voucher.ReceiptVoucherHeaderSerializer")
+    @patch("receipts.views.receipt_voucher.ReceiptVoucherHeader.objects")
+    def test_approval_view_returns_already_rejected_feedback_for_stale_tab_reject(
+        self,
+        mocked_header_objects,
+        mocked_serializer,
+        mocked_reject_voucher,
+        _mocked_require_permission,
+    ):
+        queryset = MagicMock()
+        queryset.only.return_value = queryset
+        queryset.filter.return_value = queryset
+        mocked_header_objects.filter.return_value = queryset
+        with patch("receipts.views.receipt_voucher.get_object_or_404", return_value=SimpleNamespace(id=9, entity_id=1)):
+            mocked_serializer.return_value.data = {
+                "id": 9,
+                "approval_status": "REJECTED",
+                "approval_status_name": "Rejected",
+            }
+            mocked_reject_voucher.return_value = SimpleNamespace(
+                message="Already rejected.",
+                header=SimpleNamespace(id=9),
+            )
+            request = self._request("/api/receipts/receipt-vouchers/9/approval/?entity=1&entityfinid=2", {"action": "reject"})
+
+            response = ReceiptVoucherApprovalAPIView.as_view()(request, pk=9)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["message"], "Already rejected.")
+        self.assertEqual(response.data["approval_status"], "REJECTED")
+        self.assertEqual(response.data["approval_status_name"], "Rejected")
+
     @patch("errorlogger.drf_exception_handler.ErrorLog.objects.create")
     @patch("receipts.views.receipt_voucher._require_receipt_permission")
     @patch("receipts.views.receipt_voucher.ReceiptVoucherHeader.objects")
@@ -1867,6 +2133,29 @@ class ReceiptRuntimeWithholdingTests(SimpleTestCase):
         self.assertTrue(payload.get("withholding_runtime_result", {}).get("zero_collection"))
         self.assertFalse(payload.get("withholding_runtime_result", {}).get("user_selected_add_tcs"))
 
+    def test_runtime_withholding_enabled_without_section_keeps_manual_rows_and_sets_no_section_snapshot(self):
+        adjustments, payload = ReceiptVoucherService._apply_runtime_withholding_to_adjustments(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            received_from_id=55,
+            voucher_date=None,
+            cash_received_amount=Decimal("100.00"),
+            allocations=[],
+            adjustments=[
+                {"adj_type": "BANK_CHARGES", "amount": Decimal("2.00"), "remarks": "manual"},
+                {"adj_type": "TCS", "amount": Decimal("5.00"), "remarks": ReceiptVoucherService.AUTO_WITHHOLDING_TCS_REMARK},
+            ],
+            workflow_payload={"withholding": {"enabled": True, "mode": "AUTO"}},
+        )
+
+        self.assertEqual(len(adjustments), 1)
+        self.assertEqual(adjustments[0]["adj_type"], "BANK_CHARGES")
+        self.assertEqual(payload.get("withholding_runtime_result", {}).get("reason_code"), "NO_SECTION")
+        self.assertEqual(payload.get("withholding_runtime_result", {}).get("collection_status"), "NOT_COLLECTED")
+        self.assertTrue(payload.get("withholding_runtime_result", {}).get("zero_collection"))
+        self.assertTrue(payload.get("withholding_runtime_result", {}).get("user_selected_add_tcs"))
+
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._resolve_entity_runtime_tcs_mapping")
     @patch("receipts.services.receipt_voucher_service.StaticAccountService.get_ledger_id")
     @patch("receipts.services.receipt_voucher_service.StaticAccountService.get_account_id")
@@ -2071,6 +2360,46 @@ class ReceiptRuntimeWithholdingTests(SimpleTestCase):
         self.assertEqual(runtime.get("collection_status"), "COLLECTED")
         self.assertFalse(runtime.get("zero_collection"))
         self.assertTrue(runtime.get("user_selected_add_tcs"))
+
+    @patch("receipts.services.receipt_voucher_service.StaticAccountService.get_ledger_id")
+    @patch("receipts.services.receipt_voucher_service.StaticAccountService.get_account_id")
+    @patch("receipts.services.receipt_voucher_service.compute_withholding_preview")
+    def test_runtime_withholding_replaces_existing_auto_tcs_row_without_duplication(
+        self,
+        mock_preview,
+        mock_get_account_id,
+        mock_get_ledger_id,
+    ):
+        mock_get_account_id.return_value = 9001
+        mock_get_ledger_id.return_value = 3001
+        mock_preview.return_value = SimpleNamespace(
+            rate=Decimal("1.0000"),
+            amount=Decimal("10.00"),
+            reason="auto",
+            reason_code="OK",
+            section=SimpleNamespace(id=5, section_code="206C1H"),
+        )
+
+        adjustments, _ = ReceiptVoucherService._apply_runtime_withholding_to_adjustments(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            received_from_id=55,
+            voucher_date=None,
+            cash_received_amount=Decimal("100.00"),
+            allocations=[{"open_item": 1, "settled_amount": Decimal("100.00")}],
+            adjustments=[
+                {"adj_type": "BANK_CHARGES", "amount": Decimal("2.00"), "remarks": "manual"},
+                {"adj_type": "TCS", "amount": Decimal("3.00"), "remarks": ReceiptVoucherService.AUTO_WITHHOLDING_TCS_REMARK},
+            ],
+            workflow_payload={"withholding": {"enabled": True, "section_id": 5, "mode": "AUTO", "allow_static_fallback": True}},
+        )
+
+        self.assertEqual(len(adjustments), 2)
+        runtime_rows = [row for row in adjustments if row["adj_type"] == "TCS"]
+        self.assertEqual(len(runtime_rows), 1)
+        self.assertEqual(runtime_rows[0]["amount"], Decimal("10.00"))
+        self.assertEqual(runtime_rows[0]["remarks"], ReceiptVoucherService.AUTO_WITHHOLDING_TCS_REMARK)
 
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._resolve_entity_runtime_tcs_mapping")
     @patch("receipts.services.receipt_voucher_service.StaticAccountService.get_ledger_id")

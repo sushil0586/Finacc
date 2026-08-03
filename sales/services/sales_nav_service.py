@@ -127,6 +127,100 @@ class SalesInvoiceNavService:
         return int(match.group(1) or 0)
 
     @staticmethod
+    def resolve_adjacent_in_scope(
+        *,
+        qs,
+        current_obj: Any,
+        direction: str,
+        include_unnumbered_forward: bool = False,
+    ):
+        current_seq = SalesInvoiceNavService._sequence_no(current_obj)
+        if current_seq <= 0:
+            if direction == "previous":
+                return qs.filter(id__lt=current_obj.id).order_by("-id").first()
+            return qs.filter(id__gt=current_obj.id).order_by("id").first()
+
+        current_doc_no = int(getattr(current_obj, "doc_no", 0) or 0)
+        if current_doc_no > 0 and hasattr(qs, "filter"):
+            numbered_qs = qs.filter(doc_no__gt=0)
+            if direction == "previous":
+                return (
+                    numbered_qs
+                    .filter(Q(doc_no__lt=current_doc_no) | Q(doc_no=current_doc_no, id__lt=current_obj.id))
+                    .order_by("-doc_no", "-id")
+                    .first()
+                )
+
+            next_obj = (
+                numbered_qs
+                .filter(Q(doc_no__gt=current_doc_no) | Q(doc_no=current_doc_no, id__gt=current_obj.id))
+                .order_by("doc_no", "id")
+                .first()
+            )
+            if next_obj is None and include_unnumbered_forward:
+                next_obj = (
+                    qs
+                    .filter(Q(doc_no__isnull=True) | Q(doc_no__lte=0), id__gt=current_obj.id)
+                    .order_by("id")
+                    .first()
+                )
+            return next_obj
+
+        rows = list(qs)
+        if direction == "previous":
+            candidates = [
+                row for row in rows
+                if (
+                    (SalesInvoiceNavService._sequence_no(row) < current_seq)
+                    or (
+                        SalesInvoiceNavService._sequence_no(row) == current_seq
+                        and int(getattr(row, "id", 0) or 0) < int(getattr(current_obj, "id", 0) or 0)
+                    )
+                )
+            ]
+            return max(
+                candidates,
+                key=lambda row: (
+                    SalesInvoiceNavService._sequence_no(row),
+                    int(getattr(row, "id", 0) or 0),
+                ),
+                default=None,
+            )
+
+        candidates = [
+            row for row in rows
+            if (
+                (SalesInvoiceNavService._sequence_no(row) > current_seq)
+                or (
+                    SalesInvoiceNavService._sequence_no(row) == current_seq
+                    and int(getattr(row, "id", 0) or 0) > int(getattr(current_obj, "id", 0) or 0)
+                )
+            )
+        ]
+        next_obj = min(
+            candidates,
+            key=lambda row: (
+                SalesInvoiceNavService._sequence_no(row),
+                int(getattr(row, "id", 0) or 0),
+            ),
+            default=None,
+        )
+        if next_obj is None and include_unnumbered_forward:
+            unnumbered_forward_candidates = [
+                row for row in rows
+                if (
+                    SalesInvoiceNavService._sequence_no(row) <= 0
+                    and int(getattr(row, "id", 0) or 0) > int(getattr(current_obj, "id", 0) or 0)
+                )
+            ]
+            next_obj = min(
+                unnumbered_forward_candidates,
+                key=lambda row: int(getattr(row, "id", 0) or 0),
+                default=None,
+            )
+        return next_obj
+
+    @staticmethod
     def get_prev_next_for_instance(
         instance: SalesInvoiceHeader,
         *,
@@ -153,49 +247,16 @@ class SalesInvoiceNavService:
             allowed_statuses=allowed_statuses,
             line_mode=line_mode,
         )
-
-        current_seq = SalesInvoiceNavService._sequence_no(instance)
-        if current_seq > 0:
-            rows = list(all_code_qs)
-            prev_candidates = [
-                row for row in rows
-                if (
-                    (SalesInvoiceNavService._sequence_no(row) < current_seq)
-                    or (
-                        SalesInvoiceNavService._sequence_no(row) == current_seq
-                        and int(getattr(row, "id", 0) or 0) < int(getattr(instance, "id", 0) or 0)
-                    )
-                )
-            ]
-            next_candidates = [
-                row for row in rows
-                if (
-                    (SalesInvoiceNavService._sequence_no(row) > current_seq)
-                    or (
-                        SalesInvoiceNavService._sequence_no(row) == current_seq
-                        and int(getattr(row, "id", 0) or 0) > int(getattr(instance, "id", 0) or 0)
-                    )
-                )
-            ]
-            prev_obj = max(
-                prev_candidates,
-                key=lambda row: (
-                    SalesInvoiceNavService._sequence_no(row),
-                    int(getattr(row, "id", 0) or 0),
-                ),
-                default=None,
-            )
-            next_obj = min(
-                next_candidates,
-                key=lambda row: (
-                    SalesInvoiceNavService._sequence_no(row),
-                    int(getattr(row, "id", 0) or 0),
-                ),
-                default=None,
-            )
-        else:
-            prev_obj = all_code_qs.filter(id__lt=instance.id).order_by("-id").first()
-            next_obj = all_code_qs.filter(id__gt=instance.id).order_by("id").first()
+        prev_obj = SalesInvoiceNavService.resolve_adjacent_in_scope(
+            qs=all_code_qs,
+            current_obj=instance,
+            direction="previous",
+        )
+        next_obj = SalesInvoiceNavService.resolve_adjacent_in_scope(
+            qs=all_code_qs,
+            current_obj=instance,
+            direction="next",
+        )
 
         return {
             "previous": SalesInvoiceNavService._to_item(prev_obj),

@@ -122,8 +122,11 @@ def _resolve_dynamic_party_head(ledger, closing_value):
         selected = debit_head or credit_head
 
     if selected is None:
-        return None, None, Debit
-    return selected.id, selected.name, selected.drcreffect or Debit
+        return None, None, None, None, Debit
+    accounttype = getattr(selected, "accounttype", None)
+    accounttype_id = getattr(accounttype, "id", None)
+    accounttype_name = getattr(accounttype, "accounttypename", None)
+    return selected.id, selected.name, accounttype_id, accounttype_name, selected.drcreffect or Debit
 
 
 def _raw_trial_balance_rows(
@@ -225,7 +228,7 @@ def _raw_trial_balance_rows(
         credit = movement.get("credit") or Decimal("0.00")
         closing = opening + debit - credit
         display_opening = opening if include_opening else Decimal("0.00")
-        accounthead_id, accounthead_name, normal_balance = _resolve_dynamic_party_head(ledger, closing)
+        accounthead_id, accounthead_name, accounttype_id, accounttype_name, normal_balance = _resolve_dynamic_party_head(ledger, closing)
         abnormal_balance = _is_abnormal_balance(closing, normal_balance)
         if not include_zero_balances and opening == 0 and debit == 0 and credit == 0 and closing == 0:
             continue
@@ -235,8 +238,8 @@ def _raw_trial_balance_rows(
             "ledger_name": ledger.name,
             "accounthead_id": accounthead_id,
             "accounthead_name": accounthead_name,
-            "accounttype_id": ledger.accounttype_id,
-            "accounttype_name": ledger.accounttype.accounttypename if ledger.accounttype_id else None,
+            "accounttype_id": accounttype_id,
+            "accounttype_name": accounttype_name,
             "normal_balance": normal_balance,
             "opening": f"{display_opening:.2f}",
             "debit": f"{debit:.2f}",

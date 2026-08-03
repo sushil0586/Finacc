@@ -116,6 +116,7 @@ class RegisterApiView(ListCreateAPIView):
             "next_step": "entity_onboarding_required",
             "recommended_onboarding_endpoint": "/api/entity/onboarding/register/",
             "intent": intent,
+            "selected_plan_code": getattr(user, "_signup_plan_code", None),
             "trial_started": subscription["subscription"]["is_trial"],
             "message": (
                 "Your free trial has started. Finish entity onboarding to start ERP operations."
@@ -123,6 +124,10 @@ class RegisterApiView(ListCreateAPIView):
                 else "Account created successfully. Finish entity onboarding to start ERP operations."
             ),
             "subscription": subscription,
+            "subscription_endpoints": {
+                "public_plans": "/api/subscriptions/public/plans",
+                "current_summary": "/api/subscriptions/me/summary",
+            },
         }
         headers = self.get_success_headers(serializer.data)
         return Response(payload, status=status.HTTP_201_CREATED, headers=headers)
@@ -570,5 +575,4 @@ class VerifyEmailApiView(GenericAPIView):
         AuthEmailVerificationService.verify_user_email(user)
 
         return Response({"message": "Email verified successfully."}, status=status.HTTP_200_OK)
-
 

@@ -3,12 +3,13 @@ from __future__ import annotations
 import re
 
 from django.db import transaction
+from django.shortcuts import get_object_or_404
 from rest_framework import serializers, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from django.shortcuts import get_object_or_404
 
+from core.entitlements import enforce_operational_entity_access
 from financial.invoice_custom_fields_service import InvoiceCustomFieldService
 from financial.models import (
     InvoiceCustomFieldDefinition,
@@ -19,6 +20,7 @@ from helpers.utils.meta_cache import (
     SALES_META_NAMESPACES,
     bump_meta_namespaces,
 )
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
 def _meta_namespaces_for_module(module: str | None) -> list[str]:
@@ -28,6 +30,27 @@ def _meta_namespaces_for_module(module: str | None) -> list[str]:
     if normalized == InvoiceCustomFieldDefinition.Module.SALES_INVOICE:
         return SALES_META_NAMESPACES
     return []
+
+
+def _feature_code_for_module(module: str | None) -> str | None:
+    normalized = str(module or "").strip().lower()
+    if normalized == InvoiceCustomFieldDefinition.Module.PURCHASE_INVOICE:
+        return SubscriptionLimitCodes.FEATURE_PURCHASE
+    if normalized == InvoiceCustomFieldDefinition.Module.SALES_INVOICE:
+        return SubscriptionLimitCodes.FEATURE_SALES
+    return None
+
+
+def _enforce_entity_module_access(*, request, entity_id: int, module: str | None) -> None:
+    feature_code = _feature_code_for_module(module)
+    if not feature_code:
+        return
+    enforce_operational_entity_access(
+        request=request,
+        entity_id=entity_id,
+        feature_code=feature_code,
+        access_mode=SubscriptionService.ACCESS_MODE_OPERATIONAL,
+    )
 
 
 class InvoiceCustomFieldDefinitionSerializer(serializers.ModelSerializer):
@@ -157,6 +180,7 @@ class InvoiceCustomFieldDefinitionListCreateAPIView(APIView):
 
         if not entity_id or not module:
             return Response({"detail": "entity and module query params are required."}, status=400)
+        _enforce_entity_module_access(request=request, entity_id=int(entity_id), module=str(module))
 
         if manage_mode:
             qs = InvoiceCustomFieldDefinition.objects.filter(
@@ -186,6 +210,11 @@ class InvoiceCustomFieldDefinitionListCreateAPIView(APIView):
     def post(self, request):
         ser = InvoiceCustomFieldDefinitionSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
+        _enforce_entity_module_access(
+            request=request,
+            entity_id=ser.validated_data["entity"].id,
+            module=ser.validated_data.get("module"),
+        )
         obj = ser.save()
         namespaces = _meta_namespaces_for_module(obj.module)
         if namespaces:
@@ -198,6 +227,7 @@ class InvoiceCustomFieldDefinitionDetailAPIView(APIView):
 
     def patch(self, request, pk: int):
         obj = get_object_or_404(InvoiceCustomFieldDefinition, pk=pk)
+        _enforce_entity_module_access(request=request, entity_id=obj.entity_id, module=obj.module)
         previous_module = obj.module
         ser = InvoiceCustomFieldDefinitionSerializer(obj, data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
@@ -219,6 +249,7 @@ class InvoiceCustomFieldDefaultListCreateAPIView(APIView):
 
         if not entity_id or not module or not party_account_id:
             return Response({"detail": "entity, module and party query params are required."}, status=400)
+        _enforce_entity_module_access(request=request, entity_id=int(entity_id), module=str(module))
 
         defaults = InvoiceCustomFieldService.get_defaults_map(
             entity_id=int(entity_id),
@@ -232,6 +263,11 @@ class InvoiceCustomFieldDefaultListCreateAPIView(APIView):
         ser = InvoiceCustomFieldDefaultSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         payload = ser.validated_data
+        _enforce_entity_module_access(
+            request=request,
+            entity_id=payload["definition"].entity_id,
+            module=payload["definition"].module,
+        )
         obj, _ = InvoiceCustomFieldDefault.objects.update_or_create(
             definition=payload["definition"],
             party_account=payload["party_account"],

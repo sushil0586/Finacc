@@ -27,6 +27,7 @@ from invoice_import.views import (
     PurchaseInvoiceImportJobCommitAPIView,
     PurchaseInvoiceImportJobReviewAPIView,
     PurchaseInvoiceImportJobReconciliationAPIView,
+    PurchaseInvoiceImportTemplateAPIView,
     SalesInvoiceImportJobCommitAPIView,
     SalesInvoiceImportJobCreateAPIView,
     SalesInvoiceImportJobDetailAPIView,
@@ -38,6 +39,7 @@ from purchase.models import PurchaseInvoiceHeader
 from purchase.models.purchase_ap import VendorBillOpenItem
 from sales.models import SalesInvoiceHeader
 from sales.models.sales_ar import CustomerBillOpenItem
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
 @override_settings(AUTH_PASSWORD_VALIDATORS=[])
@@ -1296,6 +1298,29 @@ class InvoiceImportAPIViewTests(InvoiceImportServiceTests):
         _mock_permission.assert_called_once_with(user=self.user, entity_id=self.entity.id, doc_type=1, action="view")
 
     @patch("invoice_import.views.require_sales_request_permission")
+    def test_sales_template_endpoint_is_blocked_when_sales_feature_disabled(self, _mock_permission):
+        account = SubscriptionService.register_entity_creation(entity=self.entity, owner=self.user)
+        subscription = SubscriptionService.ensure_active_subscription(customer_account=account)
+        sales_limit = subscription.plan.limits.get(key=SubscriptionLimitCodes.FEATURE_SALES)
+        sales_limit.bool_value = False
+        sales_limit.save(update_fields=["bool_value", "updated_at"])
+
+        request = self._request(
+            "get",
+            "/api/sales/legacy-import/template/",
+            query={
+                "entity": self.entity.id,
+                "mode": ImportJob.Mode.OUTSTANDING_ONLY,
+                "detail_level": ImportJob.DetailLevel.HEADER_ONLY,
+            },
+        )
+        response = SalesInvoiceImportTemplateAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "subscription_feature_disabled")
+        self.assertEqual(response.data["feature_code"], SubscriptionLimitCodes.FEATURE_SALES)
+
+    @patch("invoice_import.views.require_sales_request_permission")
     def test_sales_job_create_detail_and_commit_views(self, _mock_permission):
         profile = ImportProfile.objects.create(
             entity=self.entity,
@@ -1366,6 +1391,29 @@ class InvoiceImportAPIViewTests(InvoiceImportServiceTests):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(mock_permission.call_args_list[0].kwargs["action"], "update")
+
+    @patch("invoice_import.views.require_purchase_request_permission")
+    def test_purchase_template_endpoint_is_blocked_when_purchase_feature_disabled(self, _mock_permission):
+        account = SubscriptionService.register_entity_creation(entity=self.entity, owner=self.user)
+        subscription = SubscriptionService.ensure_active_subscription(customer_account=account)
+        purchase_limit = subscription.plan.limits.get(key=SubscriptionLimitCodes.FEATURE_PURCHASE)
+        purchase_limit.bool_value = False
+        purchase_limit.save(update_fields=["bool_value", "updated_at"])
+
+        request = self._request(
+            "get",
+            "/api/purchase/legacy-import/template/",
+            query={
+                "entity": self.entity.id,
+                "mode": ImportJob.Mode.OUTSTANDING_ONLY,
+                "detail_level": ImportJob.DetailLevel.HEADER_ONLY,
+            },
+        )
+        response = PurchaseInvoiceImportTemplateAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "subscription_feature_disabled")
+        self.assertEqual(response.data["feature_code"], SubscriptionLimitCodes.FEATURE_PURCHASE)
 
     @patch("invoice_import.views.require_purchase_request_permission")
     def test_purchase_detail_and_reconciliation_views_use_view_permission(self, mock_permission):

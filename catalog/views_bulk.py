@@ -24,6 +24,7 @@ from .bulk_products import (
 )
 from .models import ProductBulkJob
 from entity.models import Entity
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
 class SafeFormatNegotiation(DefaultContentNegotiation):
@@ -46,7 +47,14 @@ def _entity_from_request(request):
         entity_id = int(raw)
     except (TypeError, ValueError):
         raise ValidationError({"entity": "entity must be a valid integer id."})
-    return get_object_or_404(Entity, pk=entity_id)
+    entity = get_object_or_404(Entity, pk=entity_id)
+    SubscriptionService.assert_entity_access(
+        user=request.user,
+        entity=entity,
+        access_mode=SubscriptionService.ACCESS_MODE_OPERATIONAL,
+        feature_code=SubscriptionLimitCodes.FEATURE_INVENTORY,
+    )
+    return entity
 
 
 def _json_safe(value):
@@ -68,6 +76,7 @@ class ProductBulkTemplateAPIView(APIView):
     content_negotiation_class = SafeFormatNegotiation
 
     def get(self, request):
+        _entity_from_request(request)
         fmt = (request.query_params.get("format") or "xlsx").lower()
         if fmt not in ("xlsx", "csv"):
             raise ValidationError({"format": "Use xlsx or csv."})

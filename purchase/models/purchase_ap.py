@@ -58,6 +58,10 @@ class VendorBillOpenItem(TrackingModel):
             models.Index(fields=["entity", "entityfinid", "due_date"], name="ix_pur_ap_open_duedt"),
             models.Index(fields=["entity", "entityfinid", "vendor", "is_open", "due_date"], name="ix_pur_ap_open_vdue"),
             models.Index(fields=["entity", "entityfinid", "subentity", "is_open", "due_date"], name="ix_pur_ap_open_sdue"),
+            models.Index(
+                fields=["entity", "entityfinid", "subentity", "vendor", "bill_date"],
+                name="ix_pur_ap_hist_scope",
+            ),
         ]
 
     def __str__(self) -> str:
@@ -108,6 +112,14 @@ class VendorSettlement(TrackingModel):
             models.Index(fields=["entity", "entityfinid", "vendor_ledger", "status"], name="ix_pur_settle_vscope"),
             models.Index(fields=["entity", "entityfinid", "settlement_date"], name="ix_pur_settle_date"),
             models.Index(fields=["entity", "entityfinid", "vendor", "status", "settlement_date"], name="ix_pur_settle_vstatdt"),
+            models.Index(
+                fields=["entity", "entityfinid", "subentity", "status", "settlement_date"],
+                name="ix_pur_settle_hist_scope",
+            ),
+            models.Index(
+                fields=["advance_balance", "status", "settlement_date"],
+                name="ix_pur_settle_adv_statdt",
+            ),
         ]
 
     def __str__(self) -> str:
@@ -151,6 +163,10 @@ class VendorAdvanceBalance(TrackingModel):
             models.Index(fields=["entity", "entityfinid", "vendor_ledger", "is_open"], name="ix_pur_adv_vscope"),
             models.Index(fields=["entity", "entityfinid", "credit_date"], name="ix_pur_adv_creditdt"),
             models.Index(fields=["entity", "entityfinid", "vendor", "is_open", "credit_date"], name="ix_pur_adv_vopendt"),
+            models.Index(
+                fields=["entity", "entityfinid", "subentity", "vendor", "credit_date"],
+                name="ix_pur_adv_hist_scope",
+            ),
         ]
 
     def __str__(self) -> str:

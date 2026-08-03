@@ -1,5 +1,8 @@
 # Backend Performance Baseline Runbook (Finacc Django)
 
+Related:
+- [local-postgres-stress-prerequisites-2026-08-03.md](/Users/ansh/finacc-angular/finacc-django/Finacc/docs/performance/local-postgres-stress-prerequisites-2026-08-03.md:1)
+
 ## Goal
 
 Produce a first baseline with latency and error-rate metrics for core sales flows.

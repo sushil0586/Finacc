@@ -58,6 +58,15 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
     AUTO_PAISE_ROUND_OFF_REMARK = "__AUTO_PAISE_ROUND_OFF__"
 
     @staticmethod
+    def _approval_state_snapshot(voucher_id: int) -> Optional[ReceiptVoucherHeader]:
+        return (
+            ReceiptVoucherHeader.objects
+            .only("id", "status", "workflow_payload")
+            .filter(pk=voucher_id)
+            .first()
+        )
+
+    @staticmethod
     def _coerce_date(value) -> Optional[date]:
         if value is None:
             return None
@@ -259,14 +268,23 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
             return
 
         preview = ReceiptVoucherService._runtime_tcs_preview_from_header(header)
+        existing_scope = {
+            "module_name": "receipts",
+            "document_type": (header.receipt_type or "receipt_voucher").strip().lower(),
+            "document_id": int(header.id),
+        }
+        if not preview.enabled:
+            existing = TcsComputation.objects.filter(**existing_scope).only("id").first()
+            if existing is None:
+                return
         status = ReceiptVoucherService._runtime_tcs_status_for_header(header)
         if not preview.enabled:
             status = TcsComputation.Status.REVERSED
 
         upsert_tcs_computation(
-            module_name="receipts",
-            document_type=(header.receipt_type or "receipt_voucher").strip().lower(),
-            document_id=int(header.id),
+            module_name=existing_scope["module_name"],
+            document_type=existing_scope["document_type"],
+            document_id=existing_scope["document_id"],
             document_no=ReceiptVoucherService._runtime_tcs_document_no(header),
             doc_date=header.voucher_date or timezone.localdate(),
             entity_id=int(header.entity_id),
@@ -1683,6 +1701,11 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
     @staticmethod
     @transaction.atomic
     def submit_voucher(voucher_id: int, submitted_by_id: Optional[int] = None, remarks: Optional[str] = None) -> ReceiptVoucherResult:
+        snapshot = ReceiptVoucherService._approval_state_snapshot(voucher_id)
+        if snapshot is not None:
+            snapshot_state = ReceiptVoucherService._workflow_state(getattr(snapshot, "workflow_payload", None))
+            if snapshot_state.get("status") == "SUBMITTED":
+                return ReceiptVoucherResult(snapshot, "Already submitted.")
         h = ReceiptVoucherHeader.objects.select_for_update().get(pk=voucher_id)
         if int(h.status) in (int(ReceiptVoucherHeader.Status.POSTED), int(ReceiptVoucherHeader.Status.CANCELLED)):
             raise ValueError("Only draft/confirmed vouchers can be submitted.")
@@ -1706,6 +1729,11 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
     @staticmethod
     @transaction.atomic
     def approve_voucher(voucher_id: int, approved_by_id: Optional[int] = None, remarks: Optional[str] = None) -> ReceiptVoucherResult:
+        snapshot = ReceiptVoucherService._approval_state_snapshot(voucher_id)
+        if snapshot is not None:
+            snapshot_state = ReceiptVoucherService._workflow_state(getattr(snapshot, "workflow_payload", None))
+            if snapshot_state.get("status") == "APPROVED":
+                return ReceiptVoucherResult(snapshot, "Already approved.")
         h = ReceiptVoucherHeader.objects.select_for_update().get(pk=voucher_id)
         if int(h.status) in (int(ReceiptVoucherHeader.Status.POSTED), int(ReceiptVoucherHeader.Status.CANCELLED)):
             raise ValueError("Only draft/confirmed vouchers can be approved.")
@@ -1743,6 +1771,11 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
     @staticmethod
     @transaction.atomic
     def reject_voucher(voucher_id: int, rejected_by_id: Optional[int] = None, remarks: Optional[str] = None) -> ReceiptVoucherResult:
+        snapshot = ReceiptVoucherService._approval_state_snapshot(voucher_id)
+        if snapshot is not None:
+            snapshot_state = ReceiptVoucherService._workflow_state(getattr(snapshot, "workflow_payload", None))
+            if snapshot_state.get("status") == "REJECTED":
+                return ReceiptVoucherResult(snapshot, "Already rejected.")
         h = ReceiptVoucherHeader.objects.select_for_update().get(pk=voucher_id)
         if int(h.status) in (int(ReceiptVoucherHeader.Status.POSTED), int(ReceiptVoucherHeader.Status.CANCELLED)):
             raise ValueError("Only draft/confirmed vouchers can be rejected.")

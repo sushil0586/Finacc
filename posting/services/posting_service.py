@@ -21,6 +21,8 @@ from posting.models import (
 ZERO2 = Decimal("0.00")
 Q2 = Decimal("0.01")
 Q4 = Decimal("0.0001")
+ENTRY_NARRATION_MAX = Entry._meta.get_field("narration").max_length or 500
+JOURNAL_DESCRIPTION_MAX = JournalLine._meta.get_field("description").max_length or 500
 
 
 def q2(x) -> Decimal:
@@ -49,6 +51,15 @@ def _json_safe(value):
     if isinstance(value, uuid.UUID):
         return str(value)
     return value
+
+
+def _clip_text(value, *, max_length: int) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_length:
+        return text
+    if max_length <= 3:
+        return text[:max_length]
+    return f"{text[: max_length - 3]}..."
 
 
 @dataclass
@@ -317,6 +328,8 @@ class PostingService:
         revision = self._next_revision(txn_type, txn_id)
         self._deactivate_previous_batch(txn_type, txn_id)
 
+        narration = _clip_text(narration, max_length=ENTRY_NARRATION_MAX)
+
         batch = PostingBatch.objects.create(
             entity_id=self.entity_id,
             entityfin_id=self.entityfin_id,
@@ -383,7 +396,7 @@ class PostingService:
                 ledger_id=resolved_ledger_id,
                 drcr=bool(x.drcr),
                 amount=amt,
-                description=x.description or narration,
+                description=_clip_text(x.description or narration, max_length=JOURNAL_DESCRIPTION_MAX),
                 posting_date=posting_date,
                 posted_at=now_dt if mark_posted else None,
                 created_by_id=self.user_id,

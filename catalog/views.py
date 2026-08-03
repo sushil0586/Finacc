@@ -38,6 +38,7 @@ from reportlab.pdfgen import canvas
 from entity.models import Entity, Godown, SubEntity
 from financial.models import Ledger
 from assets.models import AssetCategory
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 from .models import (
     ProductCategory,
@@ -123,9 +124,17 @@ class EntityFromQueryMixin:
             raise ValidationError({"entity": "Query param ?entity=<id> is required."})
 
         try:
-            return Entity.objects.get(id=int(entity_param))
+            entity = Entity.objects.get(id=int(entity_param))
         except (ValueError, Entity.DoesNotExist):
             raise NotFound("Invalid entity")
+
+        SubscriptionService.assert_entity_access(
+            user=self.request.user,
+            entity=entity,
+            access_mode=SubscriptionService.ACCESS_MODE_OPERATIONAL,
+            feature_code=SubscriptionLimitCodes.FEATURE_INVENTORY,
+        )
+        return entity
 
     def get_serializer_context(self):
         parent_getter = getattr(super(), "get_serializer_context", None)
@@ -172,6 +181,24 @@ class EntityFromQueryMixin:
             return queryset.filter(isactive=False)
 
         raise ValidationError({"isactive": "Invalid value. Use true/false."})
+
+
+class InventoryScopedPathEntityMixin:
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_entity_from_path(self, entity_id):
+        try:
+            entity = Entity.objects.get(id=int(entity_id))
+        except (TypeError, ValueError, Entity.DoesNotExist):
+            raise NotFound("Invalid entity")
+
+        SubscriptionService.assert_entity_access(
+            user=self.request.user,
+            entity=entity,
+            access_mode=SubscriptionService.ACCESS_MODE_OPERATIONAL,
+            feature_code=SubscriptionLimitCodes.FEATURE_INVENTORY,
+        )
+        return entity
 
 
 class ProtectedDeleteMessageMixin:
@@ -510,18 +537,11 @@ class ProductStatusListAPIView(APIView):
 # Bootstrap API for Product Page (one call for dropdowns + optional product)
 # ----------------------------------------------------------------------
 
-class ProductPageBootstrapAPIView(APIView):
+class ProductPageBootstrapAPIView(EntityFromQueryMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
-        entity_id = request.query_params.get("entity")
-        if not entity_id:
-            raise ValidationError({"entity": "Query param ?entity=<id> is required."})
-
-        try:
-            entity_id_int = int(entity_id)
-        except ValueError:
-            raise ValidationError({"entity": "Invalid entity id"})
+        entity_id_int = self.get_entity().id
 
         product_id = request.query_params.get("product_id")
         product = None
@@ -603,7 +623,7 @@ class ProductPageBootstrapAPIView(APIView):
 # Transaction-ready product meta APIs
 # ----------------------------------------------------------------------
 
-class TransactionProductMetaAPIView(APIView):
+class TransactionProductMetaAPIView(EntityFromQueryMixin, APIView):
     """
     Rich product catalog for transactional line-entry screens.
     Returns product-specific UOM options, conversions, prices, and barcodes.
@@ -611,14 +631,7 @@ class TransactionProductMetaAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, format=None):
-        entity = request.query_params.get("entity")
-        if not entity:
-            raise ValidationError({"entity": "Query param ?entity=<id> is required."})
-
-        try:
-            entity_id = int(entity)
-        except (TypeError, ValueError):
-            raise ValidationError({"entity": "Invalid entity id."})
+        entity_id = self.get_entity().id
 
         search = (request.query_params.get("search") or "").strip()
         as_of_date_raw = (request.query_params.get("as_of_date") or "").strip()
@@ -645,21 +658,14 @@ class TransactionProductMetaAPIView(APIView):
         return Response(payload)
 
 
-class TransactionProductDetailAPIView(APIView):
+class TransactionProductDetailAPIView(EntityFromQueryMixin, APIView):
     """
     Rich single-product transaction meta for line-entry defaults.
     """
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, product_id: int, format=None):
-        entity = request.query_params.get("entity")
-        if not entity:
-            raise ValidationError({"entity": "Query param ?entity=<id> is required."})
-
-        try:
-            entity_id = int(entity)
-        except (TypeError, ValueError):
-            raise ValidationError({"entity": "Invalid entity id."})
+        entity_id = self.get_entity().id
 
         as_of_date_raw = (request.query_params.get("as_of_date") or "").strip()
         as_of_date = parse_date(as_of_date_raw) if as_of_date_raw else None
@@ -678,13 +684,14 @@ class TransactionProductDetailAPIView(APIView):
 # Lightweight product list for invoice page (optimized)
 # ----------------------------------------------------------------------
 
-class InvoiceProductListAPIView(APIView):
+class InvoiceProductListAPIView(InventoryScopedPathEntityMixin, APIView):
     """
     Lightweight transaction-ready product list for invoice pages.
     """
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, entity_id, format=None):
+        self.get_entity_from_path(entity_id)
         search = (request.query_params.get("search") or "").strip()
         as_of_date_raw = (request.query_params.get("as_of_date") or "").strip()
         as_of_date = parse_date(as_of_date_raw) if as_of_date_raw else None
@@ -705,13 +712,14 @@ class InvoiceProductListAPIView(APIView):
 # Flat list for product screen (optimized + fixed HSN bug)
 # ----------------------------------------------------------------------
 
-class ProductImportantListAPIView(APIView):
+class ProductImportantListAPIView(InventoryScopedPathEntityMixin, APIView):
     """
     GET /api/catalog/entity/<entity_id>/products/list/
     """
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, entity_id):
+        self.get_entity_from_path(entity_id)
         gst_latest_sq = ProductGstRate.objects.filter(
             product_id=OuterRef("pk")
         ).order_by("-valid_from")
@@ -821,9 +829,16 @@ class ProductBarcodeListCreateAPIView(generics.ListCreateAPIView):
         if not entity_param:
             raise ValidationError({"entity": "Query param ?entity=<id> is required."})
         try:
-            return Entity.objects.get(id=int(entity_param))
+            entity = Entity.objects.get(id=int(entity_param))
         except (ValueError, Entity.DoesNotExist):
             raise NotFound("Invalid entity")
+        SubscriptionService.assert_entity_access(
+            user=self.request.user,
+            entity=entity,
+            access_mode=SubscriptionService.ACCESS_MODE_OPERATIONAL,
+            feature_code=SubscriptionLimitCodes.FEATURE_INVENTORY,
+        )
+        return entity
 
     def get_product(self):
         product_id = self.kwargs["product_id"]
@@ -855,6 +870,13 @@ class ProductBarcodeRUDAPIView(generics.RetrieveUpdateDestroyAPIView):
             entity_id = int(entity_param)
         except (TypeError, ValueError):
             raise ValidationError({"entity": "Invalid entity id"})
+        entity = get_object_or_404(Entity, id=entity_id)
+        SubscriptionService.assert_entity_access(
+            user=self.request.user,
+            entity=entity,
+            access_mode=SubscriptionService.ACCESS_MODE_OPERATIONAL,
+            feature_code=SubscriptionLimitCodes.FEATURE_INVENTORY,
+        )
         return ProductBarcode.objects.select_related("product", "uom").filter(product__entity_id=entity_id)
 
 
@@ -912,9 +934,16 @@ class ProductScopedChildMixin:
         if not entity_param:
             raise ValidationError({"entity": "Query param ?entity=<id> is required."})
         try:
-            return Entity.objects.get(id=int(entity_param))
+            entity = Entity.objects.get(id=int(entity_param))
         except (ValueError, Entity.DoesNotExist):
             raise NotFound("Invalid entity")
+        SubscriptionService.assert_entity_access(
+            user=self.request.user,
+            entity=entity,
+            access_mode=SubscriptionService.ACCESS_MODE_OPERATIONAL,
+            feature_code=SubscriptionLimitCodes.FEATURE_INVENTORY,
+        )
+        return entity
 
     def _get_entity_id(self):
         entity_param = self.request.query_params.get("entity")

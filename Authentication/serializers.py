@@ -19,6 +19,7 @@ class RegisterSerializer(serializers.ModelSerializer):
         write_only=True,
         default=SubscriptionService.INTENT_STANDARD,
     )
+    plan_code = serializers.CharField(required=False, allow_blank=True, write_only=True)
     password = serializers.CharField(
         max_length=128,
         min_length=6,
@@ -35,6 +36,7 @@ class RegisterSerializer(serializers.ModelSerializer):
             "email",
             "password",
             "intent",
+            "plan_code",
         )
 
     def validate_email(self, value):
@@ -53,6 +55,7 @@ class RegisterSerializer(serializers.ModelSerializer):
     @transaction.atomic
     def create(self, validated_data):
         intent = validated_data.pop("intent", SubscriptionService.INTENT_STANDARD)
+        plan_code = (validated_data.pop("plan_code", "") or "").strip() or None
 
         validated_data["email"] = (validated_data.get("email") or "").strip().lower()
         validated_data["username"] = (validated_data.get("username") or "").strip()
@@ -64,9 +67,11 @@ class RegisterSerializer(serializers.ModelSerializer):
         SubscriptionService.handle_signup(
             user=user,
             intent=intent,
+            plan_code=plan_code,
         )
 
         user._signup_intent = intent
+        user._signup_plan_code = plan_code
         return user
 
 
@@ -268,4 +273,3 @@ class ChangePasswordSerializer(serializers.Serializer):
 
 # Compatibility alias retained for external imports that still use the old class name.
 Registerserializers = RegisterSerializer
-

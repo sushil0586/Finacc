@@ -495,6 +495,7 @@ class OnboardingUserPayloadSerializer(serializers.Serializer):
 
 class RegisterAndOnboardSerializer(serializers.Serializer):
     intent = serializers.ChoiceField(choices=('standard', 'trial'), required=False, allow_null=True)
+    plan_code = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     user = OnboardingUserPayloadSerializer()
     onboarding = EntityOnboardingCreateSerializer()
 
@@ -552,6 +553,8 @@ class RegisterAndOnboardResponseSerializer(serializers.Serializer):
     verification = serializers.DictField()
     subscription = serializers.DictField(required=False)
     intent = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    selected_plan_code = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    subscription_endpoints = serializers.DictField(required=False)
 
 
 class OnboardingSimpleOptionSerializer(serializers.Serializer):
@@ -563,6 +566,7 @@ class OnboardingSimpleOptionSerializer(serializers.Serializer):
 
 class OnboardingMetaResponseSerializer(serializers.Serializer):
     version = serializers.CharField(required=False)
+    workflow = serializers.DictField(required=False)
     defaults = serializers.DictField()
     required_fields = serializers.DictField(required=False)
     payload_contract = serializers.DictField(required=False)

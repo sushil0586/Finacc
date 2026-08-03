@@ -662,6 +662,37 @@ def build_session_payload(session: BankReconciliationSession) -> dict[str, objec
     }
 
 
+def build_session_list_payload(session: BankReconciliationSession) -> dict[str, object]:
+    return {
+        "id": session.id,
+        "session_code": session.session_code,
+        "entity_id": session.entity_id,
+        "entity_name": session.entity.entityname if session.entity_id else "",
+        "entityfin_id": session.entityfin_id,
+        "subentity_id": session.subentity_id,
+        "bank_account": serialize_bank_account(session.bank_account),
+        "status": session.status,
+        "statement_label": session.statement_label,
+        "source_name": session.source_name,
+        "source_format": session.source_format,
+        "date_from": _iso_date(session.date_from),
+        "date_to": _iso_date(session.date_to),
+        "statement_opening_balance": f"{session.statement_opening_balance:.2f}",
+        "statement_closing_balance": f"{session.statement_closing_balance:.2f}",
+        "book_opening_balance": f"{session.book_opening_balance:.2f}",
+        "book_closing_balance": f"{session.book_closing_balance:.2f}",
+        "matched_amount": f"{session.matched_amount:.2f}",
+        "unmatched_amount": f"{session.unmatched_amount:.2f}",
+        "difference_amount": f"{session.difference_amount:.2f}",
+        "imported_row_count": session.imported_row_count,
+        "matched_row_count": session.matched_row_count,
+        "reviewed_row_count": session.reviewed_row_count,
+        "exception_row_count": session.exception_row_count,
+        "notes": session.notes,
+        "metadata": session.metadata,
+    }
+
+
 def build_hub_payload(*, entity, entityfin_id=None, subentity_id=None) -> dict[str, object]:
     sessions = BankReconciliationSession.objects.filter(entity=entity)
     if entityfin_id:

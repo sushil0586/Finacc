@@ -23,8 +23,10 @@ from invoice_import.services import (
     commit_job,
     mark_job_reviewed,
 )
+from core.entitlements import enforce_operational_entity_access
 from purchase.views.rbac import require_purchase_request_permission
 from sales.views.sales_invoice_views import require_sales_request_permission
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
 class InvoiceImportBaseAPIView(APIView):
@@ -36,15 +38,28 @@ class InvoiceImportBaseAPIView(APIView):
         raw = request.query_params.get("entity") or request.data.get("entity")
         if not raw:
             raise ValidationError({"entity": "entity is required."})
-        entity = get_object_or_404(Entity, pk=int(raw))
-        self._require_permission(request, entity=entity, action=action)
-        return entity
+        return enforce_operational_entity_access(
+            request=request,
+            entity_id=int(raw),
+            feature_code=self._feature_code(),
+            access_mode=SubscriptionService.ACCESS_MODE_OPERATIONAL,
+            permission_check=lambda *, user, entity: self._require_permission_for_entity(
+                user=user,
+                entity=entity,
+                action=action,
+            ),
+        )
 
-    def _require_permission(self, request, *, entity: Entity, action: str) -> None:
+    def _feature_code(self) -> str:
         if self.module == ImportJob.Module.SALES:
-            require_sales_request_permission(user=request.user, entity_id=entity.id, doc_type=1, action=action)
+            return SubscriptionLimitCodes.FEATURE_SALES
+        return SubscriptionLimitCodes.FEATURE_PURCHASE
+
+    def _require_permission_for_entity(self, *, user, entity: Entity, action: str) -> None:
+        if self.module == ImportJob.Module.SALES:
+            require_sales_request_permission(user=user, entity_id=entity.id, doc_type=1, action=action)
         else:
-            require_purchase_request_permission(user=request.user, entity_id=entity.id, doc_type=1, action=action)
+            require_purchase_request_permission(user=user, entity_id=entity.id, doc_type=1, action=action)
 
     def _get_job(self, request, job_id: int, *, action: str = "view") -> ImportJob:
         entity = self._get_entity(request, action=action)

@@ -85,6 +85,66 @@ META_CACHE_SETTINGS_TTL_SECONDS = config('META_CACHE_SETTINGS_TTL_SECONDS', defa
 META_CACHE_VERSION = config('META_CACHE_VERSION', default='1')
 META_CACHE_OBSERVABILITY_ENABLED = config('META_CACHE_OBSERVABILITY_ENABLED', default=False, cast=_cast_boolish_env)
 META_CACHE_LOG_LEVEL = config('META_CACHE_LOG_LEVEL', default='INFO')
+PAYABLES_CLOSE_PACK_RECON_CACHE_ENABLED = config(
+    'PAYABLES_CLOSE_PACK_RECON_CACHE_ENABLED',
+    default=True,
+    cast=_cast_boolish_env,
+)
+PAYABLES_CLOSE_PACK_RECON_CACHE_TTL_SECONDS = config(
+    'PAYABLES_CLOSE_PACK_RECON_CACHE_TTL_SECONDS',
+    default=15,
+    cast=int,
+)
+PAYABLES_CLOSE_PACK_CACHE_ENABLED = config(
+    'PAYABLES_CLOSE_PACK_CACHE_ENABLED',
+    default=True,
+    cast=_cast_boolish_env,
+)
+PAYABLES_CLOSE_PACK_CACHE_TTL_SECONDS = config(
+    'PAYABLES_CLOSE_PACK_CACHE_TTL_SECONDS',
+    default=15,
+    cast=int,
+)
+PAYABLES_VENDOR_LEDGER_CACHE_ENABLED = config(
+    'PAYABLES_VENDOR_LEDGER_CACHE_ENABLED',
+    default=True,
+    cast=_cast_boolish_env,
+)
+PAYABLES_VENDOR_LEDGER_CACHE_TTL_SECONDS = config(
+    'PAYABLES_VENDOR_LEDGER_CACHE_TTL_SECONDS',
+    default=15,
+    cast=int,
+)
+PAYABLES_NOTE_REGISTER_CACHE_ENABLED = config(
+    'PAYABLES_NOTE_REGISTER_CACHE_ENABLED',
+    default=True,
+    cast=_cast_boolish_env,
+)
+PAYABLES_NOTE_REGISTER_CACHE_TTL_SECONDS = config(
+    'PAYABLES_NOTE_REGISTER_CACHE_TTL_SECONDS',
+    default=15,
+    cast=int,
+)
+PAYABLES_AP_AGING_CACHE_ENABLED = config(
+    'PAYABLES_AP_AGING_CACHE_ENABLED',
+    default=True,
+    cast=_cast_boolish_env,
+)
+PAYABLES_AP_AGING_CACHE_TTL_SECONDS = config(
+    'PAYABLES_AP_AGING_CACHE_TTL_SECONDS',
+    default=15,
+    cast=int,
+)
+PAYABLES_META_CACHE_ENABLED = config(
+    'PAYABLES_META_CACHE_ENABLED',
+    default=True,
+    cast=_cast_boolish_env,
+)
+PAYABLES_META_CACHE_TTL_SECONDS = config(
+    'PAYABLES_META_CACHE_TTL_SECONDS',
+    default=300,
+    cast=int,
+)
 
 # GST reconciliation rollout/performance controls.
 # Keep defaults conservative for pilot rollout.
@@ -93,6 +153,11 @@ GST_RECON_CACHE_TTL_SECONDS = config('GST_RECON_CACHE_TTL_SECONDS', default=60, 
 GST_RECON_PERF_LOGGING = config('GST_RECON_PERF_LOGGING', default=False, cast=_cast_boolish_env)
 GST_RECON_ASYNC_MATCH_ENABLED = config('GST_RECON_ASYNC_MATCH_ENABLED', default=False, cast=_cast_boolish_env)
 GST_RECON_ASYNC_MATCH_HANDLER = config('GST_RECON_ASYNC_MATCH_HANDLER', default='')
+DB_POOL_ENABLED = config('DB_POOL_ENABLED', default=False, cast=_cast_boolish_env)
+DB_POOL_MIN_SIZE = config('DB_POOL_MIN_SIZE', default=4, cast=int)
+DB_POOL_MAX_SIZE = config('DB_POOL_MAX_SIZE', default=24, cast=int)
+DB_POOL_TIMEOUT_SECONDS = config('DB_POOL_TIMEOUT_SECONDS', default=10, cast=int)
+DB_POOL_MAX_WAITING = config('DB_POOL_MAX_WAITING', default=64, cast=int)
 
 # ---------------------------------------------------------------------------
 # Test / conditional app flags
@@ -221,8 +286,24 @@ DATABASES = {
         'PASSWORD': config('DB_PASSWORD'),
         'HOST': config('DB_HOST', default='localhost'),
         'PORT': config('DB_PORT', default=''),
+        'CONN_MAX_AGE': config('DB_CONN_MAX_AGE', default=0, cast=int),
+        'CONN_HEALTH_CHECKS': config('DB_CONN_HEALTH_CHECKS', default=True, cast=_cast_boolish_env),
+        'OPTIONS': {
+            'connect_timeout': config('DB_CONNECT_TIMEOUT_SECONDS', default=5, cast=int),
+            'application_name': config('DB_APPLICATION_NAME', default='finacc-django'),
+        },
     }
 }
+
+if DB_POOL_ENABLED:
+    if DATABASES['default']['CONN_MAX_AGE'] != 0:
+        raise ValueError('DB pooling requires DB_CONN_MAX_AGE=0.')
+    DATABASES['default']['OPTIONS']['pool'] = {
+        'min_size': DB_POOL_MIN_SIZE,
+        'max_size': DB_POOL_MAX_SIZE,
+        'timeout': DB_POOL_TIMEOUT_SECONDS,
+        'max_waiting': DB_POOL_MAX_WAITING,
+    }
 
 DATABASES['default']['TEST'] = {
     'NAME': config('DB_TEST_NAME', default=f"test_{DATABASES['default']['NAME']}"),
@@ -416,12 +497,23 @@ LOGGING = {
             'filename': os.path.join(LOG_DIR, 'error.log'),
             'formatter': 'simple',
         },
+        'purchase_perf_file': {
+            'level': 'INFO',
+            'class': 'logging.FileHandler',
+            'filename': os.path.join(LOG_DIR, 'purchase_perf.log'),
+            'formatter': 'simple',
+        },
     },
     'loggers': {
         'django': {
             'handlers': ['file'],
             'level': 'ERROR',
             'propagate': True,
+        },
+        'purchase.perf': {
+            'handlers': ['purchase_perf_file'],
+            'level': 'INFO',
+            'propagate': False,
         },
     },
 }

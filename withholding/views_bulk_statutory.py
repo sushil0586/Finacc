@@ -13,6 +13,7 @@ from rest_framework.views import APIView
 
 from catalog.models import ProductBulkJob
 from entity.models import Entity
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 from withholding.bulk_statutory import (
     CONFIGS_SHEET,
     SECTIONS_SHEET,
@@ -40,7 +41,14 @@ def _entity_from_request(request):
     raw = request.query_params.get("entity") or request.data.get("entity")
     if not raw:
         raise ValidationError({"entity": "entity is required."})
-    return get_object_or_404(Entity, pk=int(raw))
+    entity = get_object_or_404(Entity, pk=int(raw))
+    SubscriptionService.assert_entity_access(
+        user=request.user,
+        entity=entity,
+        access_mode=SubscriptionService.ACCESS_MODE_OPERATIONAL,
+        feature_code=SubscriptionLimitCodes.FEATURE_FINANCIAL,
+    )
+    return entity
 
 
 def _entityfin_from_request(request):
@@ -73,6 +81,7 @@ class _BaseBulkMixin:
 
 class TcsSectionsBulkTemplateAPIView(_BaseBulkMixin, APIView):
     def get(self, request):
+        _entity_from_request(request)
         fmt = _fmt(request)
         content = render_payload(sections_template_payload(), fmt)
         if fmt == "xlsx":
@@ -304,4 +313,3 @@ class TcsBulkJobErrorsExportAPIView(_BaseBulkMixin, APIView):
         resp = HttpResponse(content, content_type="application/zip")
         resp["Content-Disposition"] = f'attachment; filename="tcs_bulk_errors_{job.id}.zip"'
         return resp
-

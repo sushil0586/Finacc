@@ -37,6 +37,7 @@ from .services import (
     auto_match_session,
     build_hub_payload,
     build_reconciliation_summary,
+    build_session_list_payload,
     build_session_payload,
     candidate_journal_lines,
     create_session,
@@ -151,7 +152,7 @@ class BankReconciliationSessionListCreateAPIView(ScopedEntitlementMixin, BankRec
             sessions = sessions.filter(subentity_id=scope["subentity"])
 
         total_count = sessions.count()
-        payload = [build_session_payload(session) for session in sessions[:25]]
+        payload = [build_session_list_payload(session) for session in sessions[:25]]
         return Response({"results": payload, "count": total_count})
 
     def post(self, request):

@@ -86,6 +86,10 @@ class EntitySeedService:
                 actor=actor,
                 template_code=FinancialSeedService.DEFAULT_TEMPLATE,
             )
+            financial_summary["static_account_default_clone"] = StaticAccountService.clone_default_entity_mappings(
+                target_entity_id=entity.id,
+                actor=actor,
+            )
             financial_summary["financial_settings_id"] = settings_obj.id
             financial_summary["financial_settings_created"] = settings_created
             summary["financial"] = financial_summary

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, timedelta
+import logging
 import re
 from gst_tds.services.gst_tds_service import GstTdsService, normalize_contract_ref
 from purchase.models.purchase_addons import PurchaseChargeLine, PurchaseChargeType
 
 
 from decimal import Decimal, ROUND_HALF_UP
+from time import perf_counter
 from typing import Any, Dict, List, Optional, Tuple
 
 from django.db import transaction
@@ -20,6 +22,8 @@ from catalog.taxability import resolve_product_default_taxability
 from catalog.uom_helpers import resolve_product_uom
 from entity.models import EntityFinancialYear
 from financial.gstin import validate_financial_gstin
+from financial.models import account as FinancialAccount
+from geography.models import State
 from financial.profile_access import account_compliance_profile, account_gstno, account_pan, account_partytype
 from posting.common.location_resolver import resolve_posting_location_id
 from posting.models import InventoryMove
@@ -72,6 +76,7 @@ RATE_HALF = Decimal("1.0000")    # 1% + 1%
 TWOPLACES = Decimal("0.01")
 TDS_TOLERANCE = Decimal("0.02")  # 2 paisa tolerance
 PAN_RE = re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]$")
+perf_logger = logging.getLogger("purchase.perf")
 
 
 def q2r(x: Decimal) -> Decimal:
@@ -134,6 +139,58 @@ class PurchaseInvoiceService:
                 if not (line.get("itc_block_reason") or "").strip():
                     line["itc_block_reason"] = "Not ITC eligible for non-taxable line."
 
+    @staticmethod
+    def _prime_runtime_relations(instance: PurchaseInvoiceHeader) -> PurchaseInvoiceHeader:
+        if not isinstance(instance, PurchaseInvoiceHeader):
+            return instance
+
+        cached_fields = getattr(getattr(instance, "_state", None), "fields_cache", {}) or {}
+        if (
+            "vendor" in cached_fields
+            and "vendor_state" in cached_fields
+            and "supplier_state" in cached_fields
+            and "place_of_supply_state" in cached_fields
+        ):
+            return instance
+
+        vendor_id = getattr(instance, "vendor_id", None)
+        try:
+            vendor_id = int(vendor_id) if vendor_id not in (None, "") else None
+        except (TypeError, ValueError):
+            vendor_id = None
+        if vendor_id:
+            vendor = (
+                FinancialAccount.objects
+                .select_related("compliance_profile", "commercial_profile", "ledger")
+                .filter(id=vendor_id)
+                .first()
+            )
+            if vendor is not None:
+                instance._state.fields_cache["vendor"] = vendor
+
+        state_ids = set()
+        for state_id in (
+            getattr(instance, "vendor_state_id", None),
+            getattr(instance, "supplier_state_id", None),
+            getattr(instance, "place_of_supply_state_id", None),
+        ):
+            try:
+                state_id = int(state_id) if state_id not in (None, "") else None
+            except (TypeError, ValueError):
+                state_id = None
+            if not state_id:
+                continue
+            state_ids.add(state_id)
+        if state_ids:
+            states = State.objects.in_bulk(state_ids)
+            if getattr(instance, "vendor_state_id", None) in states:
+                instance._state.fields_cache["vendor_state"] = states[instance.vendor_state_id]
+            if getattr(instance, "supplier_state_id", None) in states:
+                instance._state.fields_cache["supplier_state"] = states[instance.supplier_state_id]
+            if getattr(instance, "place_of_supply_state_id", None) in states:
+                instance._state.fields_cache["place_of_supply_state"] = states[instance.place_of_supply_state_id]
+        return instance
+
     # ---------------------------
     # Period lock
     # ---------------------------
@@ -190,18 +247,20 @@ class PurchaseInvoiceService:
         subentity_id: Optional[int],
         entityfinid_id: Optional[int],
         original_bill_date: date,
+        purchase_locks: Optional[List[PurchaseLockPeriod]] = None,
     ) -> AmendmentWindow:
         reasons: list[str] = []
         lock_dates: list[date] = []
 
-        purchase_locks = list(
-            PurchaseLockPeriod.objects.filter(
-                entity_id=entity_id,
-                lock_date__gte=original_bill_date,
-            ).filter(
-                Q(subentity_id=subentity_id) | Q(subentity__isnull=True)
-            ).order_by("-lock_date")
-        )
+        if purchase_locks is None:
+            purchase_locks = list(
+                PurchaseLockPeriod.objects.filter(
+                    entity_id=entity_id,
+                    lock_date__gte=original_bill_date,
+                ).filter(
+                    Q(subentity_id=subentity_id) | Q(subentity__isnull=True)
+                ).order_by("-lock_date")
+            )
         if purchase_locks:
             effective_lock = purchase_locks[0]
             reasons.append(
@@ -317,14 +376,26 @@ class PurchaseInvoiceService:
 
     @staticmethod
     def assert_not_locked(entity_id, subentity_id, bill_date, entityfinid_id=None):
-        locked, reason = PurchaseSettingsService.is_locked(entity_id, subentity_id, bill_date)
-        if locked:
-            raise ValueError(f"Purchase period locked. {reason}")
+        purchase_locks = list(
+            PurchaseLockPeriod.objects.filter(
+                entity_id=entity_id,
+                lock_date__gte=bill_date,
+            ).filter(
+                Q(subentity_id=subentity_id) | Q(subentity__isnull=True)
+            ).order_by("-lock_date")
+        )
+        if purchase_locks:
+            effective_lock = purchase_locks[0]
+            raise ValueError(
+                "Purchase period locked. "
+                f"{effective_lock.reason or f'Locked up to {effective_lock.lock_date}'}"
+            )
         window = PurchaseInvoiceService._build_amendment_window(
             entity_id=entity_id,
             subentity_id=subentity_id,
             entityfinid_id=entityfinid_id,
             original_bill_date=bill_date,
+            purchase_locks=purchase_locks,
         )
         if window.amendment_required:
             joined = " ".join(window.reasons)
@@ -450,7 +521,7 @@ class PurchaseInvoiceService:
         header.match_notes = notes
         
     @staticmethod
-    def _apply_gst_tds(*, header: PurchaseInvoiceHeader) -> None:
+    def _apply_gst_tds(*, header: PurchaseInvoiceHeader, policy=None) -> None:
         """
         GST-TDS u/s 51.
         - If gst_tds_enabled = False -> clear all.
@@ -459,10 +530,11 @@ class PurchaseInvoiceService:
             - If gst_tds_is_manual = True -> accept user values (validated)
             - Else -> compute from totals + tax_regime/is_igst (existing logic)
         """
-        policy = PurchaseSettingsService.get_policy(
-            getattr(header, "entity_id", 0),
-            getattr(header, "subentity_id", None),
-        )
+        if policy is None:
+            policy = PurchaseSettingsService.get_policy(
+                getattr(header, "entity_id", 0),
+                getattr(header, "subentity_id", None),
+            )
 
         if not bool(getattr(policy, "post_gst_tds_on_invoice", False)):
             header.gst_tds_enabled = False
@@ -623,14 +695,15 @@ class PurchaseInvoiceService:
         )
 
     @staticmethod
-    def _apply_vendor_withholding_variance_policy(*, header: PurchaseInvoiceHeader) -> None:
+    def _apply_vendor_withholding_variance_policy(*, header: PurchaseInvoiceHeader, policy=None) -> None:
         """
         Compare vendor-declared withholding values against system-computed values.
         Policy keys:
           - vendor_tds_variance_rule: off|warn|hard
           - vendor_gst_tds_variance_rule: off|warn|hard
         """
-        policy = PurchaseSettingsService.get_policy(header.entity_id, header.subentity_id)
+        if policy is None:
+            policy = PurchaseSettingsService.get_policy(header.entity_id, header.subentity_id)
         warnings: list[str] = []
 
         def _check(rule_key: str, msg: str) -> None:
@@ -728,7 +801,12 @@ class PurchaseInvoiceService:
         if bill_date and attrs.get("posting_date") and attrs["posting_date"] < bill_date:
             raise ValueError("Posting date cannot be before bill date.")
     @staticmethod
-    def validate_vendor_account(attrs: Dict[str, Any], instance: Optional[PurchaseInvoiceHeader] = None) -> None:
+    def validate_vendor_account(
+        attrs: Dict[str, Any],
+        instance: Optional[PurchaseInvoiceHeader] = None,
+        *,
+        policy=None,
+    ) -> None:
         vendor = attrs.get("vendor") or (instance.vendor if instance else None)
         if not vendor:
             return
@@ -737,7 +815,7 @@ class PurchaseInvoiceService:
         subentity_obj = attrs.get("subentity") or (instance.subentity if instance else None)
         entity_id = getattr(entity_obj, "id", entity_obj)
         subentity_id = getattr(subentity_obj, "id", subentity_obj)
-        policy = PurchaseSettingsService.get_policy(entity_id, subentity_id) if entity_id else None
+        policy = policy or (PurchaseSettingsService.get_policy(entity_id, subentity_id) if entity_id else None)
         controls = getattr(policy, "controls", {}) if policy else {}
 
         def _level(key: str, default: str = "hard") -> str:
@@ -756,7 +834,8 @@ class PurchaseInvoiceService:
                 if str(attrs.get("match_status") or (getattr(instance, "match_status", "na") if instance else "na")).lower() == "na":
                     attrs["match_status"] = getattr(PurchaseInvoiceHeader.MatchStatus, "WARN", "warn")
 
-        partytype = (account_partytype(vendor) or "").strip()
+        vendor_profile = PurchaseInvoiceService._vendor_profile_snapshot_from_attrs(attrs, instance=instance)
+        partytype = vendor_profile["partytype"]
         allowed_partytypes = {"", "Vendor", "Both", "Bank"}
         if partytype not in allowed_partytypes:
             raise ValueError("Selected vendor account is not marked as Vendor/Both/Bank.")
@@ -767,15 +846,15 @@ class PurchaseInvoiceService:
         if not getattr(vendor, "ledger_id", None):
             raise ValueError("Selected vendor account does not have a linked ledger.")
 
-        compliance = account_compliance_profile(vendor)
-        gstregtype = str(getattr(compliance, "gstregtype", "") or "").strip()
+        compliance = vendor_profile["compliance"]
+        gstregtype = vendor_profile["gstregtype"]
         registered_types = {"Regular", "Composition", "SEZ", "UIN"}
 
         gstin_level = _level("vendor_gstin_format_rule", "hard")
         raw_gstin = (
             attrs.get("vendor_gstin")
             or (instance.vendor_gstin if instance else None)
-            or account_gstno(vendor)
+            or vendor_profile["gstno"]
             or ""
         )
         gstin = str(raw_gstin or "").strip().upper()
@@ -794,7 +873,7 @@ class PurchaseInvoiceService:
         if withholding_enabled:
             pan_required_level = _level("withholding_pan_required_rule", "hard")
             pan_format_level = _level("withholding_pan_format_rule", "hard")
-            pan = str(account_pan(vendor) or "").strip().upper()
+            pan = vendor_profile["pan"]
             if not pan:
                 _handle(
                     pan_required_level,
@@ -815,16 +894,56 @@ class PurchaseInvoiceService:
             attrs["vendor_ledger_id"] = getattr(vendor, "ledger_id", None)
 
     @staticmethod
+    def _vendor_profile_snapshot(vendor: Any) -> Dict[str, Any]:
+        compliance = account_compliance_profile(vendor)
+        return {
+            "compliance": compliance,
+            "commercial": getattr(vendor, "commercial_profile", None),
+            "gstno": str(account_gstno(vendor) or "").strip(),
+            "pan": str(account_pan(vendor) or "").strip().upper(),
+            "partytype": str(account_partytype(vendor) or "").strip(),
+            "gstregtype": str(getattr(compliance, "gstregtype", "") or "").strip(),
+        }
+
+    @staticmethod
+    def _vendor_profile_snapshot_from_attrs(
+        attrs: Dict[str, Any],
+        instance: Optional[PurchaseInvoiceHeader] = None,
+    ) -> Dict[str, Any]:
+        vendor = attrs.get("vendor") or (instance.vendor if instance else None)
+        if not vendor:
+            return {
+                "compliance": None,
+                "commercial": None,
+                "gstno": "",
+                "pan": "",
+                "partytype": "",
+                "gstregtype": "",
+            }
+
+        vendor_id = getattr(vendor, "id", None)
+        cached_vendor_id = attrs.get("_vendor_profile_snapshot_vendor_id")
+        cached_snapshot = attrs.get("_vendor_profile_snapshot_cache")
+        if cached_snapshot is not None and cached_vendor_id == vendor_id:
+            return cached_snapshot
+
+        snapshot = PurchaseInvoiceService._vendor_profile_snapshot(vendor)
+        attrs["_vendor_profile_snapshot_vendor_id"] = vendor_id
+        attrs["_vendor_profile_snapshot_cache"] = snapshot
+        return snapshot
+
+    @staticmethod
     def apply_vendor_snapshot(attrs: Dict[str, Any], instance: Optional[PurchaseInvoiceHeader] = None) -> None:
         vendor = attrs.get("vendor") or (instance.vendor if instance else None)
         if not vendor:
             return
+        vendor_profile = PurchaseInvoiceService._vendor_profile_snapshot_from_attrs(attrs, instance=instance)
 
         if not (attrs.get("vendor_name") or (instance.vendor_name if instance else None)):
             attrs["vendor_name"] = (getattr(vendor, "effective_accounting_name", None) or getattr(vendor, "accountname", None) or str(vendor)).strip()[:200]
 
         if not (attrs.get("vendor_gstin") or (instance.vendor_gstin if instance else None)):
-            gstno = account_gstno(vendor)
+            gstno = vendor_profile["gstno"]
             if gstno:
                 attrs["vendor_gstin"] = str(gstno).strip()[:15]
 
@@ -843,11 +962,7 @@ class PurchaseInvoiceService:
         attrs: Dict[str, Any],
         instance: Optional[PurchaseInvoiceHeader] = None,
     ) -> str:
-        vendor = attrs.get("vendor") or (instance.vendor if instance else None)
-        if not vendor:
-            return ""
-        compliance = account_compliance_profile(vendor)
-        return str(getattr(compliance, "gstregtype", "") or "").strip()
+        return PurchaseInvoiceService._vendor_profile_snapshot_from_attrs(attrs, instance=instance)["gstregtype"]
 
     @staticmethod
     def supply_category_value(
@@ -1010,7 +1125,12 @@ class PurchaseInvoiceService:
     # Tax regime derivation
     # ---------------------------
     @staticmethod
-    def derive_tax_regime(attrs: Dict[str, Any], instance: Optional[PurchaseInvoiceHeader] = None) -> DerivedRegime:
+    def derive_tax_regime(
+        attrs: Dict[str, Any],
+        instance: Optional[PurchaseInvoiceHeader] = None,
+        *,
+        policy=None,
+    ) -> DerivedRegime:
         entity_id = attrs.get("entity") or (instance.entity_id if instance else None)
         subentity_id = attrs.get("subentity") or (instance.subentity_id if instance else None)
         if hasattr(entity_id, "id"):
@@ -1021,7 +1141,8 @@ class PurchaseInvoiceService:
         auto_derive = True
         if entity_id:
             try:
-                auto_derive = PurchaseSettingsService.get_policy(entity_id, subentity_id).auto_derive_tax_regime
+                policy = policy or PurchaseSettingsService.get_policy(entity_id, subentity_id)
+                auto_derive = policy.auto_derive_tax_regime
             except Exception:
                 auto_derive = True
 
@@ -1047,8 +1168,8 @@ class PurchaseInvoiceService:
     # Validations (structure-level)
     # ---------------------------
     @staticmethod
-    def validate_header(attrs: Dict[str, Any], instance: Optional[PurchaseInvoiceHeader] = None) -> None:
-        PurchaseInvoiceService.validate_vendor_account(attrs, instance=instance)
+    def validate_header(attrs: Dict[str, Any], instance: Optional[PurchaseInvoiceHeader] = None, *, policy=None) -> None:
+        PurchaseInvoiceService.validate_vendor_account(attrs, instance=instance, policy=policy)
         PurchaseInvoiceService.apply_vendor_ledger(attrs, instance=instance)
 
         supplier_invoice_number = str(
@@ -1086,6 +1207,23 @@ class PurchaseInvoiceService:
         if doc_type == DocType.TAX_INVOICE and attrs.get("ref_document"):
             raise ValueError("Tax Invoice should not have ref_document.")
         if doc_type in (DocType.CREDIT_NOTE, DocType.DEBIT_NOTE) and ref_document:
+            entity = attrs.get("entity") or (instance.entity if instance else None)
+            vendor = attrs.get("vendor") or (instance.vendor if instance else None)
+            subentity = attrs.get("subentity") or (instance.subentity if instance else None)
+            entity_id = getattr(entity, "id", entity)
+            vendor_id = getattr(vendor, "id", vendor)
+            subentity_id = getattr(subentity, "id", subentity)
+            entityfinid_id = attrs.get("entityfinid_id", (instance.entityfinid_id if instance else None))
+
+            if int(getattr(ref_document, "entity_id", 0) or 0) != int(entity_id):
+                raise ValueError("ref_document must belong to same entity.")
+            if int(getattr(ref_document, "entityfinid_id", 0) or 0) != int(entityfinid_id):
+                raise ValueError("ref_document must belong to same financial year.")
+            if (getattr(ref_document, "subentity_id", None) or None) != (subentity_id or None):
+                raise ValueError("ref_document must belong to same subentity scope.")
+            if vendor_id and int(getattr(ref_document, "vendor_id", 0) or 0) != int(vendor_id):
+                raise ValueError("ref_document vendor must match current invoice vendor.")
+
             correction_bill_date = attrs.get("bill_date") or (instance.bill_date if instance else None)
             PurchaseInvoiceService.assert_note_correction_date_open(
                 ref_document=ref_document,
@@ -1136,6 +1274,17 @@ class PurchaseInvoiceService:
 
         entity_id = getattr(entity, "id", entity)
         vendor_id = getattr(vendor, "id", vendor)
+        if instance is not None and getattr(instance, "id", None):
+            same_entity = getattr(instance, "entity_id", None) == entity_id
+            same_vendor = getattr(instance, "vendor_id", None) == vendor_id
+            same_invoice_number = str(getattr(instance, "supplier_invoice_number", "") or "").strip().lower() == (
+                supplier_invoice_number.lower()
+            )
+            same_invoice_date = getattr(instance, "supplier_invoice_date", None) == supplier_invoice_date
+            same_grand_total = q2(getattr(instance, "grand_total", ZERO2)) == q2(grand_total)
+            if same_entity and same_vendor and same_invoice_number and same_invoice_date and same_grand_total:
+                return
+
         qs = PurchaseInvoiceHeader.objects.filter(
             entity_id=entity_id,
             vendor_id=vendor_id,
@@ -1158,6 +1307,7 @@ class PurchaseInvoiceService:
         instance: Optional[PurchaseInvoiceHeader] = None,
         *,
         require_at_least_one_line: bool = True,
+        policy=None,
     ) -> None:
         if not lines and require_at_least_one_line:
             raise ValueError("At least one line is required.")
@@ -1200,7 +1350,7 @@ class PurchaseInvoiceService:
         if hasattr(subentity_id, "id"):
             subentity_id = subentity_id.id
         if entity_id:
-            policy = PurchaseSettingsService.get_policy(entity_id, subentity_id)
+            policy = policy or PurchaseSettingsService.get_policy(entity_id, subentity_id)
             if not policy.allow_mixed_taxability:
                 for i, ln in enumerate(lines or [], start=1):
                     line_taxability = int(ln.get("taxability", header_taxability))
@@ -1209,6 +1359,27 @@ class PurchaseInvoiceService:
                             f"Line {i}: mixed taxability is disabled by purchase settings. "
                             "Keep all purchase lines aligned with the header taxability."
                         )
+
+        product_ids = {
+            int(product_id)
+            for product_id in (
+                getattr(ln.get("product"), "pk", ln.get("product"))
+                for ln in (lines or [])
+            )
+            if product_id not in (None, "", 0)
+        }
+        product_map: Dict[int, Product] = {
+            product.id: product
+            for product in Product.objects.filter(pk__in=product_ids).only(
+                "id",
+                "is_batch_managed",
+                "is_expiry_tracked",
+                "is_service",
+                "purchase_behavior",
+                "purchase_account_id",
+                "default_asset_category_id",
+            )
+        }
 
         doc_type = int(attrs.get("doc_type", (instance.doc_type if instance else DocType.TAX_INVOICE)))
         ref_document = attrs.get("ref_document") or (instance.ref_document if instance else None)
@@ -1287,9 +1458,7 @@ class PurchaseInvoiceService:
                 raise ValueError(f"Line {i}: free_qty cannot be negative")
 
             if product_id:
-                product = Product.objects.filter(pk=int(product_id)).only(
-                    "id", "is_batch_managed", "is_expiry_tracked", "is_service", "purchase_behavior", "purchase_account_id", "default_asset_category_id"
-                ).first()
+                product = product_map.get(int(product_id))
                 if product:
                     if bool(getattr(product, "is_service", False)):
                         ln["is_service"] = True
@@ -1922,12 +2091,47 @@ class PurchaseInvoiceService:
         if objs:
             PurchaseTaxSummary.objects.bulk_create(objs)
 
+    @staticmethod
+    def _comparison_value(value: Any) -> Any:
+        if hasattr(value, "pk"):
+            return value.pk
+        return value
+
+    @staticmethod
+    def _apply_field_if_changed(obj: Any, field_name: str, value: Any) -> bool:
+        current_value = getattr(obj, field_name)
+        if PurchaseInvoiceService._comparison_value(current_value) == PurchaseInvoiceService._comparison_value(value):
+            return False
+        setattr(obj, field_name, value)
+        return True
+
+    @staticmethod
+    def _validate_line_runtime_invariants(obj: PurchaseInvoiceLine) -> None:
+        """
+        Fast-path validation for authoritative purchase line upserts.
+
+        The purchase mutation flow already performs structural validation and
+        server-side monetary recomputation before this point. Retain the small
+        set of product-specific invariants enforced by model.clean() without
+        paying the cost of full model validation for every changed draft line.
+        """
+        product = getattr(obj, "product", None)
+        if product is None:
+            return
+        if getattr(product, "is_batch_managed", False) and not (obj.batch_number or "").strip():
+            raise DjangoValidationError({"batch_number": "Batch number is required for batch-managed products."})
+        if getattr(product, "is_expiry_tracked", False) and obj.expiry_date is None:
+            raise DjangoValidationError({"expiry_date": "Expiry date is required for expiry-tracked products."})
+        if obj.manufacture_date and obj.expiry_date and obj.manufacture_date > obj.expiry_date:
+            raise DjangoValidationError({"expiry_date": "Expiry date must be on or after manufacture date."})
+
     # ---------------------------
     # Nested line upsert (unchanged but used with AUTH lines)
     # ---------------------------
     @staticmethod
     def upsert_lines(header: PurchaseInvoiceHeader, lines_data: List[Dict[str, Any]]) -> None:
-        existing = {obj.id: obj for obj in header.lines.all()}
+        existing_rows = list(header.lines.all())
+        existing = {obj.id: obj for obj in existing_rows}
         retained_ids = {
             int(line_id)
             for line_id in (ln.get("id") for ln in lines_data)
@@ -1936,25 +2140,67 @@ class PurchaseInvoiceService:
 
         # Remove dropped rows before inserts so a replacement line can safely reuse
         # the same line_no within the same header during edit flows.
-        for line_id, obj in list(existing.items()):
-            if line_id not in retained_ids:
-                obj.delete()
+        deleted_ids = [line_id for line_id in existing.keys() if line_id not in retained_ids]
+        if deleted_ids:
+            header.lines.filter(id__in=deleted_ids).delete()
+            for line_id in deleted_ids:
                 existing.pop(line_id, None)
 
-        max_line_no = header.lines.aggregate(m=Max("line_no")).get("m") or 0
+        max_line_no = max((int(getattr(obj, "line_no", 0) or 0) for obj in existing.values()), default=0)
         next_line_no = int(max_line_no) + 1
+        new_objects: List[PurchaseInvoiceLine] = []
+        updated_objects: List[PurchaseInvoiceLine] = []
+        update_fields = [
+            "line_no",
+            "product",
+            "purchase_account",
+            "product_desc",
+            "is_service",
+            "purchase_behavior",
+            "hsn_sac",
+            "batch_number",
+            "manufacture_date",
+            "expiry_date",
+            "uom",
+            "qty",
+            "free_qty",
+            "rate",
+            "is_rate_inclusive_of_tax",
+            "discount_type",
+            "discount_percent",
+            "discount_amount",
+            "taxability",
+            "taxable_value",
+            "gst_rate",
+            "cgst_percent",
+            "sgst_percent",
+            "igst_percent",
+            "cgst_amount",
+            "sgst_amount",
+            "igst_amount",
+            "cess_percent",
+            "cess_type",
+            "cess_specific_amount",
+            "cess_amount",
+            "line_total",
+            "is_itc_eligible",
+            "itc_block_reason",
+            "asset_record",
+        ]
 
         for ln in lines_data:
             line_id = ln.get("id")
             if line_id and line_id in existing:
                 obj = existing[line_id]
+                changed = False
                 for k, v in ln.items():
                     if k not in {"id", "is_gst_manual"}:
-                        setattr(obj, k, v)
+                        changed = PurchaseInvoiceService._apply_field_if_changed(obj, k, v) or changed
                 if not ln.get("line_no"):
                     obj.line_no = obj.line_no
-                obj.full_clean()
-                obj.save()
+                if changed:
+                    PurchaseInvoiceService._validate_line_runtime_invariants(obj)
+                    updated_objects.append(obj)
             else:
                 if not ln.get("line_no"):
                     ln["line_no"] = next_line_no
@@ -1963,8 +2209,13 @@ class PurchaseInvoiceService:
                     header=header,
                     **{k: v for k, v in ln.items() if k not in {"id", "is_gst_manual"}}
                 )
-                obj.full_clean()
-                obj.save()
+                PurchaseInvoiceService._validate_line_runtime_invariants(obj)
+                new_objects.append(obj)
+
+        if new_objects:
+            PurchaseInvoiceLine.objects.bulk_create(new_objects)
+        if updated_objects:
+            PurchaseInvoiceLine.objects.bulk_update(updated_objects, [*update_fields, "updated_at"])
 
     # ---------------------------
     # High-level orchestrators
@@ -1974,7 +2225,7 @@ class PurchaseInvoiceService:
 
 
     @classmethod
-    def _apply_tds(cls, *, header: PurchaseInvoiceHeader) -> None:
+    def _apply_tds(cls, *, header: PurchaseInvoiceHeader, policy=None) -> None:
         """
         Income-tax Vendor TDS (194C/194J/194Q etc).
         - If withholding_enabled = False -> clear all.
@@ -1983,10 +2234,11 @@ class PurchaseInvoiceService:
             - Else -> compute from PurchaseWithholdingService.
         Note: TDS does NOT reduce GST and should NOT reduce vendor payable at invoice stage.
         """
-        policy = PurchaseSettingsService.get_policy(
-            getattr(header, "entity_id", 0),
-            getattr(header, "subentity_id", None),
-        )
+        if policy is None:
+            policy = PurchaseSettingsService.get_policy(
+                getattr(header, "entity_id", 0),
+                getattr(header, "subentity_id", None),
+            )
         if not bool(getattr(policy, "post_gst_tds_on_invoice", False)):
             header.withholding_enabled = False
             header.tds_is_manual = False
@@ -2237,8 +2489,8 @@ class PurchaseInvoiceService:
 
 
     @staticmethod
-    def validate_charges(*, header: PurchaseInvoiceHeader, charges: List[Dict[str, Any]]) -> None:
-        policy = PurchaseSettingsService.get_policy(header.entity_id, header.subentity_id)
+    def validate_charges(*, header: PurchaseInvoiceHeader, charges: List[Dict[str, Any]], policy=None) -> None:
+        policy = policy or PurchaseSettingsService.get_policy(header.entity_id, header.subentity_id)
         header_taxability = int(getattr(header, "default_taxability", PurchaseInvoiceHeader.Taxability.TAXABLE))
         header_charge_taxability = {
             int(PurchaseInvoiceHeader.Taxability.TAXABLE): PurchaseChargeLine.Taxability.TAXABLE,
@@ -2296,7 +2548,7 @@ class PurchaseInvoiceService:
         *,
         header: PurchaseInvoiceHeader,
         charges_client: List[Dict[str, Any]],
-    ) -> None:
+    ) -> List[Dict[str, Any]]:
         """
         Nested upsert:
         - id missing or 0 => insert
@@ -2312,6 +2564,27 @@ class PurchaseInvoiceService:
             if c.line_no is not None and c.line_no not in existing_by_line:
                 existing_by_line[int(c.line_no)] = c
         seen_ids: set[int] = set()
+        updated_objects: List[PurchaseChargeLine] = []
+        new_objects: List[PurchaseChargeLine] = []
+        authoritative_rows: List[Dict[str, Any]] = []
+        update_fields = [
+            "line_no",
+            "charge_type",
+            "description",
+            "taxability",
+            "is_service",
+            "hsn_sac_code",
+            "is_rate_inclusive_of_tax",
+            "taxable_value",
+            "gst_rate",
+            "cgst_amount",
+            "sgst_amount",
+            "igst_amount",
+            "total_value",
+            "itc_eligible",
+            "itc_block_reason",
+            "updated_at",
+        ]
 
         # recompute & upsert
         for idx, row in enumerate(charges_client, start=1):
@@ -2335,10 +2608,12 @@ class PurchaseInvoiceService:
             row["sgst_amount"] = comp.sgst_amount
             row["igst_amount"] = comp.igst_amount
             row["total_value"] = comp.total_value
+            authoritative_rows.append(dict(row))
 
             if cid and cid in existing_by_id:
                 obj = existing_by_id[cid]
                 seen_ids.add(cid)
+                changed = False
 
                 # update fields
                 for f in [
@@ -2359,20 +2634,15 @@ class PurchaseInvoiceService:
                     "itc_block_reason",
                 ]:
                     if f in row:
-                        setattr(obj, f, row[f])
-                obj.save(update_fields=[
-                    "line_no", "charge_type", "description", "taxability",
-                    "is_service", "hsn_sac_code", "is_rate_inclusive_of_tax",
-                    "taxable_value", "gst_rate",
-                    "cgst_amount", "sgst_amount", "igst_amount",
-                    "total_value", "itc_eligible", "itc_block_reason",
-                    "updated_at",
-                ])
+                        changed = PurchaseInvoiceService._apply_field_if_changed(obj, f, row[f]) or changed
+                if changed:
+                    updated_objects.append(obj)
             else:
                 # insert or upsert by line_no to avoid unique constraint clashes
                 existing_line_obj = existing_by_line.get(line_no_for_insert)
                 if existing_line_obj:
                     seen_ids.add(existing_line_obj.id)
+                    changed = False
                     for f in [
                         "line_no",
                         "charge_type",
@@ -2391,41 +2661,43 @@ class PurchaseInvoiceService:
                         "itc_block_reason",
                     ]:
                         if f in row:
-                            setattr(existing_line_obj, f, row[f])
-                    existing_line_obj.save(update_fields=[
-                        "line_no", "charge_type", "description", "taxability",
-                        "is_service", "hsn_sac_code", "is_rate_inclusive_of_tax",
-                        "taxable_value", "gst_rate",
-                        "cgst_amount", "sgst_amount", "igst_amount",
-                        "total_value", "itc_eligible", "itc_block_reason",
-                        "updated_at",
-                    ])
+                            changed = PurchaseInvoiceService._apply_field_if_changed(existing_line_obj, f, row[f]) or changed
+                    if changed:
+                        updated_objects.append(existing_line_obj)
                     continue
 
                 # insert fresh
-                PurchaseChargeLine.objects.create(
-                    header=header,
-                    line_no=line_no_for_insert,
-                    charge_type=row.get("charge_type") or PurchaseChargeLine.ChargeType.OTHER,
-                    description=row.get("description") or "",
-                    taxability=row.get("taxability") or PurchaseChargeLine.Taxability.TAXABLE,
-                    is_service=bool(row.get("is_service", True)),
-                    hsn_sac_code=(row.get("hsn_sac_code") or "").strip(),
-                    is_rate_inclusive_of_tax=bool(row.get("is_rate_inclusive_of_tax", False)),
-                    taxable_value=row["taxable_value"],
-                    gst_rate=q2(row.get("gst_rate") or ZERO2),
-                    cgst_amount=row["cgst_amount"],
-                    sgst_amount=row["sgst_amount"],
-                    igst_amount=row["igst_amount"],
-                    total_value=row["total_value"],
-                    itc_eligible=bool(row.get("itc_eligible", True)),
-                    itc_block_reason=(row.get("itc_block_reason") or "").strip(),
+                new_objects.append(
+                    PurchaseChargeLine(
+                        header=header,
+                        line_no=line_no_for_insert,
+                        charge_type=row.get("charge_type") or PurchaseChargeLine.ChargeType.OTHER,
+                        description=row.get("description") or "",
+                        taxability=row.get("taxability") or PurchaseChargeLine.Taxability.TAXABLE,
+                        is_service=bool(row.get("is_service", True)),
+                        hsn_sac_code=(row.get("hsn_sac_code") or "").strip(),
+                        is_rate_inclusive_of_tax=bool(row.get("is_rate_inclusive_of_tax", False)),
+                        taxable_value=row["taxable_value"],
+                        gst_rate=q2(row.get("gst_rate") or ZERO2),
+                        cgst_amount=row["cgst_amount"],
+                        sgst_amount=row["sgst_amount"],
+                        igst_amount=row["igst_amount"],
+                        total_value=row["total_value"],
+                        itc_eligible=bool(row.get("itc_eligible", True)),
+                        itc_block_reason=(row.get("itc_block_reason") or "").strip(),
+                    )
                 )
 
+        if new_objects:
+            PurchaseChargeLine.objects.bulk_create(new_objects)
+        if updated_objects:
+            PurchaseChargeLine.objects.bulk_update(updated_objects, update_fields)
+
         # delete missing
-        for obj in existing_qs:
-            if obj.id not in seen_ids:
-                obj.delete()
+        deleted_ids = [obj.id for obj in existing_qs if obj.id not in seen_ids]
+        if deleted_ids:
+            header.charges.filter(id__in=deleted_ids).delete()
+        return authoritative_rows
 
 
     @staticmethod
@@ -2458,16 +2730,61 @@ class PurchaseInvoiceService:
             "total_gst": q2(total_gst),
             "grand_total_base": q2(grand),
         }
+
+    @staticmethod
+    def should_sync_gst_tds_contract_ledger(
+        *,
+        header: PurchaseInvoiceHeader,
+        old_scope_key=None,
+    ) -> bool:
+        """
+        Draft purchase documents do not contribute to GST-TDS contract ledger totals.
+        Skip the scope aggregate for routine draft create/save paths and only sync when:
+        - the document is confirmed/posted, or
+        - an old scope key exists from a previously contributing document.
+        """
+        status_value = int(getattr(header, "status", 0) or 0)
+        if status_value in (
+            int(PurchaseInvoiceHeader.Status.CONFIRMED),
+            int(PurchaseInvoiceHeader.Status.POSTED),
+        ):
+            return True
+        return bool(old_scope_key)
+
+    @staticmethod
+    def should_rebuild_tax_summary(*, header: PurchaseInvoiceHeader) -> bool:
+        """
+        Purchase tax summaries are primarily needed for reporting, posting, and
+        explicit compliance actions. Skip routine draft create/save rebuilds and
+        keep this work for confirmed or posted documents.
+        """
+        status_value = int(getattr(header, "status", 0) or 0)
+        return status_value in (
+            int(PurchaseInvoiceHeader.Status.CONFIRMED),
+            int(PurchaseInvoiceHeader.Status.POSTED),
+        )
     
 
 
     @staticmethod
     @transaction.atomic
     def create_with_lines(validated_data: Dict[str, Any]) -> PurchaseInvoiceHeader:
+        started_at = perf_counter()
+        phase_started_at = started_at
+        phase_durations: dict[str, float] = {}
+
+        def mark_phase(name: str) -> None:
+            nonlocal phase_started_at
+            now = perf_counter()
+            phase_durations[name] = (now - phase_started_at) * 1000
+            phase_started_at = now
+
         round_off_explicit = "round_off" in validated_data
         grand_total_hint = validated_data.get("grand_total") if "grand_total" in validated_data else None
         lines_client = validated_data.pop("lines", []) or []
         charges_client = validated_data.pop("charges", []) or []
+        validated_data.pop("_vendor_profile_snapshot_cache", None)
+        validated_data.pop("_vendor_profile_snapshot_vendor_id", None)
         # Numbering is controlled by allocation services on confirm/post.
         # Ignore any client-sent values to avoid duplicate unique-key conflicts.
         validated_data.pop("doc_no", None)
@@ -2479,12 +2796,17 @@ class PurchaseInvoiceService:
             bill_date=validated_data.get("bill_date"),
             entityfinid_id=(validated_data.get("entityfinid").id if hasattr(validated_data.get("entityfinid"), "id") else validated_data.get("entityfinid")),
         )
+        mark_phase("lock_validation_ms")
 
+        policy = PurchaseSettingsService.get_policy(
+            entity_id=(validated_data["entity"].id if hasattr(validated_data.get("entity"), "id") else validated_data.get("entity")),
+            subentity_id=(validated_data.get("subentity").id if hasattr(validated_data.get("subentity"), "id") else validated_data.get("subentity")),
+        )
         PurchaseInvoiceService.apply_vendor_snapshot(validated_data)
         PurchaseInvoiceService.apply_special_tax_treatment_defaults(validated_data)
         PurchaseInvoiceService.apply_dates(validated_data)
 
-        derived = PurchaseInvoiceService.derive_tax_regime(validated_data)
+        derived = PurchaseInvoiceService.derive_tax_regime(validated_data, policy=policy)
         validated_data["tax_regime"] = derived.tax_regime
         validated_data["is_igst"] = derived.is_igst
         PurchaseInvoiceService.apply_product_line_defaults(
@@ -2492,12 +2814,9 @@ class PurchaseInvoiceService:
             lines=lines_client,
         )
 
-        PurchaseInvoiceService.validate_header(validated_data)
+        PurchaseInvoiceService.validate_header(validated_data, policy=policy)
+        mark_phase("header_prepare_validate_ms")
 
-        policy = PurchaseSettingsService.get_policy(
-            entity_id=(validated_data["entity"].id if hasattr(validated_data.get("entity"), "id") else validated_data.get("entity")),
-            subentity_id=(validated_data.get("subentity").id if hasattr(validated_data.get("subentity"), "id") else validated_data.get("subentity")),
-        )
         require_lines_level = policy.level("require_lines_on_confirm", "hard")
         mismatch_level = policy.level("line_amount_mismatch", "hard")
         require_at_least_one_line = require_lines_level == "hard"
@@ -2507,7 +2826,9 @@ class PurchaseInvoiceService:
             lines_client,
             derived,
             require_at_least_one_line=require_at_least_one_line,
+            policy=policy,
         )
+        mark_phase("line_structure_validate_ms")
 
         # authoritative lines
         lines_auth: List[Dict[str, Any]] = []
@@ -2515,8 +2836,13 @@ class PurchaseInvoiceService:
             auth = PurchaseInvoiceService.compute_line_authoritative(validated_data, ln, derived)
             PurchaseInvoiceService.verify_client_vs_authoritative(ln, auth, i, mismatch_level=mismatch_level)
             lines_auth.append(auth)
+        mark_phase("line_authoritative_compute_ms")
+
+        validated_data.pop("_vendor_profile_snapshot_cache", None)
+        validated_data.pop("_vendor_profile_snapshot_vendor_id", None)
 
         header = PurchaseInvoiceHeader.objects.create(**validated_data)
+        mark_phase("header_insert_ms")
 
         # save lines
         max_ln = 0
@@ -2533,36 +2859,40 @@ class PurchaseInvoiceService:
                 header=header,
                 **{k: v for k, v in ln.items() if k != "is_gst_manual"}
             )
-            obj.full_clean()
+            PurchaseInvoiceService._validate_line_runtime_invariants(obj)
             objs.append(obj)
         if objs:
             PurchaseInvoiceLine.objects.bulk_create(objs)
+        mark_phase("line_bulk_create_ms")
 
         # ✅ charges (NEW) - insert/update/delete
-        PurchaseInvoiceService.validate_charges(header=header, charges=charges_client)
-        PurchaseInvoiceService.upsert_charges(header=header, charges_client=charges_client)
+        PurchaseInvoiceService.validate_charges(header=header, charges=charges_client, policy=policy)
+        charges_auth = PurchaseInvoiceService.upsert_charges(header=header, charges_client=charges_client)
+        mark_phase("charge_upsert_ms")
 
         # ✅ totals MUST include charges
-        db_lines = list(header.lines.values("taxable_value", "cgst_amount", "sgst_amount", "igst_amount", "cess_amount"))
-        db_charges = list(header.charges.values("taxable_value", "cgst_amount", "sgst_amount", "igst_amount"))
-        totals = PurchaseInvoiceService.compute_totals_with_charges(db_lines, db_charges)
+        totals = PurchaseInvoiceService.compute_totals_with_charges(lines_auth, charges_auth)
+        mark_phase("totals_compute_ms")
         preview_grand_total = grand_total_hint if grand_total_hint is not None else totals["grand_total_base"]
         PurchaseInvoiceService.assert_no_duplicate_supplier_invoice(
             instance=header,
             attrs=validated_data,
             grand_total=preview_grand_total,
         )
+        mark_phase("duplicate_check_ms")
         PurchaseInvoiceService.apply_totals_to_header(
             header,
             totals,
             round_off_explicit=round_off_explicit,
             grand_total_hint=grand_total_hint,
         )
+        mark_phase("totals_assign_ms")
 
         # ✅ TDS AFTER totals (now includes charges)
-        PurchaseInvoiceService._apply_tds(header=header)
-        PurchaseInvoiceService._apply_gst_tds(header=header)
-        PurchaseInvoiceService._apply_vendor_withholding_variance_policy(header=header)
+        PurchaseInvoiceService._apply_tds(header=header, policy=policy)
+        PurchaseInvoiceService._apply_gst_tds(header=header, policy=policy)
+        PurchaseInvoiceService._apply_vendor_withholding_variance_policy(header=header, policy=policy)
+        mark_phase("tds_apply_ms")
 
         update_fields = [
             "total_taxable", "total_cgst", "total_sgst", "total_igst",
@@ -2580,20 +2910,63 @@ class PurchaseInvoiceService:
             update_fields.append("vendor_payable")
 
         header.save(update_fields=update_fields)
+        mark_phase("header_save_ms")
 
-        # ✅ tax summary now includes charges
-        PurchaseInvoiceService.rebuild_tax_summary(header)
-        GstTdsService.sync_contract_ledger_for_header(header)
+        if PurchaseInvoiceService.should_rebuild_tax_summary(header=header):
+            PurchaseInvoiceService.rebuild_tax_summary(header)
+        mark_phase("tax_summary_ms")
+        if PurchaseInvoiceService.should_sync_gst_tds_contract_ledger(header=header):
+            GstTdsService.sync_contract_ledger_for_header(header)
+        mark_phase("gst_tds_contract_sync_ms")
+        perf_logger.info(
+            "purchase_invoice_service_create_completed header_id=%s line_count=%s charge_count=%s total_duration_ms=%.2f phases=%s",
+            getattr(header, "id", None),
+            len(lines_auth),
+            len(charges_auth or []),
+            (perf_counter() - started_at) * 1000,
+            phase_durations,
+        )
         return header
 
     @staticmethod
     @transaction.atomic
     def update_with_lines(instance: PurchaseInvoiceHeader, validated_data: Dict[str, Any]) -> PurchaseInvoiceHeader:
+        started_at = perf_counter()
+        phase_started_at = started_at
+        phase_durations: dict[str, float] = {}
+
+        def mark_phase(name: str) -> None:
+            nonlocal phase_started_at
+            now = perf_counter()
+            phase_durations[name] = (now - phase_started_at) * 1000
+            phase_started_at = now
+
         old_scope_key = GstTdsService._scope_key_for_header(instance)
         if getattr(instance, "pk", None):
-            instance = PurchaseInvoiceHeader.objects.select_for_update().get(pk=instance.pk)
+            instance = (
+                PurchaseInvoiceHeader.objects
+                .select_for_update(of=("self",))
+                .select_related(
+                    "vendor__compliance_profile",
+                    "vendor__commercial_profile",
+                    "vendor__ledger",
+                    "vendor_state",
+                    "supplier_state",
+                    "place_of_supply_state",
+                )
+                .get(pk=instance.pk)
+            )
+            instance = PurchaseInvoiceService._prime_runtime_relations(instance)
+        mark_phase("lock_and_prime_ms")
         round_off_explicit = "round_off" in validated_data
         grand_total_hint = validated_data.get("grand_total") if "grand_total" in validated_data else None
+        validated_data.pop("_vendor_profile_snapshot_cache", None)
+        validated_data.pop("_vendor_profile_snapshot_vendor_id", None)
+        header_field_names = tuple(
+            field_name
+            for field_name in validated_data.keys()
+            if field_name not in {"lines", "charges"}
+        )
         lines_provided = "lines" in validated_data
         lines_client = validated_data.pop("lines", None)
         # Never allow replacing allocated numbering from update payload.
@@ -2609,6 +2982,7 @@ class PurchaseInvoiceService:
             raise ValueError("Cancelled purchase invoices cannot be edited.")
         if int(instance.status) == int(Status.POSTED):
             raise ValueError(PurchaseInvoiceService.blocked_edit_message(instance))
+        policy = None
         if int(instance.status) == int(Status.CONFIRMED):
             policy = PurchaseSettingsService.get_policy(instance.entity_id, instance.subentity_id)
             allow_edit_confirmed = str(policy.controls.get("allow_edit_confirmed", "on")).lower().strip()
@@ -2621,12 +2995,14 @@ class PurchaseInvoiceService:
             bill_date=(validated_data.get("bill_date") or instance.bill_date),
             entityfinid_id=instance.entityfinid_id,
         )
+        mark_phase("lock_validation_ms")
 
+        policy = policy or PurchaseSettingsService.get_policy(instance.entity_id, instance.subentity_id)
         PurchaseInvoiceService.apply_vendor_snapshot(validated_data, instance=instance)
         PurchaseInvoiceService.apply_special_tax_treatment_defaults(validated_data, instance=instance)
         PurchaseInvoiceService.apply_dates(validated_data, instance=instance)
 
-        derived = PurchaseInvoiceService.derive_tax_regime(validated_data, instance=instance)
+        derived = PurchaseInvoiceService.derive_tax_regime(validated_data, instance=instance, policy=policy)
         validated_data["tax_regime"] = derived.tax_regime
         validated_data["is_igst"] = derived.is_igst
         PurchaseInvoiceService.apply_product_line_defaults(
@@ -2634,11 +3010,14 @@ class PurchaseInvoiceService:
             lines=lines_client or [],
         )
 
-        PurchaseInvoiceService.validate_header(validated_data, instance=instance)
+        PurchaseInvoiceService.validate_header(validated_data, instance=instance, policy=policy)
+        mark_phase("header_prepare_validate_ms")
+
+        validated_data.pop("_vendor_profile_snapshot_cache", None)
+        validated_data.pop("_vendor_profile_snapshot_vendor_id", None)
 
         for k, v in validated_data.items():
             setattr(instance, k, v)
-        instance.save()
 
         header_ctx = {
             "default_taxability": instance.default_taxability,
@@ -2647,11 +3026,11 @@ class PurchaseInvoiceService:
             "is_rate_inclusive_of_tax_default": getattr(instance, "is_rate_inclusive_of_tax_default", False),
         }
 
-        policy = PurchaseSettingsService.get_policy(instance.entity_id, instance.subentity_id)
         require_lines_level = policy.level("require_lines_on_confirm", "hard")
         mismatch_level = policy.level("line_amount_mismatch", "hard")
         require_at_least_one_line = require_lines_level == "hard"
 
+        lines_auth: Optional[List[Dict[str, Any]]] = None
         if lines_provided:
             PurchaseInvoiceService.validate_lines_structural(
                 validated_data,
@@ -2659,42 +3038,60 @@ class PurchaseInvoiceService:
                 derived,
                 instance=instance,
                 require_at_least_one_line=require_at_least_one_line,
+                policy=policy,
             )
+            mark_phase("line_structure_validate_ms")
             # authoritative lines
-            lines_auth: List[Dict[str, Any]] = []
+            lines_auth = []
             for i, ln in enumerate(lines_client, start=1):
                 auth = PurchaseInvoiceService.compute_line_authoritative(header_ctx, ln, derived)
                 PurchaseInvoiceService.verify_client_vs_authoritative(ln, auth, i, mismatch_level=mismatch_level)
                 lines_auth.append(auth)
+            mark_phase("line_authoritative_compute_ms")
 
             PurchaseInvoiceService.upsert_lines(instance, lines_auth)
+            mark_phase("line_upsert_ms")
 
         # charges only if provided
+        charges_auth: Optional[List[Dict[str, Any]]] = None
         if charges_client is not None:
-            PurchaseInvoiceService.validate_charges(header=instance, charges=charges_client)
-            PurchaseInvoiceService.upsert_charges(header=instance, charges_client=charges_client)
+            PurchaseInvoiceService.validate_charges(header=instance, charges=charges_client, policy=policy)
+            charges_auth = PurchaseInvoiceService.upsert_charges(header=instance, charges_client=charges_client)
+            mark_phase("charge_upsert_ms")
 
         # totals include charges (existing or updated)
-        db_lines = list(instance.lines.values("taxable_value", "cgst_amount", "sgst_amount", "igst_amount", "cess_amount"))
-        db_charges = list(instance.charges.values("taxable_value", "cgst_amount", "sgst_amount", "igst_amount"))
-        totals = PurchaseInvoiceService.compute_totals_with_charges(db_lines, db_charges)
+        effective_lines = (
+            lines_auth
+            if lines_auth is not None
+            else list(instance.lines.values("taxable_value", "cgst_amount", "sgst_amount", "igst_amount", "cess_amount"))
+        )
+        effective_charges = (
+            charges_auth
+            if charges_auth is not None
+            else list(instance.charges.values("taxable_value", "cgst_amount", "sgst_amount", "igst_amount"))
+        )
+        totals = PurchaseInvoiceService.compute_totals_with_charges(effective_lines, effective_charges)
+        mark_phase("totals_compute_ms")
         preview_grand_total = grand_total_hint if grand_total_hint is not None else totals["grand_total_base"]
         PurchaseInvoiceService.assert_no_duplicate_supplier_invoice(
             instance=instance,
             attrs=validated_data,
             grand_total=preview_grand_total,
         )
+        mark_phase("duplicate_check_ms")
         PurchaseInvoiceService.apply_totals_to_header(
             instance,
             totals,
             round_off_explicit=round_off_explicit,
             grand_total_hint=grand_total_hint,
         )
+        mark_phase("totals_assign_ms")
 
         # TDS AFTER totals
-        PurchaseInvoiceService._apply_tds(header=instance)
-        PurchaseInvoiceService._apply_gst_tds(header=instance)
-        PurchaseInvoiceService._apply_vendor_withholding_variance_policy(header=instance)
+        PurchaseInvoiceService._apply_tds(header=instance, policy=policy)
+        PurchaseInvoiceService._apply_gst_tds(header=instance, policy=policy)
+        PurchaseInvoiceService._apply_vendor_withholding_variance_policy(header=instance, policy=policy)
+        mark_phase("tds_apply_ms")
 
         update_fields = [
             "total_taxable", "total_cgst", "total_sgst", "total_igst",
@@ -2711,8 +3108,26 @@ class PurchaseInvoiceService:
         if hasattr(instance, "vendor_payable"):
             update_fields.append("vendor_payable")
 
+        # Persist header field edits together with recomputed totals in a single write.
+        update_fields = list(dict.fromkeys([*header_field_names, *update_fields]))
         instance.save(update_fields=update_fields)
+        mark_phase("header_save_ms")
 
-        PurchaseInvoiceService.rebuild_tax_summary(instance)
-        GstTdsService.sync_contract_ledger_for_header(instance, old_scope_key=old_scope_key)
+        if PurchaseInvoiceService.should_rebuild_tax_summary(header=instance):
+            PurchaseInvoiceService.rebuild_tax_summary(instance)
+        mark_phase("tax_summary_ms")
+        if PurchaseInvoiceService.should_sync_gst_tds_contract_ledger(
+            header=instance,
+            old_scope_key=old_scope_key,
+        ):
+            GstTdsService.sync_contract_ledger_for_header(instance, old_scope_key=old_scope_key)
+        mark_phase("gst_tds_contract_sync_ms")
+        perf_logger.info(
+            "purchase_invoice_service_update_completed header_id=%s line_count=%s charges_provided=%s total_duration_ms=%.2f phases=%s",
+            getattr(instance, "id", None),
+            len(lines_auth or []),
+            charges_client is not None,
+            (perf_counter() - started_at) * 1000,
+            phase_durations,
+        )
         return instance

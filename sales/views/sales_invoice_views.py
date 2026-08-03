@@ -27,6 +27,7 @@ from sales.serializers.sales_transport_serializers import SalesInvoiceTransportS
 from sales.services.sales_invoice_service import SalesInvoiceService
 from sales.services.sales_nav_service import SalesInvoiceNavService
 from sales.services.sales_settings_service import SalesSettingsService
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 import qrcode
 
 
@@ -46,10 +47,28 @@ def _sales_permission_prefix(raw_doc_type) -> str:
     return "sales.invoice"
 
 
-def require_sales_request_permission(*, user, entity_id: int, doc_type, action: str):
+def require_sales_request_permission(
+    *,
+    user,
+    entity_id: int,
+    doc_type,
+    action: str,
+    access_mode: str | None = None,
+    feature_code: str | None = None,
+):
     entity = EffectivePermissionService.entity_for_user(user, int(entity_id))
     if entity is None:
         raise PermissionDenied({"detail": "Entity not found or inaccessible."})
+
+    if access_mode or feature_code:
+        if not hasattr(entity, "customer_account_id"):
+            entity = Entity.objects.filter(pk=getattr(entity, "id", entity_id)).first() or entity
+        SubscriptionService.assert_entity_access(
+            user=user,
+            entity=entity,
+            access_mode=access_mode or SubscriptionService.ACCESS_MODE_OPERATIONAL,
+            feature_code=feature_code,
+        )
 
     permission_code = f"{_sales_permission_prefix(doc_type)}.{action}"
     permission_codes = EffectivePermissionService.permission_codes_for_user(user, int(entity_id))
@@ -149,6 +168,7 @@ class SalesInvoiceListCreateAPIView(_SalesScopeMixin, generics.ListCreateAPIView
                 entity_id=entity_id,
                 doc_type=self.request.query_params.get("doc_type"),
                 action="view",
+                feature_code=SubscriptionLimitCodes.FEATURE_SALES,
             )
         qs = (
             self._scoped_queryset()
@@ -193,6 +213,10 @@ class SalesInvoiceListCreateAPIView(_SalesScopeMixin, generics.ListCreateAPIView
             "subentity",
         ).only(
             "id",
+            "is_legacy_imported",
+            "legacy_source_system",
+            "legacy_source_key",
+            "legacy_import_mode",
             "doc_code",
             "doc_type",
             "invoice_number",
@@ -203,6 +227,7 @@ class SalesInvoiceListCreateAPIView(_SalesScopeMixin, generics.ListCreateAPIView
             "grand_total",
             "outstanding_amount",
             "subentity_id",
+            "location",
             "location_id",
             "customer__accountname",
             "customer__ledger_id",
@@ -240,6 +265,7 @@ class SalesInvoiceListCreateAPIView(_SalesScopeMixin, generics.ListCreateAPIView
             entity_id=entity_id,
             doc_type=payload.get("doc_type"),
             action="create",
+            feature_code=SubscriptionLimitCodes.FEATURE_SALES,
         )
         try:
             return super().create(request, *args, **kwargs)
@@ -248,6 +274,10 @@ class SalesInvoiceListCreateAPIView(_SalesScopeMixin, generics.ListCreateAPIView
 
 
 class SalesInvoiceLookupAPIView(_SalesScopeMixin, APIView):
+    def _include_total(self) -> bool:
+        raw = str(self.request.query_params.get("include_total") or "").strip().lower()
+        return raw in {"1", "true", "yes"}
+
     def _parse_limit(self) -> int:
         try:
             raw_limit = int(self.request.query_params.get("limit") or 100)
@@ -283,6 +313,7 @@ class SalesInvoiceLookupAPIView(_SalesScopeMixin, APIView):
                 entity_id=entity_id,
                 doc_type=self.request.query_params.get("doc_type"),
                 action="view",
+                feature_code=SubscriptionLimitCodes.FEATURE_SALES,
             )
 
         params = self.request.query_params
@@ -324,6 +355,7 @@ class SalesInvoiceLookupAPIView(_SalesScopeMixin, APIView):
 
         return qs.select_related(None).select_related(
             "customer",
+            "customer__ledger",
             "subentity",
         ).only(
             "id",
@@ -339,18 +371,25 @@ class SalesInvoiceLookupAPIView(_SalesScopeMixin, APIView):
             "grand_total",
             "outstanding_amount",
             "subentity_id",
+            "customer__ledger_id",
+            "customer__ledger__name",
             "customer__accountname",
             "subentity__subentityname",
         )
 
     def get(self, request, *args, **kwargs):
         queryset = self._base_queryset()
-        total_count = queryset.count()
         limit = self._parse_limit()
         offset = self._parse_offset()
-        items = queryset[offset:offset + limit]
+        include_total = self._include_total()
+        fetch_limit = limit if include_total else (limit + 1)
+        items = queryset[offset:offset + fetch_limit]
+        has_more = (len(items) > limit) if not include_total else False
+        if has_more:
+            items = items[:limit]
         serializer = SalesInvoiceLookupSerializer(items, many=True, context={"request": request})
         returned_count = len(serializer.data)
+        total_count = queryset.count() if include_total else None
         return Response(
             {
                 "items": serializer.data,
@@ -358,7 +397,7 @@ class SalesInvoiceLookupAPIView(_SalesScopeMixin, APIView):
                 "returned_count": returned_count,
                 "limit": limit,
                 "offset": offset,
-                "has_more": total_count > (offset + returned_count),
+                "has_more": (total_count > (offset + returned_count)) if total_count is not None else has_more,
             }
         )
 
@@ -371,6 +410,7 @@ class SalesInvoiceCrossModeNavigationAPIView(_SalesScopeMixin, APIView):
             entity_id=header.entity_id,
             doc_type=header.doc_type,
             action="view",
+            feature_code=SubscriptionLimitCodes.FEATURE_SALES,
         )
 
         target_line_mode = str(request.query_params.get("target_line_mode") or "").strip().lower()
@@ -390,54 +430,11 @@ class SalesInvoiceCrossModeNavigationAPIView(_SalesScopeMixin, APIView):
             allowed_statuses=SalesInvoiceNavService.DEFAULT_ALLOWED_STATUSES,
             line_mode=target_line_mode,
         )
-        rows = list(qs)
-        current_seq = SalesInvoiceNavService._sequence_no(header)
-
-        target_obj = None
-        if current_seq > 0:
-            if direction == "previous":
-                candidates = [
-                    row for row in rows
-                    if (
-                        (SalesInvoiceNavService._sequence_no(row) < current_seq)
-                        or (
-                            SalesInvoiceNavService._sequence_no(row) == current_seq
-                            and int(getattr(row, "id", 0) or 0) < int(getattr(header, "id", 0) or 0)
-                        )
-                    )
-                ]
-                target_obj = max(
-                    candidates,
-                    key=lambda row: (
-                        SalesInvoiceNavService._sequence_no(row),
-                        int(getattr(row, "id", 0) or 0),
-                    ),
-                    default=None,
-                )
-            else:
-                candidates = [
-                    row for row in rows
-                    if (
-                        (SalesInvoiceNavService._sequence_no(row) > current_seq)
-                        or (
-                            SalesInvoiceNavService._sequence_no(row) == current_seq
-                            and int(getattr(row, "id", 0) or 0) > int(getattr(header, "id", 0) or 0)
-                        )
-                    )
-                ]
-                target_obj = min(
-                    candidates,
-                    key=lambda row: (
-                        SalesInvoiceNavService._sequence_no(row),
-                        int(getattr(row, "id", 0) or 0),
-                    ),
-                    default=None,
-                )
-        else:
-            if direction == "previous":
-                target_obj = qs.filter(id__lt=header.id).order_by("-id").first()
-            else:
-                target_obj = qs.filter(id__gt=header.id).order_by("id").first()
+        target_obj = SalesInvoiceNavService.resolve_adjacent_in_scope(
+            qs=qs,
+            current_obj=header,
+            direction=direction,
+        )
 
         return Response(
             {
@@ -482,6 +479,7 @@ class SalesInvoiceRetrieveUpdateAPIView(_SalesScopeMixin, generics.RetrieveUpdat
             entity_id=instance.entity_id,
             doc_type=instance.doc_type,
             action="view",
+            feature_code=SubscriptionLimitCodes.FEATURE_SALES,
         )
         serializer = self.get_serializer(instance)
         return Response(serializer.data)
@@ -507,6 +505,7 @@ class SalesInvoiceRetrieveUpdateAPIView(_SalesScopeMixin, generics.RetrieveUpdat
             entity_id=instance.entity_id,
             doc_type=instance.doc_type,
             action="update",
+            feature_code=SubscriptionLimitCodes.FEATURE_SALES,
         )
         try:
             return super().update(request, *args, **kwargs)
@@ -520,6 +519,7 @@ class SalesInvoiceRetrieveUpdateAPIView(_SalesScopeMixin, generics.RetrieveUpdat
             entity_id=instance.entity_id,
             doc_type=instance.doc_type,
             action="update",
+            feature_code=SubscriptionLimitCodes.FEATURE_SALES,
         )
         try:
             return super().partial_update(request, *args, **kwargs)
@@ -533,6 +533,7 @@ class SalesInvoiceRetrieveUpdateAPIView(_SalesScopeMixin, generics.RetrieveUpdat
             entity_id=instance.entity_id,
             doc_type=instance.doc_type,
             action="delete",
+            feature_code=SubscriptionLimitCodes.FEATURE_SALES,
         )
         return super().destroy(request, *args, **kwargs)
 
@@ -561,6 +562,7 @@ class SalesInvoiceConfirmAPIView(_SalesScopeMixin, APIView):
             entity_id=header.entity_id,
             doc_type=header.doc_type,
             action="confirm",
+            feature_code=SubscriptionLimitCodes.FEATURE_SALES,
         )
         try:
             header = SalesInvoiceService.confirm(header=header, user=request.user)
@@ -578,12 +580,14 @@ class SalesInvoicePostAPIView(_SalesScopeMixin, APIView):
                 entity_id=header.entity_id,
                 doc_type=header.doc_type,
                 action="confirm",
+                feature_code=SubscriptionLimitCodes.FEATURE_SALES,
             )
         require_sales_request_permission(
             user=request.user,
             entity_id=header.entity_id,
             doc_type=header.doc_type,
             action="post",
+            feature_code=SubscriptionLimitCodes.FEATURE_SALES,
         )
         try:
             header = SalesInvoiceService.post(header=header, user=request.user)
@@ -600,6 +604,7 @@ class SalesInvoiceCancelAPIView(_SalesScopeMixin, APIView):
             entity_id=header.entity_id,
             doc_type=header.doc_type,
             action="cancel",
+            feature_code=SubscriptionLimitCodes.FEATURE_SALES,
         )
         if SalesInvoiceService.requires_current_period_correction(header=header):
             require_sales_request_permission(
@@ -607,12 +612,14 @@ class SalesInvoiceCancelAPIView(_SalesScopeMixin, APIView):
                 entity_id=header.entity_id,
                 doc_type=SalesInvoiceHeader.DocType.CREDIT_NOTE,
                 action="create",
+                feature_code=SubscriptionLimitCodes.FEATURE_SALES,
             )
             require_sales_request_permission(
                 user=request.user,
                 entity_id=header.entity_id,
                 doc_type=SalesInvoiceHeader.DocType.CREDIT_NOTE,
                 action="post",
+                feature_code=SubscriptionLimitCodes.FEATURE_SALES,
             )
         reason = (request.data or {}).get("reason", "")
         try:
@@ -630,6 +637,7 @@ class SalesInvoiceReverseAPIView(_SalesScopeMixin, APIView):
             entity_id=header.entity_id,
             doc_type=header.doc_type,
             action="unpost",
+            feature_code=SubscriptionLimitCodes.FEATURE_SALES,
         )
         reason = (request.data or {}).get("reason", "")
         try:
@@ -647,6 +655,7 @@ class SalesInvoiceSettlementAPIView(_SalesScopeMixin, APIView):
             entity_id=header.entity_id,
             doc_type=header.doc_type,
             action="update",
+            feature_code=SubscriptionLimitCodes.FEATURE_SALES,
         )
         payload = request.data or {}
         settled_amount = payload.get("settled_amount")
@@ -718,6 +727,7 @@ class SalesInvoiceTransportAPIView(_SalesScopeMixin, APIView):
             entity_id=header.entity_id,
             doc_type=header.doc_type,
             action="view",
+            feature_code=SubscriptionLimitCodes.FEATURE_SALES,
         )
 
         transport_snapshot = getattr(header, "transport_snapshot", None)
@@ -750,6 +760,7 @@ class SalesInvoiceTransportAPIView(_SalesScopeMixin, APIView):
             entity_id=header.entity_id,
             doc_type=header.doc_type,
             action="update",
+            feature_code=SubscriptionLimitCodes.FEATURE_SALES,
         )
 
         payload = request.data if isinstance(getattr(request, "data", None), dict) else {}
@@ -1119,6 +1130,7 @@ class SalesInvoicePrintAPIView(_SalesScopeMixin, APIView):
             entity_id=header.entity_id,
             doc_type=header.doc_type,
             action="view",
+            feature_code=SubscriptionLimitCodes.FEATURE_SALES,
         )
         return Response(self._build_payload(header), status=status.HTTP_200_OK)
 

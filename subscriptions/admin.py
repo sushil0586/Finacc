@@ -273,6 +273,7 @@ class SubscriptionPlanAdmin(admin.ModelAdmin):
         "trial_days",
         "is_default",
         "is_public",
+        "is_selectable_for_signup",
         "billing_provider",
         "limit_count",
         "limit_summary",
@@ -285,6 +286,7 @@ class SubscriptionPlanAdmin(admin.ModelAdmin):
         "billing_interval",
         "is_default",
         "is_public",
+        "is_selectable_for_signup",
         "is_active",
         "billing_provider",
         "created_at",
@@ -335,6 +337,7 @@ class SubscriptionPlanAdmin(admin.ModelAdmin):
             {
                 "fields": (
                     "is_public",
+                    "is_selectable_for_signup",
                     "is_default",
                     "is_active",
                 )

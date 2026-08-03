@@ -1,2 +1,0 @@
-Method,Name,Error,Occurrences
-GET,sales/invoices [seed-id],CatchResponseError('No invoice id found for lifecycle test'),302

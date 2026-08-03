@@ -50,6 +50,16 @@ def _build_onboarding_payload(entity, result):
 def _build_register_payload(result):
     entity = result["onboarding"]["entity"]
     onboarding_payload = _build_onboarding_payload(entity, result["onboarding"])
+    selected_plan_code = (
+        (result.get("subscription") or {})
+        .get("subscription", {})
+        .get("metadata", {})
+        .get("selected_plan_code")
+    ) or (
+        (result.get("subscription") or {})
+        .get("subscription", {})
+        .get("plan_code")
+    )
     return {
         "user": {
             "id": result["user"].id,
@@ -59,9 +69,14 @@ def _build_register_payload(result):
             "last_name": result["user"].last_name,
         },
         "intent": result.get("intent"),
+        "selected_plan_code": selected_plan_code,
         "onboarding": onboarding_payload,
         "verification": result["verification"],
         "subscription": result["subscription"],
+        "subscription_endpoints": {
+            "public_plans": "/api/subscriptions/public/plans",
+            "current_summary": "/api/subscriptions/me/summary",
+        },
     }
 
 
@@ -181,6 +196,7 @@ class EntityOnboardingMetaAPIView(APIView):
                     "endpoint": "/api/auth/register",
                     "role": "secondary",
                     "description": "Creates only the user, tenant, subscription, and owner membership. It does not complete ERP onboarding.",
+                    "supports_plan_code": True,
                 },
             },
             "defaults": {
@@ -222,6 +238,7 @@ class EntityOnboardingMetaAPIView(APIView):
             },
             "payload_contract": {
                 "root_keys": [
+                    "plan_code",
                     "entity",
                     "policy",
                     "financial_years",
@@ -242,12 +259,23 @@ class EntityOnboardingMetaAPIView(APIView):
                 "arrays_required_non_empty": [
                     "financial_years",
                 ],
+                "optional_root_keys": [
+                    "plan_code",
+                    "intent",
+                    "user",
+                ],
+                "plan_selection": {
+                    "field": "plan_code",
+                    "required_for_public_signup": False,
+                    "description": "Optional public/selectable subscription plan code. If omitted, backend falls back to the default plan.",
+                },
             },
             "ui_hints": {
                 "financial_years_min_items": 1,
                 "seed_default_subentity_note": "If subentities is empty and seed_default_subentity=true, backend creates one default HO subentity.",
                 "enum_source": "field_choices",
                 "date_format": "Use ISO date/date-time strings.",
+                "subscription_plans_source": "/api/subscriptions/public/plans",
             },
             "dropdowns": {
                 "gst_registration_types": [
@@ -298,6 +326,8 @@ class EntityOnboardingMetaAPIView(APIView):
                 "update": "/api/entity/onboarding/entity/<id>/",
                 "register_and_create": "/api/entity/onboarding/register/",
                 "meta": "/api/entity/onboarding/meta/",
+                "subscription_public_plans": "/api/subscriptions/public/plans",
+                "subscription_current_summary": "/api/subscriptions/me/summary",
                 "countries": "/api/entity/onboarding/options/countries/",
                 "states": "/api/entity/onboarding/options/states/?country_id=<id>",
                 "districts": "/api/entity/onboarding/options/districts/?state_id=<id>",

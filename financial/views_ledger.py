@@ -199,6 +199,23 @@ def _attach_deprecation_headers(request, response):
     return response
 
 
+def _apply_partytype_scope_filter(qs, scope):
+    normalized_scope = str(scope or "").strip().lower()
+    if not normalized_scope:
+        return qs
+
+    scope_map = {
+        "customer": ["Customer", "Both"],
+        "vendor": ["Vendor", "Both"],
+        "both": ["Both"],
+    }
+    allowed_partytypes = scope_map.get(normalized_scope)
+    if not allowed_partytypes:
+        return qs
+
+    return qs.filter(account_profile__commercial_profile__partytype__in=allowed_partytypes)
+
+
 class AccountProfileV2Pagination(PageNumberPagination):
     page_size = 25
     page_size_query_param = "page_size"
@@ -834,15 +851,35 @@ class SimpleAccountsV2APIView(ListAPIView):
         ).prefetch_related(
             Prefetch(
                 "account_profile__addresses",
-                queryset=AccountAddress.objects.filter(isprimary=True, isactive=True).select_related("state"),
+                queryset=AccountAddress.objects.filter(isprimary=True, isactive=True).select_related("state").only(
+                    "id",
+                    "account_id",
+                    "state_id",
+                    "district_id",
+                    "city_id",
+                    "pincode",
+                    "state__statecode",
+                ),
                 to_attr="prefetched_primary_addresses",
             )
+        ).only(
+            "id",
+            "entity_id",
+            "ledger_code",
+            "name",
+            "accounthead_id",
+            "account_profile__id",
+            "account_profile__accountname",
+            "account_profile__compliance_profile__gstno",
+            "account_profile__compliance_profile__pan",
         )
 
         accounthead_codes = self.request.query_params.get("accounthead", "")
         codes = [int(a) for a in accounthead_codes.split(",") if a.isdigit()] if accounthead_codes else []
         if codes:
             qs = qs.filter(accounthead__code__in=codes)
+
+        qs = _apply_partytype_scope_filter(qs, self.request.query_params.get("partytype_scope"))
 
         return qs.order_by("name")
 

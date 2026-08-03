@@ -5,6 +5,7 @@ import logging
 from rest_framework.views import exception_handler
 from rest_framework import exceptions
 from django.contrib.auth import get_user_model
+from django.db import OperationalError
 from django.test.testcases import DatabaseOperationForbidden
 
 from .models import ErrorLog
@@ -51,7 +52,13 @@ def custom_exception_handler(exc, context):
     response = exception_handler(exc, context)
 
     request = context.get('request')
-    raw_user = request.user if request and getattr(request, "user", None) is not None else None
+    raw_user = None
+    if request is not None:
+        try:
+            maybe_user = getattr(request, "user", None)
+            raw_user = maybe_user
+        except OperationalError:
+            raw_user = None
     user = raw_user if isinstance(raw_user, User) and getattr(raw_user, "is_authenticated", False) else None
 
     try:

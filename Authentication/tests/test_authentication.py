@@ -2,7 +2,11 @@ from django.contrib.auth import get_user_model
 from django.conf import settings
 from django.core import mail
 from django.core.cache import cache
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
+from django.utils import timezone
+from datetime import timedelta
 import re
 from rest_framework import exceptions
 from rest_framework.test import APIClient, APIRequestFactory
@@ -11,6 +15,7 @@ from Authentication.models import AuthAuditLog, AuthOTP, AuthSession
 from Authentication.jwt import JwtAuthentication
 from Authentication.services import AuthOTPService, AuthSettings
 from subscriptions.models import CustomerAccount, CustomerSubscription
+from subscriptions.services import SubscriptionService
 
 
 User = get_user_model()
@@ -43,6 +48,49 @@ class JwtAuthenticationTests(TestCase):
         self.assertIsNotNone(result)
         user, _ = result
         self.assertEqual(user.pk, self.user.pk)
+
+    def test_valid_token_uses_single_session_backed_query(self):
+        token = self.user.token
+        request = self.factory.get("/api/auth/user", HTTP_AUTHORIZATION=f"Bearer {token}")
+        auth = JwtAuthentication()
+
+        with CaptureQueriesContext(connection) as queries:
+            result = auth.authenticate(request)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(len(queries), 1)
+
+    def test_authenticate_skips_session_touch_within_interval(self):
+        token = self.user.token
+        session = AuthSession.objects.get(user=self.user)
+        original_last_used_at = session.last_used_at
+        original_updated_at = session.updated_at
+
+        request = self.factory.get("/api/auth/user", HTTP_AUTHORIZATION=f"Bearer {token}")
+        auth = JwtAuthentication()
+        result = auth.authenticate(request)
+
+        self.assertIsNotNone(result)
+        session.refresh_from_db()
+        self.assertEqual(session.last_used_at, original_last_used_at)
+        self.assertEqual(session.updated_at, original_updated_at)
+
+    def test_authenticate_touches_session_after_interval(self):
+        token = self.user.token
+        session = AuthSession.objects.get(user=self.user)
+        session.last_used_at = timezone.now() - timedelta(
+            seconds=AuthSettings.SESSION_TOUCH_INTERVAL_SECONDS + 10
+        )
+        session.save(update_fields=["last_used_at", "updated_at"])
+        previous_last_used_at = session.last_used_at
+
+        request = self.factory.get("/api/auth/user", HTTP_AUTHORIZATION=f"Bearer {token}")
+        auth = JwtAuthentication()
+        result = auth.authenticate(request)
+
+        self.assertIsNotNone(result)
+        session.refresh_from_db()
+        self.assertGreater(session.last_used_at, previous_last_used_at)
 
     def test_password_change_invalidates_existing_token(self):
         token = self.user.token
@@ -112,6 +160,9 @@ class AuthFlowTests(TestCase):
         self.assertEqual(resp.data["token_type"], "Bearer")
         self.assertIn("user", resp.data)
         self.assertIn("subscription", resp.data)
+        self.assertIn("feature_summary", resp.data["subscription"])
+        self.assertIn("locked_features", resp.data["subscription"])
+        self.assertIn("block_reasons", resp.data["subscription"])
         self.assertIn(settings.AUTH_COOKIE_NAME, resp.cookies)
         self.assertIn(settings.AUTH_REFRESH_COOKIE_NAME, resp.cookies)
         self.assertTrue(AuthSession.objects.filter(user=self.user).exists())
@@ -216,6 +267,12 @@ class AuthFlowTests(TestCase):
         self.assertEqual(resp.status_code, 201)
         self.assertEqual(resp.data["intent"], "standard")
         self.assertIn("subscription", resp.data)
+        self.assertIn("subscription_endpoints", resp.data)
+        self.assertIn("feature_summary", resp.data["subscription"])
+        self.assertIn("locked_features", resp.data["subscription"])
+        self.assertIn("block_reasons", resp.data["subscription"])
+        self.assertEqual(resp.data["subscription_endpoints"]["public_plans"], "/api/subscriptions/public/plans")
+        self.assertEqual(resp.data["subscription_endpoints"]["current_summary"], "/api/subscriptions/me/summary")
         user = User.objects.get(email="new_user@example.com")
         self.assertTrue(CustomerAccount.objects.filter(owner=user).exists())
         self.assertTrue(CustomerSubscription.objects.filter(customer_account__owner=user).exists())
@@ -238,6 +295,64 @@ class AuthFlowTests(TestCase):
         self.assertEqual(resp.data["intent"], "trial")
         self.assertTrue(resp.data["trial_started"])
         self.assertEqual(resp.data["subscription"]["subscription"]["status"], "trialing")
+        self.assertIn("trial_days_remaining", resp.data["subscription"]["subscription"])
+        self.assertIsNotNone(resp.data["subscription"]["subscription"]["trial_days_remaining"])
+
+    def test_register_accepts_selectable_plan_code(self):
+        starter = SubscriptionService.get_or_create_default_plan()
+        growth = type(starter).objects.create(
+            code="growth",
+            name="Growth",
+            description="Growth plan",
+            tier=starter.PlanTier.PRO,
+            billing_interval=starter.BillingInterval.MONTHLY,
+            price_amount=1999,
+            currency="INR",
+            trial_days=0,
+            is_public=True,
+            is_default=False,
+            is_selectable_for_signup=True,
+            sort_order=2,
+        )
+        SubscriptionService.ensure_plan_limit_catalog(plan=growth)
+
+        resp = self.client.post(
+            "/api/auth/register",
+            {
+                "username": "growth_user@example.com",
+                "email": "growth_user@example.com",
+                "password": "pass@12345",
+                "first_name": "Growth",
+                "last_name": "User",
+                "plan_code": "growth",
+            },
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["subscription"]["subscription"]["plan_code"], "growth")
+        self.assertEqual(resp.data["selected_plan_code"], "growth")
+        user = User.objects.get(email="growth_user@example.com")
+        subscription = CustomerSubscription.objects.get(customer_account__owner=user)
+        self.assertEqual(subscription.plan.code, "growth")
+        self.assertEqual(subscription.metadata.get("selected_plan_code"), "growth")
+
+    def test_register_rejects_unavailable_plan_code(self):
+        resp = self.client.post(
+            "/api/auth/register",
+            {
+                "username": "badplan_user@example.com",
+                "email": "badplan_user@example.com",
+                "password": "pass@12345",
+                "first_name": "Bad",
+                "last_name": "Plan",
+                "plan_code": "non-existent-plan",
+            },
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["code"], "subscription_plan_unavailable")
 
     def test_forgot_password_send_is_rate_limited(self):
         original_limit = AuthSettings.OTP_SEND_RATE_LIMIT_ATTEMPTS

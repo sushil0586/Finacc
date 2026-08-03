@@ -25,32 +25,46 @@ SORTABLE_FIELDS = {
     "running_balance": lambda row: Decimal(row.get("running_balance") or "0.00"),
 }
 
+PURCHASE_TXN_TYPES = {
+    TxnType.PURCHASE,
+    TxnType.PURCHASE_CREDIT_NOTE,
+    TxnType.PURCHASE_DEBIT_NOTE,
+    TxnType.PURCHASE_RETURN,
+}
 
-def _invoice_drilldown_route(txn_type: str | None, txn_id: int | None) -> str | None:
+SALES_TXN_TYPES = {
+    TxnType.SALES,
+    TxnType.SALES_CREDIT_NOTE,
+    TxnType.SALES_DEBIT_NOTE,
+    TxnType.SALES_RETURN,
+}
+
+
+def _invoice_drilldown_route(txn_type: str | None, txn_id: int | None, service_route_cache=None) -> str | None:
     if not txn_id:
         return None
-    if txn_type in {
-        TxnType.PURCHASE,
-        TxnType.PURCHASE_CREDIT_NOTE,
-        TxnType.PURCHASE_DEBIT_NOTE,
-        TxnType.PURCHASE_RETURN,
-    }:
-        if PurchaseInvoiceLine.objects.filter(header_id=txn_id, is_service=True).exists():
+    if txn_type in PURCHASE_TXN_TYPES:
+        is_service = False
+        if service_route_cache is not None:
+            is_service = txn_id in service_route_cache.get("purchase_service_ids", set())
+        else:
+            is_service = PurchaseInvoiceLine.objects.filter(header_id=txn_id, is_service=True).exists()
+        if is_service:
             return "/purchaseserviceinvoice"
         return "/purchaseinvoice"
-    if txn_type in {
-        TxnType.SALES,
-        TxnType.SALES_CREDIT_NOTE,
-        TxnType.SALES_DEBIT_NOTE,
-        TxnType.SALES_RETURN,
-    }:
-        if SalesInvoiceLine.objects.filter(header_id=txn_id, is_service=True).exists():
+    if txn_type in SALES_TXN_TYPES:
+        is_service = False
+        if service_route_cache is not None:
+            is_service = txn_id in service_route_cache.get("sales_service_ids", set())
+        else:
+            is_service = SalesInvoiceLine.objects.filter(header_id=txn_id, is_service=True).exists()
+        if is_service:
             return "/saleserviceinvoice"
         return "/saleinvoice"
     return None
 
 
-def _drilldown_meta(line, *, entity_id, entityfin_id, subentity_id):
+def _drilldown_meta(line, *, entity_id, entityfin_id, subentity_id, route_cache=None, service_route_cache=None):
     txn_type = line.txn_type
     txn_type_name = line.get_txn_type_display() if hasattr(line, "get_txn_type_display") else None
 
@@ -97,6 +111,14 @@ def _drilldown_meta(line, *, entity_id, entityfin_id, subentity_id):
     if account_opening_account_id:
         drilldown_params["account_id"] = account_opening_account_id
 
+    route_key = (txn_type, source_id)
+    if route_cache is not None and route_key in route_cache:
+        drilldown_route = route_cache[route_key]
+    else:
+        drilldown_route = _invoice_drilldown_route(txn_type, source_id, service_route_cache=service_route_cache)
+        if route_cache is not None:
+            route_cache[route_key] = drilldown_route
+
     return {
         "txn_type": txn_type,
         "txn_type_name": txn_type_name,
@@ -106,7 +128,7 @@ def _drilldown_meta(line, *, entity_id, entityfin_id, subentity_id):
         "source_model": source_model,
         "source_id": source_id,
         "drilldown_target": drilldown_target,
-        "drilldown_route": _invoice_drilldown_route(txn_type, source_id),
+        "drilldown_route": drilldown_route,
         "drilldown_params": drilldown_params,
     }
 
@@ -146,13 +168,38 @@ def build_ledger_book(
         else Decimal("0.00")
     )
 
-    lines = journal_lines_for_scope(entity_id, entityfin_id, subentity_id, from_date, to_date)
+    lines_qs = journal_lines_for_scope(entity_id, entityfin_id, subentity_id, from_date, to_date)
     if separate_opening:
-        lines = lines.exclude(txn_type=TxnType.OPENING_BALANCE)
-    lines = lines.filter(resolved_ledger_id=ledger_id).order_by("posting_date", "entry_id", "id")
+        lines_qs = lines_qs.exclude(txn_type=TxnType.OPENING_BALANCE)
+    lines_qs = lines_qs.filter(resolved_ledger_id=ledger_id).order_by("posting_date", "entry_id", "id")
+    lines = list(lines_qs)
+
+    purchase_ids = {
+        int(line.txn_id)
+        for line in lines
+        if line.txn_id and line.txn_type in PURCHASE_TXN_TYPES
+    }
+    sales_ids = {
+        int(line.txn_id)
+        for line in lines
+        if line.txn_id and line.txn_type in SALES_TXN_TYPES
+    }
+    service_route_cache = {
+        "purchase_service_ids": set(
+            PurchaseInvoiceLine.objects.filter(header_id__in=purchase_ids, is_service=True)
+            .values_list("header_id", flat=True)
+            .distinct()
+        ) if purchase_ids else set(),
+        "sales_service_ids": set(
+            SalesInvoiceLine.objects.filter(header_id__in=sales_ids, is_service=True)
+            .values_list("header_id", flat=True)
+            .distinct()
+        ) if sales_ids else set(),
+    }
 
     running = opening
     row_data = []
+    route_cache = {}
     total_debit = Decimal("0.00")
     total_credit = Decimal("0.00")
     voucher_type_set = {str(value).strip().lower() for value in (voucher_types or []) if str(value).strip()}
@@ -179,6 +226,8 @@ def build_ledger_book(
                 entity_id=entity_id,
                 entityfin_id=entityfin_id,
                 subentity_id=subentity_id,
+                route_cache=route_cache,
+                service_route_cache=service_route_cache,
             ),
         }
 

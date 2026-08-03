@@ -383,8 +383,10 @@ class VoucherSettingsAPIView(ScopedEntitlementMixin, APIView):
         return self.patch(request)
 
 
-class VoucherCompiledChoicesAPIView(APIView):
+class VoucherCompiledChoicesAPIView(ScopedEntitlementMixin, APIView):
     permission_classes = [IsAuthenticated]
+    subscription_feature_code = SubscriptionLimitCodes.FEATURE_FINANCIAL
+    subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
 
     def get(self, request):
         entity_raw = request.query_params.get("entity_id", request.query_params.get("entity"))
@@ -404,5 +406,8 @@ class VoucherCompiledChoicesAPIView(APIView):
                 raise ValidationError({"subentity_id": "subentity_id must be an integer."})
             if subentity_id == 0:
                 subentity_id = None
+        if entity_id is None:
+            raise ValidationError({"entity_id": "entity_id query param is required."})
+        self.enforce_scope(request, entity_id=entity_id, subentity_id=subentity_id)
 
         return Response(VoucherChoiceService.compile_choices(entity_id=entity_id, subentity_id=subentity_id))

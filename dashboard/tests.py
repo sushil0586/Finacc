@@ -8,8 +8,9 @@ from django.utils import timezone
 from rest_framework.test import APIClient, APITestCase
 
 from Authentication.models import User
-from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity, UnitType
+from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity
 from rbac.models import Permission, Role, RolePermission, UserRoleAssignment
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
 @override_settings(ROOT_URLCONF="FA.urls", AUTH_PASSWORD_VALIDATORS=[], RBAC_DEV_ALLOW_ALL_ACCESS=False)
@@ -24,12 +25,10 @@ class DashboardHomeMetaAPITests(APITestCase):
         )
         self.client.force_authenticate(user=self.user)
 
-        self.unit_type = UnitType.objects.create(UnitName="Business", UnitDesc="Business")
         self.gst_type = GstRegistrationType.objects.create(Name="Regular", Description="Regular")
         self.entity = Entity.objects.create(
             entityname="Dashboard Entity",
             legalname="Dashboard Entity Pvt Ltd",
-            unitType=self.unit_type,
             GstRegitrationType=self.gst_type,
             createdby=self.user,
         )
@@ -132,3 +131,16 @@ class DashboardHomeMetaAPITests(APITestCase):
 
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.data["detail"], "You do not have permission to access dashboard.home.view.")
+
+    def test_dashboard_meta_is_blocked_when_reporting_feature_disabled(self):
+        customer_account = SubscriptionService.register_entity_creation(entity=self.entity, owner=self.user)
+        subscription = SubscriptionService.ensure_active_subscription(customer_account=customer_account)
+        reporting_limit = subscription.plan.limits.get(key=SubscriptionLimitCodes.FEATURE_REPORTING)
+        reporting_limit.bool_value = False
+        reporting_limit.save(update_fields=["bool_value", "updated_at"])
+
+        response = self.client.get("/api/dashboard/home/meta/", {"entity": self.entity.id})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "subscription_feature_disabled")
+        self.assertEqual(response.data["feature_code"], SubscriptionLimitCodes.FEATURE_REPORTING)

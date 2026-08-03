@@ -21,6 +21,7 @@ from posting.adapters.year_opening import YearOpeningPostingAdapter
 from posting.common.static_accounts import StaticAccountCodes
 from posting.static_account_service import StaticAccountMappingService
 from posting.services.balances import ledger_balance_map
+from posting.services.static_accounts import StaticAccountService
 from posting.common.location_resolver import resolve_posting_location_id
 from posting.services.posting_service import (
     JLInput,
@@ -137,6 +138,42 @@ class PostingServicePostTests(PostingServiceBaseTest):
     def test_draft_post_sets_draft_status(self):
         entry = self._post(txn_id=30, mark_posted=False)
         self.assertEqual(entry.status, EntryStatus.DRAFT)
+
+    def test_post_truncates_journal_line_description_to_model_limit(self):
+        long_desc = "X" * 700
+        entry = self.svc.post(
+            txn_type="JV",
+            txn_id=31,
+            voucher_no="JV-31",
+            voucher_date=TODAY,
+            posting_date=TODAY,
+            jl_inputs=[
+                JLInput(accounthead_id=self.ah_dr.id, drcr=True, amount=Decimal("100.00"), description=long_desc),
+                JLInput(accounthead_id=self.ah_cr.id, drcr=False, amount=Decimal("100.00"), description=long_desc),
+            ],
+            use_advisory_lock=False,
+        )
+
+        descriptions = list(JournalLine.objects.filter(entry=entry).values_list("description", flat=True))
+        self.assertEqual(len(descriptions), 2)
+        self.assertTrue(all(len(desc) == 500 for desc in descriptions))
+        self.assertTrue(all(desc.endswith("...") for desc in descriptions))
+
+    def test_post_truncates_entry_narration_to_model_limit(self):
+        long_narration = "N" * 700
+        entry = self.svc.post(
+            txn_type="JV",
+            txn_id=32,
+            voucher_no="JV-32",
+            voucher_date=TODAY,
+            posting_date=TODAY,
+            narration=long_narration,
+            jl_inputs=self._balanced_jl("100.00"),
+            use_advisory_lock=False,
+        )
+
+        self.assertEqual(len(entry.narration), 500)
+        self.assertTrue(entry.narration.endswith("..."))
 
     def test_zero_amount_line_is_skipped(self):
         jl = [
@@ -674,11 +711,13 @@ class StaticAccountMappingServiceTests(TestCase):
             accounttype=cls.account_type,
             drcreffect="Credit",
         )
-        cls.static_account = StaticAccount.objects.create(
+        cls.static_account, _ = StaticAccount.objects.get_or_create(
             code="OUTPUT_IGST",
-            name="Output IGST",
-            group=StaticAccountGroup.GST_OUTPUT,
-            is_required=True,
+            defaults={
+                "name": "Output IGST",
+                "group": StaticAccountGroup.GST_OUTPUT,
+                "is_required": True,
+            },
         )
         cls.pure_ledger = Ledger.objects.create(
             entity=cls.entity,
@@ -735,6 +774,68 @@ class StaticAccountMappingServiceTests(TestCase):
         self.assertEqual(mapping.ledger_id, self.party_ledger.id)
         self.assertEqual(row.account_id, self.party_account.id)
         self.assertEqual(row.ledger_id, self.party_ledger.id)
+
+    def test_clone_default_entity_mappings_copies_template_mapping_by_ledger_code(self):
+        template_entity = Entity.objects.create(entityname="Template Static Entity")
+        target_entity = Entity.objects.create(entityname="Target Static Entity")
+        static_account, _ = StaticAccount.objects.get_or_create(
+            code="SALES_DEFAULT",
+            defaults={
+                "name": "Sales Default",
+                "group": StaticAccountGroup.SALES,
+                "is_required": False,
+            },
+        )
+
+        source_ledger = Ledger.objects.create(
+            entity=template_entity,
+            ledger_code=7100,
+            name="Sales Revenue Template",
+            accounthead=self.account_head,
+            accounttype=self.account_type,
+            is_party=False,
+        )
+        source_account = account.objects.create(
+            entity=template_entity,
+            accountname="Sales Revenue Template",
+            ledger=source_ledger,
+        )
+        target_ledger = Ledger.objects.create(
+            entity=target_entity,
+            ledger_code=7100,
+            name="Sales Revenue Target",
+            accounthead=self.account_head,
+            accounttype=self.account_type,
+            is_party=False,
+        )
+        target_account = account.objects.create(
+            entity=target_entity,
+            accountname="Sales Revenue Target",
+            ledger=target_ledger,
+        )
+        EntityStaticAccountMap.objects.create(
+            entity=template_entity,
+            static_account=static_account,
+            account=source_account,
+            ledger=source_ledger,
+            createdby=self.user,
+        )
+
+        summary = StaticAccountService.clone_default_entity_mappings(
+            target_entity_id=target_entity.id,
+            actor=self.user,
+            template_entity_id=template_entity.id,
+        )
+
+        cloned = EntityStaticAccountMap.objects.get(
+            entity=target_entity,
+            static_account=static_account,
+            is_active=True,
+        )
+        self.assertEqual(summary["created"], 1)
+        self.assertIn(static_account.code, summary["copied_codes"])
+        self.assertEqual(cloned.account_id, target_account.id)
+        self.assertEqual(cloned.ledger_id, target_ledger.id)
 
 
 class PostingLocationResolverTests(TestCase):

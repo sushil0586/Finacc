@@ -9,7 +9,7 @@ from rest_framework import serializers
 
 from entity.models import Entity
 
-from .models import UserEntityAccess
+from .models import PlanLimit, SubscriptionPlan, UserEntityAccess
 from .services import SubscriptionService
 
 
@@ -204,6 +204,183 @@ class TenantMembershipListResponseSerializer(serializers.Serializer):
     capabilities = serializers.DictField(child=serializers.BooleanField())
     role_choices = serializers.ListField(child=serializers.DictField())
     members = TenantMembershipSerializer(many=True)
+
+
+class SubscriptionPublicPlanSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    code = serializers.CharField()
+    name = serializers.CharField()
+    description = serializers.CharField(allow_blank=True)
+    tier = serializers.CharField(allow_null=True)
+    billing_interval = serializers.CharField(allow_null=True)
+    price_amount = serializers.DecimalField(max_digits=10, decimal_places=2)
+    currency = serializers.CharField(allow_null=True)
+    trial_days = serializers.IntegerField()
+    is_default = serializers.BooleanField()
+    is_public = serializers.BooleanField()
+    is_selectable_for_signup = serializers.BooleanField()
+    sort_order = serializers.IntegerField()
+    features = serializers.DictField(child=serializers.BooleanField())
+    limits = serializers.DictField(child=serializers.IntegerField(allow_null=True))
+    metadata = serializers.JSONField()
+
+
+class SubscriptionSnapshotSerializer(serializers.Serializer):
+    customer_account = serializers.JSONField()
+    subscription = serializers.JSONField()
+    plan = SubscriptionPublicPlanSerializer()
+    limits = serializers.JSONField()
+    features = serializers.JSONField()
+    feature_summary = serializers.JSONField()
+    locked_features = serializers.JSONField()
+    usage = serializers.JSONField()
+    quota_summary = serializers.JSONField()
+    block_reasons = serializers.JSONField()
+
+
+class SubscriptionAccountActionSerializer(serializers.Serializer):
+    plan_id = serializers.IntegerField(required=False)
+    status_reason = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    status_notes = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+
+    def validate(self, attrs):
+        action = self.context["action"]
+        if action == "change_plan":
+            if not attrs.get("plan_id"):
+                raise serializers.ValidationError({"plan_id": "plan_id is required for change_plan."})
+        return attrs
+
+
+class SubscriptionPlanLimitAdminSerializer(serializers.Serializer):
+    id = serializers.IntegerField(read_only=True)
+    key = serializers.CharField(max_length=100)
+    label = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    limit_type = serializers.ChoiceField(choices=PlanLimit.LimitType.choices)
+    int_value = serializers.IntegerField(required=False, allow_null=True)
+    bool_value = serializers.BooleanField(required=False, allow_null=True)
+    text_value = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    is_unlimited = serializers.BooleanField(required=False, default=False)
+    value = serializers.JSONField(read_only=True)
+    metadata = serializers.JSONField(required=False)
+
+    def validate(self, attrs):
+        is_unlimited = attrs.get("is_unlimited", False)
+        limit_type = attrs["limit_type"]
+        int_value = attrs.get("int_value")
+        bool_value = attrs.get("bool_value")
+        text_value = attrs.get("text_value")
+
+        value_count = sum([
+            int_value is not None,
+            bool_value is not None,
+            bool(text_value),
+        ])
+
+        if is_unlimited:
+            if value_count > 0:
+                raise serializers.ValidationError("Unlimited limits cannot also store a concrete value.")
+            return attrs
+
+        if limit_type == PlanLimit.LimitType.INTEGER:
+            if int_value is None:
+                raise serializers.ValidationError({"int_value": "Required for integer limits."})
+            if bool_value is not None or text_value:
+                raise serializers.ValidationError("Only int_value may be set for integer limits.")
+        elif limit_type == PlanLimit.LimitType.BOOLEAN:
+            if bool_value is None:
+                raise serializers.ValidationError({"bool_value": "Required for boolean limits."})
+            if int_value is not None or text_value:
+                raise serializers.ValidationError("Only bool_value may be set for boolean limits.")
+        else:
+            if not text_value:
+                raise serializers.ValidationError({"text_value": "Required for text limits."})
+            if int_value is not None or bool_value is not None:
+                raise serializers.ValidationError("Only text_value may be set for text limits.")
+        return attrs
+
+
+class SubscriptionPlanAdminSerializer(serializers.ModelSerializer):
+    raw_limits = SubscriptionPlanLimitAdminSerializer(many=True, required=False)
+    features = serializers.DictField(read_only=True)
+    limits = serializers.DictField(read_only=True)
+
+    class Meta:
+        model = SubscriptionPlan
+        fields = (
+            "id",
+            "code",
+            "name",
+            "description",
+            "tier",
+            "billing_interval",
+            "price_amount",
+            "currency",
+            "trial_days",
+            "sort_order",
+            "is_public",
+            "is_default",
+            "is_selectable_for_signup",
+            "is_active",
+            "external_price_id",
+            "billing_provider",
+            "metadata",
+            "features",
+            "limits",
+            "raw_limits",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = ("created_at", "updated_at")
+
+    def validate(self, attrs):
+        instance = getattr(self, "instance", None)
+
+        def resolved(field, default=None):
+            if field in attrs:
+                return attrs[field]
+            if instance is not None:
+                return getattr(instance, field)
+            return default
+
+        is_public = resolved("is_public", True)
+        is_selectable_for_signup = resolved("is_selectable_for_signup", True)
+        is_default = resolved("is_default", False)
+        is_active = resolved("is_active", True)
+
+        errors = {}
+
+        if is_selectable_for_signup and not is_public:
+            errors["is_selectable_for_signup"] = (
+                "Signup-selectable plans must also be public."
+            )
+
+        if is_default:
+            if not is_active:
+                errors["is_active"] = "Default plan must remain active."
+            if not is_public:
+                errors["is_public"] = "Default plan must remain public."
+            if not is_selectable_for_signup:
+                errors["is_selectable_for_signup"] = (
+                    "Default plan must remain selectable for signup."
+                )
+
+        if errors:
+            raise serializers.ValidationError(errors)
+
+        return attrs
+
+    def create(self, validated_data):
+        return SubscriptionService.create_or_update_plan(data=validated_data)
+
+    def update(self, instance, validated_data):
+        return SubscriptionService.create_or_update_plan(plan=instance, data=validated_data)
+
+    def to_representation(self, instance):
+        if isinstance(instance, dict):
+            return super().to_representation(instance)
+        return super().to_representation(
+            SubscriptionService.serialize_internal_plan(plan=instance)
+        )
 
 
 def tenant_membership_queryset_for_entity(entity: Entity):

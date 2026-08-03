@@ -11,7 +11,7 @@ from rest_framework.test import APITestCase, APIClient
 
 from Authentication.models import User
 from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity
-from financial.models import Ledger, account, accountHead, accounttype
+from financial.models import Debit, Ledger, account, accountHead, accounttype
 from financial.services_opening_balance import account_opening_txn_id
 from financial.services import apply_normalized_profile_payload, create_account_with_synced_ledger
 from geography.models import City, Country, District, State
@@ -394,7 +394,6 @@ class BookReportAPITests(APITestCase):
         response = self.client.get(reverse("reports_api:financial-daybook"), {"entity": self.entity.id, "entityfinid": self.entityfin.id, "subentity": self.subentity.id, "from_date": "2025-04-01", "to_date": "2025-04-30"})
         self.assertEqual(response.status_code, 200)
         data = response.json()
-        print("TB_PERIODS", data["periods"])
         self.assertTrue(data["balance_integrity"])
         self.assertEqual(data["mode"], "voucher_list")
         self.assertEqual(data["totals"]["transaction_count"], 4)
@@ -411,7 +410,6 @@ class BookReportAPITests(APITestCase):
         response = self.client.get(reverse("reports_api:financial-meta"), {"entity": self.entity.id})
         self.assertEqual(response.status_code, 200)
         data = response.json()
-        print("PL_PERIODS", data["periods"])
         self.assertIn("voucher_types", data)
         self.assertIn("daybook_voucher_types", data)
         self.assertIn("cashbook_voucher_types", data)
@@ -461,6 +459,19 @@ class BookReportAPITests(APITestCase):
         self.assertIn(self.cash_account.id, cash_ids)
         self.assertIn(self.bank_account.id, bank_ids)
         self.assertNotIn(self.other_cash_account.id, all_ids)
+
+    @override_settings(META_CACHE_ENABLED=True, META_CACHE_TTL_SECONDS=300)
+    def test_financial_meta_uses_cache_for_repeated_entity_requests(self):
+        url = reverse("reports_api:financial-meta")
+        with patch("reports.api.financial.views.build_financial_report_meta") as mocked_builder:
+            mocked_builder.return_value = {"entity_id": self.entity.id, "all_accounts": []}
+
+            first = self.client.get(url, {"entity": self.entity.id})
+            second = self.client.get(url, {"entity": self.entity.id})
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(mocked_builder.call_count, 1)
 
     def test_daybook_filters_voucher_type_status_posted_and_search(self):
         response = self.client.get(reverse("reports_api:financial-daybook"), {"entity": self.entity.id, "voucher_type": f"{TxnType.JOURNAL_BANK},{TxnType.PAYMENT}", "status": "posted", "posted": True, "search": "REF-BANK-001"})
@@ -590,7 +601,6 @@ class BookReportAPITests(APITestCase):
         response = self.client.get(reverse("reports_api:financial-daybook"), {"entity": self.entity.id, "page": 1, "page_size": 2})
         self.assertEqual(response.status_code, 200)
         data = response.json()
-        print("BS_PERIODS", data["periods"])
         self.assertEqual(len(data["results"]), 2)
         self.assertEqual(data["count"], 4)
         self.assertEqual(data["totals"]["debit_total"], "125.00")
@@ -1552,6 +1562,33 @@ class BookReportAPITests(APITestCase):
         self.assertEqual(Decimal(str(rows["Cash In Hand"]["opening"])), Decimal("100.00"))
         self.assertEqual(Decimal(str(rows["Main Bank"]["opening"])), Decimal("200.00"))
 
+    def test_trial_balance_handles_ledger_without_account_heads(self):
+        orphan_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=9904,
+            name="Headless Ledger",
+            createdby=self.user,
+        )
+
+        response = self.client.get(
+            reverse("reports_api:financial-trial-balance"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "group_by": "ledger",
+                "posted_only": True,
+                "include_zero_balances": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        rows = {row["ledger_id"]: row for row in response.json()["rows"]}
+        orphan_row = rows[orphan_ledger.id]
+        self.assertIsNone(orphan_row["accounthead_id"])
+        self.assertIsNone(orphan_row["accounthead_name"])
+        self.assertIsNone(orphan_row["accounttype_id"])
+        self.assertIsNone(orphan_row["accounttype_name"])
+        self.assertEqual(orphan_row["normal_balance"], Debit)
+
     def test_trial_balance_exposes_standard_export_actions(self):
         response = self.client.get(
             reverse("reports_api:financial-trial-balance"),
@@ -2025,6 +2062,169 @@ class BookReportAPITests(APITestCase):
         self.assertEqual(data["reporting"]["sort_by"], "closing")
         self.assertEqual(data["reporting"]["sort_order"], "desc")
 
+    def test_ledger_summary_accounthead_detailed_includes_group_children(self):
+        response = self.client.get(
+            reverse("reports_api:financial-ledger-summary"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "scope_mode": "custom",
+                "from_date": "2025-04-01",
+                "to_date": "2025-04-30",
+                "group_by": "accounthead",
+                "view_type": "detailed",
+                "posted_only": True,
+                "include_opening": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        rows = {row["label"]: row for row in data["rows"]}
+
+        cash_group = rows["Cash Head"]
+        self.assertEqual(cash_group["child_count"], 1)
+        self.assertEqual(len(cash_group["children"]), 1)
+        self.assertEqual(cash_group["children"][0]["ledger_name"], "Cash In Hand")
+        self.assertEqual(Decimal(str(cash_group["opening"])), Decimal("100.00"))
+        self.assertEqual(Decimal(str(cash_group["debit"])), Decimal("50.00"))
+        self.assertEqual(Decimal(str(cash_group["balance"])), Decimal("150.00"))
+
+        bank_group = rows["Bank Head"]
+        child_names = {child["ledger_name"] for child in bank_group["children"]}
+        self.assertIn("Main Bank", child_names)
+        self.assertNotIn("Sundry Creditors", child_names)
+
+    def test_ledger_summary_accounttype_summary_rolls_up_totals(self):
+        liability_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Liabilities",
+            accounttypecode="L100",
+            createdby=self.user,
+        )
+        liability_head = accountHead.objects.create(
+            entity=self.entity,
+            name="Liability Head",
+            code=401,
+            balanceType="Credit",
+            drcreffect="Credit",
+            accounttype=liability_type,
+            createdby=self.user,
+        )
+        liability_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=4010,
+            name="Loan Ledger",
+            accounthead=liability_head,
+            createdby=self.user,
+        )
+        liability_account = create_account_with_synced_ledger(
+            account_data={"entity": self.entity, "ledger": liability_ledger, "accountname": "Loan Ledger", "createdby": self.user},
+            ledger_overrides={"ledger_code": 4010, "accounthead": liability_head, "is_party": True},
+        )
+        self._create_entry(
+            txn_type=TxnType.JOURNAL,
+            txn_id=4010,
+            voucher_no="JV-LIAB-001",
+            posting_date="2025-04-06",
+            voucher_date="2025-04-06",
+            status=EntryStatus.POSTED,
+            narration="Liability booking",
+            subentity=self.subentity,
+            lines=[
+                (self.cash_account, self.cash_ledger, True, "80.00", "Cash inflow"),
+                (liability_account, liability_ledger, False, "80.00", "Loan booked"),
+            ],
+        )
+
+        response = self.client.get(
+            reverse("reports_api:financial-ledger-summary"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "group_by": "accounttype",
+                "view_type": "summary",
+                "posted_only": True,
+                "include_opening": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        rows = {row["label"]: row for row in data["rows"]}
+
+        self.assertIn("Assets", rows)
+        self.assertIn("Liabilities", rows)
+        self.assertEqual(rows["Liabilities"]["child_count"], 1)
+        self.assertEqual(rows["Liabilities"]["children"], [])
+        self.assertEqual(Decimal(str(rows["Liabilities"]["credit"])), Decimal("80.00"))
+        self.assertEqual(Decimal(str(rows["Liabilities"]["balance"])), Decimal("-80.00"))
+        self.assertEqual(Decimal(str(data["totals"]["debit"])), Decimal("195.00"))
+        self.assertEqual(Decimal(str(data["totals"]["credit"])), Decimal("195.00"))
+
+    def test_ledger_summary_zero_balance_flag_controls_orphan_ledger_visibility(self):
+        orphan_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=9903,
+            name="Zero Ledger",
+            accounthead=self.head_cash,
+            createdby=self.user,
+        )
+        create_account_with_synced_ledger(
+            account_data={"entity": self.entity, "ledger": orphan_ledger, "accountname": "Zero Ledger", "createdby": self.user},
+            ledger_overrides={"ledger_code": 9903, "accounthead": self.head_cash, "is_party": True},
+        )
+
+        hidden_response = self.client.get(
+            reverse("reports_api:financial-ledger-summary"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "group_by": "ledger",
+                "posted_only": True,
+            },
+        )
+        self.assertEqual(hidden_response.status_code, 200)
+        hidden_names = {row["ledger_name"] for row in hidden_response.json()["rows"]}
+        self.assertNotIn("Zero Ledger", hidden_names)
+
+        shown_response = self.client.get(
+            reverse("reports_api:financial-ledger-summary"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "group_by": "ledger",
+                "posted_only": True,
+                "include_zero_balances": True,
+            },
+        )
+        self.assertEqual(shown_response.status_code, 200)
+        shown_rows = {row["ledger_name"]: row for row in shown_response.json()["rows"]}
+        self.assertIn("Zero Ledger", shown_rows)
+        self.assertEqual(Decimal(str(shown_rows["Zero Ledger"]["balance"])), Decimal("0.00"))
+
+    def test_ledger_summary_search_and_pagination_keep_filtered_record_count(self):
+        response = self.client.get(
+            reverse("reports_api:financial-ledger-summary"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "group_by": "ledger",
+                "posted_only": True,
+                "search": "Bank",
+                "page": 1,
+                "page_size": 1,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+
+        self.assertEqual(data["pagination"]["page"], 1)
+        self.assertEqual(data["pagination"]["page_size"], 1)
+        self.assertEqual(data["pagination"]["total_records"], 1)
+        self.assertEqual(data["pagination"]["total_pages"], 1)
+        self.assertEqual(len(data["rows"]), 1)
+        self.assertEqual(data["rows"][0]["ledger_name"], "Main Bank")
+        self.assertEqual(data["reporting"]["search"], "Bank")
+
     def test_ledger_book_financial_year_scope_with_explicit_dates_does_not_split_opening(self):
         response = self.client.get(
             reverse("reports_api:financial-ledger-book"),
@@ -2444,7 +2644,7 @@ class BookReportAPITests(APITestCase):
         data = response.json()
         diagnostics = data.get("diagnostics") or {}
 
-        self.assertEqual(diagnostics.get("difference"), "125.00")
+        self.assertEqual(diagnostics.get("difference"), "-125.00")
         self.assertEqual((diagnostics.get("primary_reason") or {}).get("code"), "excluded_balance_sheet_rows")
         self.assertEqual((diagnostics.get("primary_reason") or {}).get("amount"), "125.00")
         excluded_ledgers = {

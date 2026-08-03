@@ -166,6 +166,7 @@ class SubscriptionPlan(TimeStampedModel, SoftDeleteModel):
 
     is_public = models.BooleanField(default=True)
     is_default = models.BooleanField(default=False)
+    is_selectable_for_signup = models.BooleanField(default=True)
 
     external_price_id = models.CharField(
         max_length=120,
@@ -190,6 +191,7 @@ class SubscriptionPlan(TimeStampedModel, SoftDeleteModel):
             models.Index(fields=["code"]),
             models.Index(fields=["tier"]),
             models.Index(fields=["is_public"]),
+            models.Index(fields=["is_selectable_for_signup"]),
             models.Index(fields=["is_default"]),
         ]
 

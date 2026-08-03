@@ -11,6 +11,7 @@ from rest_framework.test import APIClient, APITestCase
 from Authentication.models import User
 from catalog.models import PriceList, Product, ProductBarcode, ProductCategory, ProductPrice, UnitOfMeasure
 from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 from .models import CommercePromotion, CommercePromotionScope, CommercePromotionSlab
 
@@ -205,3 +206,44 @@ class CommerceFoundationTests(APITestCase):
         payload = create.json()
         self.assertEqual(payload["code"], "PROMO-API")
         self.assertEqual(len(payload["slabs"]), 2)
+
+    def test_line_normalize_is_blocked_when_sales_feature_disabled(self):
+        account = SubscriptionService.register_entity_creation(entity=self.entity, owner=self.user)
+        subscription = SubscriptionService.ensure_active_subscription(customer_account=account)
+        sales_limit = subscription.plan.limits.get(key=SubscriptionLimitCodes.FEATURE_SALES)
+        sales_limit.bool_value = False
+        sales_limit.save(update_fields=["bool_value", "updated_at"])
+
+        response = self.client.post(
+            reverse("commerce:line-normalize"),
+            {
+                "entity": self.entity.id,
+                "subentity": self.subentity.id,
+                "barcode": self.barcode.barcode,
+                "qty": "1.0000",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["code"], "subscription_feature_disabled")
+        self.assertEqual(response.json()["feature_code"], SubscriptionLimitCodes.FEATURE_SALES)
+
+    def test_promotion_detail_is_scoped_to_requested_entity(self):
+        promotion = self._create_promotion()
+        other_entity = Entity.objects.create(
+            entityname="Other Commerce Entity",
+            entitydesc="Other commerce entity",
+            legalname="Other Commerce Entity Pvt Ltd",
+            GstRegitrationType=self.gst_type,
+            createdby=self.user,
+        )
+        SubscriptionService.register_entity_creation(entity=self.entity, owner=self.user)
+        SubscriptionService.register_entity_creation(entity=other_entity, owner=self.user)
+
+        response = self.client.get(
+            reverse("commerce:promotion-detail", args=[promotion.id]),
+            {"entity": other_entity.id},
+        )
+
+        self.assertEqual(response.status_code, 404)

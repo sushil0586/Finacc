@@ -3,16 +3,21 @@ from __future__ import annotations
 from decimal import Decimal
 from datetime import date, datetime
 from types import SimpleNamespace
+from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
+import time
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.http import Http404
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
+from django.core.cache import cache
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity
+from helpers.utils.meta_cache import PAYMENT_META_NAMESPACES, bump_meta_namespaces, get_or_set_meta_cache
 from numbering.models import DocumentNumberSeries, DocumentType
 from numbering.seeding import NumberingSeedService
 from payments.models import PaymentVoucherHeader
@@ -20,7 +25,7 @@ from payments.serializers.payment_voucher import PaymentVoucherHeaderSerializer
 from payments.services.payment_voucher_service import PaymentVoucherService
 from payments.services.payment_settings_service import PaymentSettingsService
 from payments.views.payment_exports import PaymentVoucherPDFAPIView
-from payments.views.payment_meta import PaymentVoucherDetailFormMetaAPIView
+from payments.views.payment_meta import PaymentVoucherDetailFormMetaAPIView, PaymentVoucherFormMetaAPIView
 from payments.views.payment_voucher import (
     PaymentVoucherApprovalAPIView,
     PaymentVoucherCancelAPIView,
@@ -30,9 +35,11 @@ from payments.views.payment_voucher import (
     _duplicate_reference_warnings,
 )
 from payments.views.payment_settings import PaymentSettingsAPIView
+from payments.views.payment_choices import PaymentCompiledChoicesAPIView
 from posting.adapters.payment_voucher import PaymentVoucherPostingAdapter
 from purchase.models.purchase_ap import VendorSettlement
 from purchase.services.purchase_ap_service import PurchaseApService
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 from withholding.models import WithholdingBaseRule
 
 User = get_user_model()
@@ -86,10 +93,45 @@ class PaymentPostingAdapterTests(SimpleTestCase):
         self.assertIn("From HDFC Bank", jl[0].description)
 
 
+@override_settings(
+    CACHES={
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "payment-meta-cache-lock-tests",
+            "TIMEOUT": 300,
+        }
+    },
+    META_CACHE_LOCK_WAIT_SECONDS=2.0,
+    META_CACHE_LOCK_POLL_SECONDS=0.01,
+    META_CACHE_LOCK_TIMEOUT_SECONDS=5,
+)
+class MetaCacheSingleFlightTests(SimpleTestCase):
+    def setUp(self):
+        cache.clear()
+
+    def test_concurrent_requests_share_single_builder_run(self):
+        key = "meta:test:single-flight"
+        call_state = {"count": 0}
+        state_lock = Lock()
+
+        def builder():
+            with state_lock:
+                call_state["count"] += 1
+            time.sleep(0.1)
+            return {"ok": True}
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            results = list(executor.map(lambda _: get_or_set_meta_cache(key, builder, timeout=60), range(5)))
+
+        self.assertEqual(call_state["count"], 1)
+        self.assertEqual(results, [{"ok": True}] * 5)
+
+
 class PaymentVoucherReferenceWarningTests(SimpleTestCase):
     @patch("payments.views.payment_voucher.PaymentVoucherHeader.objects")
     def test_duplicate_reference_warning_includes_existing_voucher_code(self, mocked_objects):
-        mocked_objects.filter.return_value.exclude.return_value.order_by.return_value.filter.return_value.only.return_value.first.return_value = SimpleNamespace(
+        exact_qs = mocked_objects.filter.return_value.exclude.return_value.order_by.return_value
+        exact_qs.filter.return_value.only.return_value.first.return_value = SimpleNamespace(
             voucher_code="PPV-1002",
             doc_code="PPV",
             doc_no=1002,
@@ -108,6 +150,36 @@ class PaymentVoucherReferenceWarningTests(SimpleTestCase):
         self.assertEqual(warnings, [
             "Reference already appears on voucher PPV-1002. Please double-check before proceeding."
         ])
+
+    @patch("payments.views.payment_voucher.PaymentVoucherHeader.objects")
+    def test_duplicate_reference_warning_falls_back_to_case_insensitive_match(self, mocked_objects):
+        exact_filter = MagicMock(name="exact_filter")
+        fallback_filter = MagicMock(name="fallback_filter")
+        mocked_objects.filter.side_effect = [exact_filter, fallback_filter]
+
+        exact_qs = exact_filter.exclude.return_value.order_by.return_value
+        exact_qs.filter.return_value.only.return_value.first.return_value = None
+        fallback_qs = fallback_filter.exclude.return_value.order_by.return_value
+        fallback_qs.filter.return_value.only.return_value.first.return_value = SimpleNamespace(
+            voucher_code="PPV-1003",
+            doc_code="PPV",
+            doc_no=1003,
+        )
+        voucher = SimpleNamespace(
+            id=99,
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=5,
+            paid_to_id=77,
+            reference_number="utr-001",
+        )
+
+        warnings = _duplicate_reference_warnings(voucher)
+
+        self.assertEqual(warnings, [
+            "Reference already appears on voucher PPV-1003. Please double-check before proceeding."
+        ])
+        self.assertEqual(mocked_objects.filter.call_count, 2)
 
 
 class PaymentVoucherServiceTests(SimpleTestCase):
@@ -213,6 +285,33 @@ class PaymentVoucherServiceTests(SimpleTestCase):
         result = PaymentVoucherService.reject_voucher.__wrapped__(voucher_id=11, rejected_by_id=8, remarks="Retry")
 
         self.assertEqual(result.message, "Already rejected.")
+
+
+class PaymentChoicesEntitlementTests(TestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.user = User.objects.create_user(
+            username="payment-choices-user",
+            email="payment-choices@example.com",
+            password="pass@12345",
+        )
+        self.entity = Entity.objects.create(entityname="Payment Choices Entity", createdby=self.user)
+
+    def test_payment_choices_are_blocked_when_financial_feature_disabled(self):
+        account = SubscriptionService.register_entity_creation(entity=self.entity, owner=self.user)
+        subscription = SubscriptionService.ensure_active_subscription(customer_account=account)
+        financial_limit = subscription.plan.limits.get(key=SubscriptionLimitCodes.FEATURE_FINANCIAL)
+        financial_limit.bool_value = False
+        financial_limit.save(update_fields=["bool_value", "updated_at"])
+
+        request = self.factory.get(f"/api/payments/choices/?entity={self.entity.id}")
+        force_authenticate(request, user=self.user)
+
+        response = PaymentCompiledChoicesAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "subscription_feature_disabled")
+        self.assertEqual(response.data["feature_code"], SubscriptionLimitCodes.FEATURE_FINANCIAL)
 
     @patch("payments.services.payment_voucher_service.PaymentVoucherService._resolve_financial_year")
     @patch("payments.services.payment_voucher_service.PaymentVoucherHeader.objects")
@@ -993,6 +1092,68 @@ class PurchaseApServiceUnitTests(SimpleTestCase):
         )
         mock_post_adapter.assert_called_once()
 
+    @patch.object(PaymentVoucherService, "_fresh_allocation_rows")
+    @patch("payments.services.payment_voucher_service.PaymentVoucherPostingAdapter.post_payment_voucher")
+    @patch("payments.services.payment_voucher_service.PaymentSettingsService.get_policy")
+    @patch("payments.services.payment_voucher_service.PaymentVoucherHeader.objects")
+    def test_post_voucher_blocks_against_bill_when_allocation_total_mismatches_effective_amount(
+        self,
+        mock_header_objects,
+        mock_get_policy,
+        mock_post_adapter,
+        mock_fresh_allocations,
+    ):
+        allocation_row = SimpleNamespace(open_item_id=55, settled_amount=Decimal("348.00"))
+        header = SimpleNamespace(
+            id=193,
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            status=PaymentVoucherHeader.Status.CONFIRMED,
+            payment_type=PaymentVoucherHeader.PaymentType.AGAINST_BILL,
+            voucher_date="2026-07-30",
+            voucher_code="PPV-193",
+            reference_number="UTR-MISMATCH",
+            narration="mismatch coverage",
+            paid_to_id=99,
+            cash_paid_amount=Decimal("736.00"),
+            total_adjustment_amount=Decimal("0.00"),
+            settlement_effective_amount=Decimal("736.00"),
+            settlement_effective_amount_base_currency=Decimal("736.00"),
+            exchange_rate=Decimal("1.000000"),
+            created_by_id=5,
+            ap_settlement_id=None,
+            approved_at=None,
+            approved_by_id=None,
+            workflow_payload={},
+            adjustments=SimpleNamespace(all=lambda: [], values=lambda *args, **kwargs: []),
+            allocations=SimpleNamespace(all=lambda: [allocation_row]),
+            advance_adjustments=SimpleNamespace(all=lambda: []),
+            save=MagicMock(),
+        )
+        mock_header_objects.select_related.return_value.prefetch_related.return_value.get.return_value = header
+        mock_get_policy.return_value = SimpleNamespace(controls={
+            "require_allocation_on_post": "hard",
+            "sync_ap_settlement_on_post": "on",
+            "allocation_amount_match_rule": "hard",
+            "require_confirm_before_post": "on",
+            "payment_maker_checker": "off",
+            "over_settlement_rule": "block",
+            "allocation_policy": "manual",
+            "sync_advance_balance_on_post": "off",
+        })
+        mock_fresh_allocations.return_value = [allocation_row]
+
+        with patch.object(PaymentVoucherService, "_validate_advance_adjustments", return_value=None), \
+             patch.object(PaymentVoucherService, "_validate_allocations", return_value=[]):
+            with self.assertRaisesMessage(
+                ValueError,
+                "Allocation total 348.00 does not match settlement support amount 736.00 before posting.",
+            ):
+                PaymentVoucherService.post_voucher.__wrapped__(voucher_id=193, posted_by_id=9)
+
+        mock_post_adapter.assert_not_called()
+
     @patch("payments.services.payment_voucher_service.VendorAdvanceBalance.objects")
     @patch("payments.services.payment_voucher_service.logger")
     @patch("payments.services.payment_voucher_service.PaymentVoucherPostingAdapter.post_payment_voucher")
@@ -1634,6 +1795,96 @@ class PaymentVoucherViewValidationTests(SimpleTestCase):
         self.assertIn("remarks", response.data)
         mocked_error_log.assert_called_once()
 
+    @patch("payments.views.payment_voucher._require_payment_permission")
+    @patch("payments.views.payment_voucher.PaymentVoucherService.submit_voucher")
+    @patch("payments.views.payment_voucher.PaymentVoucherHeaderSerializer")
+    @patch("payments.views.payment_voucher.PaymentVoucherHeader.objects")
+    def test_approval_view_returns_already_submitted_feedback_for_stale_tab_submit(
+        self,
+        mocked_header_objects,
+        mocked_serializer,
+        mocked_submit_voucher,
+        _mocked_require_permission,
+    ):
+        mocked_header_objects.only.return_value.get.return_value = SimpleNamespace(id=9, entity_id=1)
+        mocked_serializer.return_value.data = {
+            "id": 9,
+            "approval_status": "SUBMITTED",
+            "approval_status_name": "Submitted",
+        }
+        mocked_submit_voucher.return_value = SimpleNamespace(
+            message="Already submitted.",
+            header=SimpleNamespace(id=9),
+        )
+        request = self._request("/api/payments/payment-vouchers/9/approval/", {"action": "submit"})
+
+        response = PaymentVoucherApprovalAPIView.as_view()(request, pk=9)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["message"], "Already submitted.")
+        self.assertEqual(response.data["approval_status"], "SUBMITTED")
+        self.assertEqual(response.data["approval_status_name"], "Submitted")
+
+    @patch("payments.views.payment_voucher._require_payment_permission")
+    @patch("payments.views.payment_voucher.PaymentVoucherService.approve_voucher")
+    @patch("payments.views.payment_voucher.PaymentVoucherHeaderSerializer")
+    @patch("payments.views.payment_voucher.PaymentVoucherHeader.objects")
+    def test_approval_view_returns_already_approved_feedback_for_stale_tab_approve(
+        self,
+        mocked_header_objects,
+        mocked_serializer,
+        mocked_approve_voucher,
+        _mocked_require_permission,
+    ):
+        mocked_header_objects.only.return_value.get.return_value = SimpleNamespace(id=9, entity_id=1)
+        mocked_serializer.return_value.data = {
+            "id": 9,
+            "approval_status": "APPROVED",
+            "approval_status_name": "Approved",
+        }
+        mocked_approve_voucher.return_value = SimpleNamespace(
+            message="Already approved.",
+            header=SimpleNamespace(id=9),
+        )
+        request = self._request("/api/payments/payment-vouchers/9/approval/", {"action": "approve"})
+
+        response = PaymentVoucherApprovalAPIView.as_view()(request, pk=9)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["message"], "Already approved.")
+        self.assertEqual(response.data["approval_status"], "APPROVED")
+        self.assertEqual(response.data["approval_status_name"], "Approved")
+
+    @patch("payments.views.payment_voucher._require_payment_permission")
+    @patch("payments.views.payment_voucher.PaymentVoucherService.reject_voucher")
+    @patch("payments.views.payment_voucher.PaymentVoucherHeaderSerializer")
+    @patch("payments.views.payment_voucher.PaymentVoucherHeader.objects")
+    def test_approval_view_returns_already_rejected_feedback_for_stale_tab_reject(
+        self,
+        mocked_header_objects,
+        mocked_serializer,
+        mocked_reject_voucher,
+        _mocked_require_permission,
+    ):
+        mocked_header_objects.only.return_value.get.return_value = SimpleNamespace(id=9, entity_id=1)
+        mocked_serializer.return_value.data = {
+            "id": 9,
+            "approval_status": "REJECTED",
+            "approval_status_name": "Rejected",
+        }
+        mocked_reject_voucher.return_value = SimpleNamespace(
+            message="Already rejected.",
+            header=SimpleNamespace(id=9),
+        )
+        request = self._request("/api/payments/payment-vouchers/9/approval/", {"action": "reject"})
+
+        response = PaymentVoucherApprovalAPIView.as_view()(request, pk=9)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["message"], "Already rejected.")
+        self.assertEqual(response.data["approval_status"], "REJECTED")
+        self.assertEqual(response.data["approval_status_name"], "Rejected")
+
     @patch("errorlogger.drf_exception_handler.ErrorLog.objects.create")
     @patch("payments.views.payment_voucher._require_payment_permission")
     @patch("payments.views.payment_voucher.PaymentVoucherHeader.objects")
@@ -1952,6 +2203,29 @@ class PaymentRuntimeWithholdingTests(SimpleTestCase):
         self.assertTrue(payload.get("withholding_runtime_result", {}).get("zero_deduction"))
         self.assertFalse(payload.get("withholding_runtime_result", {}).get("user_selected_add_tds"))
 
+    def test_runtime_withholding_enabled_without_section_keeps_manual_rows_and_sets_no_section_snapshot(self):
+        adjustments, payload = PaymentVoucherService._apply_runtime_withholding_to_adjustments(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            paid_to_id=55,
+            voucher_date=None,
+            cash_paid_amount=Decimal("100.00"),
+            allocations=[],
+            adjustments=[
+                {"adj_type": "BANK_CHARGES", "amount": Decimal("2.00"), "remarks": "manual"},
+                {"adj_type": "TDS", "amount": Decimal("5.00"), "remarks": PaymentVoucherService.AUTO_WITHHOLDING_TDS_REMARK},
+            ],
+            workflow_payload={"withholding": {"enabled": True, "mode": "AUTO"}},
+        )
+
+        self.assertEqual(len(adjustments), 1)
+        self.assertEqual(adjustments[0]["adj_type"], "BANK_CHARGES")
+        self.assertEqual(payload.get("withholding_runtime_result", {}).get("reason_code"), "NO_SECTION")
+        self.assertEqual(payload.get("withholding_runtime_result", {}).get("deduction_status"), "NOT_DEDUCTED")
+        self.assertTrue(payload.get("withholding_runtime_result", {}).get("zero_deduction"))
+        self.assertTrue(payload.get("withholding_runtime_result", {}).get("user_selected_add_tds"))
+
     @patch("payments.services.payment_voucher_service.WithholdingSection.objects.filter")
     def test_runtime_withholding_rejects_invoice_based_section_even_in_manual_mode(self, mock_filter):
         mock_filter.return_value.only.return_value.first.return_value = SimpleNamespace(
@@ -2031,6 +2305,53 @@ class PaymentRuntimeWithholdingTests(SimpleTestCase):
         self.assertEqual(runtime.get("deduction_status"), "DEDUCTED")
         self.assertFalse(runtime.get("zero_deduction"))
         self.assertTrue(runtime.get("user_selected_add_tds"))
+
+    @patch("payments.services.payment_voucher_service.WithholdingSection.objects.filter")
+    @patch("payments.services.payment_voucher_service.StaticAccountService.get_ledger_id")
+    @patch("payments.services.payment_voucher_service.StaticAccountService.get_account_id")
+    @patch("payments.services.payment_voucher_service.compute_withholding_preview")
+    def test_runtime_withholding_replaces_existing_auto_tds_row_without_duplication(
+        self,
+        mock_preview,
+        mock_get_account_id,
+        mock_get_ledger_id,
+        mock_filter,
+    ):
+        mock_filter.return_value.only.return_value.first.return_value = SimpleNamespace(
+            id=5,
+            base_rule=WithholdingBaseRule.PAYMENT_VALUE,
+            section_code="194A",
+        )
+        mock_get_account_id.return_value = 9001
+        mock_get_ledger_id.return_value = 3001
+        mock_preview.return_value = SimpleNamespace(
+            rate=Decimal("1.0000"),
+            amount=Decimal("10.00"),
+            reason="auto",
+            reason_code="OK",
+            section=SimpleNamespace(id=5, section_code="194A"),
+        )
+
+        adjustments, _ = PaymentVoucherService._apply_runtime_withholding_to_adjustments(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            paid_to_id=55,
+            voucher_date=None,
+            cash_paid_amount=Decimal("100.00"),
+            allocations=[{"open_item": 1, "settled_amount": Decimal("100.00")}],
+            adjustments=[
+                {"adj_type": "BANK_CHARGES", "amount": Decimal("2.00"), "remarks": "manual"},
+                {"adj_type": "TDS", "amount": Decimal("3.00"), "remarks": PaymentVoucherService.AUTO_WITHHOLDING_TDS_REMARK},
+            ],
+            workflow_payload={"withholding": {"enabled": True, "section_id": 5, "mode": "AUTO", "allow_static_fallback": True}},
+        )
+
+        self.assertEqual(len(adjustments), 2)
+        runtime_rows = [row for row in adjustments if row["adj_type"] == "TDS"]
+        self.assertEqual(len(runtime_rows), 1)
+        self.assertEqual(runtime_rows[0]["amount"], Decimal("10.00"))
+        self.assertEqual(runtime_rows[0]["remarks"], PaymentVoucherService.AUTO_WITHHOLDING_TDS_REMARK)
 
     @patch("payments.services.payment_voucher_service.PaymentVoucherService._resolve_entity_runtime_tds_mapping")
     @patch("payments.services.payment_voucher_service.StaticAccountService.get_ledger_id")
@@ -2209,6 +2530,55 @@ class PaymentVoucherDetailFormMetaAttachmentTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["attachments"], [{"id": 701, "file_name": "payment-proof.pdf"}])
         mocked_attachment_serializer.assert_called_once_with(["attachment-row"], many=True)
+
+
+@override_settings(META_CACHE_ENABLED=True, META_CACHE_TTL_SECONDS=600, META_CACHE_VERSION="test")
+class PaymentVoucherFormMetaCacheTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.factory = APIRequestFactory()
+        self.user = User.objects.create_user(
+            username="payment_form_meta_cache_user",
+            email="payment_form_meta_cache_user@example.com",
+            password="pass@12345",
+        )
+
+    def _request(self):
+        request = self.factory.get("/api/payments/meta/voucher-form/?entity=10&entityfinid=11&subentity=12")
+        force_authenticate(request, user=self.user)
+        return request
+
+    @patch.object(PaymentVoucherFormMetaAPIView, "enforce_scope")
+    @patch.object(PaymentVoucherFormMetaAPIView, "_voucher_form_meta")
+    def test_reuses_cached_voucher_form_payload(self, mocked_form_meta, _mocked_enforce_scope):
+        mocked_form_meta.return_value = {"entity_id": 10, "vendors": [{"id": 1}]}
+
+        view = PaymentVoucherFormMetaAPIView.as_view()
+        first = view(self._request())
+        second = view(self._request())
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.data, second.data)
+        mocked_form_meta.assert_called_once_with(10, 11, 12)
+
+    @patch.object(PaymentVoucherFormMetaAPIView, "enforce_scope")
+    @patch.object(PaymentVoucherFormMetaAPIView, "_voucher_form_meta")
+    def test_namespace_bump_invalidates_cached_voucher_form_payload(self, mocked_form_meta, _mocked_enforce_scope):
+        mocked_form_meta.side_effect = [
+            {"entity_id": 10, "vendors": [{"id": 1}]},
+            {"entity_id": 10, "vendors": [{"id": 2}]},
+        ]
+
+        view = PaymentVoucherFormMetaAPIView.as_view()
+        first = view(self._request())
+        bump_meta_namespaces(PAYMENT_META_NAMESPACES)
+        second = view(self._request())
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertNotEqual(first.data, second.data)
+        self.assertEqual(mocked_form_meta.call_count, 2)
 
 
 class PaymentNumberingSeedCommandTests(TestCase):

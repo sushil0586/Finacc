@@ -349,6 +349,63 @@ class RBACModelTests(TestCase):
             ).exists()
         )
 
+    def test_entity_seeding_grants_sales_compliance_permissions_to_default_roles(self):
+        Permission.objects.update_or_create(
+            code="sales.compliance.view",
+            defaults={
+                "name": "View Sales Compliance",
+                "module": "sales",
+                "resource": "compliance",
+                "action": "view",
+                "isactive": True,
+            },
+        )
+        Permission.objects.update_or_create(
+            code="sales.compliance.ensure",
+            defaults={
+                "name": "Ensure Sales Compliance",
+                "module": "sales",
+                "resource": "compliance",
+                "action": "ensure",
+                "isactive": True,
+            },
+        )
+
+        RBACSeedService.seed_entity(entity=self.entity, actor=self.user, seed_default_roles=True)
+
+        sales_role = Role.objects.get(entity=self.entity, code="sales_user")
+        compliance_role = Role.objects.get(entity=self.entity, code="compliance_user")
+        super_admin_role = Role.objects.get(entity=self.entity, code="entity.super_admin")
+
+        self.assertTrue(
+            RolePermission.objects.filter(
+                role=sales_role,
+                permission__code="sales.compliance.view",
+                isactive=True,
+            ).exists()
+        )
+        self.assertTrue(
+            RolePermission.objects.filter(
+                role=sales_role,
+                permission__code="sales.compliance.ensure",
+                isactive=True,
+            ).exists()
+        )
+        self.assertTrue(
+            RolePermission.objects.filter(
+                role=super_admin_role,
+                permission__code="sales.compliance.view",
+                isactive=True,
+            ).exists()
+        )
+        self.assertFalse(
+            RolePermission.objects.filter(
+                role=compliance_role,
+                permission__code="sales.compliance.view",
+                isactive=True,
+            ).exists()
+        )
+
     def test_admin_full_access_reconcile_migration_grants_all_active_permissions(self):
         migration = importlib.import_module("rbac.migrations.0064_sync_admin_full_access")
         super_admin_role = Role.objects.create(

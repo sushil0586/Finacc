@@ -33,6 +33,7 @@ from financial.services import (
 from posting.common.static_accounts import StaticAccountCodes
 from posting.models import Entry, EntityStaticAccountMap, JournalLine, StaticAccount, StaticAccountGroup, TxnType
 from withholding.models import EntityPartyTaxProfile
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
 class FinancialLedgerSyncTests(TestCase):
@@ -141,6 +142,21 @@ class FinancialApiContractSmokeTests(TestCase):
         )
         self.client = APIClient()
         self.client.force_authenticate(self.user)
+
+    def test_account_choices_meta_is_blocked_when_financial_feature_disabled(self):
+        account = SubscriptionService.register_entity_creation(entity=self.entity, owner=self.user)
+        subscription = SubscriptionService.ensure_active_subscription(customer_account=account)
+        financial_limit = subscription.plan.limits.get(key=SubscriptionLimitCodes.FEATURE_FINANCIAL)
+        financial_limit.bool_value = False
+        financial_limit.save(update_fields=["bool_value", "updated_at"])
+
+        response = self.client.get(
+            f"/api/financial/meta/account-choices/?entity={self.entity.id}"
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "subscription_feature_disabled")
+        self.assertEqual(response.data["feature_code"], SubscriptionLimitCodes.FEATURE_FINANCIAL)
 
     def test_account_type_duplicate_name_is_rejected_cleanly(self):
         accounttype.objects.create(
@@ -370,6 +386,36 @@ class FinancialApiContractSmokeTests(TestCase):
             for row in refreshed.data.get("custom_field_definitions", [])
         }
         self.assertIn("purchase_cache_probe", refreshed_keys)
+
+    def test_purchase_invoice_custom_field_definition_is_blocked_when_purchase_feature_disabled(self):
+        account = SubscriptionService.register_entity_creation(entity=self.entity, owner=self.user)
+        subscription = SubscriptionService.ensure_active_subscription(customer_account=account)
+        purchase_limit = subscription.plan.limits.get(key=SubscriptionLimitCodes.FEATURE_PURCHASE)
+        purchase_limit.bool_value = False
+        purchase_limit.save(update_fields=["bool_value", "updated_at"])
+
+        response = self.client.get(
+            f"/api/financial/invoice-custom-fields/definitions/?entity={self.entity.id}&module=purchase_invoice"
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "subscription_feature_disabled")
+        self.assertEqual(response.data["feature_code"], SubscriptionLimitCodes.FEATURE_PURCHASE)
+
+    def test_sales_invoice_custom_field_definition_is_blocked_when_sales_feature_disabled(self):
+        account = SubscriptionService.register_entity_creation(entity=self.entity, owner=self.user)
+        subscription = SubscriptionService.ensure_active_subscription(customer_account=account)
+        sales_limit = subscription.plan.limits.get(key=SubscriptionLimitCodes.FEATURE_SALES)
+        sales_limit.bool_value = False
+        sales_limit.save(update_fields=["bool_value", "updated_at"])
+
+        response = self.client.get(
+            f"/api/financial/invoice-custom-fields/definitions/?entity={self.entity.id}&module=sales_invoice"
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "subscription_feature_disabled")
+        self.assertEqual(response.data["feature_code"], SubscriptionLimitCodes.FEATURE_SALES)
 
     def test_account_type_list_without_page_returns_plain_array(self):
         accounttype.objects.create(
@@ -1999,6 +2045,80 @@ class FinancialEndpointAliasTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIsNone(response.headers.get("X-API-Deprecated"))
 
+    def _create_simple_account(self, *, name: str, partytype: str, ledger_code: int):
+        head = accountHead.objects.create(
+            entity=self.entity,
+            name=f"{name} Head",
+            code=3000 + ledger_code,
+            drcreffect="Debit",
+            createdby=self.user,
+        )
+        ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=ledger_code,
+            name=name,
+            accounthead=head,
+            is_party=True,
+            createdby=self.user,
+            isactive=True,
+        )
+        acc = account.objects.create(
+            entity=self.entity,
+            createdby=self.user,
+            accountname=name,
+            ledger=ledger,
+            isactive=True,
+        )
+        AccountCommercialProfile.objects.create(
+            account=acc,
+            entity=self.entity,
+            createdby=self.user,
+            partytype=partytype,
+        )
+        AccountComplianceProfile.objects.create(
+            account=acc,
+            entity=self.entity,
+            createdby=self.user,
+            pan=f"ABCDE{ledger_code:04d}F",
+        )
+        return acc
+
+    def test_simple_accounts_customer_scope_includes_customer_and_both(self):
+        customer = self._create_simple_account(name="Customer Alpha", partytype="Customer", ledger_code=4101)
+        both = self._create_simple_account(name="Shared Beta", partytype="Both", ledger_code=4102)
+        self._create_simple_account(name="Vendor Gamma", partytype="Vendor", ledger_code=4103)
+
+        response = self.client.get(
+            f"/api/financial/accounts/simple-v2?entity={self.entity.id}&partytype_scope=customer"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertSetEqual({row["id"] for row in response.data}, {customer.id, both.id})
+
+    def test_simple_accounts_vendor_scope_includes_vendor_and_both(self):
+        vendor = self._create_simple_account(name="Vendor Alpha", partytype="Vendor", ledger_code=4201)
+        both = self._create_simple_account(name="Shared Beta", partytype="Both", ledger_code=4202)
+        self._create_simple_account(name="Customer Gamma", partytype="Customer", ledger_code=4203)
+
+        response = self.client.get(
+            f"/api/financial/accounts/simple-v2?entity={self.entity.id}&partytype_scope=vendor"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertSetEqual({row["id"] for row in response.data}, {vendor.id, both.id})
+
+    def test_simple_accounts_both_scope_returns_only_shared_parties(self):
+        self._create_simple_account(name="Vendor Alpha", partytype="Vendor", ledger_code=4301)
+        both = self._create_simple_account(name="Shared Beta", partytype="Both", ledger_code=4302)
+        self._create_simple_account(name="Customer Gamma", partytype="Customer", ledger_code=4303)
+
+        response = self.client.get(
+            f"/api/financial/accounts/simple-v2?entity={self.entity.id}&partytype_scope=both"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertSetEqual({row["id"] for row in response.data}, {both.id})
+
     def test_pure_ledger_create_does_not_auto_create_account_profile(self):
         head = accountHead.objects.create(
             entity=self.entity,
@@ -2333,6 +2453,8 @@ class FinancialAccountsBulkCoverageTests(TestCase):
             password="secret123",
             email_verified=True,
         )
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
         self.entity = Entity.objects.create(entityname="Bulk Accounts Entity", createdby=self.user)
         EntityFinancialYear.objects.create(
             entity=self.entity,
@@ -2391,6 +2513,19 @@ class FinancialAccountsBulkCoverageTests(TestCase):
             is_active=True,
             createdby=self.user,
         )
+
+    def test_bulk_template_is_blocked_when_financial_feature_disabled(self):
+        account = SubscriptionService.register_entity_creation(entity=self.entity, owner=self.user)
+        subscription = SubscriptionService.ensure_active_subscription(customer_account=account)
+        financial_limit = subscription.plan.limits.get(key=SubscriptionLimitCodes.FEATURE_FINANCIAL)
+        financial_limit.bool_value = False
+        financial_limit.save(update_fields=["bool_value", "updated_at"])
+
+        response = self.client.get(f"/api/financial/accounts-v2/bulk/template/?entity={self.entity.id}&format=xlsx")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "subscription_feature_disabled")
+        self.assertEqual(response.data["feature_code"], SubscriptionLimitCodes.FEATURE_FINANCIAL)
 
     def test_template_and_export_include_extended_profile_fields(self):
         template_row = accounts_bulk_template_payload()["accounts"][0]

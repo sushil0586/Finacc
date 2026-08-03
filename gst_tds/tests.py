@@ -22,6 +22,7 @@ from gst_tds.services.gst_tds_service import (
     RATE_HALF,
     ZERO2,
 )
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 User = get_user_model()
 
@@ -516,6 +517,19 @@ class GstTdsApiTests(TestCase):
             )
 
         self.assertEqual(resp.status_code, 403)
+
+    def test_config_is_blocked_when_financial_feature_disabled(self):
+        customer_account = SubscriptionService.register_entity_creation(entity=self.entity_1, owner=self.user)
+        subscription = SubscriptionService.ensure_active_subscription(customer_account=customer_account)
+        financial_limit = subscription.plan.limits.get(key=SubscriptionLimitCodes.FEATURE_FINANCIAL)
+        financial_limit.bool_value = False
+        financial_limit.save(update_fields=["bool_value", "updated_at"])
+
+        resp = self.client.get(f"/api/gst-tds/config/?entity={self.entity_1.id}&subentity={self.sub_1.id}")
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["code"], "subscription_feature_disabled")
+        self.assertEqual(resp.data["feature_code"], SubscriptionLimitCodes.FEATURE_FINANCIAL)
 
 
 class GstTdsDeleteProtectionTests(SimpleTestCase):

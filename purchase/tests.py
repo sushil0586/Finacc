@@ -6,9 +6,12 @@ from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.management import call_command
+from django.db import connection
 from django.db.models import Sum
 from django.test import SimpleTestCase, TestCase
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from openpyxl import load_workbook
 from rest_framework import status
@@ -36,6 +39,7 @@ from purchase.services.purchase_settings_service import PurchaseSettingsService
 from purchase.services.purchase_statutory_service import PurchaseStatutoryService
 from purchase.views.purchase_invoice import (
     PurchaseInvoiceListCreateAPIView,
+    PurchaseInvoiceRetrieveUpdateDestroyAPIView,
     PurchaseInvoiceLookupAPIView,
     PurchaseInvoiceCrossModeNavigationAPIView,
 )
@@ -48,6 +52,7 @@ from posting.adapters.purchase_invoice import (
 )
 from posting.models import Entry, EntryStatus, InventoryMove, JournalLine, PostingBatch, TxnType
 from posting.common.static_accounts import StaticAccountCodes
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 from withholding.services import WithholdingResult
 from purchase.services.purchase_withholding_service import PurchaseWithholdingService
 from purchase.models.purchase_statutory import PurchaseStatutoryChallan, PurchaseStatutoryReturn
@@ -159,6 +164,58 @@ class PurchaseTdsApplyTests(SimpleTestCase):
             PurchaseInvoiceService._apply_tds(header=header)
 
 
+class PurchaseInvoiceRetrieveContextTests(SimpleTestCase):
+    def test_detail_get_context_skips_navigation_and_preview_numbers(self):
+        factory = APIRequestFactory()
+        request = factory.get("/api/purchase/purchase-invoices/1/?entity=1&entityfinid=1")
+
+        view = PurchaseInvoiceRetrieveUpdateDestroyAPIView()
+        view.request = view.initialize_request(request)
+        view.args = ()
+        view.kwargs = {"pk": 1}
+        view.format_kwarg = None
+
+        ctx = view.get_serializer_context()
+
+        self.assertIsNone(ctx["line_mode"])
+        self.assertTrue(ctx["skip_navigation"])
+        self.assertTrue(ctx["skip_preview_numbers"])
+        self.assertTrue(ctx["skip_gst_tds_contract_summary"])
+
+
+class PurchaseInvoiceSerializerContextTests(SimpleTestCase):
+    def test_skip_gst_tds_contract_summary_short_circuits_lookup(self):
+        serializer = PurchaseInvoiceHeaderSerializer(
+            context={"skip_gst_tds_contract_summary": True}
+        )
+        header = SimpleNamespace(
+            gst_tds_contract_ref="CON-1",
+            vendor_id=10,
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+        )
+
+        self.assertIsNone(serializer.get_gst_tds_contract_summary(header))
+
+    def test_detail_patch_context_skips_navigation_and_preview_numbers(self):
+        factory = APIRequestFactory()
+        request = factory.patch("/api/purchase/purchase-invoices/1/?entity=1&entityfinid=1", {}, format="json")
+
+        view = PurchaseInvoiceRetrieveUpdateDestroyAPIView()
+        view.request = view.initialize_request(request)
+        view.args = ()
+        view.kwargs = {"pk": 1}
+        view.format_kwarg = None
+
+        ctx = view.get_serializer_context()
+
+        self.assertIsNone(ctx["line_mode"])
+        self.assertTrue(ctx["skip_navigation"])
+        self.assertTrue(ctx["skip_preview_numbers"])
+        self.assertTrue(ctx["skip_gst_tds_contract_summary"])
+
+
 class PurchaseInvoiceLookupViewTests(SimpleTestCase):
     def setUp(self):
         super().setUp()
@@ -175,12 +232,22 @@ class PurchaseInvoiceLookupViewTests(SimpleTestCase):
 
     def test_lookup_view_returns_limited_payload(self):
         mocked_queryset = MagicMock()
-        mocked_queryset.count.return_value = 2
-        mocked_queryset.__getitem__.return_value = [self.header]
-        with patch.object(PurchaseInvoiceLookupAPIView, "_base_queryset", return_value=mocked_queryset), patch(
-            "purchase.views.purchase_invoice.PurchaseInvoiceLookupSerializer"
-        ) as mocked_lookup_serializer:
-            mocked_lookup_serializer.return_value.data = [{"id": 10, "purchase_number": "PINV-10"}]
+        mocked_values_queryset = MagicMock()
+        mocked_values_queryset.__getitem__.return_value = [
+            {"id": 10, "purchase_number": "PINV-10"},
+            {"id": 11, "purchase_number": "PINV-11"},
+        ]
+        with patch.object(PurchaseInvoiceLookupAPIView, "_base_queryset", return_value=mocked_queryset), patch.object(
+            PurchaseInvoiceLookupAPIView,
+            "_lookup_values_queryset",
+            return_value=mocked_values_queryset,
+        ), patch.object(
+            PurchaseInvoiceLookupAPIView,
+            "_serialize_lookup_row",
+            side_effect=[
+                {"id": 10, "purchase_number": "PINV-10"},
+            ],
+        ) as mocked_serialize:
 
             request = self.factory.get("/api/purchase/purchase-invoices/lookup/?entity=1&entityfinid=1&limit=1")
             force_authenticate(request, user=self.user)
@@ -188,18 +255,80 @@ class PurchaseInvoiceLookupViewTests(SimpleTestCase):
             response = PurchaseInvoiceLookupAPIView.as_view()(request)
 
             self.assertEqual(response.status_code, 200)
-            mocked_lookup_serializer.assert_called_once()
+            mocked_serialize.assert_called_once_with({"id": 10, "purchase_number": "PINV-10"})
+            mocked_queryset.count.assert_not_called()
+            mocked_values_queryset.__getitem__.assert_called_once_with(slice(0, 2, None))
             self.assertEqual(
                 response.data,
                 {
                     "items": [{"id": 10, "purchase_number": "PINV-10"}],
-                    "total_count": 2,
+                    "total_count": None,
                     "returned_count": 1,
                     "limit": 1,
                     "offset": 0,
                     "has_more": True,
                 },
             )
+
+    def test_lookup_view_can_skip_total_count(self):
+        mocked_queryset = MagicMock()
+        mocked_values_queryset = MagicMock()
+        mocked_values_queryset.__getitem__.return_value = [{"id": 10, "purchase_number": "PINV-10"}]
+        with patch.object(PurchaseInvoiceLookupAPIView, "_base_queryset", return_value=mocked_queryset), patch.object(
+            PurchaseInvoiceLookupAPIView,
+            "_lookup_values_queryset",
+            return_value=mocked_values_queryset,
+        ), patch.object(
+            PurchaseInvoiceLookupAPIView,
+            "_serialize_lookup_row",
+            return_value={"id": 10, "purchase_number": "PINV-10"},
+        ):
+
+            request = self.factory.get(
+                "/api/purchase/purchase-invoices/lookup/?entity=1&entityfinid=1&limit=1&include_total=false"
+            )
+            force_authenticate(request, user=self.user)
+
+            response = PurchaseInvoiceLookupAPIView.as_view()(request)
+
+            self.assertEqual(response.status_code, 200)
+            mocked_queryset.count.assert_not_called()
+            mocked_values_queryset.__getitem__.assert_called_once_with(slice(0, 2, None))
+            self.assertEqual(
+                response.data,
+                {
+                    "items": [{"id": 10, "purchase_number": "PINV-10"}],
+                    "total_count": None,
+                    "returned_count": 1,
+                    "limit": 1,
+                    "offset": 0,
+                    "has_more": False,
+                },
+            )
+
+    def test_purchase_header_runtime_indexes_cover_lookup_and_nav_hotspots(self):
+        index_names = {
+            index.name
+            for index in PurchaseInvoiceHeader._meta.indexes
+        }
+
+        self.assertIn("ix_pur_lookup_sort", index_names)
+        self.assertIn("ix_pur_nav_scope", index_names)
+
+    @patch("purchase.views.purchase_invoice.require_purchase_request_permission")
+    def test_lookup_base_queryset_skips_unused_subentity_join(self, mocked_require_permission):
+        request = self.factory.get("/api/purchase/purchase-invoices/lookup/?entity=1&entityfinid=1")
+        force_authenticate(request, user=self.user)
+
+        view = PurchaseInvoiceLookupAPIView()
+        view.request = view.initialize_request(request)
+
+        queryset = view._base_queryset()
+        select_related = queryset.query.select_related
+
+        self.assertIn("vendor", select_related)
+        self.assertNotIn("subentity", select_related)
+        mocked_require_permission.assert_called_once()
 
 
 class PurchaseInvoiceConcurrencyHardeningTests(SimpleTestCase):
@@ -239,14 +368,464 @@ class PurchaseInvoiceConcurrencyHardeningTests(SimpleTestCase):
         mock_header_objects.select_for_update.assert_called_once_with()
         mock_header_objects.select_for_update.return_value.get.assert_called_once_with(pk=41)
 
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService.rebuild_tax_summary")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService._apply_vendor_withholding_variance_policy")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService._apply_gst_tds")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService._apply_tds")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService.apply_totals_to_header")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService.assert_no_duplicate_supplier_invoice")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService.compute_totals_with_charges")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService.apply_product_line_defaults")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService.derive_tax_regime")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService.apply_dates")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService.apply_special_tax_treatment_defaults")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService.apply_vendor_snapshot")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService.validate_header")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService.assert_not_locked")
+    @patch("purchase.services.purchase_invoice_service.PurchaseSettingsService.get_policy")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceHeader.objects")
+    @patch("purchase.services.purchase_invoice_service.GstTdsService._scope_key_for_header")
+    def test_update_with_lines_persists_header_and_totals_in_single_save(
+        self,
+        mock_scope_key,
+        mock_header_objects,
+        mock_get_policy,
+        mock_assert_not_locked,
+        mock_validate_header,
+        mock_apply_vendor_snapshot,
+        mock_apply_special_defaults,
+        mock_apply_dates,
+        mock_derive_tax_regime,
+        mock_apply_product_line_defaults,
+        mock_compute_totals,
+        mock_assert_duplicate,
+        mock_apply_totals,
+        mock_apply_tds,
+        mock_apply_gst_tds,
+        mock_apply_variance,
+        mock_rebuild_tax_summary,
+    ):
+        mock_scope_key.return_value = None
+        mock_get_policy.return_value = SimpleNamespace(
+            controls={"allow_edit_confirmed": "on"},
+            level=lambda *args, **kwargs: "soft",
+        )
+        mock_derive_tax_regime.return_value = SimpleNamespace(tax_regime=1, is_igst=False)
+        mock_compute_totals.return_value = {
+            "total_taxable": Decimal("100.00"),
+            "total_cgst": Decimal("9.00"),
+            "total_sgst": Decimal("9.00"),
+            "total_igst": Decimal("0.00"),
+            "total_cess": Decimal("0.00"),
+            "total_gst": Decimal("18.00"),
+            "grand_total_base": Decimal("118.00"),
+        }
+
+        instance = MagicMock()
+        instance.pk = 41
+        instance.id = 41
+        instance.status = int(PurchaseInvoiceHeader.Status.DRAFT)
+        instance.entity_id = 1
+        instance.entityfinid_id = 1
+        instance.subentity_id = 1
+        instance.bill_date = date(2026, 8, 2)
+        instance.default_taxability = int(PurchaseInvoiceHeader.Taxability.TAXABLE)
+        instance.is_reverse_charge = False
+        instance.vendor_gstin = "29ABCDE1234F1Z5"
+        instance.lines.values.return_value = []
+        instance.charges.values.return_value = []
+        instance.save = MagicMock()
+        mock_header_objects.select_for_update.return_value.get.return_value = instance
+
+        updated = PurchaseInvoiceService.update_with_lines.__wrapped__(
+            instance,
+            {
+                "supplier_invoice_number": "SUP-UPDATED-1",
+                "bill_date": date(2026, 8, 2),
+            },
+        )
+
+        self.assertIs(updated, instance)
+        self.assertEqual(instance.save.call_count, 1)
+        save_kwargs = instance.save.call_args.kwargs
+        self.assertIn("update_fields", save_kwargs)
+        self.assertIn("supplier_invoice_number", save_kwargs["update_fields"])
+        self.assertIn("bill_date", save_kwargs["update_fields"])
+        self.assertIn("grand_total", save_kwargs["update_fields"])
+        mock_assert_not_locked.assert_called_once()
+        mock_get_policy.assert_called_once_with(instance.entity_id, instance.subentity_id)
+        mock_apply_totals.assert_called_once()
+        mock_rebuild_tax_summary.assert_not_called()
+
+    def test_should_sync_gst_tds_contract_ledger_skips_plain_draft(self):
+        header = SimpleNamespace(status=int(PurchaseInvoiceHeader.Status.DRAFT))
+
+        self.assertFalse(
+            PurchaseInvoiceService.should_sync_gst_tds_contract_ledger(header=header)
+        )
+
+    def test_should_sync_gst_tds_contract_ledger_keeps_confirmed_document(self):
+        header = SimpleNamespace(status=int(PurchaseInvoiceHeader.Status.CONFIRMED))
+
+        self.assertTrue(
+            PurchaseInvoiceService.should_sync_gst_tds_contract_ledger(header=header)
+        )
+
+    def test_should_sync_gst_tds_contract_ledger_keeps_old_scope_cleanup(self):
+        header = SimpleNamespace(status=int(PurchaseInvoiceHeader.Status.DRAFT))
+
+        self.assertTrue(
+            PurchaseInvoiceService.should_sync_gst_tds_contract_ledger(
+                header=header,
+                old_scope_key=(1, 1, 1, 1, "CTR-1"),
+            )
+        )
+
+    def test_should_rebuild_tax_summary_skips_plain_draft(self):
+        header = SimpleNamespace(status=int(PurchaseInvoiceHeader.Status.DRAFT))
+
+        self.assertFalse(
+            PurchaseInvoiceService.should_rebuild_tax_summary(header=header)
+        )
+
+    def test_should_rebuild_tax_summary_keeps_confirmed_document(self):
+        header = SimpleNamespace(status=int(PurchaseInvoiceHeader.Status.CONFIRMED))
+
+        self.assertTrue(
+            PurchaseInvoiceService.should_rebuild_tax_summary(header=header)
+        )
+
+    @patch("purchase.services.purchase_invoice_service.GstTdsService.sync_contract_ledger_for_header")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService.should_sync_gst_tds_contract_ledger", return_value=False)
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService.should_rebuild_tax_summary", return_value=False)
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceHeader.save")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService._apply_vendor_withholding_variance_policy")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService._apply_gst_tds")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService._apply_tds")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService.apply_totals_to_header")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService.assert_no_duplicate_supplier_invoice")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService.compute_totals_with_charges")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService.upsert_charges", return_value=[])
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService.validate_charges")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceLine.objects.bulk_create")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceHeader.objects.create")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService.verify_client_vs_authoritative")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService.compute_line_authoritative")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService.validate_lines_structural")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService.validate_header")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService.apply_product_line_defaults")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService.derive_tax_regime")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService.apply_dates")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService.apply_special_tax_treatment_defaults")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService.apply_vendor_snapshot")
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService.assert_not_locked")
+    @patch("purchase.services.purchase_invoice_service.PurchaseSettingsService.get_policy")
+    def test_create_with_lines_uses_runtime_invariants_instead_of_full_clean(
+        self,
+        mock_get_policy,
+        mock_assert_not_locked,
+        mock_apply_vendor_snapshot,
+        mock_apply_special_defaults,
+        mock_apply_dates,
+        mock_derive_tax_regime,
+        mock_apply_product_line_defaults,
+        mock_validate_header,
+        mock_validate_lines_structural,
+        mock_compute_line_authoritative,
+        mock_verify_client_vs_authoritative,
+        mock_header_create,
+        mock_bulk_create,
+        mock_validate_charges,
+        mock_upsert_charges,
+        mock_compute_totals,
+        mock_assert_duplicate,
+        mock_apply_totals,
+        mock_apply_tds,
+        mock_apply_gst_tds,
+        mock_apply_variance,
+        mock_header_save,
+        mock_should_rebuild,
+        mock_should_sync_contract,
+        mock_sync_contract,
+    ):
+        mock_get_policy.return_value = SimpleNamespace(
+            level=lambda *args, **kwargs: "soft",
+        )
+        mock_derive_tax_regime.return_value = SimpleNamespace(tax_regime=1, is_igst=False)
+        mock_compute_line_authoritative.return_value = {
+            "line_no": 1,
+            "product": Product(is_batch_managed=False, is_expiry_tracked=False),
+            "purchase_account": None,
+            "product_desc": "runtime line",
+            "is_service": False,
+            "purchase_behavior": ProductPurchaseBehavior.INVENTORY,
+            "hsn_sac": "HSN1",
+            "batch_number": "",
+            "manufacture_date": None,
+            "expiry_date": None,
+            "uom": None,
+            "qty": Decimal("1.00"),
+            "free_qty": Decimal("0.00"),
+            "rate": Decimal("100.00"),
+            "is_rate_inclusive_of_tax": False,
+            "discount_type": "N",
+            "discount_percent": Decimal("0.00"),
+            "discount_amount": Decimal("0.00"),
+            "taxability": int(PurchaseInvoiceHeader.Taxability.TAXABLE),
+            "taxable_value": Decimal("100.00"),
+            "gst_rate": Decimal("18.00"),
+            "cgst_percent": Decimal("9.00"),
+            "sgst_percent": Decimal("9.00"),
+            "igst_percent": Decimal("0.00"),
+            "cgst_amount": Decimal("9.00"),
+            "sgst_amount": Decimal("9.00"),
+            "igst_amount": Decimal("0.00"),
+            "cess_percent": Decimal("0.00"),
+            "cess_type": "none",
+            "cess_specific_amount": Decimal("0.00"),
+            "cess_amount": Decimal("0.00"),
+            "line_total": Decimal("118.00"),
+            "is_itc_eligible": True,
+            "itc_block_reason": "",
+            "asset_record": None,
+        }
+        mock_compute_totals.return_value = {
+            "total_taxable": Decimal("100.00"),
+            "total_cgst": Decimal("9.00"),
+            "total_sgst": Decimal("9.00"),
+            "total_igst": Decimal("0.00"),
+            "total_cess": Decimal("0.00"),
+            "total_gst": Decimal("18.00"),
+            "grand_total_base": Decimal("118.00"),
+        }
+        header = PurchaseInvoiceHeader(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=1,
+            bill_date=date(2026, 8, 3),
+            posting_date=date(2026, 8, 3),
+            default_taxability=int(PurchaseInvoiceHeader.Taxability.TAXABLE),
+            status=int(PurchaseInvoiceHeader.Status.DRAFT),
+        )
+        mock_header_create.return_value = header
+
+        with patch.object(PurchaseInvoiceLine, "full_clean", autospec=True) as mocked_full_clean:
+            created = PurchaseInvoiceService.create_with_lines.__wrapped__(
+                {
+                    "entity_id": 1,
+                    "entityfinid_id": 1,
+                    "subentity_id": 1,
+                    "bill_date": date(2026, 8, 3),
+                    "posting_date": date(2026, 8, 3),
+                    "default_taxability": int(PurchaseInvoiceHeader.Taxability.TAXABLE),
+                    "lines": [{"product_desc": "client line"}],
+                    "charges": [],
+                }
+            )
+
+        self.assertIs(created, header)
+        mocked_full_clean.assert_not_called()
+        mock_bulk_create.assert_called_once()
+        created_lines = mock_bulk_create.call_args.args[0]
+        self.assertEqual(len(created_lines), 1)
+        self.assertEqual(created_lines[0].line_no, 1)
+
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceLine.objects.bulk_update")
+    def test_upsert_lines_skips_unchanged_existing_rows(self, mock_bulk_update):
+        header = MagicMock()
+        existing_line = MagicMock()
+        existing_line.id = 11
+        existing_line.line_no = 1
+        existing_line.product = "P1"
+        existing_line.purchase_account = "A1"
+        existing_line.product_desc = "desc"
+        existing_line.is_service = False
+        existing_line.purchase_behavior = "inventory"
+        existing_line.hsn_sac = "HSN1"
+        existing_line.batch_number = ""
+        existing_line.manufacture_date = None
+        existing_line.expiry_date = None
+        existing_line.uom = "PCS"
+        existing_line.qty = Decimal("1.00")
+        existing_line.free_qty = Decimal("0.00")
+        existing_line.rate = Decimal("100.00")
+        existing_line.is_rate_inclusive_of_tax = False
+        existing_line.discount_type = "amount"
+        existing_line.discount_percent = Decimal("0.00")
+        existing_line.discount_amount = Decimal("0.00")
+        existing_line.taxability = 1
+        existing_line.taxable_value = Decimal("100.00")
+        existing_line.gst_rate = Decimal("18.00")
+        existing_line.cgst_percent = Decimal("9.00")
+        existing_line.sgst_percent = Decimal("9.00")
+        existing_line.igst_percent = Decimal("0.00")
+        existing_line.cgst_amount = Decimal("9.00")
+        existing_line.sgst_amount = Decimal("9.00")
+        existing_line.igst_amount = Decimal("0.00")
+        existing_line.cess_percent = Decimal("0.00")
+        existing_line.cess_type = "advalorem"
+        existing_line.cess_specific_amount = Decimal("0.00")
+        existing_line.cess_amount = Decimal("0.00")
+        existing_line.line_total = Decimal("118.00")
+        existing_line.is_itc_eligible = True
+        existing_line.itc_block_reason = ""
+        existing_line.asset_record = None
+        header.lines.all.return_value = [existing_line]
+
+        PurchaseInvoiceService.upsert_lines(
+            header,
+            [
+                {
+                    "id": 11,
+                    "line_no": 1,
+                    "product": "P1",
+                    "purchase_account": "A1",
+                    "product_desc": "desc",
+                    "is_service": False,
+                    "purchase_behavior": "inventory",
+                    "hsn_sac": "HSN1",
+                    "batch_number": "",
+                    "manufacture_date": None,
+                    "expiry_date": None,
+                    "uom": "PCS",
+                    "qty": Decimal("1.00"),
+                    "free_qty": Decimal("0.00"),
+                    "rate": Decimal("100.00"),
+                    "is_rate_inclusive_of_tax": False,
+                    "discount_type": "amount",
+                    "discount_percent": Decimal("0.00"),
+                    "discount_amount": Decimal("0.00"),
+                    "taxability": 1,
+                    "taxable_value": Decimal("100.00"),
+                    "gst_rate": Decimal("18.00"),
+                    "cgst_percent": Decimal("9.00"),
+                    "sgst_percent": Decimal("9.00"),
+                    "igst_percent": Decimal("0.00"),
+                    "cgst_amount": Decimal("9.00"),
+                    "sgst_amount": Decimal("9.00"),
+                    "igst_amount": Decimal("0.00"),
+                    "cess_percent": Decimal("0.00"),
+                    "cess_type": "advalorem",
+                    "cess_specific_amount": Decimal("0.00"),
+                    "cess_amount": Decimal("0.00"),
+                    "line_total": Decimal("118.00"),
+                    "is_itc_eligible": True,
+                    "itc_block_reason": "",
+                    "asset_record": None,
+                }
+            ],
+        )
+
+        existing_line.full_clean.assert_not_called()
+        mock_bulk_update.assert_not_called()
+
+    def test_line_runtime_invariants_reject_missing_batch_for_batch_managed_product(self):
+        product = Product(is_batch_managed=True, is_expiry_tracked=False)
+        header = PurchaseInvoiceHeader()
+        line = PurchaseInvoiceLine(
+            header=header,
+            line_no=1,
+            product=product,
+            purchase_account=None,
+            product_desc="batch product",
+            is_service=False,
+            purchase_behavior="inventory",
+            hsn_sac="HSN1",
+            batch_number="",
+            manufacture_date=None,
+            expiry_date=None,
+            uom=None,
+            qty=Decimal("1.00"),
+            free_qty=Decimal("0.00"),
+            rate=Decimal("100.00"),
+            is_rate_inclusive_of_tax=False,
+            discount_type="N",
+            discount_percent=Decimal("0.00"),
+            discount_amount=Decimal("0.00"),
+            taxability=1,
+            taxable_value=Decimal("100.00"),
+            gst_rate=Decimal("18.00"),
+            cgst_percent=Decimal("9.00"),
+            sgst_percent=Decimal("9.00"),
+            igst_percent=Decimal("0.00"),
+            cgst_amount=Decimal("9.00"),
+            sgst_amount=Decimal("9.00"),
+            igst_amount=Decimal("0.00"),
+            cess_percent=Decimal("0.00"),
+            cess_type="none",
+            cess_specific_amount=Decimal("0.00"),
+            cess_amount=Decimal("0.00"),
+            line_total=Decimal("118.00"),
+            is_itc_eligible=True,
+            itc_block_reason="",
+            asset_record=None,
+        )
+
+        with self.assertRaises(DjangoValidationError) as exc:
+            PurchaseInvoiceService._validate_line_runtime_invariants(line)
+
+        self.assertIn("batch_number", exc.exception.message_dict)
+
+    def test_line_runtime_invariants_reject_expiry_before_manufacture(self):
+        product = Product(is_batch_managed=False, is_expiry_tracked=True)
+        header = PurchaseInvoiceHeader()
+        line = PurchaseInvoiceLine(
+            header=header,
+            line_no=1,
+            product=product,
+            purchase_account=None,
+            product_desc="expiry product",
+            is_service=False,
+            purchase_behavior="inventory",
+            hsn_sac="HSN1",
+            batch_number="B1",
+            manufacture_date=date(2026, 8, 2),
+            expiry_date=date(2026, 8, 1),
+            uom=None,
+            qty=Decimal("1.00"),
+            free_qty=Decimal("0.00"),
+            rate=Decimal("100.00"),
+            is_rate_inclusive_of_tax=False,
+            discount_type="N",
+            discount_percent=Decimal("0.00"),
+            discount_amount=Decimal("0.00"),
+            taxability=1,
+            taxable_value=Decimal("100.00"),
+            gst_rate=Decimal("18.00"),
+            cgst_percent=Decimal("9.00"),
+            sgst_percent=Decimal("9.00"),
+            igst_percent=Decimal("0.00"),
+            cgst_amount=Decimal("9.00"),
+            sgst_amount=Decimal("9.00"),
+            igst_amount=Decimal("0.00"),
+            cess_percent=Decimal("0.00"),
+            cess_type="none",
+            cess_specific_amount=Decimal("0.00"),
+            cess_amount=Decimal("0.00"),
+            line_total=Decimal("118.00"),
+            is_itc_eligible=True,
+            itc_block_reason="",
+            asset_record=None,
+        )
+
+        with self.assertRaises(DjangoValidationError) as exc:
+            PurchaseInvoiceService._validate_line_runtime_invariants(line)
+
+        self.assertIn("expiry_date", exc.exception.message_dict)
+
     def test_lookup_view_uses_offset_for_next_page(self):
         mocked_queryset = MagicMock()
-        mocked_queryset.count.return_value = 2
-        mocked_queryset.__getitem__.return_value = [self.header]
-        with patch.object(PurchaseInvoiceLookupAPIView, "_base_queryset", return_value=mocked_queryset), patch(
-            "purchase.views.purchase_invoice.PurchaseInvoiceLookupSerializer"
-        ) as mocked_lookup_serializer:
-            mocked_lookup_serializer.return_value.data = [{"id": 10, "purchase_number": "PINV-10"}]
+        mocked_values_queryset = MagicMock()
+        mocked_values_queryset.__getitem__.return_value = [{"id": 10, "purchase_number": "PINV-10"}]
+        with patch.object(PurchaseInvoiceLookupAPIView, "_base_queryset", return_value=mocked_queryset), patch.object(
+            PurchaseInvoiceLookupAPIView,
+            "_lookup_values_queryset",
+            return_value=mocked_values_queryset,
+        ), patch.object(
+            PurchaseInvoiceLookupAPIView,
+            "_serialize_lookup_row",
+            return_value={"id": 10, "purchase_number": "PINV-10"},
+        ):
 
             request = self.factory.get("/api/purchase/purchase-invoices/lookup/?entity=1&entityfinid=1&limit=1&offset=1")
             force_authenticate(request, user=self.user)
@@ -254,7 +833,44 @@ class PurchaseInvoiceConcurrencyHardeningTests(SimpleTestCase):
             response = PurchaseInvoiceLookupAPIView.as_view()(request)
 
             self.assertEqual(response.status_code, 200)
-            mocked_queryset.__getitem__.assert_called_once_with(slice(1, 2, None))
+            mocked_queryset.count.assert_not_called()
+            mocked_values_queryset.__getitem__.assert_called_once_with(slice(1, 3, None))
+            self.assertEqual(
+                response.data,
+                {
+                    "items": [{"id": 10, "purchase_number": "PINV-10"}],
+                    "total_count": None,
+                    "returned_count": 1,
+                    "limit": 1,
+                    "offset": 1,
+                    "has_more": False,
+                },
+            )
+
+    def test_lookup_view_can_include_total_count_when_requested(self):
+        mocked_queryset = MagicMock()
+        mocked_queryset.count.return_value = 2
+        mocked_values_queryset = MagicMock()
+        mocked_values_queryset.__getitem__.return_value = [{"id": 10, "purchase_number": "PINV-10"}]
+        with patch.object(PurchaseInvoiceLookupAPIView, "_base_queryset", return_value=mocked_queryset), patch.object(
+            PurchaseInvoiceLookupAPIView,
+            "_lookup_values_queryset",
+            return_value=mocked_values_queryset,
+        ), patch.object(
+            PurchaseInvoiceLookupAPIView,
+            "_serialize_lookup_row",
+            return_value={"id": 10, "purchase_number": "PINV-10"},
+        ):
+            request = self.factory.get(
+                "/api/purchase/purchase-invoices/lookup/?entity=1&entityfinid=1&limit=1&include_total=true"
+            )
+            force_authenticate(request, user=self.user)
+
+            response = PurchaseInvoiceLookupAPIView.as_view()(request)
+
+            self.assertEqual(response.status_code, 200)
+            mocked_queryset.count.assert_called_once()
+            mocked_values_queryset.__getitem__.assert_called_once_with(slice(0, 1, None))
             self.assertEqual(
                 response.data,
                 {
@@ -262,8 +878,8 @@ class PurchaseInvoiceConcurrencyHardeningTests(SimpleTestCase):
                     "total_count": 2,
                     "returned_count": 1,
                     "limit": 1,
-                    "offset": 1,
-                    "has_more": False,
+                    "offset": 0,
+                    "has_more": True,
                 },
             )
 
@@ -286,11 +902,17 @@ class PurchaseInvoiceConcurrencyHardeningTests(SimpleTestCase):
             status=int(PurchaseInvoiceHeader.Status.POSTED),
             bill_date=None,
         )
+        mocked_numbered_qs = MagicMock()
+        mocked_filter_qs = MagicMock()
+        mocked_scope_qs = MagicMock()
+        mocked_scope_qs.filter.return_value = mocked_numbered_qs
+        mocked_numbered_qs.filter.return_value = mocked_filter_qs
+        mocked_filter_qs.order_by.return_value.first.return_value = mocked_target
         with patch.object(PurchaseInvoiceCrossModeNavigationAPIView, "_get_scoped_header", return_value=mocked_header), patch(
             "purchase.views.purchase_invoice.require_purchase_request_permission"
         ), patch(
             "purchase.views.purchase_invoice.PurchaseInvoiceNavService._scope_qs",
-            return_value=[mocked_target],
+            return_value=mocked_scope_qs,
         ):
             request = self.factory.get(
                 "/api/purchase/purchase-invoices/50/cross-mode-nav/?entity=1&entityfinid=2&target_line_mode=service&direction=next"
@@ -303,6 +925,46 @@ class PurchaseInvoiceConcurrencyHardeningTests(SimpleTestCase):
             self.assertEqual(response.data["target"]["id"], 51)
             self.assertEqual(response.data["target_line_mode"], "service")
             self.assertEqual(response.data["direction"], "next")
+
+    @patch("purchase.views.purchase_invoice.get_object_or_404")
+    def test_cross_mode_scoped_header_fetch_is_column_trimmed(self, mocked_get_object_or_404):
+        captured = {}
+
+        def _capture(qs, **kwargs):
+            captured["queryset"] = qs
+            captured["kwargs"] = kwargs
+            return SimpleNamespace(
+                id=50,
+                entity_id=1,
+                entityfinid_id=2,
+                subentity_id=3,
+                doc_type=int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
+                status=int(PurchaseInvoiceHeader.Status.POSTED),
+                doc_no=100,
+                purchase_number="PINV/2026/100",
+                bill_date=None,
+            )
+
+        mocked_get_object_or_404.side_effect = _capture
+
+        request = self.factory.get(
+            "/api/purchase/purchase-invoices/50/cross-mode-nav/?entity=1&entityfinid=2&subentity=3&target_line_mode=service&direction=next"
+        )
+        force_authenticate(request, user=self.user)
+
+        view = PurchaseInvoiceCrossModeNavigationAPIView()
+        view.request = view.initialize_request(request)
+
+        _ = view._get_scoped_header(50)
+
+        queryset = captured["queryset"]
+        loaded_fields, _ = queryset.query.deferred_loading
+
+        self.assertEqual(captured["kwargs"], {"pk": 50})
+        self.assertIn("doc_type", loaded_fields)
+        self.assertIn("doc_no", loaded_fields)
+        self.assertIn("purchase_number", loaded_fields)
+        self.assertNotIn("vendor_id", loaded_fields)
 
 
 class PurchaseDetailMetaContractTests(TestCase):
@@ -1772,6 +2434,52 @@ class PurchaseLineTaxabilityValidationTests(TestCase):
         with self.assertRaisesMessage(ValueError, "Import and SEZ purchases must use INTER tax regime."):
             PurchaseInvoiceService.validate_header(attrs)
 
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService.assert_note_correction_date_open")
+    def test_purchase_note_ref_document_requires_same_vendor(self, mocked_assert_note_window):
+        attrs = {
+            "entity": SimpleNamespace(id=1),
+            "entityfinid_id": 10,
+            "subentity": SimpleNamespace(id=100),
+            "vendor": SimpleNamespace(id=200),
+            "doc_type": int(PurchaseInvoiceHeader.DocType.CREDIT_NOTE),
+            "ref_document": SimpleNamespace(
+                entity_id=1,
+                entityfinid_id=10,
+                subentity_id=100,
+                vendor_id=201,
+            ),
+            "supplier_invoice_number": "CN-1001",
+            "supplier_invoice_date": date(2026, 4, 1),
+        }
+
+        with self.assertRaisesMessage(ValueError, "ref_document vendor must match current invoice vendor."):
+            PurchaseInvoiceService.validate_header(attrs)
+
+        mocked_assert_note_window.assert_not_called()
+
+    @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService.assert_note_correction_date_open")
+    def test_purchase_note_ref_document_requires_same_subentity_scope(self, mocked_assert_note_window):
+        attrs = {
+            "entity": SimpleNamespace(id=1),
+            "entityfinid_id": 10,
+            "subentity": SimpleNamespace(id=100),
+            "vendor": SimpleNamespace(id=200),
+            "doc_type": int(PurchaseInvoiceHeader.DocType.CREDIT_NOTE),
+            "ref_document": SimpleNamespace(
+                entity_id=1,
+                entityfinid_id=10,
+                subentity_id=101,
+                vendor_id=200,
+            ),
+            "supplier_invoice_number": "CN-1002",
+            "supplier_invoice_date": date(2026, 4, 1),
+        }
+
+        with self.assertRaisesMessage(ValueError, "ref_document must belong to same subentity scope."):
+            PurchaseInvoiceService.validate_header(attrs)
+
+        mocked_assert_note_window.assert_not_called()
+
 
 class PurchaseDuplicateSupplierInvoiceTests(TestCase):
     def test_duplicate_supplier_invoice_detected_for_same_vendor_date_and_amount(self):
@@ -1811,6 +2519,32 @@ class PurchaseDuplicateSupplierInvoiceTests(TestCase):
             },
             grand_total=Decimal("118.00"),
         )
+
+    def test_unchanged_existing_invoice_skips_duplicate_lookup_query(self):
+        entity = Entity.objects.create(entityname="Duplicate Purchase Entity 2")
+        vendor = account.objects.create(entity=entity, accountname="Vendor Y")
+        existing = PurchaseInvoiceHeader.objects.create(
+            entity=entity,
+            vendor=vendor,
+            supplier_invoice_number="SUP-2001",
+            supplier_invoice_date=date(2026, 4, 11),
+            grand_total=Decimal("236.00"),
+            status=PurchaseInvoiceHeader.Status.DRAFT,
+        )
+
+        with CaptureQueriesContext(connection) as ctx:
+            PurchaseInvoiceService.assert_no_duplicate_supplier_invoice(
+                instance=existing,
+                attrs={
+                    "entity": entity,
+                    "vendor": vendor,
+                    "supplier_invoice_number": "SUP-2001",
+                    "supplier_invoice_date": date(2026, 4, 11),
+                },
+                grand_total=Decimal("236.00"),
+            )
+
+        self.assertEqual(len(ctx), 0)
 
 
 class PurchaseWithholdingBaseRuleTests(SimpleTestCase):
@@ -2668,6 +3402,14 @@ class PurchaseApiSmokeTests(APITestCase):
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
         self.entity = Entity.objects.create(entityname="Purchase API Entity", createdby=self.user)
+        self.entityfin = EntityFinancialYear.objects.create(
+            entity=self.entity,
+            desc="FY 2026-27",
+            year_code="FY2026",
+            finstartyear=timezone.now(),
+            finendyear=timezone.now(),
+            createdby=self.user,
+        )
         self.subentity = SubEntity.objects.create(entity=self.entity, subentityname="Main")
 
     @patch("purchase.views.purchase_settings.PurchaseSettingsService.get_current_doc_no")
@@ -2714,6 +3456,108 @@ class PurchaseApiSmokeTests(APITestCase):
 
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(resp.data["entity_id"], "entity_id must be a positive integer.")
+
+    def _create_search_header(
+        self,
+        *,
+        doc_no: int,
+        vendor_name: str,
+        is_service: bool,
+        purchase_number: str | None = None,
+    ) -> PurchaseInvoiceHeader:
+        vendor = account.objects.create(
+            entity=self.entity,
+            createdby=self.user,
+            accountname=vendor_name,
+        )
+        header = PurchaseInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            vendor=vendor,
+            vendor_name=vendor_name,
+            bill_date=date(2026, 4, min(doc_no, 28)),
+            posting_date=date(2026, 4, min(doc_no, 28)),
+            due_date=date(2026, 4, min(doc_no, 28)),
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            doc_code="PINV",
+            doc_no=doc_no,
+            purchase_number=purchase_number or f"PINV-{doc_no:05d}",
+            supplier_invoice_number=f"SUP-{doc_no:05d}",
+            status=PurchaseInvoiceHeader.Status.DRAFT,
+            total_taxable=Decimal("100.00"),
+            grand_total=Decimal("118.00"),
+        )
+        PurchaseInvoiceLine.objects.create(
+            header=header,
+            line_no=1,
+            product_desc=f"{vendor_name} line",
+            is_service=is_service,
+            purchase_behavior=(
+                ProductPurchaseBehavior.EXPENSE
+                if is_service
+                else ProductPurchaseBehavior.INVENTORY
+            ),
+            qty=Decimal("1.0000"),
+            free_qty=Decimal("0.0000"),
+            rate=Decimal("100.00"),
+            taxability=PurchaseInvoiceHeader.Taxability.TAXABLE,
+            taxable_value=Decimal("100.00"),
+            gst_rate=Decimal("18.00"),
+            cgst_percent=Decimal("9.00") if not is_service else Decimal("0.00"),
+            sgst_percent=Decimal("9.00") if not is_service else Decimal("0.00"),
+            igst_percent=Decimal("0.00") if not is_service else Decimal("18.00"),
+            cgst_amount=Decimal("9.00") if not is_service else Decimal("0.00"),
+            sgst_amount=Decimal("9.00") if not is_service else Decimal("0.00"),
+            igst_amount=Decimal("0.00") if not is_service else Decimal("18.00"),
+            cess_amount=Decimal("0.00"),
+            line_total=Decimal("118.00"),
+            is_itc_eligible=True,
+        )
+        return header
+
+    @patch("purchase.views.purchase_invoice.require_purchase_request_permission")
+    def test_purchase_invoice_search_returns_paginated_response(self, mocked_require_permission):
+        self._create_search_header(doc_no=1, vendor_name="Vendor One", is_service=False)
+        self._create_search_header(doc_no=2, vendor_name="Vendor Two", is_service=False)
+
+        resp = self.client.get(
+            f"/api/purchase/purchase-invoices/search/?entity={self.entity.id}&entityfinid={self.entityfin.id}&page_size=1"
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(set(resp.data.keys()), {"count", "next", "previous", "results"})
+        self.assertEqual(resp.data["count"], 2)
+        self.assertEqual(len(resp.data["results"]), 1)
+        self.assertEqual(resp.data["previous"], None)
+        self.assertTrue(resp.data["next"])
+        mocked_require_permission.assert_called_once()
+
+    @patch("purchase.views.purchase_invoice.require_purchase_request_permission")
+    def test_purchase_service_invoice_search_filters_to_service_headers(self, mocked_require_permission):
+        service_header = self._create_search_header(
+            doc_no=10,
+            vendor_name="Service Vendor",
+            is_service=True,
+            purchase_number="PSRV-00010",
+        )
+        self._create_search_header(
+            doc_no=11,
+            vendor_name="Goods Vendor",
+            is_service=False,
+            purchase_number="PGDS-00011",
+        )
+
+        resp = self.client.get(
+            f"/api/purchase/purchase-service-invoices/search/?entity={self.entity.id}&entityfinid={self.entityfin.id}"
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["count"], 1)
+        self.assertEqual(len(resp.data["results"]), 1)
+        self.assertEqual(resp.data["results"][0]["id"], service_header.id)
+        self.assertEqual(resp.data["results"][0]["purchase_number"], "PSRV-00010")
+        mocked_require_permission.assert_called_once()
 
     @patch("purchase.views.purchase_settings.PurchaseSettingsAPIView._payload", return_value={"ok": True})
     @patch("purchase.views.purchase_settings.PurchaseSettingsService.upsert_settings")
@@ -8044,6 +8888,35 @@ class PurchaseApiPermissionTests(APITestCase):
             amount=Decimal("100.00"),
             created_by=self.user,
         )
+
+    @patch("purchase.views.rbac.EffectivePermissionService.permission_codes_for_user")
+    @patch("purchase.views.rbac.EffectivePermissionService.entity_for_user")
+    def test_purchase_invoice_list_is_blocked_when_purchase_feature_disabled(
+        self,
+        mock_entity_for_user,
+        mock_codes,
+    ):
+        account = SubscriptionService.register_entity_creation(
+            entity=self.allowed_entity,
+            owner=self.user,
+        )
+        subscription = SubscriptionService.ensure_active_subscription(customer_account=account)
+        purchase_limit = subscription.plan.limits.get(key=SubscriptionLimitCodes.FEATURE_PURCHASE)
+        purchase_limit.bool_value = False
+        purchase_limit.save(update_fields=["bool_value", "updated_at"])
+
+        mock_entity_for_user.return_value = self.allowed_entity
+        mock_codes.return_value = {"purchase.invoice.view"}
+
+        factory = APIRequestFactory()
+        request = factory.get(
+            f"/api/purchase/purchase-invoices/?entity={self.allowed_entity.id}&entityfinid={self.allowed_fy.id}"
+        )
+        force_authenticate(request, user=self.user)
+        response = PurchaseInvoiceListCreateAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["feature_code"], SubscriptionLimitCodes.FEATURE_PURCHASE)
 
     def _pk_scope_obj(self, entity_id=1):
         return SimpleNamespace(entity_id=entity_id)

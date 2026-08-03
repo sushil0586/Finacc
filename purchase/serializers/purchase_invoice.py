@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import timedelta
 from decimal import Decimal, ROUND_HALF_UP
+import logging
+from time import perf_counter
 
 from rest_framework import serializers
 
@@ -41,6 +43,7 @@ GST_TDS_TOLERANCE = Decimal("0.02")  # 2 paisa tolerance
 
 RATE_TOTAL = Decimal("2.0000")   # GST-TDS total 2%
 RATE_HALF  = Decimal("1.0000")   # GST-TDS half 1%
+perf_logger = logging.getLogger("purchase.perf")
 
 
 def q2(x) -> Decimal:
@@ -155,11 +158,21 @@ class PurchaseInvoiceLineSerializer(serializers.ModelSerializer):
         return ""
 
     def to_representation(self, instance):
+        started_at = perf_counter()
         data = super().to_representation(instance)
         if not (data.get("product_desc") or "").strip():
             product_obj = getattr(instance, "product", None)
             fallback = getattr(product_obj, "productdesc", "") if product_obj is not None else ""
             data["product_desc"] = str(fallback or "")
+        elapsed_ms = (perf_counter() - started_at) * 1000
+        if elapsed_ms >= 25:
+            perf_logger.info(
+                "purchase_invoice_line_serialize_completed line_id=%s header_id=%s is_service=%s duration_ms=%.2f",
+                getattr(instance, "id", None),
+                getattr(instance, "header_id", None),
+                getattr(instance, "is_service", None),
+                elapsed_ms,
+            )
         return data
 
     def validate(self, attrs):
@@ -402,6 +415,8 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
         return str(q4(RATE_TOTAL)) if is_inter else "0.0000"
 
     def get_gst_tds_contract_summary(self, obj):
+        if self.context.get("skip_gst_tds_contract_summary", False):
+            return None
         ref = (getattr(obj, "gst_tds_contract_ref", "") or "").strip()
         vendor_id = getattr(obj, "vendor_id", None)
         if not ref or not vendor_id:
@@ -435,12 +450,29 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
         }
 
     def to_representation(self, instance):
+        started_at = perf_counter()
         data = super().to_representation(instance)
+        base_elapsed_ms = (perf_counter() - started_at) * 1000
+        nav_elapsed_ms = 0.0
         if not self.context.get("skip_navigation", False):
+            nav_started_at = perf_counter()
             data["navigation"] = PurchaseInvoiceNavService.get_prev_next_for_instance(
                 instance,
                 line_mode=self.context.get("line_mode"),
             )
+            nav_elapsed_ms = (perf_counter() - nav_started_at) * 1000
+        total_elapsed_ms = (perf_counter() - started_at) * 1000
+        perf_logger.info(
+            "purchase_invoice_header_serialize_completed header_id=%s doc_type=%s line_mode=%s lines_count=%s charges_count=%s base_duration_ms=%.2f nav_duration_ms=%.2f total_duration_ms=%.2f",
+            getattr(instance, "id", None),
+            getattr(instance, "doc_type", None),
+            self.context.get("line_mode"),
+            len(data.get("lines") or []),
+            len(data.get("charges") or []),
+            base_elapsed_ms,
+            nav_elapsed_ms,
+            total_elapsed_ms,
+        )
         return data
 
     def get_validators(self):

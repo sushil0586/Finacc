@@ -4,6 +4,7 @@ from datetime import date, datetime
 from pathlib import Path
 from decimal import Decimal
 from io import BytesIO
+from unittest.mock import patch
 from uuid import uuid4
 
 from django.test import override_settings
@@ -505,6 +506,36 @@ class PayableReportAPITests(APITestCase):
         self.assertEqual(row["balance"], "650.00")
         self.assertEqual(row["bucket_1_30"], "650.00")
         self.assertEqual(row["_meta"]["drilldown"]["bill"]["target"], "purchase_document_detail")
+
+    def test_ap_aging_summary_scopes_last_payment_dates_to_relevant_vendors(self):
+        idle_payment = VendorSettlement.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            vendor=self.other_vendor,
+            vendor_ledger=self.other_vendor.ledger,
+            settlement_type=VendorSettlement.SettlementType.PAYMENT,
+            settlement_date=date(2025, 4, 25),
+            reference_no="PAY-IDLE-001",
+            total_amount=Decimal("50.00"),
+            status=VendorSettlement.Status.POSTED,
+            posted_at=timezone.now(),
+            posted_by=self.user,
+        )
+        self.assertIsNotNone(idle_payment.id)
+
+        response = self.client.get(
+            reverse("reports_api:ap-aging-report"),
+            self._base_scope(as_of_date="2025-04-30", view="summary"),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["summary"]["vendor_count"], 1)
+        self.assertEqual(len(data["rows"]), 1)
+        row = data["rows"][0]
+        self.assertEqual(row["vendor_id"], self.vendor.id)
+        self.assertEqual(row["last_payment_date"], "2025-04-05")
 
     def test_vendor_outstanding_detailed_rows_expose_default_msme_due_date(self):
         apply_normalized_profile_payload(
@@ -1399,6 +1430,65 @@ class PayableReportAPITests(APITestCase):
         self.assertIn("Idle Vendor", vendor_names)
         self.assertNotIn("Opening Inventory Carry Forward", vendor_names)
 
+    def test_payables_meta_vendor_filters_include_untyped_party_accounts_but_exclude_customer_only(self):
+        legacy_vendor_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=9003,
+            name="Legacy Untyped Vendor",
+            accounthead=self.vendor_head,
+            createdby=self.user,
+        )
+        legacy_vendor = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "ledger": legacy_vendor_ledger,
+                "accountname": "Legacy Untyped Vendor",
+                "createdby": self.user,
+            },
+            ledger_overrides={"ledger_code": 9003, "accounthead": self.vendor_head, "is_party": True},
+        )
+        apply_normalized_profile_payload(
+            legacy_vendor,
+            compliance_data={"gstno": "03ABCDE9999F1Z5"},
+            commercial_data={"partytype": None},
+            primary_address_data={"state": self.state, "city": self.city},
+        )
+
+        customer_only_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=9004,
+            name="Customer Only Party",
+            accounthead=self.vendor_head,
+            createdby=self.user,
+        )
+        customer_only = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "ledger": customer_only_ledger,
+                "accountname": "Customer Only Party",
+                "createdby": self.user,
+            },
+            ledger_overrides={"ledger_code": 9004, "accounthead": self.vendor_head, "is_party": True},
+        )
+        apply_normalized_profile_payload(
+            customer_only,
+            compliance_data={"gstno": "03ABCDE8888F1Z5"},
+            commercial_data={"partytype": "Customer"},
+            primary_address_data={"state": self.state, "city": self.city},
+        )
+
+        response = self.client.get(
+            reverse("reports_api:payables-meta"),
+            self._base_scope(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+
+        vendor_names = {row["name"] for row in payload["vendors"]}
+        self.assertIn("Legacy Untyped Vendor", vendor_names)
+        self.assertNotIn("Customer Only Party", vendor_names)
+
     def test_upcoming_payments_calendar_returns_due_window_rows_and_exports(self):
         response = self.client.get(
             reverse("reports_api:upcoming-payments-calendar"),
@@ -2146,6 +2236,39 @@ class PayableReportAPITests(APITestCase):
         self.assertEqual(prefs.get("ap_aging", {}).get("view"), "invoice")
         self.assertEqual(prefs.get("ap_aging", {}).get("sort_by"), "balance")
 
+    @override_settings(
+        PAYABLES_META_CACHE_ENABLED=True,
+        PAYABLES_META_CACHE_TTL_SECONDS=60,
+    )
+    def test_payables_meta_reuses_cached_shared_payload_and_keeps_user_preferences_live(self):
+        original = __import__(
+            "reports.services.payables_meta",
+            fromlist=["_build_payables_report_meta_uncached"],
+        )._build_payables_report_meta_uncached
+
+        with patch("reports.services.payables_meta._build_payables_report_meta_uncached", wraps=original) as mocked:
+            first = self.client.get(reverse("reports_api:payables-meta"), self._base_scope())
+            self.assertEqual(first.status_code, 200)
+
+            second_pref = self.client.patch(
+                reverse("reports_api:report-preferences"),
+                {
+                    "entity": self.entity.id,
+                    "report_code": "ap_aging",
+                    "payload": {"view": "invoice", "page_size": 25},
+                },
+                format="json",
+            )
+            self.assertEqual(second_pref.status_code, 200)
+
+            second = self.client.get(reverse("reports_api:payables-meta"), self._base_scope())
+
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(mocked.call_count, 1)
+        prefs = second.json().get("user_preferences", {})
+        self.assertEqual(prefs.get("ap_aging", {}).get("view"), "invoice")
+        self.assertEqual(prefs.get("ap_aging", {}).get("page_size"), 25)
+
     def test_payables_dashboard_summary_api_returns_totals_and_top_vendors(self):
         apply_normalized_profile_payload(
             self.vendor,
@@ -2686,6 +2809,41 @@ class PayableReportAPITests(APITestCase):
         self.assertTrue(response["Content-Type"].startswith(content_type))
         self.assertTrue(bytes(response.content).startswith(prefix))
 
+    @override_settings(
+        PAYABLES_VENDOR_LEDGER_CACHE_ENABLED=True,
+        PAYABLES_VENDOR_LEDGER_CACHE_TTL_SECONDS=60,
+    )
+    def test_vendor_ledger_statement_reuses_cached_payload_for_same_scope(self):
+        self._post_vendor_statement_entry(txn_type=TxnType.PURCHASE, txn_id=self.invoice.id, posting_date=date(2025, 4, 1), amount="1000.00", voucher_no="PI-PINV-1002", description="Purchase invoice")
+        params = self._base_scope(vendor=self.vendor.id, from_date="2025-04-01", to_date="2025-04-30")
+        original = __import__(
+            "reports.services.payables_operational",
+            fromlist=["_build_vendor_ledger_statement_uncached"],
+        )._build_vendor_ledger_statement_uncached
+        with patch("reports.services.payables_operational._build_vendor_ledger_statement_uncached", wraps=original) as mocked:
+            first = self.client.get(reverse("reports_api:vendor-ledger-statement"), params)
+            second = self.client.get(reverse("reports_api:vendor-ledger-statement"), params)
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(mocked.call_count, 1)
+
+    @override_settings(
+        PAYABLES_NOTE_REGISTER_CACHE_ENABLED=True,
+        PAYABLES_NOTE_REGISTER_CACHE_TTL_SECONDS=60,
+    )
+    def test_vendor_note_register_reuses_cached_payload_for_same_scope(self):
+        params = self._base_scope(from_date="2025-04-01", to_date="2025-04-30")
+        original = __import__(
+            "reports.services.payables_operational",
+            fromlist=["_build_vendor_note_register_uncached"],
+        )._build_vendor_note_register_uncached
+        with patch("reports.services.payables_operational._build_vendor_note_register_uncached", wraps=original) as mocked:
+            first = self.client.get(reverse("reports_api:vendor-note-register"), params)
+            second = self.client.get(reverse("reports_api:vendor-note-register"), params)
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(mocked.call_count, 1)
+
     def test_payables_close_pack_composes_existing_control_sections(self):
         apply_normalized_profile_payload(
             self.vendor,
@@ -2712,6 +2870,46 @@ class PayableReportAPITests(APITestCase):
         self.assertIn("800.00", payload["overview"]["msme_reporting_note"])
         self.assertIn("top_vendors", payload)
         self.assertEqual(payload["top_vendors"]["top_msme_overdue_vendors"][0]["vendor_name"], "ABC Traders")
+
+    @override_settings(
+        PAYABLES_CLOSE_PACK_RECON_CACHE_ENABLED=True,
+        PAYABLES_CLOSE_PACK_RECON_CACHE_TTL_SECONDS=60,
+    )
+    def test_payables_close_pack_reuses_cached_reconciliation_for_same_scope(self):
+        self._post_vendor_gl_balance(Decimal("650.00"), posting_date=date(2025, 8, 1), txn_id=9011, voucher_no="GL-AP-11")
+        scope = self._base_scope(as_of_date="2025-08-01")
+
+        original = __import__(
+            "reports.services.payables_operational",
+            fromlist=["build_ap_gl_reconciliation_report"],
+        ).build_ap_gl_reconciliation_report
+
+        with patch("reports.services.payables_operational.build_ap_gl_reconciliation_report", wraps=original) as mocked:
+            first = self.client.get(reverse("reports_api:payables-close-pack"), scope)
+            second = self.client.get(reverse("reports_api:payables-close-pack"), scope)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(mocked.call_count, 1)
+
+    @override_settings(
+        PAYABLES_AP_AGING_CACHE_ENABLED=True,
+        PAYABLES_AP_AGING_CACHE_TTL_SECONDS=60,
+    )
+    def test_ap_aging_report_reuses_cached_payload_for_same_scope(self):
+        scope = self._base_scope(as_of_date="2025-04-30", view="summary")
+        original = __import__(
+            "reports.services.payables",
+            fromlist=["_build_ap_aging_report_uncached"],
+        )._build_ap_aging_report_uncached
+
+        with patch("reports.services.payables._build_ap_aging_report_uncached", wraps=original) as mocked:
+            first = self.client.get(reverse("reports_api:ap-aging-report"), scope)
+            second = self.client.get(reverse("reports_api:ap-aging-report"), scope)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(mocked.call_count, 1)
 
     def test_payables_close_pack_top_overdue_vendors_are_not_limited_to_first_outstanding_page(self):
         for index in range(10):

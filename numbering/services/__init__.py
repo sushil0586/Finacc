@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+from django.db.models import Q
 from django.utils import timezone
 
 from numbering.models import DocumentNumberSeries, DocumentType
@@ -64,6 +65,109 @@ def ensure_document_type(*, module: str, doc_key: str, name: str, default_code: 
     return doc_type
 
 
+def ensure_document_types_batch(*, module: str, configs: list[dict]) -> dict[str, DocumentType]:
+    """
+    Batch-oriented variant of ensure_document_type() keyed by doc_key.
+    Keeps the same normalization/update guarantees while avoiding repeated
+    point lookups for callers that need several document types together.
+    """
+    if not configs:
+        return {}
+
+    requested = []
+    seen_doc_keys: set[str] = set()
+    for cfg in configs:
+        doc_key = str(cfg.get("doc_key") or "").strip()
+        if not doc_key or doc_key in seen_doc_keys:
+            continue
+        seen_doc_keys.add(doc_key)
+        requested.append(
+            {
+                "doc_key": doc_key,
+                "name": str(cfg.get("name") or "").strip(),
+                "default_code": str(cfg.get("default_code") or "").strip(),
+            }
+        )
+
+    if not requested:
+        return {}
+
+    doc_keys = [cfg["doc_key"] for cfg in requested]
+    default_codes = [cfg["default_code"] for cfg in requested if cfg["default_code"]]
+
+    existing_rows = list(
+        DocumentType.objects.filter(
+            Q(module=module, doc_key__in=doc_keys)
+            | Q(module__iexact=module, doc_key__in=doc_keys)
+            | Q(module__iexact=module, default_code__in=default_codes)
+        ).order_by("id")
+    )
+
+    by_exact_key = {(row.module, row.doc_key): row for row in existing_rows if row.module and row.doc_key}
+    by_ci_key = {(str(row.module or "").lower(), str(row.doc_key or "").lower()): row for row in existing_rows if row.doc_key}
+    by_ci_default_code = {
+        (str(row.module or "").lower(), str(row.default_code or "").lower()): row
+        for row in existing_rows
+        if row.default_code
+    }
+
+    resolved: dict[str, DocumentType] = {}
+    to_create: list[DocumentType] = []
+    to_update: list[DocumentType] = []
+
+    for cfg in requested:
+        doc_key = cfg["doc_key"]
+        name = cfg["name"]
+        default_code = cfg["default_code"]
+        row = (
+            by_exact_key.get((module, doc_key))
+            or by_ci_key.get((module.lower(), doc_key.lower()))
+            or by_ci_default_code.get((module.lower(), default_code.lower()))
+        )
+
+        if row is None:
+            row = DocumentType(
+                module=module,
+                doc_key=doc_key,
+                name=name,
+                default_code=default_code,
+                is_active=True,
+            )
+            to_create.append(row)
+            resolved[doc_key] = row
+            continue
+
+        changed = False
+        if row.module != module:
+            row.module = module
+            changed = True
+        if row.doc_key != doc_key:
+            row.doc_key = doc_key
+            changed = True
+        if row.name != name:
+            row.name = name
+            changed = True
+        if row.default_code != default_code:
+            row.default_code = default_code
+            changed = True
+        if not row.is_active:
+            row.is_active = True
+            changed = True
+        if changed:
+            to_update.append(row)
+        resolved[doc_key] = row
+
+    if to_create:
+        DocumentType.objects.bulk_create(to_create)
+    if to_update:
+        DocumentType.objects.bulk_update(
+            to_update,
+            ["module", "doc_key", "name", "default_code", "is_active", "updated_at"],
+        )
+
+    return resolved
+
+
 def ensure_series(
     *,
     entity_id: int,
@@ -118,6 +222,7 @@ __all__ = [
     "DocumentNumberSeries",
     "SeedSequenceResult",
     "ensure_document_type",
+    "ensure_document_types_batch",
     "ensure_series",
     "SeriesPatternConflict",
     "find_series_pattern_conflict",

@@ -25,6 +25,7 @@ from rest_framework.views import APIView
 from catalog.models import ProductBulkJob
 from sales.models import SalesInvoiceHeader, SalesInvoiceLine
 from sales.views.sales_invoice_views import require_sales_request_permission
+from subscriptions.services import SubscriptionLimitCodes
 
 
 STATUS_SLUG_TO_ID = {
@@ -143,8 +144,19 @@ class _BulkPrintMixin:
                 entity_id=entity_id,
                 doc_type=doc_type,
                 action="view",
+                feature_code=SubscriptionLimitCodes.FEATURE_SALES,
             )
             checked_doc_types.add(doc_type)
+
+    def _require_job_permissions(self, *, user, entity_id: int, job: ProductBulkJob) -> None:
+        payload = self._as_dict(job.payload)
+        manifest = self._as_list(payload.get("manifest"))
+        doc_slugs = []
+        for row in manifest:
+            doc_slug = str(self._as_dict(row).get("doc_type") or "").strip()
+            if doc_slug:
+                doc_slugs.append(doc_slug)
+        self._require_doc_permissions(user=user, entity_id=entity_id, doc_slugs=doc_slugs)
 
     def _build_queryset(self, *, entity_id: int, entityfinid_id: int | None, subentity_id: int | None, payload: dict):
         scope = self._as_dict(payload.get("scope"))
@@ -386,6 +398,7 @@ class SalesBulkPrintJobDetailAPIView(_BulkPrintMixin, APIView):
     def get(self, request, job_id: int):
         entity_id, _, _ = self._scope(request)
         job = get_object_or_404(ProductBulkJob, pk=job_id, entity_id=entity_id)
+        self._require_job_permissions(user=request.user, entity_id=entity_id, job=job)
         payload = self._as_dict(job.payload)
         manifest = self._as_list(payload.get("manifest"))
 
@@ -647,6 +660,7 @@ class SalesBulkPrintJobDownloadAPIView(_BulkPrintMixin, APIView):
             raise ValidationError({"format": "Use json, csv, zip, pdf or zip_pdf."})
 
         job = get_object_or_404(ProductBulkJob, pk=job_id, entity_id=entity_id)
+        self._require_job_permissions(user=request.user, entity_id=entity_id, job=job)
         payload = self._as_dict(job.payload)
         request_payload = self._as_dict(payload.get("request"))
         scope_payload = self._as_dict(payload.get("scope"))

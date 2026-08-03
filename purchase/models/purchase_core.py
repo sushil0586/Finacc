@@ -4,7 +4,8 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError
 from django.conf import settings
 from django.db import models
-from django.db.models import Q
+from django.db.models import F, Q
+from django.db.models.functions import Upper
 from django.utils import timezone
 from geography.models import State
 from financial.models import Ledger, account
@@ -312,6 +313,8 @@ class PurchaseInvoiceHeader(models.Model):
             models.Index(fields=["entity", "entityfinid", "vendor"], name="ix_pur_ent_fin_vendor"),
             models.Index(fields=["entity", "entityfinid", "vendor_ledger"], name="ix_pur_ent_fin_vledger"),
             models.Index(fields=["entity", "entityfinid", "doc_code", "doc_no"], name="ix_pur_docno_lookup"),
+            models.Index(fields=["entity", "entityfinid", "doc_no", "id"], name="ix_pur_lookup_sort"),
+            models.Index(fields=["entity", "entityfinid", "subentity", "doc_no", "id"], name="ix_pur_lookup_sub"),
             models.Index(fields=["entity", "entityfinid", "vendor", "due_date"], name="ix_pur_ap_due"),
             models.Index(fields=["entity", "entityfinid", "vendor_ledger", "due_date"], name="ix_pur_ap_vldue"),
             models.Index(fields=["entity", "entityfinid", "subentity", "bill_date"], name="ix_pur_hdr_billdt"),
@@ -319,8 +322,19 @@ class PurchaseInvoiceHeader(models.Model):
             models.Index(fields=["entity", "entityfinid", "subentity", "status", "bill_date"], name="ix_pur_hdr_statdt"),
             models.Index(fields=["entity", "entityfinid", "subentity", "doc_type"], name="ix_pur_hdr_doctyp"),
             models.Index(fields=["entity", "entityfinid", "subentity", "doc_type", "doc_code", "doc_no"], name="ix_pur_hdr_nav"),
+            models.Index(fields=["entity", "entityfinid", "doc_type", "status", "doc_no", "id"], name="ix_pur_nav_scope"),
+            models.Index(fields=["entity", "entityfinid", "subentity", "doc_type", "status", "doc_no", "id"], name="ix_pur_nav_sub"),
             models.Index(fields=["entity", "entityfinid", "vendor", "status", "bill_date"], name="ix_pur_vend_statdt"),
             models.Index(fields=["entity", "vendor", "supplier_invoice_date", "supplier_invoice_number"], name="ix_pur_vendor_supinv"),
+            models.Index(
+                F("entity"),
+                F("vendor"),
+                F("supplier_invoice_date"),
+                F("grand_total"),
+                Upper("supplier_invoice_number"),
+                condition=~Q(status=9),
+                name="ix_pur_dup_guard",
+            ),
         ]
 
     def __str__(self):

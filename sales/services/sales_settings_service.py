@@ -677,8 +677,14 @@ class SalesSettingsService:
         return SalesStockPolicy.ScopeLevel.ENTITY
 
     @staticmethod
-    def get_stock_policy_payload(*, entity_id: int, subentity_id: Optional[int], entityfinid_id: Optional[int]) -> Dict[str, Any]:
-        policy = SalesStockPolicyService.resolve(
+    def get_stock_policy_payload(
+        *,
+        entity_id: int,
+        subentity_id: Optional[int],
+        entityfinid_id: Optional[int],
+        resolved_policy: Optional[ResolvedSalesStockPolicy] = None,
+    ) -> Dict[str, Any]:
+        policy = resolved_policy or SalesStockPolicyService.resolve(
             entity_id=entity_id,
             subentity_id=subentity_id,
             entityfinid_id=entityfinid_id,
@@ -738,26 +744,72 @@ class SalesSettingsService:
 
     @staticmethod
     def get_seller_profile(*, entity_id: int, subentity_id: int | None) -> dict:
-        entity = Entity.objects.get(id=entity_id)
+        entity = Entity.objects.filter(id=entity_id).only("id", "entityname", "legalname").get()
         entity_addr = (
-            entity.addresses.filter(isactive=True, is_primary=True)
+            Entity.addresses.rel.related_model.objects.filter(entity_id=entity_id, isactive=True, is_primary=True)
             .select_related("state", "country", "district", "city")
+            .only(
+                "id",
+                "entity_id",
+                "line1",
+                "line2",
+                "pincode",
+                "country_id",
+                "district_id",
+                "city_id",
+                "state_id",
+                "state__id",
+                "state__statecode",
+                "state__statename",
+                "city__cityname",
+            )
             .first()
         )
-        entity_contact = entity.contacts.filter(isactive=True, is_primary=True).first()
-        entity_gst = entity.gst_registrations.filter(isactive=True, is_primary=True).first()
+        entity_contact = (
+            Entity.contacts.rel.related_model.objects.filter(entity_id=entity_id, isactive=True, is_primary=True)
+            .only("id", "entity_id", "mobile", "email")
+            .first()
+        )
+        entity_gst = (
+            Entity.gst_registrations.rel.related_model.objects.filter(entity_id=entity_id, isactive=True, is_primary=True)
+            .only("id", "entity_id", "gstin")
+            .first()
+        )
 
         se = None
         se_addr = None
         se_contact = None
         if subentity_id:
-            se = SubEntity.objects.get(id=subentity_id, entity_id=entity_id)
+            se = (
+                SubEntity.objects.filter(id=subentity_id, entity_id=entity_id)
+                .only("id", "subentityname")
+                .get()
+            )
             se_addr = (
-                se.addresses.filter(isactive=True, is_primary=True)
+                SubEntity.addresses.rel.related_model.objects.filter(subentity_id=subentity_id, isactive=True, is_primary=True)
                 .select_related("state", "country", "district", "city")
+                .only(
+                    "id",
+                    "subentity_id",
+                    "line1",
+                    "line2",
+                    "pincode",
+                    "country_id",
+                    "district_id",
+                    "city_id",
+                    "state_id",
+                    "state__id",
+                    "state__statecode",
+                    "state__statename",
+                    "city__cityname",
+                )
                 .first()
             )
-            se_contact = se.contacts.filter(isactive=True, is_primary=True).first()
+            se_contact = (
+                SubEntity.contacts.rel.related_model.objects.filter(subentity_id=subentity_id, isactive=True, is_primary=True)
+                .only("id", "subentity_id", "mobile", "email")
+                .first()
+            )
 
         # state preference: SubEntity primary state > Entity primary state
         seller_state = (se_addr.state if se_addr and se_addr.state else (entity_addr.state if entity_addr else None))
@@ -816,6 +868,25 @@ class SalesSettingsService:
         doc_type: int,
         current_number: Optional[int] = None,
     ):
+        candidates = SalesSettingsService._numbered_doc_candidates_in_scope(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            doc_type=doc_type,
+        )
+        return SalesSettingsService._pick_latest_candidate(
+            candidates=candidates,
+            current_number=current_number,
+        )
+
+    @staticmethod
+    def _numbered_doc_candidates_in_scope(
+        *,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: Optional[int],
+        doc_type: int,
+    ) -> list[tuple[int, int, SalesInvoiceHeader]]:
         inv_filters = {
             "entity_id": entity_id,
             "entityfinid_id": entityfinid_id,
@@ -831,15 +902,16 @@ class SalesSettingsService:
         else:
             inv_filters["subentity_id"] = subentity_id
 
-        rows = list(
-            SalesInvoiceHeader.objects.filter(**inv_filters)
-            .only("id", "invoice_number", "doc_no", "doc_code", "status", "bill_date")
+        rows = SalesInvoiceHeader.objects.filter(**inv_filters).only(
+            "id",
+            "invoice_number",
+            "doc_no",
+            "doc_code",
+            "status",
+            "bill_date",
         )
-        if not rows:
-            return None
 
-        threshold = int(current_number or 0)
-        candidates = []
+        candidates: list[tuple[int, int, SalesInvoiceHeader]] = []
         for row in rows:
             seq_no = SalesSettingsService._extract_sequence_no(
                 getattr(row, "doc_no", None),
@@ -847,15 +919,83 @@ class SalesSettingsService:
             )
             if seq_no <= 0:
                 continue
-            if threshold > 0 and seq_no >= threshold:
-                continue
             candidates.append((seq_no, int(getattr(row, "id", 0) or 0), row))
 
+        candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return candidates
+
+    @staticmethod
+    def _numbered_doc_candidates_by_type_in_scope(
+        *,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: Optional[int],
+        doc_types: list[int],
+    ) -> dict[int, list[tuple[int, int, SalesInvoiceHeader]]]:
+        if not doc_types:
+            return {}
+
+        inv_filters = {
+            "entity_id": entity_id,
+            "entityfinid_id": entityfinid_id,
+            "doc_type__in": doc_types,
+            "status__in": [
+                int(SalesInvoiceHeader.Status.CONFIRMED),
+                int(SalesInvoiceHeader.Status.POSTED),
+                int(SalesInvoiceHeader.Status.CANCELLED),
+            ],
+        }
+        if subentity_id is None:
+            inv_filters["subentity_id__isnull"] = True
+        else:
+            inv_filters["subentity_id"] = subentity_id
+
+        rows = SalesInvoiceHeader.objects.filter(**inv_filters).only(
+            "id",
+            "doc_type",
+            "invoice_number",
+            "doc_no",
+            "doc_code",
+            "status",
+            "bill_date",
+        )
+
+        candidates_by_type: dict[int, list[tuple[int, int, SalesInvoiceHeader]]] = {
+            int(doc_type): [] for doc_type in doc_types
+        }
+        for row in rows:
+            seq_no = SalesSettingsService._extract_sequence_no(
+                getattr(row, "doc_no", None),
+                getattr(row, "invoice_number", None),
+            )
+            if seq_no <= 0:
+                continue
+            doc_type = int(getattr(row, "doc_type", 0) or 0)
+            candidates_by_type.setdefault(doc_type, []).append(
+                (seq_no, int(getattr(row, "id", 0) or 0), row)
+            )
+
+        for candidates in candidates_by_type.values():
+            candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return candidates_by_type
+
+    @staticmethod
+    def _pick_latest_candidate(
+        *,
+        candidates: list[tuple[int, int, SalesInvoiceHeader]],
+        current_number: Optional[int] = None,
+    ):
         if not candidates:
             return None
 
-        candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
-        return candidates[0][2]
+        threshold = int(current_number or 0)
+        if threshold <= 0:
+            return candidates[0][2]
+
+        for seq_no, _, row in candidates:
+            if seq_no < threshold:
+                return row
+        return None
 
     @staticmethod
     def get_current_doc_no(
@@ -865,6 +1005,8 @@ class SalesSettingsService:
         subentity_id: Optional[int],
         doc_key: str,
         doc_code: str,
+        candidates: Optional[list[tuple[int, int, SalesInvoiceHeader]]] = None,
+        doc_type_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         - current_number: preview (next-to-issue) from numbering series (uses doc_code)
@@ -873,15 +1015,18 @@ class SalesSettingsService:
         """
 
         # 1) Find DocumentType row (for numbering preview)
-        doc_type_row = (
-            DocumentType.objects.filter(
-                module="sales",
-                doc_key=doc_key,
-                is_active=True,
+        if doc_type_id:
+            doc_type_row = type("DocTypeRef", (), {"id": int(doc_type_id)})()
+        else:
+            doc_type_row = (
+                DocumentType.objects.filter(
+                    module="sales",
+                    doc_key=doc_key,
+                    is_active=True,
+                )
+                .only("id")
+                .first()
             )
-            .only("id")
-            .first()
-        )
 
         if not doc_type_row:
             return {
@@ -916,14 +1061,22 @@ class SalesSettingsService:
         except Exception as e:
             preview_error = str(e)
 
-        # 3) Get latest saved numbered row in scope (used for fallback + previous lookup).
-        latest_doc = SalesSettingsService._last_saved_doc_in_scope(
-            entity_id=entity_id,
-            entityfinid_id=entityfinid_id,
-            subentity_id=subentity_id,
-            doc_type=sales_doc_type,
-            current_number=None,
-        )
+        # 3) Get numbered rows once and reuse them for latest + previous lookup.
+        if candidates is None:
+            latest_doc = SalesSettingsService._last_saved_doc_in_scope(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                doc_type=sales_doc_type,
+                current_number=None,
+            )
+            prev_doc = None
+        else:
+            latest_doc = SalesSettingsService._pick_latest_candidate(
+                candidates=candidates,
+                current_number=None,
+            )
+            prev_doc = None
 
         # If configured code preview is stale/low, try latest doc's code.
         latest_doc_code = str(getattr(latest_doc, "doc_code", "") or "").strip()
@@ -964,13 +1117,19 @@ class SalesSettingsService:
             }
 
         # 4) Previous = nearest numbered row < current number in scope.
-        prev_doc = SalesSettingsService._last_saved_doc_in_scope(
-            entity_id=entity_id,
-            entityfinid_id=entityfinid_id,
-            subentity_id=subentity_id,
-            doc_type=sales_doc_type,
-            current_number=current_no,
-        )
+        if candidates is None:
+            prev_doc = SalesSettingsService._last_saved_doc_in_scope(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                doc_type=sales_doc_type,
+                current_number=current_no,
+            )
+        else:
+            prev_doc = SalesSettingsService._pick_latest_candidate(
+                candidates=candidates,
+                current_number=current_no,
+            )
         previous_number = None
         if prev_doc:
             previous_number = SalesSettingsService._extract_sequence_no(
@@ -990,6 +1149,66 @@ class SalesSettingsService:
             "previous_status": int(prev_doc.status) if prev_doc else None,
             "previous_bill_date": prev_doc.bill_date if prev_doc else None,
         }
+
+    @staticmethod
+    def get_current_doc_numbers_batch(
+        *,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: Optional[int],
+        doc_requests: dict[str, dict[str, str]],
+    ) -> dict[str, Dict[str, Any]]:
+        if not doc_requests:
+            return {}
+
+        doc_keys = [cfg["doc_key"] for cfg in doc_requests.values()]
+        doc_type_rows = DocumentType.objects.filter(
+            module="sales",
+            doc_key__in=doc_keys,
+            is_active=True,
+        ).only("id", "doc_key")
+        doc_type_by_key = {row.doc_key: row for row in doc_type_rows}
+
+        sales_doc_types = {
+            row_key: SalesSettingsService._sales_doc_type_from_doc_key(cfg["doc_key"])
+            for row_key, cfg in doc_requests.items()
+        }
+        candidates_by_type = SalesSettingsService._numbered_doc_candidates_by_type_in_scope(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            doc_types=list({int(doc_type) for doc_type in sales_doc_types.values()}),
+        )
+
+        result: dict[str, Dict[str, Any]] = {}
+        for row_key, cfg in doc_requests.items():
+            doc_type_row = doc_type_by_key.get(cfg["doc_key"])
+            if not doc_type_row:
+                result[row_key] = {
+                    "enabled": False,
+                    "reason": f"DocumentType not found: sales/{cfg['doc_key']}",
+                    "doc_type_id": None,
+                    "current_number": None,
+                    "previous_number": None,
+                    "previous_invoice_id": None,
+                    "previous_invoice_number": None,
+                    "previous_status": None,
+                    "previous_bill_date": None,
+                }
+                continue
+
+            sales_doc_type = sales_doc_types[row_key]
+            result[row_key] = SalesSettingsService.get_current_doc_no(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                doc_key=cfg["doc_key"],
+                doc_code=cfg["doc_code"],
+                candidates=candidates_by_type.get(int(sales_doc_type), []),
+                doc_type_id=doc_type_row.id,
+            )
+
+        return result
 
     # ----------------------------
     # Settings / Policy

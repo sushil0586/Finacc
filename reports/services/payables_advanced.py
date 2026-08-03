@@ -158,70 +158,48 @@ def build_ap_payment_forecast_report(
             effective_due_date__lte=end_date,
         )
     )
-    summary = base_qs.aggregate(
-        total_due=Coalesce(
-            Sum("outstanding_asof"),
-            Value(ZERO, output_field=DecimalField(max_digits=14, decimal_places=2)),
-        ),
-        total_overdue=Coalesce(
-            Sum(
-                Case(
-                    When(effective_due_date__lt=reference, then="outstanding_asof"),
-                    default=Value(ZERO, output_field=DecimalField(max_digits=14, decimal_places=2)),
-                    output_field=DecimalField(max_digits=14, decimal_places=2),
-                )
-            ),
-            Value(ZERO, output_field=DecimalField(max_digits=14, decimal_places=2)),
-        ),
-        next_7=Coalesce(
-            Sum(
-                Case(
-                    When(
-                        effective_due_date__gte=reference,
-                        effective_due_date__lte=reference + timedelta(days=7),
-                        then="outstanding_asof",
-                    ),
-                    default=Value(ZERO, output_field=DecimalField(max_digits=14, decimal_places=2)),
-                    output_field=DecimalField(max_digits=14, decimal_places=2),
-                )
-            ),
-            Value(ZERO, output_field=DecimalField(max_digits=14, decimal_places=2)),
-        ),
-        next_30=Coalesce(
-            Sum(
-                Case(
-                    When(
-                        effective_due_date__gte=reference,
-                        effective_due_date__lte=reference + timedelta(days=30),
-                        then="outstanding_asof",
-                    ),
-                    default=Value(ZERO, output_field=DecimalField(max_digits=14, decimal_places=2)),
-                    output_field=DecimalField(max_digits=14, decimal_places=2),
-                )
-            ),
-            Value(ZERO, output_field=DecimalField(max_digits=14, decimal_places=2)),
-        ),
-    )
-    grouped_rows = list(
-        base_qs.values("effective_due_date").annotate(
-            vendor_count=Count("vendor_id", distinct=True),
-            bill_count=Count("id"),
-            due_amount=Coalesce(
-                Sum("outstanding_asof"),
-                Value(ZERO, output_field=DecimalField(max_digits=14, decimal_places=2)),
-            ),
-            overdue_amount=Coalesce(
-                Sum(
-                    Case(
-                        When(effective_due_date__lt=reference, then="outstanding_asof"),
-                        default=Value(ZERO, output_field=DecimalField(max_digits=14, decimal_places=2)),
-                        output_field=DecimalField(max_digits=14, decimal_places=2),
-                    )
-                ),
-                Value(ZERO, output_field=DecimalField(max_digits=14, decimal_places=2)),
-            ),
+    summary = {
+        "total_due": ZERO,
+        "total_overdue": ZERO,
+        "next_7": ZERO,
+        "next_30": ZERO,
+    }
+    grouped_map: dict = {}
+    for item in base_qs.values("id", "vendor_id", "effective_due_date", "outstanding_asof").iterator(chunk_size=2000):
+        due_date = item["effective_due_date"]
+        outstanding = q2(item["outstanding_asof"])
+        summary["total_due"] += outstanding
+        if due_date < reference:
+            summary["total_overdue"] += outstanding
+        if reference <= due_date <= reference + timedelta(days=7):
+            summary["next_7"] += outstanding
+        if reference <= due_date <= reference + timedelta(days=30):
+            summary["next_30"] += outstanding
+        bucket = grouped_map.setdefault(
+            due_date,
+            {
+                "effective_due_date": due_date,
+                "vendor_ids": set(),
+                "bill_count": 0,
+                "due_amount": ZERO,
+                "overdue_amount": ZERO,
+            },
         )
-    )
+        bucket["vendor_ids"].add(item["vendor_id"])
+        bucket["bill_count"] += 1
+        bucket["due_amount"] += outstanding
+        if due_date < reference:
+            bucket["overdue_amount"] += outstanding
+    grouped_rows = [
+        {
+            "effective_due_date": due_date,
+            "vendor_count": len(values["vendor_ids"]),
+            "bill_count": values["bill_count"],
+            "due_amount": values["due_amount"],
+            "overdue_amount": values["overdue_amount"],
+        }
+        for due_date, values in sorted(grouped_map.items(), key=lambda item: item[0])
+    ]
     sample_vendor_names: dict = defaultdict(list)
     sample_bill_numbers: dict = defaultdict(list)
     for sample in (
@@ -407,7 +385,7 @@ def build_vendor_reconciliation_statement_report(
     bill_totals = defaultdict(lambda: ZERO)
     note_totals = defaultdict(lambda: ZERO)
     if vendor_ids:
-        aggregated_rows = (
+        for row in (
             _open_item_balance_queryset(
                 entity_id=entity_id,
                 entityfin_id=entityfin_id,
@@ -415,46 +393,30 @@ def build_vendor_reconciliation_statement_report(
                 upto_date=as_of,
                 vendor_ids=vendor_ids,
             )
-            .values("vendor_id")
-            .annotate(
-                invoiced=Coalesce(
-                    Sum(
-                        Case(
-                            When(original_amount__gte=ZERO, then="original_amount"),
-                            default=Value(ZERO, output_field=DecimalField(max_digits=14, decimal_places=2)),
-                            output_field=DecimalField(max_digits=14, decimal_places=2),
-                        )
-                    ),
-                    Value(ZERO, output_field=DecimalField(max_digits=14, decimal_places=2)),
-                ),
-                notes=Coalesce(
-                    Sum(
-                        Case(
-                            When(original_amount__lt=ZERO, then=-1 * Coalesce("original_amount", Value(ZERO, output_field=DecimalField(max_digits=14, decimal_places=2)))),
-                            default=Value(ZERO, output_field=DecimalField(max_digits=14, decimal_places=2)),
-                            output_field=DecimalField(max_digits=14, decimal_places=2),
-                        )
-                    ),
-                    Value(ZERO, output_field=DecimalField(max_digits=14, decimal_places=2)),
-                ),
-                settled=Coalesce(
-                    Sum("settled_asof"),
-                    Value(ZERO, output_field=DecimalField(max_digits=14, decimal_places=2)),
-                ),
-                closing_balance=Coalesce(
-                    Sum("outstanding_asof"),
-                    Value(ZERO, output_field=DecimalField(max_digits=14, decimal_places=2)),
-                ),
+            .values("vendor_id", "original_amount", "settled_asof", "outstanding_asof")
+            .iterator(chunk_size=2000)
+        ):
+            vendor_summary = open_item_summary.setdefault(
+                row["vendor_id"],
+                {
+                    "invoiced": ZERO,
+                    "notes": ZERO,
+                    "settled": ZERO,
+                    "closing_balance": ZERO,
+                },
             )
-        )
+            original_amount = q2(row["original_amount"])
+            settled_asof = q2(row["settled_asof"])
+            outstanding_asof = q2(row["outstanding_asof"])
+            if original_amount >= ZERO:
+                vendor_summary["invoiced"] += original_amount
+            else:
+                vendor_summary["notes"] += -original_amount
+            vendor_summary["settled"] += settled_asof
+            vendor_summary["closing_balance"] += outstanding_asof
         open_item_summary = {
-            row["vendor_id"]: {
-                "invoiced": q2(row["invoiced"]),
-                "notes": q2(row["notes"]),
-                "settled": q2(row["settled"]),
-                "closing_balance": q2(row["closing_balance"]),
-            }
-            for row in aggregated_rows
+            vendor_id: {key: q2(value) for key, value in values.items()}
+            for vendor_id, values in open_item_summary.items()
         }
         if opening_cutoff is not None:
             opening_items = open_item_vendor_summary(
@@ -839,16 +801,24 @@ def build_ap_compliance_aging_report(
         .exclude(effective_due_date__isnull=True)
     )
     medium_cutoff = as_of - timedelta(days=90)
-    summary = base_qs.aggregate(
-        total_outstanding=Coalesce(
-            Sum("outstanding_asof"),
-            Value(ZERO, output_field=DecimalField(max_digits=14, decimal_places=2)),
-        ),
-        row_count=Count("id"),
-        high_count=Count("id", filter=Q(gstin_value="")),
-        medium_count=Count("id", filter=~Q(gstin_value="") & Q(effective_due_date__lt=medium_cutoff)),
-        low_count=Count("id", filter=~Q(gstin_value="") & Q(effective_due_date__gte=medium_cutoff)),
-    )
+    summary = {
+        "total_outstanding": ZERO,
+        "row_count": 0,
+        "high_count": 0,
+        "medium_count": 0,
+        "low_count": 0,
+    }
+    for item in base_qs.values("gstin_value", "effective_due_date", "outstanding_asof").iterator(chunk_size=2000):
+        summary["row_count"] += 1
+        outstanding = q2(item["outstanding_asof"])
+        summary["total_outstanding"] += outstanding
+        gstin = str(item.get("gstin_value") or "").strip()
+        if not gstin:
+            summary["high_count"] += 1
+        elif item["effective_due_date"] < medium_cutoff:
+            summary["medium_count"] += 1
+        else:
+            summary["low_count"] += 1
     db_ordering = _ap_compliance_sort_mapping(sort_by, sort_order)
     paged_rows = []
     total_rows = int(summary["row_count"] or 0)

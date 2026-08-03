@@ -9,7 +9,7 @@ from django.db.models import Q
 from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase
 from openpyxl import load_workbook
-from rest_framework.test import APIRequestFactory, force_authenticate
+from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 
 from entity.models import Entity
 from financial.models import AccountComplianceProfile, account
@@ -67,6 +67,7 @@ from withholding.views import (
     _invoice_posting_state,
     _tcs_source_route_for_document,
 )
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
 class _ChainableListQuerySet(list):
@@ -2027,6 +2028,34 @@ class WithholdingTcsApiPermissionTests(TestCase):
         mocked_entity.assert_called_once_with(self.user, 1)
         mocked_codes.assert_called_once_with(self.user, 1)
         mocked_subscription.assert_called_once()
+
+
+class WithholdingTcsBulkEntitlementTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = get_user_model().objects.create_user(
+            username="tcs-bulk-entitlement",
+            email="tcs-bulk-entitlement@example.com",
+            password="testpass123",
+        )
+        self.client.force_authenticate(user=self.user)
+        self.entity = Entity.objects.create(entityname="TCS Bulk Entity", createdby=self.user)
+
+    def test_tcs_bulk_template_is_blocked_when_financial_feature_disabled(self):
+        customer_account = SubscriptionService.register_entity_creation(entity=self.entity, owner=self.user)
+        subscription = SubscriptionService.ensure_active_subscription(customer_account=customer_account)
+        financial_limit = subscription.plan.limits.get(key=SubscriptionLimitCodes.FEATURE_FINANCIAL)
+        financial_limit.bool_value = False
+        financial_limit.save(update_fields=["bool_value", "updated_at"])
+
+        response = self.client.get(
+            "/api/tcs/sections/bulk/template/",
+            {"entity": self.entity.id, "format": "xlsx"},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "subscription_feature_disabled")
+        self.assertEqual(response.data["feature_code"], SubscriptionLimitCodes.FEATURE_FINANCIAL)
 
 
 class WithholdingTcsWorkspaceExportTests(TestCase):

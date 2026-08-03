@@ -20,6 +20,7 @@ from vouchers.models import VoucherHeader, VoucherLine
 from vouchers.serializers.voucher import VoucherWriteSerializer
 from vouchers.services.voucher_settings_service import VoucherSettingsService
 from vouchers.services.voucher_service import VoucherResult, VoucherService
+from vouchers.views.voucher_settings import VoucherCompiledChoicesAPIView
 from vouchers.views.voucher import (
     VoucherListCreateAPIView,
     VoucherApprovalAPIView,
@@ -29,6 +30,7 @@ from vouchers.views.voucher import (
     VoucherUnpostAPIView,
     _duplicate_reference_warnings,
 )
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
 class VoucherServiceUnitTests(SimpleTestCase):
@@ -220,7 +222,41 @@ class VoucherNumberingSeedCommandTests(TestCase):
             finendyear=timezone.now(),
             createdby=self.user,
         )
+
+
+class VoucherChoicesEntitlementTests(TestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.user = get_user_model().objects.create_user(
+            username="voucher-choices-user",
+            email="voucher-choices@example.com",
+            password="pass@12345",
+        )
+        self.entity = Entity.objects.create(entityname="Voucher Choices Entity", createdby=self.user)
+        self.entityfin = EntityFinancialYear.objects.create(
+            entity=self.entity,
+            desc="FY 2026-27",
+            finstartyear=timezone.now(),
+            finendyear=timezone.now(),
+            createdby=self.user,
+        )
         self.subentity = SubEntity.objects.create(entity=self.entity, subentityname="Branch A", is_head_office=True)
+
+    def test_voucher_choices_are_blocked_when_financial_feature_disabled(self):
+        account = SubscriptionService.register_entity_creation(entity=self.entity, owner=self.user)
+        subscription = SubscriptionService.ensure_active_subscription(customer_account=account)
+        financial_limit = subscription.plan.limits.get(key=SubscriptionLimitCodes.FEATURE_FINANCIAL)
+        financial_limit.bool_value = False
+        financial_limit.save(update_fields=["bool_value", "updated_at"])
+
+        request = self.factory.get(f"/api/vouchers/choices/?entity={self.entity.id}")
+        force_authenticate(request, user=self.user)
+
+        response = VoucherCompiledChoicesAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "subscription_feature_disabled")
+        self.assertEqual(response.data["feature_code"], SubscriptionLimitCodes.FEATURE_FINANCIAL)
 
     def test_seed_voucher_numbering_without_subentity_seeds_root_and_branch_scopes(self):
         call_command(

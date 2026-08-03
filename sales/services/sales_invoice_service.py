@@ -155,18 +155,13 @@ class SalesInvoiceService:
         reason_code: str | None,
     ) -> None:
         flags = dict(getattr(header, "legacy_behavior_flags", {}) or {})
-        if not enabled:
-            flags.pop("tcs_runtime_result", None)
-            header.legacy_behavior_flags = flags
-            return
-
         section = getattr(header, "tcs_section", None)
         amount = q2(getattr(header, "tcs_amount", ZERO2) or ZERO2)
         base_amount = q2(getattr(header, "tcs_base_amount", ZERO2) or ZERO2)
         rate = q4(getattr(header, "tcs_rate", ZERO4) or ZERO4)
 
         flags["tcs_runtime_result"] = {
-            "enabled": True,
+            "enabled": bool(enabled),
             "mode": str(mode or "AUTO").upper().strip(),
             "section_id": getattr(section, "id", None) if section is not None else None,
             "section_code": str(getattr(section, "section_code", "") or "").strip().upper() or None,
@@ -182,8 +177,8 @@ class SalesInvoiceService:
         header.legacy_behavior_flags = flags
 
     @staticmethod
-    def _policy_controls(header: SalesInvoiceHeader) -> dict:
-        settings_obj = SalesInvoiceService.get_settings(
+    def _policy_controls(header: SalesInvoiceHeader, settings_obj: Optional[SalesSettings] = None) -> dict:
+        settings_obj = settings_obj or SalesInvoiceService.get_settings(
             header.entity_id,
             header.subentity_id,
             entityfinid_id=getattr(header, "entityfinid_id", None),
@@ -782,11 +777,15 @@ class SalesInvoiceService:
                 raise
 
     @classmethod
-    def _apply_tcs(cls, *, header: SalesInvoiceHeader, user) -> None:
+    def _apply_tcs(cls, *, header: SalesInvoiceHeader, user, settings_obj: Optional[SalesSettings] = None) -> None:
         """
         Enforce: only ONE TCS section at a time (tcs_section FK).
         Compute TCS AFTER totals are available.
         """
+
+        persist_header_changes = int(
+            getattr(header, "status", SalesInvoiceHeader.Status.DRAFT) or SalesInvoiceHeader.Status.DRAFT
+        ) != int(SalesInvoiceHeader.Status.DRAFT)
 
         # If not enabled => clear everything
         if not getattr(header, "withholding_enabled", False):
@@ -809,18 +808,23 @@ class SalesInvoiceService:
                 header=header,
                 mode="AUTO",
                 enabled=False,
-                reason=None,
-                reason_code=None,
+                reason=preview.reason,
+                reason_code=preview.reason_code,
             )
             header.updated_by = user
-            header.save(update_fields=[
-                "tcs_section", "tcs_rate", "tcs_base_amount", "tcs_amount", "tcs_reason",
-                "tcs_is_reversal", "legacy_behavior_flags", "updated_by"
-            ])
+            if persist_header_changes:
+                header.save(update_fields=[
+                    "tcs_section", "tcs_rate", "tcs_base_amount", "tcs_amount", "tcs_reason",
+                    "tcs_is_reversal", "legacy_behavior_flags", "updated_by"
+                ])
             cls._sync_tcs_computation(header=header, preview=preview, user=user, status="REVERSED")
             return
 
-        settings_obj = cls.get_settings(header.entity_id, header.subentity_id, entityfinid_id=getattr(header, "entityfinid_id", None))
+        settings_obj = settings_obj or cls.get_settings(
+            header.entity_id,
+            header.subentity_id,
+            entityfinid_id=getattr(header, "entityfinid_id", None),
+        )
         is_credit_note = int(header.doc_type or 0) == int(SalesInvoiceHeader.DocType.CREDIT_NOTE)
         credit_note_policy = (getattr(settings_obj, "tcs_credit_note_policy", "REVERSE") or "REVERSE").upper()
 
@@ -848,10 +852,11 @@ class SalesInvoiceService:
                 reason_code=preview.reason_code,
             )
             header.updated_by = user
-            header.save(update_fields=[
-                "tcs_section", "tcs_rate", "tcs_base_amount", "tcs_amount",
-                "tcs_reason", "tcs_is_reversal", "legacy_behavior_flags", "updated_by",
-            ])
+            if persist_header_changes:
+                header.save(update_fields=[
+                    "tcs_section", "tcs_rate", "tcs_base_amount", "tcs_amount",
+                    "tcs_reason", "tcs_is_reversal", "legacy_behavior_flags", "updated_by",
+                ])
             cls._sync_tcs_computation(header=header, preview=preview, user=user, status="REVERSED")
             return
 
@@ -890,18 +895,20 @@ class SalesInvoiceService:
         # OPTIONAL: if you have receivable_total field
         if hasattr(header, "customer_receivable"):
             header.customer_receivable = q2((header.grand_total or ZERO2) + (header.tcs_amount or ZERO2))
-            header.save(update_fields=[
-                "tcs_section", "tcs_rate", "tcs_base_amount", "tcs_amount", "tcs_reason",
-                "tcs_is_reversal",
-                "legacy_behavior_flags",
-                "customer_receivable",
-                "updated_by",
-            ])
+            if persist_header_changes:
+                header.save(update_fields=[
+                    "tcs_section", "tcs_rate", "tcs_base_amount", "tcs_amount", "tcs_reason",
+                    "tcs_is_reversal",
+                    "legacy_behavior_flags",
+                    "customer_receivable",
+                    "updated_by",
+                ])
         else:
-            header.save(update_fields=[
-                "tcs_section", "tcs_rate", "tcs_base_amount", "tcs_amount", "tcs_reason",
-                "tcs_is_reversal", "legacy_behavior_flags", "updated_by"
-            ])
+            if persist_header_changes:
+                header.save(update_fields=[
+                    "tcs_section", "tcs_rate", "tcs_base_amount", "tcs_amount", "tcs_reason",
+                    "tcs_is_reversal", "legacy_behavior_flags", "updated_by"
+                ])
 
         status = "REVERSED" if bool(header.tcs_is_reversal) else "CONFIRMED"
         cls._sync_tcs_computation(header=header, preview=res, user=user, status=status)
@@ -911,6 +918,8 @@ class SalesInvoiceService:
         if not getattr(header, "id", None):
             return
         if not getattr(header, "entity_id", None) or not getattr(header, "entityfinid_id", None):
+            return
+        if int(getattr(header, "status", SalesInvoiceHeader.Status.DRAFT) or SalesInvoiceHeader.Status.DRAFT) == int(SalesInvoiceHeader.Status.DRAFT):
             return
 
         doc_type_map = {
@@ -1853,6 +1862,11 @@ class SalesInvoiceService:
             setattr(header, k, v)
 
         header.updated_by = user
+        settings_obj = cls.get_settings(
+            header.entity_id,
+            header.subentity_id,
+            entityfinid_id=getattr(header, "entityfinid_id", None),
+        )
 
         cls._prepare_header_for_persistence(header=header)
 
@@ -1864,17 +1878,34 @@ class SalesInvoiceService:
                 header_taxability=int(getattr(header, "taxability", SalesInvoiceHeader.Taxability.TAXABLE)),
                 lines_data=lines_data,
             )
-            cls.upsert_lines(header=header, incoming_lines=lines_data, user=user, allow_delete=True)
+            cls.upsert_lines(
+                header=header,
+                incoming_lines=lines_data,
+                user=user,
+                allow_delete=True,
+                settings_obj=settings_obj,
+            )
         if charges_data is not None:
             cls.validate_charges(header=header, charges=charges_data)
             cls.upsert_charges(header=header, incoming_charges=charges_data, user=user, allow_delete=True)
         cls._recompute_invoice_state(
             header=header,
             user=user,
+            settings_obj=settings_obj,
             round_off_explicit=round_off_explicit,
             grand_total_hint=grand_total_hint,
+            persist_header_changes=False,
         )
         header.save(update_fields=[
+            "total_taxable_value",
+            "total_cgst",
+            "total_sgst",
+            "total_igst",
+            "total_cess",
+            "total_discount",
+            "total_other_charges",
+            "round_off",
+            "grand_total",
             "gst_compliance_mode",
             "is_einvoice_applicable",
             "is_eway_applicable",
@@ -1883,9 +1914,17 @@ class SalesInvoiceService:
             "compliance_override_reason",
             "compliance_override_at",
             "compliance_override_by",
+            "tcs_section",
+            "tcs_rate",
+            "tcs_base_amount",
+            "tcs_amount",
+            "tcs_reason",
+            "tcs_is_reversal",
+            "legacy_behavior_flags",
             "settled_amount",
             "outstanding_amount",
             "settlement_status",
+            "updated_by",
             "updated_at",
         ])
 
@@ -1928,9 +1967,9 @@ class SalesInvoiceService:
     # Lines upsert + compute
     # -------------------------
     @staticmethod
-    def upsert_lines(*, header, incoming_lines, user, allow_delete: bool) -> None:
+    def upsert_lines(*, header, incoming_lines, user, allow_delete: bool, settings_obj: Optional[SalesSettings] = None) -> None:
         incoming_lines = incoming_lines or []
-        controls = SalesInvoiceService._policy_controls(header)
+        controls = SalesInvoiceService._policy_controls(header, settings_obj=settings_obj)
         mismatch_level = str(controls.get("line_amount_mismatch", "hard")).lower().strip()
         if mismatch_level not in {"off", "warn", "hard"}:
             mismatch_level = "hard"
@@ -2599,6 +2638,7 @@ class SalesInvoiceService:
         charges: Optional[list[SalesChargeLine]] = None,
         round_off_explicit: bool = False,
         grand_total_hint: Optional[Decimal] = None,
+        persist_header_changes: bool = True,
     ):
         settings_obj = settings_obj or cls.get_settings(
             header.entity_id,
@@ -2666,21 +2706,22 @@ class SalesInvoiceService:
         header.round_off = totals.round_off
         header.grand_total = totals.grand_total
         header.updated_by = user
-        header.save(
-            update_fields=[
-                "total_taxable_value",
-                "total_cgst",
-                "total_sgst",
-                "total_igst",
-                "total_cess",
-                "total_discount",
-                "total_other_charges",
-                "round_off",
-                "grand_total",
-                "updated_by",
-                "updated_at",
-            ]
-        )
+        if persist_header_changes:
+            header.save(
+                update_fields=[
+                    "total_taxable_value",
+                    "total_cgst",
+                    "total_sgst",
+                    "total_igst",
+                    "total_cess",
+                    "total_discount",
+                    "total_other_charges",
+                    "round_off",
+                    "grand_total",
+                    "updated_by",
+                    "updated_at",
+                ]
+            )
 
     @classmethod
     def _recompute_invoice_state(
@@ -2693,6 +2734,7 @@ class SalesInvoiceService:
         charges: Optional[list[SalesChargeLine]] = None,
         round_off_explicit: bool = False,
         grand_total_hint: Optional[Decimal] = None,
+        persist_header_changes: bool = True,
     ) -> tuple[list[SalesInvoiceLine], list[SalesChargeLine]]:
         settings_obj = settings_obj or cls.get_settings(
             header.entity_id,
@@ -2709,6 +2751,7 @@ class SalesInvoiceService:
             charges=charges,
             round_off_explicit=round_off_explicit,
             grand_total_hint=grand_total_hint,
+            persist_header_changes=persist_header_changes,
         )
         cls._derive_compliance_flags(
             header=header,
@@ -2716,7 +2759,7 @@ class SalesInvoiceService:
             user=user,
         )
         cls._validate_adjustment_caps(header=header)
-        cls._apply_tcs(header=header, user=user)
+        cls._apply_tcs(header=header, user=user, settings_obj=settings_obj)
         cls.recompute_settlement_fields(header=header)
         return lines, charges
 
@@ -2726,6 +2769,7 @@ class SalesInvoiceService:
     @classmethod
     @transaction.atomic
     def confirm(cls, *, header: SalesInvoiceHeader, user) -> SalesInvoiceHeader:
+        header = SalesInvoiceHeader.objects.select_for_update().get(pk=header.pk)
         if header.status == SalesInvoiceHeader.Status.POSTED:
             return header
         if header.status == SalesInvoiceHeader.Status.CONFIRMED:
@@ -2814,6 +2858,8 @@ class SalesInvoiceService:
           - call posting adapter (GL/Stock)
           - set POSTED
         """
+        header = SalesInvoiceHeader.objects.select_for_update().get(pk=header.pk)
+
         # ---- hard gates ----
         if int(header.status) == int(SalesInvoiceHeader.Status.CANCELLED):
             raise ValueError("Cannot post: document is cancelled.")
@@ -2931,6 +2977,8 @@ class SalesInvoiceService:
     @classmethod
     @transaction.atomic
     def reverse_posting(cls, *, header: SalesInvoiceHeader, user, reason: str = "") -> SalesInvoiceHeader:
+        header = SalesInvoiceHeader.objects.select_for_update().get(pk=header.pk)
+
         if int(header.status) != int(SalesInvoiceHeader.Status.POSTED):
             raise ValueError("Only posted invoices can be reversed.")
         controls = cls._policy_controls(header)
@@ -2987,26 +3035,29 @@ class SalesInvoiceService:
                 )
             )
 
-        PostingService(
-            entity_id=header.entity_id,
-            entityfin_id=header.entityfinid_id,
-            subentity_id=header.subentity_id,
-            user_id=getattr(user, "id", None),
-        ).post(
-            txn_type=txn_type,
-            txn_id=header.id,
-            voucher_no=str(header.invoice_number or header.doc_no or header.id),
-            voucher_date=header.bill_date,
-            posting_date=header.posting_date or header.bill_date,
-            narration=f"Reversal for {header.invoice_number or header.id}",
-            jl_inputs=jl_inputs,
-            # Unpost should clear prior inventory impact for this transaction.
-            # PostingService deletes existing rows by txn locator before inserting fresh rows.
-            # Keeping this empty prevents net stock drift after unpost.
-            im_inputs=[],
-            use_advisory_lock=True,
-            mark_posted=True,
-        )
+        try:
+            PostingService(
+                entity_id=header.entity_id,
+                entityfin_id=header.entityfinid_id,
+                subentity_id=header.subentity_id,
+                user_id=getattr(user, "id", None),
+            ).post(
+                txn_type=txn_type,
+                txn_id=header.id,
+                voucher_no=str(header.invoice_number or header.doc_no or header.id),
+                voucher_date=header.bill_date,
+                posting_date=header.posting_date or header.bill_date,
+                narration=f"Reversal for {header.invoice_number or header.id}",
+                jl_inputs=jl_inputs,
+                # Unpost should clear prior inventory impact for this transaction.
+                # PostingService deletes existing rows by txn locator before inserting fresh rows.
+                # Keeping this empty prevents net stock drift after unpost.
+                im_inputs=[],
+                use_advisory_lock=True,
+                mark_posted=True,
+            )
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
 
         Entry.objects.filter(
             entity_id=header.entity_id,

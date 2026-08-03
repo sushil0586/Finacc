@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Dict, List
 
-from sales.models import SalesChoiceOverride, SalesInvoiceHeader,SalesInvoiceLine
+from django.db.models import Q
+
+from sales.models import SalesChoiceOverride, SalesInvoiceHeader, SalesInvoiceLine
 
 
 def _enum_choices_to_payload(enum_cls) -> List[dict]:
@@ -38,9 +40,9 @@ class SalesChoicesService:
         }
 
         overrides = list(
-            SalesChoiceOverride.objects.filter(entity_id=entity_id, subentity_id=subentity_id)
-        ) + list(
-            SalesChoiceOverride.objects.filter(entity_id=entity_id, subentity__isnull=True)
+            SalesChoiceOverride.objects.filter(entity_id=entity_id).filter(
+                Q(subentity_id=subentity_id) | Q(subentity__isnull=True)
+            )
         )
 
         # Apply overrides (subentity-specific can override entity-level)

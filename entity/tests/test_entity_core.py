@@ -1,10 +1,12 @@
-from datetime import date, datetime, timezone as dt_timezone
+from datetime import date, datetime, timedelta, timezone as dt_timezone
 from io import StringIO
+from unittest import mock
 
 from django.core.management import call_command
 from django.core import mail
 from django.test import TestCase, override_settings
 from django.core.exceptions import ValidationError
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.test import APIClient
 
 from Authentication.models import User
@@ -15,14 +17,18 @@ from entity.models import EntityBankAccountV2 as BankAccount
 from entity.onboarding_serializers import EntityOnboardingCreateSerializer, EntityOnboardingUpdateSerializer
 from entity.onboarding_services import EntityOnboardingService
 from entity.seeding import EntitySeedService
+from financial.seeding import FinancialSeedService
 from financial.models import FinancialSettings, Ledger, account, accountHead
+from posting.models import EntityStaticAccountMap, StaticAccount
+from posting.services.static_accounts import StaticAccountService
 from purchase.models.purchase_core import PurchaseInvoiceHeader
 from rbac.models import Role as RbacRole
 from rbac.models import UserRoleAssignment
 from geography.models import City, Country, District, State
 from numbering.models import DocumentNumberSeries, DocumentType
 from sales.models.mastergst_models import MasterGSTEnvironment, MasterGSTServiceScope, SalesMasterGSTCredential
-from subscriptions.models import CustomerAccount, CustomerSubscription, UserEntityAccess
+from subscriptions.models import CustomerAccount, CustomerSubscription, PlanLimit, UserEntityAccess
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
 class EntityContextV2Tests(TestCase):
@@ -83,7 +89,7 @@ class EntityGstinValidationTests(TestCase):
     def test_sandbox_gstin_validator_allows_provider_pseudo_gstin(self):
         gstin_validator("29AAGCB1286Q000")
 
-    @override_settings(SALES_MASTERGST_ENV="SANDBOX")``
+    @override_settings(SALES_MASTERGST_ENV="SANDBOX")
     def test_sandbox_onboarding_subentity_serializer_allows_gstin_state_mismatch(self):
         country = Country.objects.create(countryname="India", countrycode="IN")
         punjab = State.objects.create(statename="Punjab", statecode="03", country=country)
@@ -157,8 +163,18 @@ class EntityOnboardingTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         root_keys = response.data["payload_contract"]["root_keys"]
+        self.assertIn("plan_code", root_keys)
         self.assertIn("compliance_credentials", root_keys)
         self.assertIn("compliance_credentials", response.data["payload_contract"]["arrays_allow_empty"])
+        self.assertEqual(
+            response.data["payload_contract"]["plan_selection"]["field"],
+            "plan_code",
+        )
+        self.assertEqual(
+            response.data["ui_hints"]["subscription_plans_source"],
+            "/api/subscriptions/public/plans",
+        )
+        self.assertTrue(response.data["workflow"]["auth_register_flow"]["supports_plan_code"])
         self.assertTrue(any(row["label"] == "Sandbox" for row in response.data["dropdowns"]["mastergst_environments"]))
         self.assertTrue(any(row["label"] == "E-Invoice" for row in response.data["dropdowns"]["mastergst_service_scopes"]))
 
@@ -259,6 +275,8 @@ class EntityOnboardingTests(TestCase):
         self.assertTrue(FinancialSettings.objects.filter(entity=entity).exists())
         self.assertTrue(accountHead.objects.filter(entity=entity, code=1000).exists())
         self.assertTrue(account.objects.filter(entity=entity, ledger__ledger_code=4000).exists())
+        self.assertTrue(account.objects.filter(entity=entity, ledger__ledger_code=9002).exists())
+        self.assertTrue(account.objects.filter(entity=entity, ledger__ledger_code=9003).exists())
 
         subentity = SubEntity.objects.filter(entity=entity).order_by("id").first()
         self.assertIsNotNone(subentity)
@@ -641,6 +659,115 @@ class EntityOnboardingTests(TestCase):
         self.assertIn("posting_static_accounts", response.data)
         self.assertGreaterEqual(response.data["posting_static_accounts"]["created"], 0)
 
+    def test_authenticated_onboarding_create_rejects_when_entity_limit_is_exhausted(self):
+        account = SubscriptionService.ensure_customer_account(user=self.user)
+        plan = SubscriptionService.get_or_create_default_plan()
+        PlanLimit.objects.update_or_create(
+            plan=plan,
+            key=SubscriptionLimitCodes.MAX_ENTITIES,
+            defaults={"limit_type": PlanLimit.LimitType.INTEGER, "int_value": 1},
+        )
+        Entity.objects.create(
+            entityname="Existing Entity",
+            legalname="Existing Entity Pvt Ltd",
+            createdby=self.user,
+            customer_account=account,
+            GstRegitrationType=self.gst_type,
+        )
+
+        payload = {
+            "entity": {
+                "entityname": "Blocked Entity",
+                "legalname": "Blocked Entity Pvt Ltd",
+                "GstRegitrationType": self.gst_type.id,
+                "gstno": "03APXPB5894F1Z3",
+                "panno": "APXPB5894F",
+                "phoneoffice": "9855966534",
+                "phoneresidence": "9855966534",
+                "email": "blocked@example.com",
+                "address": "4369 GT Road",
+                "country": self.country.id,
+                "state": self.state.id,
+                "district": self.district.id,
+                "city": self.city.id,
+                "pincode": "140406",
+                "const": self.constitution.id,
+            },
+            "financial_years": [
+                {
+                    "finstartyear": "2026-04-01T00:00:00Z",
+                    "finendyear": "2027-03-31T00:00:00Z",
+                    "desc": "FY 2026-27",
+                    "isactive": True,
+                }
+            ],
+        }
+
+        response = self.client.post("/api/entity/onboarding/create/", payload, format="json")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "subscription_limit_exceeded")
+        self.assertEqual(response.data["limit_code"], SubscriptionLimitCodes.MAX_ENTITIES)
+        self.assertEqual(int(response.data["limit"]), 1)
+        self.assertEqual(int(response.data["current"]), 1)
+
+    def test_authenticated_onboarding_create_for_invited_user_provisions_their_own_account_context(self):
+        owner = User.objects.create_user(
+            username="owner-create@example.com",
+            email="owner-create@example.com",
+            password="secret123",
+        )
+        member = User.objects.create_user(
+            username="member-create@example.com",
+            email="member-create@example.com",
+            password="secret123",
+        )
+        account = SubscriptionService.ensure_customer_account(user=owner)
+        SubscriptionService.ensure_account_membership(
+            customer_account=account,
+            user=member,
+            role=UserEntityAccess.Role.BILLING,
+            granted_by=owner,
+        )
+        self.client.force_authenticate(user=member)
+
+        payload = {
+            "entity": {
+                "entityname": "Member Blocked Entity",
+                "legalname": "Member Blocked Entity Pvt Ltd",
+                "GstRegitrationType": self.gst_type.id,
+                "gstno": "03APXPB5894F1Z3",
+                "panno": "APXPB5894F",
+                "phoneoffice": "9855966534",
+                "phoneresidence": "9855966534",
+                "email": "member-create@example.com",
+                "address": "4369 GT Road",
+                "country": self.country.id,
+                "state": self.state.id,
+                "district": self.district.id,
+                "city": self.city.id,
+                "pincode": "140406",
+                "const": self.constitution.id,
+            },
+            "financial_years": [
+                {
+                    "finstartyear": "2026-04-01T00:00:00Z",
+                    "finendyear": "2027-03-31T00:00:00Z",
+                    "desc": "FY 2026-27",
+                    "isactive": True,
+                }
+            ],
+        }
+
+        response = self.client.post("/api/entity/onboarding/create/", payload, format="json")
+
+        self.assertEqual(response.status_code, 201)
+        created_entity = Entity.objects.get(id=response.data["entity_id"])
+        self.assertEqual(created_entity.createdby, member)
+        self.assertIsNotNone(created_entity.customer_account)
+        self.assertEqual(created_entity.customer_account.owner, member)
+        self.assertNotEqual(created_entity.customer_account, account)
+
     def test_unified_onboarding_submit_supports_public_signup(self):
         self.client.force_authenticate(user=None)
 
@@ -699,6 +826,14 @@ class EntityOnboardingTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["defaults"]["seed_options"]["template_code"], "indian_accounting_final")
+        self.assertEqual(
+            response.data["endpoints"]["subscription_public_plans"],
+            "/api/subscriptions/public/plans",
+        )
+        self.assertEqual(
+            response.data["endpoints"]["subscription_current_summary"],
+            "/api/subscriptions/me/summary",
+        )
         self.assertTrue(len(response.data["dropdowns"]["gst_registration_types"]) >= 1)
         self.assertTrue(len(response.data["dropdowns"]["constitutions"]) >= 1)
         self.assertTrue(len(response.data["dropdowns"]["countries"]) >= 1)
@@ -915,6 +1050,171 @@ class EntityOnboardingTests(TestCase):
         self.assertEqual(bank.bank_name, "ICICI Bank")
         self.assertEqual(fy.desc, "FY 2026-27 Updated")
 
+    def test_onboarding_detail_allows_creator_without_rbac_assignment_after_membership_backfill(self):
+        create_result = EntityOnboardingService.create_entity(
+            actor=self.user,
+            payload={
+                "entity": {
+                    "entityname": "Creator Managed Entity",
+                    "legalname": "Creator Managed Entity Pvt Ltd",
+                    "GstRegitrationType": self.gst_type,
+                    "gstno": "03APXPB5894F1Z3",
+                    "panno": "APXPB5894F",
+                    "phoneoffice": "9855966534",
+                    "phoneresidence": "9855966534",
+                    "email": "creator-managed@example.com",
+                    "address": "Main Road",
+                    "country": self.country,
+                    "state": self.state,
+                    "district": self.district,
+                    "city": self.city,
+                    "pincode": "140406",
+                    "const": self.constitution,
+                },
+                "financial_years": [
+                    {
+                        "finstartyear": "2026-04-01T00:00:00Z",
+                        "finendyear": "2027-03-31T00:00:00Z",
+                        "desc": "FY 2026-27",
+                        "isactive": True,
+                    }
+                ],
+            },
+        )
+        entity = create_result["entity"]
+        UserRoleAssignment.objects.filter(entity=entity, user=self.user).delete()
+        UserEntityAccess.objects.filter(
+            customer_account=entity.customer_account,
+            user=self.user,
+        ).delete()
+        entity.customer_account = None
+        entity.save(update_fields=["customer_account"])
+
+        response = self.client.get(f"/api/entity/onboarding/entity/{entity.id}/")
+
+        entity.refresh_from_db()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["entity_id"], entity.id)
+        self.assertIsNotNone(entity.customer_account_id)
+        self.assertTrue(
+            UserEntityAccess.objects.filter(
+                customer_account=entity.customer_account,
+                user=self.user,
+                role=UserEntityAccess.Role.OWNER,
+                is_active=True,
+            ).exists()
+        )
+
+    def test_onboarding_detail_rejects_user_without_entity_membership(self):
+        other_user = User.objects.create_user(
+            username="entity_outsider",
+            email="entity_outsider@example.com",
+            password="secret123",
+        )
+        entity = Entity.objects.create(
+            entityname="Restricted Entity",
+            legalname="Restricted Entity Pvt Ltd",
+            createdby=self.user,
+        )
+        outsider_client = APIClient()
+        outsider_client.force_authenticate(user=other_user)
+
+        response = outsider_client.get(f"/api/entity/onboarding/entity/{entity.id}/")
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["detail"], "You are not allowed to view this entity.")
+
+    def test_onboarding_update_rejects_user_without_entity_membership(self):
+        other_user = User.objects.create_user(
+            username="entity_update_outsider",
+            email="entity_update_outsider@example.com",
+            password="secret123",
+        )
+        entity = Entity.objects.create(
+            entityname="Restricted Update Entity",
+            legalname="Restricted Update Entity Pvt Ltd",
+            createdby=self.user,
+        )
+        outsider_client = APIClient()
+        outsider_client.force_authenticate(user=other_user)
+
+        response = outsider_client.patch(
+            f"/api/entity/onboarding/entity/{entity.id}/",
+            {"entity": {"entityname": "Should Not Save"}},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["detail"], "You are not allowed to update this entity.")
+
+    def test_can_manage_entity_rejects_membership_when_only_non_current_assignment_exists(self):
+        result = EntityOnboardingService.create_entity(
+            actor=self.user,
+            payload={
+                "entity": {
+                    "entityname": "Assignment Window Entity",
+                    "legalname": "Assignment Window Entity Pvt Ltd",
+                    "GstRegitrationType": self.gst_type,
+                    "gstno": "03APXPB5894F1Z3",
+                    "panno": "APXPB5894F",
+                    "phoneoffice": "9855966534",
+                    "phoneresidence": "9855966534",
+                    "email": "window@example.com",
+                    "address": "Main Road",
+                    "country": self.country,
+                    "state": self.state,
+                    "district": self.district,
+                    "city": self.city,
+                    "pincode": "140406",
+                    "const": self.constitution,
+                },
+                "financial_years": [
+                    {
+                        "finstartyear": "2026-04-01T00:00:00Z",
+                        "finendyear": "2027-03-31T00:00:00Z",
+                        "desc": "FY 2026-27",
+                        "isactive": True,
+                    }
+                ],
+            },
+        )
+        entity = result["entity"]
+        member = User.objects.create_user(
+            username="window_member",
+            email="window_member@example.com",
+            password="secret123",
+        )
+        role = RbacRole.objects.create(
+            entity=entity,
+            name="Window Role",
+            code="window_role",
+        )
+        UserEntityAccess.objects.create(
+            customer_account=entity.customer_account,
+            user=member,
+            role=UserEntityAccess.Role.MEMBER,
+            granted_by=self.user,
+        )
+        now = datetime.now(dt_timezone.utc)
+        UserRoleAssignment.objects.create(
+            user=member,
+            entity=entity,
+            role=role,
+            effective_to=now - timedelta(days=1),
+        )
+
+        self.assertFalse(EntityOnboardingService.can_manage_entity(user=member, entity=entity))
+
+        UserRoleAssignment.objects.filter(user=member, entity=entity).delete()
+        UserRoleAssignment.objects.create(
+            user=member,
+            entity=entity,
+            role=role,
+            effective_from=now + timedelta(days=1),
+        )
+
+        self.assertFalse(EntityOnboardingService.can_manage_entity(user=member, entity=entity))
+
     def test_onboarding_update_seeds_numbering_for_new_financial_year_and_subentity_scopes(self):
         create_payload = {
             "entity": {
@@ -1104,6 +1404,12 @@ class RegisterAndEntityOnboardingTests(TestCase):
 
         self.assertEqual(response.status_code, 201)
         self.assertIn("subscription", response.data)
+        self.assertIn("subscription_endpoints", response.data)
+        self.assertIn("feature_summary", response.data["subscription"])
+        self.assertIn("locked_features", response.data["subscription"])
+        self.assertIn("block_reasons", response.data["subscription"])
+        self.assertEqual(response.data["subscription_endpoints"]["public_plans"], "/api/subscriptions/public/plans")
+        self.assertEqual(response.data["subscription_endpoints"]["current_summary"], "/api/subscriptions/me/summary")
         self.assertIn("subscription", response.data["onboarding"])
         self.assertEqual(response.data["intent"], "standard")
         self.assertFalse(response.data["verification"]["email_verified"])
@@ -1123,6 +1429,94 @@ class RegisterAndEntityOnboardingTests(TestCase):
                 is_active=True,
             ).exists()
         )
+
+    @override_settings(DEFAULT_STATIC_ACCOUNT_TEMPLATE_ENTITY_ID=999999)
+    def test_register_and_onboard_clones_static_account_defaults_from_template_entity(self):
+        template_entity = Entity.objects.create(
+            entityname="Template Entity",
+            legalname="Template Entity Pvt Ltd",
+            GstRegitrationType=self.gst_type,
+            createdby=self.seed_user,
+        )
+        FinancialSeedService.seed_entity(
+            entity=template_entity,
+            actor=self.seed_user,
+            template_code="indian_accounting_final",
+        )
+        StaticAccountService.seed_static_account_master()
+        source_account = account.objects.filter(entity=template_entity, ledger__isnull=False).order_by("id").first()
+        self.assertIsNotNone(source_account)
+        static_account = StaticAccount.objects.filter(is_active=True).order_by("code").first()
+        self.assertIsNotNone(static_account)
+        EntityStaticAccountMap.objects.create(
+            entity=template_entity,
+            static_account=static_account,
+            account=source_account,
+            ledger=source_account.ledger,
+            createdby=self.seed_user,
+        )
+
+        with override_settings(DEFAULT_STATIC_ACCOUNT_TEMPLATE_ENTITY_ID=template_entity.id):
+            payload = {
+                "user": {
+                    "email": "templatedfounder@example.com",
+                    "username": "templatedfounder@example.com",
+                    "first_name": "Template",
+                    "last_name": "Founder",
+                    "password": "secret123",
+                },
+                "onboarding": {
+                    "entity": {
+                        "entityname": "Templated Entity",
+                        "legalname": "Templated Entity Pvt Ltd",
+                        "GstRegitrationType": self.gst_type.id,
+                        "gstno": "03APXPB5894F1Z3",
+                        "panno": "APXPB5894F",
+                        "phoneoffice": "9855966534",
+                        "phoneresidence": "9855966534",
+                        "email": "templatedfounder@example.com",
+                        "address": "4369 GT Road",
+                        "country": self.country.id,
+                        "state": self.state.id,
+                        "district": self.district.id,
+                        "city": self.city.id,
+                        "pincode": "140406",
+                        "const": self.constitution.id,
+                    },
+                    "financial_years": [
+                        {
+                            "finstartyear": "2026-04-01T00:00:00Z",
+                            "finendyear": "2027-03-31T00:00:00Z",
+                            "desc": "FY 2026-27",
+                            "isactive": True,
+                        }
+                    ],
+                    "seed_options": {
+                        "template_code": "indian_accounting_final",
+                        "seed_financial": True,
+                        "seed_rbac": True,
+                        "seed_default_subentity": True,
+                        "seed_default_roles": True,
+                    },
+                },
+            }
+
+            response = self.client.post("/api/entity/onboarding/register/", payload, format="json")
+
+        self.assertEqual(response.status_code, 201)
+        target_entity = Entity.objects.get(id=response.data["onboarding"]["entity_id"])
+        target_account = account.objects.filter(
+            entity=target_entity,
+            ledger__ledger_code=source_account.ledger.ledger_code,
+        ).first()
+        self.assertIsNotNone(target_account)
+        cloned = EntityStaticAccountMap.objects.get(
+            entity=target_entity,
+            static_account=static_account,
+            is_active=True,
+        )
+        self.assertEqual(cloned.account_id, target_account.id)
+        self.assertIn("onboarding", response.data)
 
     def test_register_and_onboard_accepts_trial_intent(self):
         payload = {
@@ -1168,6 +1562,178 @@ class RegisterAndEntityOnboardingTests(TestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.data["intent"], "trial")
         self.assertEqual(response.data["subscription"]["subscription"]["status"], "trialing")
+        self.assertIn("trial_days_remaining", response.data["subscription"]["subscription"])
+        self.assertIsNotNone(response.data["subscription"]["subscription"]["trial_days_remaining"])
+
+    def test_register_and_onboard_accepts_selectable_plan_code(self):
+        starter = SubscriptionService.get_or_create_default_plan()
+        growth = type(starter).objects.create(
+            code="growth-onboard",
+            name="Growth Onboard",
+            description="Growth plan for onboarding",
+            tier=starter.PlanTier.PRO,
+            billing_interval=starter.BillingInterval.MONTHLY,
+            price_amount=2999,
+            currency="INR",
+            trial_days=0,
+            is_public=True,
+            is_default=False,
+            is_selectable_for_signup=True,
+            sort_order=3,
+        )
+        SubscriptionService.ensure_plan_limit_catalog(plan=growth)
+
+        payload = {
+            "plan_code": "growth-onboard",
+            "user": {
+                "email": "growthfounder@example.com",
+                "username": "growthfounder@example.com",
+                "first_name": "Growth",
+                "last_name": "Founder",
+                "password": "secret123",
+            },
+            "onboarding": {
+                "entity": {
+                    "entityname": "Growth Entity",
+                    "legalname": "Growth Entity Pvt Ltd",
+                    "GstRegitrationType": self.gst_type.id,
+                    "gstno": "03APXPB5894F1Z3",
+                    "panno": "APXPB5894F",
+                    "phoneoffice": "9855966534",
+                    "phoneresidence": "9855966534",
+                    "email": "growthfounder@example.com",
+                    "address": "4369 GT Road",
+                    "country": self.country.id,
+                    "state": self.state.id,
+                    "district": self.district.id,
+                    "city": self.city.id,
+                    "pincode": "140406",
+                    "const": self.constitution.id,
+                },
+                "financial_years": [
+                    {
+                        "finstartyear": "2026-04-01T00:00:00Z",
+                        "finendyear": "2027-03-31T00:00:00Z",
+                        "desc": "FY 2026-27",
+                        "isactive": True,
+                    }
+                ],
+            },
+        }
+
+        response = self.client.post("/api/entity/onboarding/register/", payload, format="json")
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["subscription"]["subscription"]["plan_code"], "growth-onboard")
+        self.assertEqual(response.data["selected_plan_code"], "growth-onboard")
+        account = CustomerAccount.objects.get(owner__email="growthfounder@example.com")
+        self.assertEqual(account.subscriptions.get().plan.code, "growth-onboard")
+
+    def test_register_and_onboard_rejects_unavailable_plan_code(self):
+        payload = {
+            "plan_code": "missing-plan",
+            "user": {
+                "email": "badplanfounder@example.com",
+                "username": "badplanfounder@example.com",
+                "first_name": "Bad",
+                "last_name": "Plan",
+                "password": "secret123",
+            },
+            "onboarding": {
+                "entity": {
+                    "entityname": "Bad Plan Entity",
+                    "legalname": "Bad Plan Entity Pvt Ltd",
+                    "GstRegitrationType": self.gst_type.id,
+                    "gstno": "03APXPB5894F1Z3",
+                    "panno": "APXPB5894F",
+                    "phoneoffice": "9855966534",
+                    "phoneresidence": "9855966534",
+                    "email": "badplanfounder@example.com",
+                    "address": "4369 GT Road",
+                    "country": self.country.id,
+                    "state": self.state.id,
+                    "district": self.district.id,
+                    "city": self.city.id,
+                    "pincode": "140406",
+                    "const": self.constitution.id,
+                },
+                "financial_years": [
+                    {
+                        "finstartyear": "2026-04-01T00:00:00Z",
+                        "finendyear": "2027-03-31T00:00:00Z",
+                        "desc": "FY 2026-27",
+                        "isactive": True,
+                    }
+                ],
+            },
+        }
+
+        response = self.client.post("/api/entity/onboarding/register/", payload, format="json")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "subscription_plan_unavailable")
+
+    def test_register_and_onboard_rejects_existing_but_non_selectable_plan_code(self):
+        starter = SubscriptionService.get_or_create_default_plan()
+        invite_only = type(starter).objects.create(
+            code="invite-only-onboard",
+            name="Invite Only Onboard",
+            description="Not selectable during public onboarding",
+            tier=starter.PlanTier.PRO,
+            billing_interval=starter.BillingInterval.MONTHLY,
+            price_amount=1999,
+            currency="INR",
+            trial_days=0,
+            is_public=True,
+            is_default=False,
+            is_selectable_for_signup=False,
+            sort_order=5,
+        )
+        SubscriptionService.ensure_plan_limit_catalog(plan=invite_only)
+
+        payload = {
+            "plan_code": "invite-only-onboard",
+            "user": {
+                "email": "inviteonlyfounder@example.com",
+                "username": "inviteonlyfounder@example.com",
+                "first_name": "Invite",
+                "last_name": "Only",
+                "password": "secret123",
+            },
+            "onboarding": {
+                "entity": {
+                    "entityname": "Invite Only Entity",
+                    "legalname": "Invite Only Entity Pvt Ltd",
+                    "GstRegitrationType": self.gst_type.id,
+                    "gstno": "03APXPB5894F1Z3",
+                    "panno": "APXPB5894F",
+                    "phoneoffice": "9855966534",
+                    "phoneresidence": "9855966534",
+                    "email": "inviteonlyfounder@example.com",
+                    "address": "4369 GT Road",
+                    "country": self.country.id,
+                    "state": self.state.id,
+                    "district": self.district.id,
+                    "city": self.city.id,
+                    "pincode": "140406",
+                    "const": self.constitution.id,
+                },
+                "financial_years": [
+                    {
+                        "finstartyear": "2026-04-01T00:00:00Z",
+                        "finendyear": "2027-03-31T00:00:00Z",
+                        "desc": "FY 2026-27",
+                        "isactive": True,
+                    }
+                ],
+            },
+        }
+
+        response = self.client.post("/api/entity/onboarding/register/", payload, format="json")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "subscription_plan_unavailable")
+        self.assertEqual(response.data["plan_code"], "invite-only-onboard")
 
     def test_register_and_onboard_accepts_flat_public_payload_shape(self):
         payload = {
@@ -1220,6 +1786,110 @@ class RegisterAndEntityOnboardingTests(TestCase):
 
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.data["user"]["email"], "flatfounder@example.com")
+
+    def test_register_and_onboard_rejects_existing_user_email(self):
+        User.objects.create_user(
+            username="existingfounder@example.com",
+            email="existingfounder@example.com",
+            password="secret123",
+        )
+
+        payload = {
+            "user": {
+                "email": "existingfounder@example.com",
+                "username": "existingfounder@example.com",
+                "first_name": "Existing",
+                "last_name": "Founder",
+                "password": "secret123",
+            },
+            "onboarding": {
+                "entity": {
+                    "entityname": "Existing Email Entity",
+                    "legalname": "Existing Email Entity Pvt Ltd",
+                    "GstRegitrationType": self.gst_type.id,
+                    "gstno": "03APXPB5894F1Z3",
+                    "panno": "APXPB5894F",
+                    "phoneoffice": "9855966534",
+                    "phoneresidence": "9855966534",
+                    "email": "existingfounder@example.com",
+                    "address": "4369 GT Road",
+                    "country": self.country.id,
+                    "state": self.state.id,
+                    "district": self.district.id,
+                    "city": self.city.id,
+                    "pincode": "140406",
+                    "const": self.constitution.id,
+                },
+                "financial_years": [
+                    {
+                        "finstartyear": "2026-04-01T00:00:00Z",
+                        "finendyear": "2027-03-31T00:00:00Z",
+                        "desc": "FY 2026-27",
+                        "isactive": True,
+                    }
+                ],
+            },
+        }
+
+        response = self.client.post("/api/entity/onboarding/register/", payload, format="json")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("user", response.data)
+        self.assertIn("email", response.data["user"])
+        self.assertEqual(User.objects.filter(email="existingfounder@example.com").count(), 1)
+        self.assertFalse(CustomerAccount.objects.filter(owner__email="existingfounder@example.com").exists())
+
+    def test_register_and_onboard_rolls_back_signup_when_onboarding_fails(self):
+        payload = {
+            "user": {
+                "email": "rollbackfounder@example.com",
+                "username": "rollbackfounder@example.com",
+                "first_name": "Rollback",
+                "last_name": "Founder",
+                "password": "secret123",
+            },
+            "onboarding": {
+                "entity": {
+                    "entityname": "Rollback Entity",
+                    "legalname": "Rollback Entity Pvt Ltd",
+                    "GstRegitrationType": self.gst_type.id,
+                    "gstno": "29APXPB5894F1Z3",
+                    "panno": "APXPB5894F",
+                    "phoneoffice": "9855966534",
+                    "phoneresidence": "9855966534",
+                    "email": "rollbackfounder@example.com",
+                    "address": "4369 GT Road",
+                    "country": self.country.id,
+                    "state": self.state.id,
+                    "district": self.district.id,
+                    "city": self.city.id,
+                    "pincode": "140406",
+                    "const": self.constitution.id,
+                },
+                "financial_years": [
+                    {
+                        "finstartyear": "2026-04-01T00:00:00Z",
+                        "finendyear": "2027-03-31T00:00:00Z",
+                        "desc": "FY 2026-27",
+                        "isactive": True,
+                    }
+                ],
+            },
+        }
+
+        with mock.patch.object(
+            EntityOnboardingService,
+            "create_entity",
+            side_effect=DRFValidationError({"detail": "Forced onboarding failure for rollback coverage."}),
+        ):
+            response = self.client.post("/api/entity/onboarding/register/", payload, format="json")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["detail"], "Forced onboarding failure for rollback coverage.")
+        self.assertFalse(User.objects.filter(email="rollbackfounder@example.com").exists())
+        self.assertFalse(CustomerAccount.objects.filter(owner__email="rollbackfounder@example.com").exists())
+        self.assertFalse(CustomerSubscription.objects.filter(customer_account__owner__email="rollbackfounder@example.com").exists())
+        self.assertFalse(Entity.objects.filter(entityname="Rollback Entity").exists())
 
 
 class ResetTransactionalDataCommandTests(TestCase):

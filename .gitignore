@@ -38,5 +38,9 @@ htmlcov/
 .coverage
 .coverage.*
 
+# Perf artifacts
+perf/locust/results_*.html
+perf/locust/results_*.csv
+
 # Migrations cache
 */migrations/__pycache__/

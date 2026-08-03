@@ -76,6 +76,26 @@ from posting.common.static_accounts import StaticAccountCodes
 
 
 class SalesInvoiceServiceUnitTests(SimpleTestCase):
+    databases = {"default"}
+
+    @patch("sales.services.sales_invoice_service.SalesInvoiceHeader.objects")
+    def test_post_reloads_header_with_row_lock_before_status_checks(self, mocked_header_objects):
+        unlocked_header = SimpleNamespace(
+            pk=5231,
+            status=SalesInvoiceHeader.Status.CONFIRMED,
+        )
+        locked_header = SimpleNamespace(
+            pk=5231,
+            status=SalesInvoiceHeader.Status.POSTED,
+        )
+        mocked_header_objects.select_for_update.return_value.get.return_value = locked_header
+
+        result = SalesInvoiceService.post(header=unlocked_header, user=SimpleNamespace(id=7))
+
+        self.assertIs(result, locked_header)
+        mocked_header_objects.select_for_update.assert_called_once_with()
+        mocked_header_objects.select_for_update.return_value.get.assert_called_once_with(pk=5231)
+
     def test_lookup_serializer_exposes_stable_draft_lookup_identity(self):
         invoice = SalesInvoiceHeader(
             id=42,
@@ -2074,6 +2094,72 @@ class SalesInvoiceAdditionalServiceUnitTests(SimpleTestCase):
                 customer_id=10,
             )
 
+    def test_validate_doc_linkage_rejects_customer_mismatch_for_note(self):
+        original = SimpleNamespace(entity_id=1, entityfinid_id=1, subentity_id=None, customer_id=99)
+        with self.assertRaisesMessage(ValueError, "original_invoice customer must match current invoice customer."):
+            SalesInvoiceService._validate_doc_linkage(
+                doc_type=int(SalesInvoiceHeader.DocType.CREDIT_NOTE),
+                original_invoice=original,
+                entity_id=1,
+                entityfinid_id=1,
+                subentity_id=None,
+                customer_id=10,
+            )
+
+    def test_validate_doc_linkage_rejects_subentity_scope_mismatch_for_note(self):
+        original = SimpleNamespace(entity_id=1, entityfinid_id=1, subentity_id=2, customer_id=10)
+        with self.assertRaisesMessage(ValueError, "original_invoice must belong to same subentity scope."):
+            SalesInvoiceService._validate_doc_linkage(
+                doc_type=int(SalesInvoiceHeader.DocType.CREDIT_NOTE),
+                original_invoice=original,
+                entity_id=1,
+                entityfinid_id=1,
+                subentity_id=1,
+                customer_id=10,
+            )
+
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._validate_shipping_detail_for_customer")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._resolve_customer_ledger_id")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService.assert_not_locked")
+    def test_update_with_lines_rejects_stale_linked_note_after_customer_change(
+        self,
+        mocked_assert_not_locked,
+        mocked_resolve_customer_ledger,
+        mocked_validate_shipping,
+    ):
+        mocked_resolve_customer_ledger.return_value = None
+        header = SimpleNamespace(
+            id=44,
+            status=SalesInvoiceHeader.Status.DRAFT,
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            bill_date=date(2026, 4, 1),
+            customer_id=10,
+            shipping_detail_id=None,
+            is_bill_to_ship_to_same=True,
+            doc_type=int(SalesInvoiceHeader.DocType.CREDIT_NOTE),
+            original_invoice=SimpleNamespace(
+                entity_id=1,
+                entityfinid_id=1,
+                subentity_id=None,
+                customer_id=10,
+            ),
+            reference="CN-REF-1",
+        )
+
+        with self.assertRaisesMessage(ValueError, "original_invoice customer must match current invoice customer."):
+            SalesInvoiceService.update_with_lines(
+                header=header,
+                header_data={"customer_id": 22},
+                lines_data=None,
+                charges_data=None,
+                user=None,
+            )
+
+        mocked_assert_not_locked.assert_called_once()
+        mocked_validate_shipping.assert_called_once()
+
     def test_validate_b2b_gstin_requirements_blocks_missing_customer_gstin(self):
         header = SimpleNamespace(
             supply_category=int(SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B),
@@ -2317,6 +2403,53 @@ class SalesInvoiceAdditionalServiceUnitTests(SimpleTestCase):
         self.assertEqual(runtime.get("reason_code"), "DISABLED")
         self.assertEqual(runtime.get("reason"), "TCS disabled in entity config")
         self.assertEqual(runtime.get("collection_status"), "NOT_COLLECTED")
+
+    def test_apply_tcs_withholding_disabled_clears_stale_fields_and_persists_disabled_snapshot(self):
+        class Header:
+            withholding_enabled = False
+            doc_type = int(SalesInvoiceHeader.DocType.TAX_INVOICE)
+            tcs_section = SimpleNamespace(id=11, section_code="206C(1H)")
+            tcs_section_id = 11
+            tcs_rate = Decimal("0.1000")
+            tcs_base_amount = Decimal("1000.00")
+            tcs_amount = Decimal("10.00")
+            tcs_reason = "Previously collected"
+            tcs_is_reversal = True
+            entity_id = 1
+            entityfinid_id = 1
+            subentity_id = None
+            customer_id = 1
+            bill_date = date(2026, 4, 1)
+            grand_total = Decimal("1180.00")
+            total_taxable_value = Decimal("1000.00")
+            legacy_behavior_flags = {
+                "tcs_runtime_result": {
+                    "enabled": True,
+                    "reason_code": "OK",
+                    "amount": "10.00",
+                }
+            }
+            updated_by = None
+
+            def save(self, **kwargs):
+                return None
+
+        h = Header()
+        with patch("sales.services.sales_invoice_service.SalesInvoiceService._sync_tcs_computation") as mocked_sync:
+            SalesInvoiceService._apply_tcs(header=h, user=None)
+
+        self.assertIsNone(h.tcs_section)
+        self.assertEqual(h.tcs_rate, Decimal("0.0000"))
+        self.assertEqual(h.tcs_base_amount, Decimal("0.00"))
+        self.assertEqual(h.tcs_amount, Decimal("0.00"))
+        self.assertIsNone(h.tcs_reason)
+        self.assertFalse(h.tcs_is_reversal)
+        runtime = (h.legacy_behavior_flags or {}).get("tcs_runtime_result", {})
+        self.assertFalse(runtime.get("enabled"))
+        self.assertEqual(runtime.get("reason_code"), "DISABLED")
+        self.assertEqual(runtime.get("collection_status"), "NOT_COLLECTED")
+        self.assertFalse(runtime.get("user_selected_add_tcs"))
+        mocked_sync.assert_called_once()
 
     @patch("sales.services.sales_invoice_service.SalesInvoiceService._run_auto_compliance")
     @patch("sales.services.sales_invoice_service.SalesInvoiceService._validate_invoice_uniqueness_per_gstin")
@@ -2685,6 +2818,21 @@ class SalesInvoiceViewUnitTests(SimpleTestCase):
         view.request = view.initialize_request(request)
 
         queryset = view.get_queryset()
+        select_related = queryset.query.select_related
+
+        self.assertIn("customer", select_related)
+        self.assertIn("ledger", select_related["customer"])
+        self.assertIn("subentity", select_related)
+
+    @patch("sales.views.sales_invoice_views.require_sales_request_permission")
+    def test_lookup_queryset_selects_customer_related_ledger(self, mocked_require_permission):
+        request = self.factory.get("/api/sales/invoices/lookup/?entity=1")
+        force_authenticate(request, user=self.user)
+
+        view = SalesInvoiceLookupAPIView()
+        view.request = view.initialize_request(request)
+
+        queryset = view._base_queryset()
         select_related = queryset.query.select_related
 
         self.assertIn("customer", select_related)
@@ -5136,8 +5284,7 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
 
     def test_lookup_view_returns_limited_payload(self):
         mocked_queryset = MagicMock()
-        mocked_queryset.count.return_value = 2
-        mocked_queryset.__getitem__.return_value = [self.header]
+        mocked_queryset.__getitem__.return_value = [self.header, self.header]
         with patch.object(SalesInvoiceLookupAPIView, "_base_queryset", return_value=mocked_queryset), patch(
             "sales.views.sales_invoice_views.SalesInvoiceLookupSerializer"
         ) as mocked_lookup_serializer:
@@ -5150,11 +5297,13 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
 
             self.assertEqual(response.status_code, 200)
             mocked_lookup_serializer.assert_called_once()
+            mocked_queryset.count.assert_not_called()
+            mocked_queryset.__getitem__.assert_called_once_with(slice(0, 2, None))
             self.assertEqual(
                 response.data,
                 {
                     "items": [{"id": 10, "invoice_number": "INV-10"}],
-                    "total_count": 2,
+                    "total_count": None,
                     "returned_count": 1,
                     "limit": 1,
                     "offset": 0,
@@ -5162,9 +5311,36 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
                 },
             )
 
+    def test_lookup_view_can_skip_total_count(self):
+        mocked_queryset = MagicMock()
+        mocked_queryset.__getitem__.return_value = [self.header]
+        with patch.object(SalesInvoiceLookupAPIView, "_base_queryset", return_value=mocked_queryset), patch(
+            "sales.views.sales_invoice_views.SalesInvoiceLookupSerializer"
+        ) as mocked_lookup_serializer:
+            mocked_lookup_serializer.return_value.data = [{"id": 10, "invoice_number": "INV-10"}]
+
+            request = self.factory.get("/api/sales/invoices/lookup/?entity=1&limit=1&include_total=false")
+            force_authenticate(request, user=self.user)
+
+            response = SalesInvoiceLookupAPIView.as_view()(request)
+
+            self.assertEqual(response.status_code, 200)
+            mocked_queryset.count.assert_not_called()
+            mocked_queryset.__getitem__.assert_called_once_with(slice(0, 2, None))
+            self.assertEqual(
+                response.data,
+                {
+                    "items": [{"id": 10, "invoice_number": "INV-10"}],
+                    "total_count": None,
+                    "returned_count": 1,
+                    "limit": 1,
+                    "offset": 0,
+                    "has_more": False,
+                },
+            )
+
     def test_lookup_view_uses_offset_for_next_page(self):
         mocked_queryset = MagicMock()
-        mocked_queryset.count.return_value = 2
         mocked_queryset.__getitem__.return_value = [self.header]
         with patch.object(SalesInvoiceLookupAPIView, "_base_queryset", return_value=mocked_queryset), patch(
             "sales.views.sales_invoice_views.SalesInvoiceLookupSerializer"
@@ -5177,7 +5353,37 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
             response = SalesInvoiceLookupAPIView.as_view()(request)
 
             self.assertEqual(response.status_code, 200)
-            mocked_queryset.__getitem__.assert_called_once_with(slice(1, 2, None))
+            mocked_queryset.count.assert_not_called()
+            mocked_queryset.__getitem__.assert_called_once_with(slice(1, 3, None))
+            self.assertEqual(
+                response.data,
+                {
+                    "items": [{"id": 10, "invoice_number": "INV-10"}],
+                    "total_count": None,
+                    "returned_count": 1,
+                    "limit": 1,
+                    "offset": 1,
+                    "has_more": False,
+                },
+            )
+
+    def test_lookup_view_can_include_total_count_when_requested(self):
+        mocked_queryset = MagicMock()
+        mocked_queryset.count.return_value = 2
+        mocked_queryset.__getitem__.return_value = [self.header]
+        with patch.object(SalesInvoiceLookupAPIView, "_base_queryset", return_value=mocked_queryset), patch(
+            "sales.views.sales_invoice_views.SalesInvoiceLookupSerializer"
+        ) as mocked_lookup_serializer:
+            mocked_lookup_serializer.return_value.data = [{"id": 10, "invoice_number": "INV-10"}]
+
+            request = self.factory.get("/api/sales/invoices/lookup/?entity=1&limit=1&include_total=true")
+            force_authenticate(request, user=self.user)
+
+            response = SalesInvoiceLookupAPIView.as_view()(request)
+
+            self.assertEqual(response.status_code, 200)
+            mocked_queryset.count.assert_called_once()
+            mocked_queryset.__getitem__.assert_called_once_with(slice(0, 1, None))
             self.assertEqual(
                 response.data,
                 {
@@ -5185,8 +5391,8 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
                     "total_count": 2,
                     "returned_count": 1,
                     "limit": 1,
-                    "offset": 1,
-                    "has_more": False,
+                    "offset": 0,
+                    "has_more": True,
                 },
             )
 

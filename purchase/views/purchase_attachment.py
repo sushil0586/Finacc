@@ -13,6 +13,8 @@ from rest_framework.views import APIView
 from helpers.utils.attachment_validation import validate_attachment_uploads
 from purchase.models import PurchaseAttachment, PurchaseInvoiceHeader
 from purchase.serializers.purchase_attachment import PurchaseAttachmentSerializer
+from purchase.views.rbac import require_purchase_request_permission
+from subscriptions.services import SubscriptionLimitCodes
 
 
 class PurchaseAttachmentBaseAPIView(APIView):
@@ -44,11 +46,25 @@ class PurchaseAttachmentBaseAPIView(APIView):
 class PurchaseInvoiceAttachmentListCreateAPIView(PurchaseAttachmentBaseAPIView):
     def get(self, request, pk: int):
         header = self._scoped_header(request, pk)
+        require_purchase_request_permission(
+            user=request.user,
+            entity_id=header.entity_id,
+            doc_type=header.doc_type,
+            action="view",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
+        )
         rows = header.attachments.order_by("-created_at", "-id")
         return Response(PurchaseAttachmentSerializer(rows, many=True).data)
 
     def post(self, request, pk: int):
         header = self._scoped_header(request, pk)
+        require_purchase_request_permission(
+            user=request.user,
+            entity_id=header.entity_id,
+            doc_type=header.doc_type,
+            action="create",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
+        )
         files = request.FILES.getlist("attachments") or request.FILES.getlist("file")
         if not files:
             raise ValidationError({"detail": "At least one attachment file is required."})
@@ -71,6 +87,13 @@ class PurchaseInvoiceAttachmentListCreateAPIView(PurchaseAttachmentBaseAPIView):
 class PurchaseInvoiceAttachmentDeleteAPIView(PurchaseAttachmentBaseAPIView):
     def delete(self, request, pk: int, attachment_id: int):
         header = self._scoped_header(request, pk)
+        require_purchase_request_permission(
+            user=request.user,
+            entity_id=header.entity_id,
+            doc_type=header.doc_type,
+            action="delete",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
+        )
         attachment = get_object_or_404(PurchaseAttachment.objects.filter(header=header), pk=attachment_id)
         try:
             attachment.file.delete(save=False)
@@ -85,6 +108,13 @@ class PurchaseInvoiceAttachmentDownloadAPIView(PurchaseAttachmentBaseAPIView):
 
     def get(self, request, pk: int, attachment_id: int):
         header = self._scoped_header(request, pk)
+        require_purchase_request_permission(
+            user=request.user,
+            entity_id=header.entity_id,
+            doc_type=header.doc_type,
+            action="view",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
+        )
         attachment = get_object_or_404(PurchaseAttachment.objects.filter(header=header), pk=attachment_id)
         if not attachment.file:
             raise ValidationError({"detail": "Attachment file is missing."})

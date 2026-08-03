@@ -73,10 +73,17 @@ def _governance_payload(entity_id: int) -> dict:
     }
 
 
-class AccountChoicesAPIView(APIView):
+class AccountChoicesAPIView(ScopedEntitlementMixin, APIView):
     permission_classes = [IsAuthenticated]
+    subscription_feature_code = SubscriptionLimitCodes.FEATURE_FINANCIAL
+    subscription_access_mode = SubscriptionService.ACCESS_MODE_SETUP
 
     def get(self, request):
+        entity_id = request.query_params.get("entity")
+        if not entity_id:
+            return Response({"error": "Entity is required"}, status=400)
+        self.enforce_scope(request, entity_id=int(entity_id))
+
         return Response({
             "partytype": _choice_list(PARTY_TYPE_CHOICES),
             "paymentterms": _choice_list(PAYMENT_TERMS_CHOICES),

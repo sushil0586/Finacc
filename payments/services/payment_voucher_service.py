@@ -717,6 +717,24 @@ class PaymentVoucherService(SettlementVoucherRuntimeMixin):
         return warnings
 
     @staticmethod
+    def _validate_settlement_support_match(
+        *,
+        effective_amount: Decimal,
+        advance_total: Decimal,
+        allocation_total: Decimal,
+        level: str = "hard",
+        tolerance: Decimal = Decimal("0.01"),
+        context_label: str = "Allocation",
+    ) -> list[str]:
+        support_total = q2(q2(effective_amount) + q2(advance_total))
+        return PaymentVoucherService._validate_allocation_effective_match(
+            effective_amount=support_total,
+            allocation_total=allocation_total,
+            level=level,
+            tolerance=tolerance,
+        )
+
+    @staticmethod
     def _auto_fifo_allocations(
         *,
         entity_id: int,
@@ -815,10 +833,10 @@ class PaymentVoucherService(SettlementVoucherRuntimeMixin):
         validated_data["settlement_effective_amount_base_currency"] = q2(effective * exchange_rate)
 
         amount_match_level = str(policy.controls.get("allocation_amount_match_rule", "hard")).lower().strip()
-        total_support = q2(effective + advance_total)
         if allocations:
-            PaymentVoucherService._validate_allocation_effective_match(
-                effective_amount=total_support,
+            PaymentVoucherService._validate_settlement_support_match(
+                effective_amount=effective,
+                advance_total=advance_total,
                 allocation_total=PaymentVoucherService._sum_allocations(allocations),
                 level=amount_match_level,
             )
@@ -1002,16 +1020,16 @@ class PaymentVoucherService(SettlementVoucherRuntimeMixin):
                     }
                     for x in instance.advance_adjustments.all()
                 ]
-            PaymentVoucherService._validate_allocation_effective_match(
-                effective_amount=q2(
-                    PaymentVoucherService._effective_settlement_amount(
+            PaymentVoucherService._validate_settlement_support_match(
+                effective_amount=PaymentVoucherService._effective_settlement_amount(
                     q2(validated_data.get("cash_paid_amount", instance.cash_paid_amount)),
                     PaymentVoucherService._compute_adjustment_total(
                         adjustments
                         if adjustments is not None
                         else instance.adjustments.values("amount", "settlement_effect")
                     ),
-                ) + PaymentVoucherService._sum_advance_adjustments(live_advance_rows)),
+                ),
+                advance_total=PaymentVoucherService._sum_advance_adjustments(live_advance_rows),
                 allocation_total=PaymentVoucherService._sum_allocations(allocations),
                 level=amount_match_level,
             )
@@ -1440,8 +1458,9 @@ class PaymentVoucherService(SettlementVoucherRuntimeMixin):
             ))
             try:
                 warnings.extend(
-                    PaymentVoucherService._validate_allocation_effective_match(
-                        effective_amount=total_support_amount,
+                    PaymentVoucherService._validate_settlement_support_match(
+                        effective_amount=live_effective_amount,
+                        advance_total=live_advance_total,
                         allocation_total=allocation_total,
                         level=amount_match_level,
                     )

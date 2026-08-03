@@ -133,6 +133,10 @@ class PaymentVoucherHeader(TrackingModel):
         indexes = [
             models.Index(fields=["entity", "entityfinid", "voucher_date"], name="ix_pay_ent_fin_date"),
             models.Index(fields=["entity", "entityfinid", "paid_to"], name="ix_pay_ent_fin_vendor"),
+            models.Index(
+                fields=["entity", "entityfinid", "paid_to", "subentity", "reference_number"],
+                name="ix_pay_ref_warn_scope",
+            ),
             models.Index(fields=["entity", "entityfinid", "paid_to_ledger"], name="ix_pay_ent_fin_vendor_led"),
             models.Index(fields=["entity", "entityfinid", "status"], name="ix_pay_ent_fin_status"),
             models.Index(fields=["entity", "entityfinid", "subentity", "voucher_date"], name="ix_pay_entfin_sub_dt"),

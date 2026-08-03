@@ -12,6 +12,8 @@ from collections import defaultdict
 from datetime import date, timedelta
 from decimal import Decimal
 
+from django.conf import settings
+from django.db.models import Max, Q
 from django.utils import timezone
 
 from financial.profile_access import (
@@ -22,6 +24,9 @@ from financial.profile_access import (
     account_gstno,
     account_region_state,
 )
+from helpers.utils.meta_cache import build_meta_cache_key, get_or_set_meta_cache
+from purchase.models.purchase_ap import VendorAdvanceBalance, VendorBillOpenItem, VendorSettlement
+from purchase.models.purchase_core import PurchaseInvoiceHeader
 
 from reports.selectors.financial import normalize_scope_ids
 from reports.selectors.payables import (
@@ -30,6 +35,8 @@ from reports.selectors.payables import (
     asof_advances,
     asof_open_item_balances,
     coerce_date,
+    iter_asof_open_item_balance_summary_rows,
+    open_item_vendor_aging_bucket_summary,
     open_item_vendor_summary,
     period_bill_credit_totals,
     posted_payment_totals,
@@ -56,12 +63,51 @@ from reports.services.payables_settings import get_payables_settings_response
 ZERO = Decimal("0.00")
 GL_RECONCILIATION_TOLERANCE = Decimal("0.05")
 EXPORTABLE_FORMATS = list(PAYABLE_EXPORT_FORMATS)
+_AP_AGING_NAMESPACE = "reports.payables.ap_aging"
 
 
 def _iso_date(value):
     if hasattr(value, "isoformat"):
         return value.isoformat()
     return value
+
+
+def _scope_watermark_iso(model, *, entity_id, entityfin_id, subentity_id):
+    qs = model.objects.filter(entity_id=entity_id)
+    if entityfin_id is not None:
+        qs = qs.filter(entityfinid_id=entityfin_id)
+    if subentity_id is not None:
+        qs = qs.filter(Q(subentity_id=subentity_id) | Q(subentity__isnull=True))
+    return _iso_date(qs.aggregate(value=Max("updated_at"))["value"])
+
+
+def _ap_aging_scope_watermark(*, entity_id, entityfin_id, subentity_id):
+    return {
+        "headers_updated_at": _scope_watermark_iso(
+            PurchaseInvoiceHeader,
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+        ),
+        "open_items_updated_at": _scope_watermark_iso(
+            VendorBillOpenItem,
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+        ),
+        "advances_updated_at": _scope_watermark_iso(
+            VendorAdvanceBalance,
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+        ),
+        "settlements_updated_at": _scope_watermark_iso(
+            VendorSettlement,
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+        ),
+    }
 
 
 def _drilldown_item(*, label, target, params, path=None, report_code=None, kind=None):
@@ -117,6 +163,61 @@ def _allocate_vendor_credits(invoice_rows, credit_amount):
         enriched["residual_after_credit"] = residual_after
         out.append(enriched)
     return out, remaining
+
+
+def _summarize_vendor_aging_rows(invoice_rows, credit_amount, as_of_date):
+    """Apply FIFO credit allocation and accumulate summary aging buckets in one pass."""
+    remaining = q2(credit_amount)
+    buckets = defaultdict(lambda: ZERO)
+    outstanding_total = ZERO
+    overdue_total = ZERO
+
+    for row in invoice_rows:
+        residual = q2(row["residual_before_credit"])
+        if residual <= ZERO:
+            continue
+        credit_used = min(residual, remaining) if remaining > ZERO else ZERO
+        remaining = q2(remaining - credit_used)
+        balance = q2(residual - credit_used)
+        if balance <= ZERO:
+            continue
+        days_overdue = (as_of_date - row["due_date"]).days
+        bucket = _aging_bucket(days_overdue)
+        buckets[bucket] = q2(buckets[bucket] + balance)
+        outstanding_total = q2(outstanding_total + balance)
+        if days_overdue > 0:
+            overdue_total = q2(overdue_total + balance)
+
+    return buckets, outstanding_total, overdue_total, remaining
+
+
+def _apply_credit_fifo_to_bucket_totals(bucket_totals, credit_amount):
+    """Apply vendor credits against oldest aging buckets first for summary mode."""
+    remaining = q2(credit_amount)
+    adjusted = {
+        "current": q2(bucket_totals.get("current", ZERO)),
+        "bucket_1_30": q2(bucket_totals.get("bucket_1_30", ZERO)),
+        "bucket_31_60": q2(bucket_totals.get("bucket_31_60", ZERO)),
+        "bucket_61_90": q2(bucket_totals.get("bucket_61_90", ZERO)),
+        "bucket_90_plus": q2(bucket_totals.get("bucket_90_plus", ZERO)),
+    }
+    for key in ("bucket_90_plus", "bucket_61_90", "bucket_31_60", "bucket_1_30", "current"):
+        if remaining <= ZERO:
+            break
+        amount = adjusted[key]
+        if amount <= ZERO:
+            continue
+        used = min(amount, remaining)
+        adjusted[key] = q2(amount - used)
+        remaining = q2(remaining - used)
+    outstanding_total = q2(sum(adjusted.values(), ZERO))
+    overdue_total = q2(
+        adjusted["bucket_1_30"]
+        + adjusted["bucket_31_60"]
+        + adjusted["bucket_61_90"]
+        + adjusted["bucket_90_plus"]
+    )
+    return adjusted, outstanding_total, overdue_total, remaining
 
 
 def _aging_bucket(days_overdue):
@@ -284,6 +385,78 @@ def _row_with_meta(row, *, drilldown, trace=None):
     if trace:
         row["_trace"] = trace
     return row
+
+
+def _invoice_row_drilldown(*, entity_id, entityfin_id, subentity_id, as_of, row):
+    return {
+        "invoice_list": _drilldown_item(
+            label="AP Aging Invoice",
+            target="ap_aging",
+            report_code="ap_aging",
+            path="/api/reports/payables/aging/",
+            params={
+                "entity": entity_id,
+                "entityfinid": entityfin_id,
+                "subentity": subentity_id,
+                "as_of_date": as_of,
+                "vendor": row["vendor_id"],
+                "view": "invoice",
+            },
+        ),
+        "bill": _drilldown_item(
+            label="Purchase Document Detail",
+            target="purchase_document_detail",
+            params={
+                "id": row["header_id"],
+                "entity": entity_id,
+                "entityfinid": entityfin_id,
+                "subentity": subentity_id,
+            },
+        ),
+        "payment_allocation": _drilldown_item(
+            label="Settlement Allocation",
+            target="purchase_ap_payment_allocation",
+            params={
+                "entity": entity_id,
+                "entityfinid": entityfin_id,
+                "subentity": subentity_id,
+                "vendor": row["vendor_id"],
+                "invoice_header": row["header_id"],
+                "open_item": row["item_id"],
+                "as_of_date": as_of,
+            },
+        ),
+        "vendor_statement": _drilldown_item(
+            label="Vendor Statement",
+            target="vendor_ledger_statement",
+            report_code="vendor_ledger_statement",
+            path="/api/reports/payables/vendor-ledger/",
+            params={
+                "entity": entity_id,
+                "entityfinid": entityfin_id,
+                "subentity": subentity_id,
+                "vendor": row["vendor_id"],
+            },
+        ),
+    }
+
+
+def _invoice_row_trace(*, row, settled, outstanding):
+    return _trace_payload(
+        source_model="purchase.VendorBillOpenItem",
+        source_id=row["item_id"],
+        source_document_id=row["header_id"],
+        source_document_number=row["bill_number"],
+        source_document_type=row["document_type_name"],
+        vendor_id=row["vendor_id"],
+        open_item_id=row["item_id"],
+        bill_date=_iso_date(row["bill_date"]),
+        due_date=_iso_date(row["due_date"]),
+        msme_due_date=_iso_date(row["msme_due_date"]),
+        settled_amount=f"{q2(settled):.2f}",
+        outstanding_amount=f"{q2(outstanding):.2f}",
+        derived_from=["purchase.VendorBillOpenItem", "purchase.VendorSettlementLine"],
+    )
 
 
 def _report_meta_payload(
@@ -1016,7 +1189,7 @@ def build_vendor_outstanding_report(
     }
 
 
-def build_ap_aging_report(
+def _build_ap_aging_report_uncached(
     *,
     entity_id,
     entityfin_id=None,
@@ -1052,7 +1225,7 @@ def build_ap_aging_report(
     if normalized_view not in {"summary", "invoice"}:
         normalized_view = "summary"
 
-    vendors = list(
+    vendor_ids = set(
         vendor_queryset(
             entity_id=entity_id,
             vendor_id=vendor_id,
@@ -1060,162 +1233,180 @@ def build_ap_aging_report(
             region_id=region_id,
             currency=currency,
             search=search,
-        )
+        ).values_list("id", flat=True)
     )
-    vendor_by_id = {v.id: v for v in vendors}
-    vendor_ids = set(vendor_by_id.keys())
 
-    open_items_asof = asof_open_item_balances(
-        entity_id=entity_id,
-        entityfin_id=entityfin_id,
-        subentity_id=subentity_id,
-        upto_date=as_of,
-        vendor_ids=vendor_ids,
-    )
-    advances_asof = asof_advances(
-        entity_id=entity_id,
-        entityfin_id=entityfin_id,
-        subentity_id=subentity_id,
-        upto_date=as_of,
-        vendor_ids=vendor_ids,
-    )
-    last_payment_map = all_last_payment_dates(
-        entity_id=entity_id,
-        entityfin_id=entityfin_id,
-        subentity_id=subentity_id,
-        upto_date=as_of,
-    )
+    open_items_asof = []
+    if normalized_view == "invoice":
+        open_items_asof = asof_open_item_balances(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            upto_date=as_of,
+            vendor_ids=vendor_ids,
+            search=search,
+        )
+        advances_asof = asof_advances(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            upto_date=as_of,
+            vendor_ids=vendor_ids,
+        )
+    else:
+        advances_asof = asof_advances(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            upto_date=as_of,
+            vendor_ids=vendor_ids,
+        )
+        bucket_summary_by_vendor = open_item_vendor_aging_bucket_summary(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            upto_date=as_of,
+            vendor_ids=vendor_ids,
+            search=search,
+        )
+    vendor_ids_with_activity = set()
+    if normalized_view == "invoice":
+        vendor_ids_with_activity.update(
+            item.vendor_id for item, _settled, _outstanding in open_items_asof if item.vendor_id in vendor_ids
+        )
+        vendor_ids_with_activity.update(
+            adv.vendor_id for adv, _adjusted, outstanding in advances_asof
+            if adv.vendor_id in vendor_ids and outstanding > ZERO
+        )
+        last_payment_map = all_last_payment_dates(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            upto_date=as_of,
+            vendor_ids=vendor_ids_with_activity or vendor_ids,
+        )
+    else:
+        vendor_ids_with_activity.update(
+            adv.vendor_id for adv, _adjusted, outstanding in advances_asof
+            if adv.vendor_id in vendor_ids and outstanding > ZERO
+        )
+        last_payment_map = {}
 
     invoice_rows_by_vendor = defaultdict(list)
     credit_pool = defaultdict(lambda: ZERO)
-    for item, settled, outstanding in open_items_asof:
-        if item.vendor_id not in vendor_ids:
-            continue
-        if outstanding > ZERO:
-            if normalized_view == "invoice":
+    if normalized_view == "summary":
+        for vendor_id_value, summary_row in bucket_summary_by_vendor.items():
+            if vendor_id_value not in vendor_ids:
+                continue
+            vendor_ids_with_activity.add(vendor_id_value)
+            credit_pool[vendor_id_value] = q2(credit_pool[vendor_id_value] + summary_row["credit_total"])
+    else:
+        for item, settled, outstanding in open_items_asof:
+            if item.vendor_id not in vendor_ids:
+                continue
+            if outstanding > ZERO:
                 paid_amount = _paid_amount_asof(item, settled)
                 doc_type_name = item.header.get_doc_type_display() if getattr(item, "header", None) else str(item.doc_type)
                 msme_snapshot = _msme_due_snapshot(vendor=item.vendor, bill_date=item.bill_date, as_of_date=as_of)
-                drilldown = {
-                    "invoice_list": _drilldown_item(
-                        label="AP Aging Invoice",
-                        target="ap_aging",
-                        report_code="ap_aging",
-                        path="/api/reports/payables/aging/",
-                        params={
-                            "entity": entity_id,
-                            "entityfinid": entityfin_id,
-                            "subentity": subentity_id,
-                            "as_of_date": as_of,
-                            "vendor": item.vendor_id,
-                            "view": "invoice",
-                        },
-                    ),
-                    "bill": _drilldown_item(
-                        label="Purchase Document Detail",
-                        target="purchase_document_detail",
-                        params={"id": item.header_id, "entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id},
-                    ),
-                    "payment_allocation": _drilldown_item(
-                        label="Settlement Allocation",
-                        target="purchase_ap_payment_allocation",
-                        params={
-                            "entity": entity_id,
-                            "entityfinid": entityfin_id,
-                            "subentity": subentity_id,
-                            "vendor": item.vendor_id,
-                            "invoice_header": item.header_id,
-                            "open_item": item.id,
-                            "as_of_date": as_of,
-                        },
-                    ),
-                    "vendor_statement": _drilldown_item(
-                        label="Vendor Statement",
-                        target="vendor_ledger_statement",
-                        report_code="vendor_ledger_statement",
-                        path="/api/reports/payables/vendor-ledger/",
-                        params={"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "vendor": item.vendor_id},
-                    ),
-                } if include_drilldown else {}
-                invoice_rows_by_vendor[item.vendor_id].append(
-                    _row_with_meta(
-                        {
-                            "item_id": item.id,
-                            "header_id": item.header_id,
-                            "vendor_id": item.vendor_id,
-                            "vendor_name": item.vendor.effective_accounting_name,
-                            "vendor_code": item.vendor.effective_accounting_code,
-                            "bill_number": item.purchase_number or item.supplier_invoice_number or f"BILL-{item.id}",
-                            "supplier_invoice_number": item.supplier_invoice_number,
-                            "document_type": item.doc_type,
-                            "document_type_name": doc_type_name,
-                            "bill_date": item.bill_date,
-                            "due_date": item.due_date or item.bill_date,
-                            "credit_days": ((item.due_date - item.bill_date).days if item.due_date else None),
-                            **msme_snapshot,
-                            "bill_amount": q2(item.original_amount),
-                            "paid_amount": q2(paid_amount),
-                            "residual_before_credit": q2(outstanding),
-                            "branch": getattr(item.subentity, "subentityname", None),
-                            "currency": getattr(getattr(item, "header", None), "currency_code", None) or account_currency(item.vendor) or "INR",
-                            "gstin": account_gstno(item.vendor),
-                            "credit_limit": q2(account_creditlimit(item.vendor) or ZERO) if account_creditlimit(item.vendor) is not None else None,
-                            "last_payment_date": last_payment_map.get(item.vendor_id),
-                        },
-                        drilldown=drilldown,
-                        trace=_trace_payload(
-                            source_model="purchase.VendorBillOpenItem",
-                            source_id=item.id,
-                            source_document_id=item.header_id,
-                            source_document_number=item.purchase_number or item.supplier_invoice_number or f"BILL-{item.id}",
-                            source_document_type=doc_type_name,
-                            vendor_id=item.vendor_id,
-                            open_item_id=item.id,
-                            bill_date=_iso_date(item.bill_date),
-                            due_date=_iso_date(item.due_date or item.bill_date),
-                            msme_due_date=_iso_date(msme_snapshot["msme_due_date"]),
-                            settled_amount=f"{q2(settled):.2f}",
-                            outstanding_amount=f"{q2(outstanding):.2f}",
-                            derived_from=["purchase.VendorBillOpenItem", "purchase.VendorSettlementLine"],
-                        ) if include_trace else None,
-                    )
-                )
-            else:
                 invoice_rows_by_vendor[item.vendor_id].append(
                     {
                         "item_id": item.id,
+                        "header_id": item.header_id,
+                        "vendor_id": item.vendor_id,
+                        "vendor_name": item.vendor.effective_accounting_name,
+                        "vendor_code": item.vendor.effective_accounting_code,
+                        "bill_number": item.purchase_number or item.supplier_invoice_number or f"BILL-{item.id}",
+                        "supplier_invoice_number": item.supplier_invoice_number,
+                        "document_type": item.doc_type,
+                        "document_type_name": doc_type_name,
                         "bill_date": item.bill_date,
                         "due_date": item.due_date or item.bill_date,
+                        "credit_days": ((item.due_date - item.bill_date).days if item.due_date else None),
+                        **msme_snapshot,
+                        "bill_amount": q2(item.original_amount),
+                        "paid_amount": q2(paid_amount),
                         "residual_before_credit": q2(outstanding),
+                        "branch": getattr(item.subentity, "subentityname", None),
+                        "currency": getattr(getattr(item, "header", None), "currency_code", None) or account_currency(item.vendor) or "INR",
+                        "gstin": account_gstno(item.vendor),
+                        "credit_limit": q2(account_creditlimit(item.vendor) or ZERO) if account_creditlimit(item.vendor) is not None else None,
+                        "last_payment_date": last_payment_map.get(item.vendor_id),
+                        "_trace_seed": {"settled": q2(settled), "outstanding": q2(outstanding)} if include_trace else None,
                     }
                 )
-        elif outstanding < ZERO:
-            credit_pool[item.vendor_id] = q2(credit_pool[item.vendor_id] + abs(outstanding))
+            elif outstanding < ZERO:
+                credit_pool[item.vendor_id] = q2(credit_pool[item.vendor_id] + abs(outstanding))
     for adv, _adjusted, outstanding in advances_asof:
         if adv.vendor_id in vendor_ids and outstanding > ZERO:
             credit_pool[adv.vendor_id] = q2(credit_pool[adv.vendor_id] + outstanding)
+            vendor_ids_with_activity.add(adv.vendor_id)
+
+    relevant_vendor_ids = (
+        vendor_ids_with_activity if normalized_view == "summary" else set(invoice_rows_by_vendor.keys())
+    ) | {vendor_id_value for vendor_id_value, amount in credit_pool.items() if q2(amount) > ZERO}
+    if not relevant_vendor_ids:
+        relevant_vendor_ids = set(vendor_ids)
+
+    vendors = list(
+        vendor_queryset(
+            entity_id=entity_id,
+            vendor_ids=relevant_vendor_ids,
+            vendor_group=vendor_group,
+            region_id=region_id,
+            currency=currency,
+            search=search,
+        )
+    )
+    vendor_by_id = {v.id: v for v in vendors}
+    relevant_vendor_ids = set(vendor_by_id.keys())
+    if normalized_view == "summary":
+        last_payment_map = all_last_payment_dates(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            upto_date=as_of,
+            vendor_ids=relevant_vendor_ids,
+        )
 
     invoice_rows = []
     summary_rows = []
     summary_totals = defaultdict(lambda: ZERO)
     for vendor_id_key, vendor in vendor_by_id.items():
-        vendor_invoices = sorted(invoice_rows_by_vendor[vendor_id_key], key=lambda x: (x["due_date"], x["bill_date"], x["item_id"]))
-        allocated_rows, residual_credit = _allocate_vendor_credits(vendor_invoices, credit_pool[vendor_id_key])
+        vendor_invoices = invoice_rows_by_vendor[vendor_id_key]
+        if normalized_view == "summary":
+            summary_buckets = bucket_summary_by_vendor.get(
+                vendor_id_key,
+                {
+                    "current": ZERO,
+                    "bucket_1_30": ZERO,
+                    "bucket_31_60": ZERO,
+                    "bucket_61_90": ZERO,
+                    "bucket_90_plus": ZERO,
+                    "credit_total": ZERO,
+                },
+            )
+            buckets, outstanding_total, overdue_total, residual_credit = _apply_credit_fifo_to_bucket_totals(
+                summary_buckets,
+                credit_pool[vendor_id_key],
+            )
+            allocated_rows = None
+        else:
+            vendor_invoices = sorted(vendor_invoices, key=lambda x: (x["due_date"], x["bill_date"], x["item_id"]))
+            allocated_rows, residual_credit = _allocate_vendor_credits(vendor_invoices, credit_pool[vendor_id_key])
 
-        buckets = defaultdict(lambda: ZERO)
-        outstanding_total = ZERO
-        overdue_total = ZERO
-        for row in allocated_rows:
-            balance = q2(row["residual_after_credit"])
-            if balance <= ZERO:
-                continue
-            days_overdue = (as_of - row["due_date"]).days
-            bucket = _aging_bucket(days_overdue)
-            buckets[bucket] = q2(buckets[bucket] + balance)
-            outstanding_total = q2(outstanding_total + balance)
-            if days_overdue > 0:
-                overdue_total = q2(overdue_total + balance)
-            if normalized_view == "invoice":
+            buckets = defaultdict(lambda: ZERO)
+            outstanding_total = ZERO
+            overdue_total = ZERO
+            for row in allocated_rows:
+                balance = q2(row["residual_after_credit"])
+                if balance <= ZERO:
+                    continue
+                days_overdue = (as_of - row["due_date"]).days
+                bucket = _aging_bucket(days_overdue)
+                buckets[bucket] = q2(buckets[bucket] + balance)
+                outstanding_total = q2(outstanding_total + balance)
+                if days_overdue > 0:
+                    overdue_total = q2(overdue_total + balance)
                 detail = {
                     **row,
                     "balance": balance,
@@ -1313,13 +1504,29 @@ def build_ap_aging_report(
             paged_rows,
             ("bill_amount", "paid_amount", "balance", "current", "bucket_1_30", "bucket_31_60", "bucket_61_90", "bucket_90_plus", "credit_applied_fifo"),
         )
+        decorated_rows = []
+        for row in paged_rows:
+            trace_seed = row.pop("_trace_seed", None)
+            drilldown = _invoice_row_drilldown(
+                entity_id=entity_id,
+                entityfin_id=entityfin_id,
+                subentity_id=subentity_id,
+                as_of=as_of,
+                row=row,
+            ) if include_drilldown else {}
+            trace = _invoice_row_trace(
+                row=row,
+                settled=trace_seed.get("settled"),
+                outstanding=trace_seed.get("outstanding"),
+            ) if include_trace and trace_seed else None
+            decorated_rows.append(_row_with_meta(row, drilldown=drilldown, trace=trace))
         return {
             "entity_id": entity_id,
             "entityfin_id": entityfin_id,
             "subentity_id": subentity_id,
             "as_of_date": as_of,
                 "view": "invoice",
-            "rows": paged_rows,
+            "rows": decorated_rows,
             "totals": {
                 "balance": f"{q2(sum((q2(r['balance']) for r in invoice_rows), ZERO)):.2f}",
                 "current": f"{q2(sum((q2(r['current']) for r in invoice_rows), ZERO)):.2f}",
@@ -1376,6 +1583,115 @@ def build_ap_aging_report(
             user=user,
         ),
     }
+
+
+def build_ap_aging_report(
+    *,
+    entity_id,
+    entityfin_id=None,
+    subentity_id=None,
+    as_of_date=None,
+    vendor_id=None,
+    vendor_group=None,
+    region_id=None,
+    currency=None,
+    overdue_only=False,
+    credit_limit_exceeded=False,
+    search=None,
+    sort_by=None,
+    sort_order="desc",
+    page=1,
+    page_size=100,
+    view="summary",
+    include_trace=True,
+    include_drilldown=True,
+    user=None,
+):
+    def _builder():
+        return _build_ap_aging_report_uncached(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            as_of_date=as_of_date,
+            vendor_id=vendor_id,
+            vendor_group=vendor_group,
+            region_id=region_id,
+            currency=currency,
+            overdue_only=overdue_only,
+            credit_limit_exceeded=credit_limit_exceeded,
+            search=search,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            page=page,
+            page_size=page_size,
+            view=view,
+            include_trace=include_trace,
+            include_drilldown=include_drilldown,
+            user=None,
+        )
+
+    normalized_entity_id, normalized_entityfin_id, normalized_subentity_id = normalize_scope_ids(
+        entity_id, entityfin_id, subentity_id
+    )
+    cache_enabled = getattr(settings, "PAYABLES_AP_AGING_CACHE_ENABLED", True)
+    if cache_enabled:
+        cache_key = build_meta_cache_key(
+            _AP_AGING_NAMESPACE,
+            entity_id=normalized_entity_id,
+            entityfinid_id=normalized_entityfin_id,
+            subentity_id=normalized_subentity_id,
+            extra={
+                "scope_watermark": _ap_aging_scope_watermark(
+                    entity_id=normalized_entity_id,
+                    entityfin_id=normalized_entityfin_id,
+                    subentity_id=normalized_subentity_id,
+                ),
+                "as_of_date": str(as_of_date) if as_of_date else None,
+                "vendor_id": vendor_id,
+                "vendor_group": vendor_group,
+                "region_id": region_id,
+                "currency": currency,
+                "overdue_only": bool(overdue_only),
+                "credit_limit_exceeded": bool(credit_limit_exceeded),
+                "search": search,
+                "sort_by": sort_by,
+                "sort_order": sort_order,
+                "page": int(page),
+                "page_size": int(page_size),
+                "view": view,
+                "include_trace": bool(include_trace),
+                "include_drilldown": bool(include_drilldown),
+            },
+        )
+        payload = get_or_set_meta_cache(
+            cache_key,
+            _builder,
+            timeout=int(getattr(settings, "PAYABLES_AP_AGING_CACHE_TTL_SECONDS", 15)),
+        )
+    else:
+        payload = _builder()
+
+    if user is None:
+        return payload
+
+    payload = dict(payload)
+    payload.update(
+        _report_meta_payload(
+            report_code="ap_aging",
+            report_name="AP Aging Report",
+            entity_id=payload.get("entity_id"),
+            entityfin_id=payload.get("entityfin_id"),
+            subentity_id=payload.get("subentity_id"),
+            as_of_date=payload.get("as_of_date"),
+            view=payload.get("view"),
+            vendor_id=vendor_id,
+            required_menu_code="reports.accountspayableaging",
+            required_permissions=["reports.accountspayableaging.view"],
+            feature_state={"view": payload.get("view"), "include_trace": include_trace},
+            user=user,
+        )
+    )
+    return payload
 
 
 def build_msme_overdue_report(

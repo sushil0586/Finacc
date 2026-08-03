@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from datetime import timedelta
 
+from django.conf import settings
 from django.core.cache import cache
 from django.db.models import OuterRef, Subquery
 from django.db.models.functions import Coalesce
@@ -12,6 +13,7 @@ from django.utils import timezone
 
 from entity.models import EntityFinancialYear, SubEntity
 from financial.models import AccountAddress
+from helpers.utils.meta_cache import build_meta_cache_key, get_or_set_meta_cache
 from reports.selectors.payables import vendor_queryset
 from reports.services.payables_config import (
     PAYABLE_DRILLDOWN_TARGETS,
@@ -20,6 +22,8 @@ from reports.services.payables_config import (
     get_payables_registry_meta,
     get_payables_registry_payload,
 )
+
+_PAYABLES_META_NAMESPACE = "reports.payables.meta"
 
 
 def _financial_years(entity_id: int) -> list[dict]:
@@ -48,7 +52,7 @@ def _vendors(entity_id: int) -> list[dict]:
         isactive=True,
     )
     vendor_rows = (
-        vendor_queryset(entity_id=entity_id, include_untyped=False)
+        vendor_queryset(entity_id=entity_id, include_untyped=True)
         .annotate(
             effective_name=Coalesce("ledger__name", "accountname"),
             primary_region_id=Subquery(primary_addresses.values("state_id")[:1]),
@@ -227,7 +231,7 @@ def _filter_drilldown_targets(target_codes: list[str], permission_codes: set[str
     return allowed
 
 
-def build_payables_report_meta(
+def _build_payables_report_meta_uncached(
     *,
     entity_id: int,
     entityfinid_id: int | None = None,
@@ -310,3 +314,44 @@ def build_payables_report_meta(
             "can_drilldown": True,
         },
     }
+
+
+def build_payables_report_meta(
+    *,
+    entity_id: int,
+    entityfinid_id: int | None = None,
+    subentity_id: int | None = None,
+    permission_codes: set[str] | None = None,
+    user_preferences: dict | None = None,
+) -> dict:
+    normalized_permission_codes = sorted(code for code in (permission_codes or set()) if code)
+
+    def _builder():
+        return _build_payables_report_meta_uncached(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            permission_codes=set(normalized_permission_codes) if normalized_permission_codes else None,
+            user_preferences=None,
+        )
+
+    if getattr(settings, "PAYABLES_META_CACHE_ENABLED", True):
+        cache_key = build_meta_cache_key(
+            _PAYABLES_META_NAMESPACE,
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            extra={"permission_codes": normalized_permission_codes},
+        )
+        payload = get_or_set_meta_cache(
+            cache_key,
+            _builder,
+            timeout=int(getattr(settings, "PAYABLES_META_CACHE_TTL_SECONDS", 300)),
+        )
+    else:
+        payload = _builder()
+
+    payload = dict(payload)
+    payload["user_preferences"] = user_preferences or {}
+    payload["generated_at"] = timezone.now().isoformat()
+    return payload

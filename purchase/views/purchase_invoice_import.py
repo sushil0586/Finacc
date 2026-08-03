@@ -11,6 +11,8 @@ from purchase.services.purchase_invoice_import_service import (
     PurchaseInvoiceImportContext,
     PurchaseInvoiceImportService,
 )
+from purchase.views.rbac import require_purchase_request_permission
+from subscriptions.services import SubscriptionLimitCodes
 
 
 class PurchaseInvoiceImportDraftAPIView(APIView):
@@ -32,6 +34,14 @@ class PurchaseInvoiceImportDraftAPIView(APIView):
             subentity_id = int(subentity) if subentity not in (None, "", "null") else None
         except (TypeError, ValueError):
             raise ValidationError({"detail": "entity/entityfinid/subentity must be integers."})
+
+        require_purchase_request_permission(
+            user=request.user,
+            entity_id=entity_id,
+            doc_type=request.query_params.get("doc_type"),
+            action="create",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
+        )
 
         upload = request.FILES.get("file")
         if not upload:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import time
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Callable
@@ -24,11 +25,26 @@ PURCHASE_META_NAMESPACES = [
     "purchase.settings_meta",
 ]
 
+PAYMENT_META_NAMESPACES = [
+    "payments.voucher_form_meta",
+]
+
+RECEIPT_META_NAMESPACES = [
+    "receipts.voucher_form_meta",
+]
+
+REPORTS_META_NAMESPACES = [
+    "reports.financial_meta",
+]
+
 CACHE_EVENT_HIT = "hit"
 CACHE_EVENT_MISS = "miss"
 CACHE_EVENT_STORE = "store"
 CACHE_EVENT_DISABLED = "disabled"
 CACHE_EVENT_INVALIDATE = "invalidate"
+CACHE_EVENT_WAIT = "wait"
+CACHE_EVENT_LOCK_ACQUIRED = "lock_acquired"
+CACHE_EVENT_LOCK_TIMEOUT = "lock_timeout"
 
 
 def emit_meta_cache_event(event: str, **details: Any) -> None:
@@ -68,9 +84,38 @@ def get_or_set_meta_cache(key: str, builder: Callable[[], Any], *, timeout: int)
         emit_meta_cache_event(CACHE_EVENT_HIT, key=key, timeout=timeout)
         return cached
     emit_meta_cache_event(CACHE_EVENT_MISS, key=key, timeout=timeout)
+    lock_key = f"{key}:lock"
+    wait_timeout = float(getattr(settings, "META_CACHE_LOCK_WAIT_SECONDS", 15.0))
+    poll_interval = float(getattr(settings, "META_CACHE_LOCK_POLL_SECONDS", 0.05))
+    lock_timeout = max(int(getattr(settings, "META_CACHE_LOCK_TIMEOUT_SECONDS", 30)), 1)
+
+    if cache.add(lock_key, "1", timeout=lock_timeout):
+        emit_meta_cache_event(CACHE_EVENT_LOCK_ACQUIRED, key=key, timeout=timeout, lock_timeout=lock_timeout)
+        try:
+            cached_after_lock = cache.get(key)
+            if cached_after_lock is not None:
+                emit_meta_cache_event(CACHE_EVENT_HIT, key=key, timeout=timeout, after_lock=True)
+                return cached_after_lock
+            payload = builder()
+            cache.set(key, payload, timeout=timeout)
+            emit_meta_cache_event(CACHE_EVENT_STORE, key=key, timeout=timeout)
+            return payload
+        finally:
+            cache.delete(lock_key)
+
+    emit_meta_cache_event(CACHE_EVENT_WAIT, key=key, timeout=timeout, wait_timeout=wait_timeout)
+    deadline = time.monotonic() + wait_timeout
+    while time.monotonic() < deadline:
+        cached = cache.get(key)
+        if cached is not None:
+            emit_meta_cache_event(CACHE_EVENT_HIT, key=key, timeout=timeout, after_wait=True)
+            return cached
+        time.sleep(poll_interval)
+
+    emit_meta_cache_event(CACHE_EVENT_LOCK_TIMEOUT, key=key, timeout=timeout, wait_timeout=wait_timeout)
     payload = builder()
     cache.set(key, payload, timeout=timeout)
-    emit_meta_cache_event(CACHE_EVENT_STORE, key=key, timeout=timeout)
+    emit_meta_cache_event(CACHE_EVENT_STORE, key=key, timeout=timeout, fallback=True)
     return payload
 
 

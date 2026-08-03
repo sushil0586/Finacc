@@ -4,6 +4,8 @@ from rest_framework import serializers
 from rest_framework.exceptions import ValidationError
 
 from purchase.models.purchase_core import PurchaseInvoiceLine, PurchaseTaxSummary
+from purchase.views.rbac import require_purchase_request_permission
+from subscriptions.services import SubscriptionLimitCodes
 
 
 class PurchaseInvoiceLineROSerializer(serializers.ModelSerializer):
@@ -42,6 +44,13 @@ class PurchaseInvoiceLinesListAPIView(generics.ListAPIView):
 
     def get_queryset(self):
         entity_id, entityfinid_id, subentity_id = self._scope_ids()
+        require_purchase_request_permission(
+            user=self.request.user,
+            entity_id=entity_id,
+            doc_type=self.request.query_params.get("doc_type"),
+            action="view",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
+        )
         qs = PurchaseInvoiceLine.objects.select_related("header", "product", "uom").filter(
             header__entity_id=entity_id,
             header__entityfinid_id=entityfinid_id,
@@ -75,6 +84,13 @@ class PurchaseTaxSummaryListAPIView(generics.ListAPIView):
 
     def get_queryset(self):
         entity_id, entityfinid_id, subentity_id = self._scope_ids()
+        require_purchase_request_permission(
+            user=self.request.user,
+            entity_id=entity_id,
+            doc_type=self.request.query_params.get("doc_type"),
+            action="view",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
+        )
         qs = PurchaseTaxSummary.objects.select_related("header").filter(
             header__entity_id=entity_id,
             header__entityfinid_id=entityfinid_id,

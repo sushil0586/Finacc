@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from django.conf import settings
 from django.db.models import Prefetch, Q
 from django.utils import timezone
 from django.utils.dateparse import parse_date
@@ -24,6 +25,14 @@ from payments.services.payment_settings_service import (
 from purchase.services.purchase_settings_service import PurchaseSettingsService
 from purchase.models.purchase_ap import VendorAdvanceBalance, VendorSettlement
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
+from helpers.utils.meta_cache import (
+    CACHE_EVENT_DISABLED,
+    PAYMENT_META_NAMESPACES,
+    build_meta_cache_key,
+    emit_meta_cache_event,
+    get_meta_namespace_version,
+    get_or_set_meta_cache,
+)
 from withholding.models import WithholdingBaseRule, WithholdingSection, WithholdingTaxType
 
 
@@ -31,6 +40,45 @@ class PaymentMetaBaseAPIView(ScopedEntitlementMixin, APIView):
     permission_classes = [IsAuthenticated]
     subscription_feature_code = SubscriptionLimitCodes.FEATURE_FINANCIAL
     subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
+
+    def _get_cached_meta(
+        self,
+        *,
+        namespace: str,
+        entity_id: int,
+        entityfinid_id: int | None,
+        subentity_id: int | None,
+        extra: dict | None,
+        timeout: int | None,
+        loader,
+    ):
+        if not getattr(settings, "META_CACHE_ENABLED", True):
+            emit_meta_cache_event(
+                CACHE_EVENT_DISABLED,
+                namespace=namespace,
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+            )
+            return loader()
+
+        namespace_version = get_meta_namespace_version(
+            namespace,
+            base_version=str(getattr(settings, "META_CACHE_VERSION", "1")),
+        )
+        versioned_namespace = f"{namespace}:v{namespace_version}"
+        cache_key = build_meta_cache_key(
+            versioned_namespace,
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            extra=extra or {},
+        )
+        return get_or_set_meta_cache(
+            cache_key,
+            loader,
+            timeout=int(timeout or getattr(settings, "META_CACHE_TTL_SECONDS", 300)),
+        )
 
     def _parse_int(self, raw_value, field_name: str, required: bool = False):
         if raw_value in (None, "", "null", "None"):
@@ -242,7 +290,16 @@ class PaymentMetaBaseAPIView(ScopedEntitlementMixin, APIView):
 class PaymentVoucherFormMetaAPIView(PaymentMetaBaseAPIView):
     def get(self, request):
         entity_id, entityfinid_id, subentity_id = self._parse_scope(request, require_entityfinid=False)
-        return Response(self._voucher_form_meta(entity_id, entityfinid_id, subentity_id))
+        payload = self._get_cached_meta(
+            namespace=PAYMENT_META_NAMESPACES[0],
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            extra=None,
+            timeout=None,
+            loader=lambda: self._voucher_form_meta(entity_id, entityfinid_id, subentity_id),
+        )
+        return Response(payload)
 
 
 class PaymentVoucherDetailFormMetaAPIView(PaymentMetaBaseAPIView):

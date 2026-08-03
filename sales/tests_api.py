@@ -6,7 +6,9 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
+from rest_framework.test import APIRequestFactory, force_authenticate
 
+from catalog.models import ProductBulkJob
 from entity.models import Entity, EntityFinancialYear, SubEntity
 from financial.models import account
 from sales.models import SalesInvoiceHeader
@@ -14,6 +16,13 @@ from sales.serializers.sales_ar import CustomerSettlementCreateInputSerializer
 from sales.serializers.sales_charge_serializers import SalesChargeLineSerializer, SalesChargeTypeSerializer
 from sales.serializers.sales_invoice_serializers import SalesInvoiceHeaderSerializer
 from sales.services.sales_choices_service import SalesChoicesService
+from sales.views.sales_bulk_print_views import (
+    SalesBulkPrintJobDetailAPIView,
+    SalesBulkPrintJobDownloadAPIView,
+    SalesBulkPrintJobListCreateAPIView,
+)
+from sales.views.sales_invoice_views import SalesInvoiceListCreateAPIView
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
 User = get_user_model()
@@ -95,14 +104,14 @@ class SalesSettingsApiTests(SalesApiTestBase):
         self.assertEqual(resp.data, {"entityfinid": "entityfinid is required."})
 
     @patch("sales.views.sales_settings_views.SalesChoicesService.get_choices")
-    @patch("sales.views.sales_settings_views.SalesSettingsService.get_current_doc_no")
+    @patch("sales.views.sales_settings_views.SalesSettingsService.get_current_doc_numbers_batch")
     @patch("sales.views.sales_settings_views.SalesSettingsService.get_seller_profile")
     @patch("sales.views.sales_settings_views.SalesSettingsService.get_settings")
     def test_settings_returns_payload(
         self,
         mocked_get_settings,
         mocked_get_seller_profile,
-        mocked_get_current_doc_no,
+        mocked_get_current_doc_numbers_batch,
         mocked_get_choices,
     ):
         mocked_get_settings.return_value = SimpleNamespace(
@@ -128,7 +137,11 @@ class SalesSettingsApiTests(SalesApiTestBase):
             round_grand_total_to=2,
         )
         mocked_get_seller_profile.return_value = {"entity_id": 10, "gstin": "22AAAAA0000A1Z5"}
-        mocked_get_current_doc_no.side_effect = lambda **kwargs: f"{kwargs.get('doc_code', 'DOC')}/0001"
+        mocked_get_current_doc_numbers_batch.return_value = {
+            "invoice": "SI/0001",
+            "credit_note": "SCN/0001",
+            "debit_note": "SDN/0001",
+        }
         mocked_get_choices.return_value = {"DocType": [{"key": "TAX_INVOICE", "label": "Tax Invoice", "enabled": True}]}
 
         resp = self.client.get("/api/sales/settings/?entity_id=10&entityfinid=20&subentity_id=30")
@@ -197,6 +210,154 @@ class SalesSettingsApiTests(SalesApiTestBase):
         mocked_bump_cache.assert_called_once()
         self.assertEqual(resp.data["settings"]["enable_einvoice"], False)
         self.assertEqual(resp.data["settings"]["default_doc_code_invoice"], "NSI")
+
+
+class SalesInvoiceEntitlementApiTests(SalesApiTestBase):
+    def _build_sales_entitlement_scope(self):
+        entity = Entity.objects.create(entityname="Sales Invoice Entity", createdby=self.user)
+        subentity = SubEntity.objects.create(entity=entity, subentityname="Head Office")
+        entityfinid = EntityFinancialYear.objects.create(
+            entity=entity,
+            desc="FY 2026-27",
+            finstartyear=timezone.make_aware(datetime(2026, 4, 1)),
+            finendyear=timezone.make_aware(datetime(2027, 3, 31)),
+            createdby=self.user,
+        )
+        account = SubscriptionService.register_entity_creation(entity=entity, owner=self.user)
+        subscription = SubscriptionService.ensure_active_subscription(customer_account=account)
+        sales_limit = subscription.plan.limits.get(key=SubscriptionLimitCodes.FEATURE_SALES)
+        sales_limit.bool_value = False
+        sales_limit.save(update_fields=["bool_value", "updated_at"])
+        return entity, subentity, entityfinid
+
+    @patch("sales.views.sales_invoice_views.EffectivePermissionService.permission_codes_for_user")
+    @patch("sales.views.sales_invoice_views.EffectivePermissionService.entity_for_user")
+    def test_sales_invoice_list_is_blocked_when_sales_feature_disabled(
+        self,
+        mock_entity_for_user,
+        mock_codes,
+    ):
+        entity, subentity, entityfinid = self._build_sales_entitlement_scope()
+
+        mock_entity_for_user.return_value = entity
+        mock_codes.return_value = {"sales.invoice.view"}
+
+        factory = APIRequestFactory()
+        request = factory.get(
+            f"/api/sales/invoices/?entity_id={entity.id}&entityfinid_id={entityfinid.id}&subentity_id={subentity.id}"
+        )
+        force_authenticate(request, user=self.user)
+        resp = SalesInvoiceListCreateAPIView.as_view()(request)
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["feature_code"], SubscriptionLimitCodes.FEATURE_SALES)
+
+    @patch("sales.views.sales_bulk_print_views.EffectivePermissionService.permission_codes_for_user")
+    @patch("sales.views.sales_bulk_print_views.EffectivePermissionService.entity_for_user")
+    def test_bulk_print_job_create_is_blocked_when_sales_feature_disabled(
+        self,
+        mock_entity_for_user,
+        mock_codes,
+    ):
+        entity, subentity, entityfinid = self._build_sales_entitlement_scope()
+
+        mock_entity_for_user.return_value = entity
+        mock_codes.return_value = {"sales.invoice.view"}
+
+        factory = APIRequestFactory()
+        request = factory.post(
+            "/api/sales/bulk-print/jobs/",
+            {
+                "entity_id": entity.id,
+                "entityfinid": entityfinid.id,
+                "subentity_id": subentity.id,
+                "scope": {"doc_types": ["sale_invoice"]},
+            },
+            format="json",
+        )
+        force_authenticate(request, user=self.user)
+        resp = SalesBulkPrintJobListCreateAPIView.as_view()(request)
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["feature_code"], SubscriptionLimitCodes.FEATURE_SALES)
+
+    @patch("sales.views.sales_bulk_print_views.EffectivePermissionService.permission_codes_for_user")
+    @patch("sales.views.sales_bulk_print_views.EffectivePermissionService.entity_for_user")
+    def test_bulk_print_job_detail_is_blocked_when_sales_feature_disabled(
+        self,
+        mock_entity_for_user,
+        mock_codes,
+    ):
+        entity, subentity, entityfinid = self._build_sales_entitlement_scope()
+        job = ProductBulkJob.objects.create(
+            entity=entity,
+            created_by=self.user,
+            job_type=ProductBulkJob.JobType.EXPORT,
+            status=ProductBulkJob.JobStatus.COMPLETED,
+            file_format=ProductBulkJob.FileFormat.CSV,
+            summary={"matched_docs": 1},
+            payload={
+                "manifest": [
+                    {
+                        "invoice_id": 999,
+                        "doc_type": "sale_invoice",
+                        "status": "draft",
+                    }
+                ]
+            },
+        )
+
+        mock_entity_for_user.return_value = entity
+        mock_codes.return_value = {"sales.invoice.view"}
+
+        factory = APIRequestFactory()
+        request = factory.get(
+            f"/api/sales/bulk-print/jobs/{job.id}/?entity_id={entity.id}&entityfinid={entityfinid.id}&subentity_id={subentity.id}"
+        )
+        force_authenticate(request, user=self.user)
+        resp = SalesBulkPrintJobDetailAPIView.as_view()(request, job_id=job.id)
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["feature_code"], SubscriptionLimitCodes.FEATURE_SALES)
+
+    @patch("sales.views.sales_bulk_print_views.EffectivePermissionService.permission_codes_for_user")
+    @patch("sales.views.sales_bulk_print_views.EffectivePermissionService.entity_for_user")
+    def test_bulk_print_job_download_is_blocked_when_sales_feature_disabled(
+        self,
+        mock_entity_for_user,
+        mock_codes,
+    ):
+        entity, subentity, entityfinid = self._build_sales_entitlement_scope()
+        job = ProductBulkJob.objects.create(
+            entity=entity,
+            created_by=self.user,
+            job_type=ProductBulkJob.JobType.EXPORT,
+            status=ProductBulkJob.JobStatus.COMPLETED,
+            file_format=ProductBulkJob.FileFormat.CSV,
+            summary={"matched_docs": 1},
+            payload={
+                "manifest": [
+                    {
+                        "invoice_id": 999,
+                        "doc_type": "sale_invoice",
+                        "status": "draft",
+                    }
+                ]
+            },
+        )
+
+        mock_entity_for_user.return_value = entity
+        mock_codes.return_value = {"sales.invoice.view"}
+
+        factory = APIRequestFactory()
+        request = factory.get(
+            f"/api/sales/bulk-print/jobs/{job.id}/download/?entity_id={entity.id}&entityfinid={entityfinid.id}&subentity_id={subentity.id}&format=json"
+        )
+        force_authenticate(request, user=self.user)
+        resp = SalesBulkPrintJobDownloadAPIView.as_view()(request, job_id=job.id)
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["feature_code"], SubscriptionLimitCodes.FEATURE_SALES)
 
 
     @patch("sales.views.sales_settings_views.SalesLockPeriod.objects.create")

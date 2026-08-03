@@ -703,6 +703,11 @@ class EntityOnboardingService:
                 template_code=seed_options.get("template_code"),
             )
 
+        static_account_default_clone_summary = StaticAccountService.clone_default_entity_mappings(
+            target_entity_id=entity.id,
+            actor=actor,
+        )
+
         rbac_summary = {}
         if seed_options.get("seed_rbac", True):
             rbac_summary = RBACSeedService.seed_entity(
@@ -757,6 +762,7 @@ class EntityOnboardingService:
             "ownership_ids": ownership_ids,
             "compliance_credential_ids": [row["id"] for row in cls.build_entity_payload(entity=entity).get("compliance_credentials", []) if row.get("id")],
             "posting_static_accounts": posting_static_accounts_summary,
+            "posting_static_account_defaults": static_account_default_clone_summary,
             "financial": financial_summary,
             "rbac": rbac_summary,
             "numbering": numbering_summary,
@@ -1129,6 +1135,7 @@ class EntityOnboardingService:
         user_data = dict(payload["user"])
         onboarding_payload = dict(payload["onboarding"])
         intent = payload.get("intent") or SubscriptionService.INTENT_STANDARD
+        plan_code = (payload.get("plan_code") or "").strip() or None
 
         email = user_data["email"].strip().lower()
         username = (user_data.get("username") or email).strip() or email
@@ -1144,7 +1151,7 @@ class EntityOnboardingService:
             last_name=last_name,
             email_verified=False,
         )
-        SubscriptionService.handle_signup(user=user, intent=intent)
+        SubscriptionService.handle_signup(user=user, intent=intent, plan_code=plan_code)
 
         onboarding_result = cls.create_entity(actor=user, payload=onboarding_payload)
         otp = AuthOTPService.create_otp(user=user, email=email, purpose="email_verification")

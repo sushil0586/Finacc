@@ -1,3 +1,6 @@
+import logging
+from time import perf_counter
+
 from rest_framework import generics, permissions, filters
 from rest_framework import status
 from rest_framework.response import Response
@@ -10,6 +13,7 @@ from purchase.models.purchase_core import PurchaseInvoiceLine
 from purchase.serializers.purchase_invoice import PurchaseInvoiceSearchSerializer
 from purchase.filters import PurchaseInvoiceSearchFilter
 from rest_framework.filters import OrderingFilter, SearchFilter
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.views import APIView
 from django.db.models import Exists, OuterRef
 from django.db.models import Q
@@ -20,11 +24,15 @@ from purchase.models.purchase_core import PurchaseInvoiceHeader
 from purchase.serializers.purchase_invoice import (
     PurchaseInvoiceHeaderSerializer,
     PurchaseInvoiceListSerializer,
-    PurchaseInvoiceLookupSerializer,
 )
 from purchase.services.purchase_settings_service import PurchaseSettingsService
 from purchase.views.rbac import require_purchase_request_permission
+from subscriptions.services import SubscriptionLimitCodes
 from django.shortcuts import get_object_or_404
+
+PURCHASE_DOC_TYPE_LABELS = dict(PurchaseInvoiceHeader.DocType.choices)
+PURCHASE_STATUS_LABELS = dict(PurchaseInvoiceHeader.Status.choices)
+logger = logging.getLogger("purchase.perf")
 
 
 class PurchaseInvoiceListCreateAPIView(generics.ListCreateAPIView):
@@ -96,6 +104,7 @@ class PurchaseInvoiceListCreateAPIView(generics.ListCreateAPIView):
             entity_id=entity_id,
             doc_type=requested_doc_type,
             action="view",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
         )
         base_qs = PurchaseInvoiceHeader.objects.all().select_related(
             "vendor", "vendor__ledger", "vendor__commercial_profile", "vendor_ledger", "vendor_state",
@@ -176,6 +185,7 @@ class PurchaseInvoiceListCreateAPIView(generics.ListCreateAPIView):
             # List response should avoid expensive per-row preview/navigation queries.
             ctx["skip_preview_numbers"] = True
             ctx["skip_navigation"] = True
+            ctx["skip_gst_tds_contract_summary"] = True
         return ctx
 
     def perform_create(self, serializer):
@@ -194,10 +204,31 @@ class PurchaseInvoiceListCreateAPIView(generics.ListCreateAPIView):
             entity_id=entity_id,
             doc_type=request.data.get("doc_type"),
             action="create",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
         )
+        started_at = perf_counter()
         try:
-            return super().create(request, *args, **kwargs)
+            response = super().create(request, *args, **kwargs)
+            logger.info(
+                "purchase_invoice_create_completed entity_id=%s subentity_id=%s doc_type=%s line_mode=%s status_code=%s duration_ms=%.2f",
+                entity_id,
+                request.data.get("subentity"),
+                request.data.get("doc_type"),
+                self._get_line_mode(),
+                getattr(response, "status_code", None),
+                (perf_counter() - started_at) * 1000,
+            )
+            return response
         except (ValueError, DjangoValidationError, ValidationError) as exc:
+            logger.warning(
+                "purchase_invoice_create_failed entity_id=%s subentity_id=%s doc_type=%s line_mode=%s duration_ms=%.2f error=%s",
+                entity_id,
+                request.data.get("subentity"),
+                request.data.get("doc_type"),
+                self._get_line_mode(),
+                (perf_counter() - started_at) * 1000,
+                exc,
+            )
             detail = getattr(exc, "message_dict", None) or getattr(exc, "detail", None) or str(exc)
             return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -206,6 +237,7 @@ class PurchaseInvoiceRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroy
     serializer_class = PurchaseInvoiceHeaderSerializer
     permission_classes = [permissions.IsAuthenticated]
     line_mode = None  # None | "service" | "goods"
+    _cached_object = None
 
     def _scope_ids(self):
         entity = self.request.query_params.get("entity")
@@ -251,7 +283,12 @@ class PurchaseInvoiceRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroy
                 "entity", "entityfinid", "subentity",
                 "ref_document",
             )
-            .prefetch_related(
+        )
+        if subentity_id is not None:
+            qs = qs.filter(subentity_id=subentity_id)
+
+        if self.request.method.upper() == "GET":
+            qs = qs.prefetch_related(
                 Prefetch(
                     "lines",
                     queryset=PurchaseInvoiceLine.objects.select_related("product", "uom", "purchase_account")
@@ -259,15 +296,32 @@ class PurchaseInvoiceRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroy
                 "tax_summaries",
                 "charges",
             )
-        )
-        if subentity_id is not None:
-            qs = qs.filter(subentity_id=subentity_id)
 
         return self._apply_line_mode_filter(qs)
+
+    def get_object(self):
+        if self._cached_object is not None:
+            return self._cached_object
+        obj = super().get_object()
+        self._cached_object = obj
+        return obj
 
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
         ctx["line_mode"] = self._get_line_mode()
+        method = self.request.method.upper()
+        if method == "GET":
+            # Detail read paths are also used heavily by lookup/seed flows during
+            # mixed stress runs, so skip non-essential preview/navigation work.
+            ctx["skip_preview_numbers"] = True
+            ctx["skip_navigation"] = True
+            ctx["skip_gst_tds_contract_summary"] = True
+        elif method in {"PUT", "PATCH"}:
+            # Mutation responses do not need navigation/preview enrichment and
+            # were a major contributor to draft-save stress latency.
+            ctx["skip_preview_numbers"] = True
+            ctx["skip_navigation"] = True
+            ctx["skip_gst_tds_contract_summary"] = True
         return ctx
 
     def retrieve(self, request, *args, **kwargs):
@@ -277,6 +331,7 @@ class PurchaseInvoiceRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroy
             entity_id=instance.entity_id,
             doc_type=instance.doc_type,
             action="view",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
         )
         serializer = self.get_serializer(instance)
         return Response(serializer.data)
@@ -298,6 +353,7 @@ class PurchaseInvoiceRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroy
             entity_id=instance.entity_id,
             doc_type=instance.doc_type,
             action="delete",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
         )
         self.perform_destroy(instance)
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -309,10 +365,33 @@ class PurchaseInvoiceRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroy
             entity_id=instance.entity_id,
             doc_type=instance.doc_type,
             action="update",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
         )
+        started_at = perf_counter()
         try:
-            return super().update(request, *args, **kwargs)
+            response = super().update(request, *args, **kwargs)
+            logger.info(
+                "purchase_invoice_update_completed header_id=%s entity_id=%s subentity_id=%s doc_type=%s line_mode=%s status_code=%s duration_ms=%.2f",
+                instance.pk,
+                instance.entity_id,
+                instance.subentity_id,
+                instance.doc_type,
+                self._get_line_mode(),
+                getattr(response, "status_code", None),
+                (perf_counter() - started_at) * 1000,
+            )
+            return response
         except (ValueError, DjangoValidationError, ValidationError) as exc:
+            logger.warning(
+                "purchase_invoice_update_failed header_id=%s entity_id=%s subentity_id=%s doc_type=%s line_mode=%s duration_ms=%.2f error=%s",
+                instance.pk,
+                instance.entity_id,
+                instance.subentity_id,
+                instance.doc_type,
+                self._get_line_mode(),
+                (perf_counter() - started_at) * 1000,
+                exc,
+            )
             detail = getattr(exc, "message_dict", None) or getattr(exc, "detail", None) or str(exc)
             return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -323,12 +402,43 @@ class PurchaseInvoiceRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroy
             entity_id=instance.entity_id,
             doc_type=instance.doc_type,
             action="update",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
         )
+        started_at = perf_counter()
         try:
-            return super().partial_update(request, *args, **kwargs)
+            kwargs["partial"] = True
+            response = super().update(request, *args, **kwargs)
+            logger.info(
+                "purchase_invoice_partial_update_completed header_id=%s entity_id=%s subentity_id=%s doc_type=%s line_mode=%s status_code=%s duration_ms=%.2f",
+                instance.pk,
+                instance.entity_id,
+                instance.subentity_id,
+                instance.doc_type,
+                self._get_line_mode(),
+                getattr(response, "status_code", None),
+                (perf_counter() - started_at) * 1000,
+            )
+            return response
         except (ValueError, DjangoValidationError, ValidationError) as exc:
+            logger.warning(
+                "purchase_invoice_partial_update_failed header_id=%s entity_id=%s subentity_id=%s doc_type=%s line_mode=%s duration_ms=%.2f error=%s",
+                instance.pk,
+                instance.entity_id,
+                instance.subentity_id,
+                instance.doc_type,
+                self._get_line_mode(),
+                (perf_counter() - started_at) * 1000,
+                exc,
+            )
             detail = getattr(exc, "message_dict", None) or getattr(exc, "detail", None) or str(exc)
             return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class PurchaseInvoiceSearchPagination(PageNumberPagination):
+    page_size = 100
+    page_size_query_param = "page_size"
+    max_page_size = 250
+
 
 class PurchaseInvoiceSearchAPIView(generics.ListAPIView):
     """
@@ -342,6 +452,7 @@ class PurchaseInvoiceSearchAPIView(generics.ListAPIView):
     """
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = PurchaseInvoiceSearchSerializer
+    pagination_class = PurchaseInvoiceSearchPagination
 
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_class = PurchaseInvoiceSearchFilter
@@ -367,6 +478,7 @@ class PurchaseInvoiceSearchAPIView(generics.ListAPIView):
         "updated_at",
     ]
     ordering = ["-bill_date", "-id"]  # default order
+    line_mode = None  # None | "service" | "goods"
 
     def _scope_ids(self):
         entity = self.request.query_params.get("entity")
@@ -382,6 +494,16 @@ class PurchaseInvoiceSearchAPIView(generics.ListAPIView):
             raise ValidationError({"detail": "entity/entityfinid/subentity must be integers."})
         return entity_id, entityfinid_id, subentity_id
 
+    def _apply_line_mode_filter(self, queryset):
+        line_mode = self.line_mode
+        if line_mode not in ("service", "goods"):
+            return queryset
+        matching_lines = PurchaseInvoiceLine.objects.filter(
+            header_id=OuterRef("pk"),
+            is_service=(line_mode == "service"),
+        )
+        return queryset.annotate(_line_mode_match=Exists(matching_lines)).filter(_line_mode_match=True)
+
     def get_queryset(self):
         entity_id, entityfinid_id, subentity_id = self._scope_ids()
         requested_doc_type = self.request.query_params.get("doc_type")
@@ -390,6 +512,7 @@ class PurchaseInvoiceSearchAPIView(generics.ListAPIView):
             entity_id=entity_id,
             doc_type=requested_doc_type,
             action="view",
+            feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
         )
         qs = (
             PurchaseInvoiceHeader.objects
@@ -423,6 +546,7 @@ class PurchaseInvoiceSearchAPIView(generics.ListAPIView):
                 "created_at", "updated_at",
             )
         )
+        qs = self._apply_line_mode_filter(qs)
         if subentity_id is not None:
             return qs.filter(subentity_id=subentity_id)
         return qs
@@ -431,6 +555,31 @@ class PurchaseInvoiceSearchAPIView(generics.ListAPIView):
 class PurchaseInvoiceLookupAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     line_mode = None  # None | "service" | "goods"
+    LOOKUP_VALUE_FIELDS = (
+        "id",
+        "doc_type",
+        "status",
+        "bill_date",
+        "doc_code",
+        "doc_no",
+        "purchase_number",
+        "supplier_invoice_number",
+        "vendor_id",
+        "vendor_name",
+        "vendor_gstin",
+        "vendor_ledger_id",
+        "grand_total",
+        "entity_id",
+        "entityfinid_id",
+        "subentity_id",
+        "vendor__accountname",
+        "vendor__ledger__ledger_code",
+        "vendor__commercial_profile__partytype",
+    )
+
+    def _include_total(self) -> bool:
+        raw = str(self.request.query_params.get("include_total") or "").strip().lower()
+        return raw in {"1", "true", "yes"}
 
     def _parse_limit(self) -> int:
         try:
@@ -504,7 +653,6 @@ class PurchaseInvoiceLookupAPIView(APIView):
         qs = (
             PurchaseInvoiceHeader.objects
             .filter(entity_id=entity_id, entityfinid_id=entityfinid_id)
-            .select_related("vendor", "subentity")
             .order_by("-doc_no", "-id")
         )
 
@@ -532,7 +680,7 @@ class PurchaseInvoiceLookupAPIView(APIView):
             )
 
         return self._apply_line_mode_filter(
-            qs.select_related(None).select_related("vendor", "vendor__ledger", "vendor__commercial_profile", "subentity").only(
+            qs.select_related(None).select_related("vendor", "vendor__ledger", "vendor__commercial_profile").only(
                 "id",
                 "doc_type",
                 "status",
@@ -552,28 +700,83 @@ class PurchaseInvoiceLookupAPIView(APIView):
                 "vendor__accountname",
                 "vendor__ledger_id",
                 "vendor__ledger__ledger_code",
-                "vendor__ledger__name",
                 "vendor__commercial_profile__partytype",
-                "subentity__subentityname",
             )
         )
 
+    def _lookup_values_queryset(self, queryset):
+        return queryset.values(*self.LOOKUP_VALUE_FIELDS)
+
+    def _serialize_lookup_row(self, row):
+        vendor_ledger_code = row.get("vendor__ledger__ledger_code")
+        return {
+            "id": row.get("id"),
+            "doc_type": row.get("doc_type"),
+            "doc_type_name": PURCHASE_DOC_TYPE_LABELS.get(row.get("doc_type")),
+            "status": row.get("status"),
+            "status_name": PURCHASE_STATUS_LABELS.get(row.get("status")),
+            "bill_date": row.get("bill_date"),
+            "doc_code": row.get("doc_code"),
+            "doc_no": row.get("doc_no"),
+            "purchase_number": row.get("purchase_number"),
+            "supplier_invoice_number": row.get("supplier_invoice_number"),
+            "vendor": row.get("vendor_id"),
+            "vendor_name": row.get("vendor_name"),
+            "vendor_gstin": row.get("vendor_gstin"),
+            "vendor_display_name": row.get("vendor__accountname") or row.get("vendor_name"),
+            "vendor_accountcode": vendor_ledger_code,
+            "vendor_ledger_id": row.get("vendor_ledger_id") or None,
+            "vendor_partytype": row.get("vendor__commercial_profile__partytype"),
+            "grand_total": row.get("grand_total"),
+            "entity": row.get("entity_id"),
+            "entityfinid": row.get("entityfinid_id"),
+            "subentity": row.get("subentity_id"),
+        }
+
     def get(self, request, *args, **kwargs):
+        request_started_at = perf_counter()
         queryset = self._base_queryset()
-        total_count = queryset.count()
+        base_queryset_elapsed_ms = (perf_counter() - request_started_at) * 1000
         limit = self._parse_limit()
         offset = self._parse_offset()
-        items = queryset[offset:offset + limit]
-        serializer = PurchaseInvoiceLookupSerializer(items, many=True, context={"request": request})
-        returned_count = len(serializer.data)
+        include_total = self._include_total()
+        fetch_limit = limit if include_total else (limit + 1)
+        values_started_at = perf_counter()
+        rows = list(self._lookup_values_queryset(queryset)[offset:offset + fetch_limit])
+        values_elapsed_ms = (perf_counter() - values_started_at) * 1000
+        has_more = (len(rows) > limit) if not include_total else False
+        if has_more:
+            rows = rows[:limit]
+        serialize_started_at = perf_counter()
+        items = [self._serialize_lookup_row(row) for row in rows]
+        serialize_elapsed_ms = (perf_counter() - serialize_started_at) * 1000
+        total_count_started_at = perf_counter()
+        returned_count = len(items)
+        total_count = queryset.count() if include_total else None
+        total_count_elapsed_ms = (perf_counter() - total_count_started_at) * 1000 if include_total else 0.0
+        total_elapsed_ms = (perf_counter() - request_started_at) * 1000
+        logger.info(
+            "purchase_invoice_lookup_completed line_mode=%s include_total=%s limit=%s offset=%s rows=%s has_more=%s base_queryset_ms=%.2f values_fetch_ms=%.2f serialize_ms=%.2f total_count_ms=%.2f total_duration_ms=%.2f",
+            self._get_line_mode(),
+            include_total,
+            limit,
+            offset,
+            returned_count,
+            has_more,
+            base_queryset_elapsed_ms,
+            values_elapsed_ms,
+            serialize_elapsed_ms,
+            total_count_elapsed_ms,
+            total_elapsed_ms,
+        )
         return Response(
             {
-                "items": serializer.data,
+                "items": items,
                 "total_count": total_count,
                 "returned_count": returned_count,
                 "limit": limit,
                 "offset": offset,
-                "has_more": total_count > (offset + returned_count),
+                "has_more": (total_count > (offset + returned_count)) if total_count is not None else has_more,
             }
         )
 
@@ -617,7 +820,17 @@ class PurchaseInvoiceCrossModeNavigationAPIView(APIView):
     def _get_scoped_header(self, pk: int) -> PurchaseInvoiceHeader:
         entity_id, entityfinid_id, subentity_id = self._scope_ids()
         qs = self._apply_line_mode_filter(
-            PurchaseInvoiceHeader.objects.filter(entity_id=entity_id, entityfinid_id=entityfinid_id)
+            PurchaseInvoiceHeader.objects.filter(entity_id=entity_id, entityfinid_id=entityfinid_id).only(
+                "id",
+                "entity_id",
+                "entityfinid_id",
+                "subentity_id",
+                "doc_type",
+                "status",
+                "doc_no",
+                "purchase_number",
+                "bill_date",
+            )
         )
         if subentity_id is not None:
             qs = qs.filter(subentity_id=subentity_id)
@@ -649,49 +862,67 @@ class PurchaseInvoiceCrossModeNavigationAPIView(APIView):
             allowed_statuses=PurchaseInvoiceNavService.DEFAULT_ALLOWED_STATUSES,
             line_mode=target_line_mode,
         )
-        rows = list(qs)
         current_seq = PurchaseInvoiceNavService._sequence_no(header)
 
         target_obj = None
         if current_seq > 0:
-            if direction == "previous":
-                candidates = [
-                    row for row in rows
-                    if (
-                        (PurchaseInvoiceNavService._sequence_no(row) < current_seq)
-                        or (
-                            PurchaseInvoiceNavService._sequence_no(row) == current_seq
-                            and int(getattr(row, "id", 0) or 0) < int(getattr(header, "id", 0) or 0)
-                        )
+            current_doc_no = int(getattr(header, "doc_no", 0) or 0)
+            if current_doc_no > 0 and hasattr(qs, "filter"):
+                numbered_qs = qs.filter(doc_no__gt=0)
+                if direction == "previous":
+                    target_obj = (
+                        numbered_qs
+                        .filter(Q(doc_no__lt=current_doc_no) | Q(doc_no=current_doc_no, id__lt=header.id))
+                        .order_by("-doc_no", "-id")
+                        .first()
                     )
-                ]
-                target_obj = max(
-                    candidates,
-                    key=lambda row: (
-                        PurchaseInvoiceNavService._sequence_no(row),
-                        int(getattr(row, "id", 0) or 0),
-                    ),
-                    default=None,
-                )
+                else:
+                    target_obj = (
+                        numbered_qs
+                        .filter(Q(doc_no__gt=current_doc_no) | Q(doc_no=current_doc_no, id__gt=header.id))
+                        .order_by("doc_no", "id")
+                        .first()
+                    )
             else:
-                candidates = [
-                    row for row in rows
-                    if (
-                        (PurchaseInvoiceNavService._sequence_no(row) > current_seq)
-                        or (
-                            PurchaseInvoiceNavService._sequence_no(row) == current_seq
-                            and int(getattr(row, "id", 0) or 0) > int(getattr(header, "id", 0) or 0)
+                rows = list(qs)
+                if direction == "previous":
+                    candidates = [
+                        row for row in rows
+                        if (
+                            (PurchaseInvoiceNavService._sequence_no(row) < current_seq)
+                            or (
+                                PurchaseInvoiceNavService._sequence_no(row) == current_seq
+                                and int(getattr(row, "id", 0) or 0) < int(getattr(header, "id", 0) or 0)
+                            )
                         )
+                    ]
+                    target_obj = max(
+                        candidates,
+                        key=lambda row: (
+                            PurchaseInvoiceNavService._sequence_no(row),
+                            int(getattr(row, "id", 0) or 0),
+                        ),
+                        default=None,
                     )
-                ]
-                target_obj = min(
-                    candidates,
-                    key=lambda row: (
-                        PurchaseInvoiceNavService._sequence_no(row),
-                        int(getattr(row, "id", 0) or 0),
-                    ),
-                    default=None,
-                )
+                else:
+                    candidates = [
+                        row for row in rows
+                        if (
+                            (PurchaseInvoiceNavService._sequence_no(row) > current_seq)
+                            or (
+                                PurchaseInvoiceNavService._sequence_no(row) == current_seq
+                                and int(getattr(row, "id", 0) or 0) > int(getattr(header, "id", 0) or 0)
+                            )
+                        )
+                    ]
+                    target_obj = min(
+                        candidates,
+                        key=lambda row: (
+                            PurchaseInvoiceNavService._sequence_no(row),
+                            int(getattr(row, "id", 0) or 0),
+                        ),
+                        default=None,
+                    )
         else:
             if direction == "previous":
                 target_obj = qs.filter(id__lt=header.id).order_by("-id").first()
@@ -720,4 +951,8 @@ class PurchaseServiceInvoiceLookupAPIView(PurchaseInvoiceLookupAPIView):
 
 
 class PurchaseServiceInvoiceCrossModeNavigationAPIView(PurchaseInvoiceCrossModeNavigationAPIView):
+    line_mode = "service"
+
+
+class PurchaseServiceInvoiceSearchAPIView(PurchaseInvoiceSearchAPIView):
     line_mode = "service"

@@ -5,6 +5,10 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Dict, Iterable, List, Optional, Tuple
 
+from django.conf import settings
+from django.db import transaction
+
+from financial.models import Ledger, account
 from posting.models import EntityStaticAccountMap, StaticAccount, StaticAccountGroup
 
 
@@ -168,3 +172,120 @@ class StaticAccountService:
         )
         m = StaticAccountService._entity_map(entity_id)
         return [c for c in required_codes if c not in m]
+
+    @staticmethod
+    def get_default_template_entity_id() -> int:
+        return int(getattr(settings, "DEFAULT_STATIC_ACCOUNT_TEMPLATE_ENTITY_ID", 10) or 10)
+
+    @staticmethod
+    @transaction.atomic
+    def clone_default_entity_mappings(*, target_entity_id: int, actor=None, template_entity_id: Optional[int] = None) -> Dict[str, object]:
+        template_entity_id = int(template_entity_id or StaticAccountService.get_default_template_entity_id())
+        if template_entity_id <= 0 or template_entity_id == target_entity_id:
+            return {
+                "template_entity_id": template_entity_id,
+                "created": 0,
+                "skipped_existing": 0,
+                "skipped_unresolved": 0,
+                "copied_codes": [],
+            }
+
+        source_rows = list(
+            EntityStaticAccountMap.objects.filter(
+                entity_id=template_entity_id,
+                sub_entity__isnull=True,
+                is_active=True,
+                static_account__is_active=True,
+            )
+            .select_related("static_account", "account__ledger", "ledger")
+            .order_by("static_account__code", "-id")
+        )
+        if not source_rows:
+            return {
+                "template_entity_id": template_entity_id,
+                "created": 0,
+                "skipped_existing": 0,
+                "skipped_unresolved": 0,
+                "copied_codes": [],
+            }
+
+        existing_codes = set(
+            EntityStaticAccountMap.objects.filter(
+                entity_id=target_entity_id,
+                sub_entity__isnull=True,
+                is_active=True,
+            ).values_list("static_account__code", flat=True)
+        )
+
+        target_accounts_by_code = {
+            row["ledger__ledger_code"]: row
+            for row in account.objects.filter(entity_id=target_entity_id, ledger__isnull=False).values(
+                "id", "ledger_id", "ledger__ledger_code"
+            )
+        }
+        target_ledgers_by_code = {
+            row["ledger_code"]: row["id"]
+            for row in Ledger.objects.filter(entity_id=target_entity_id).values("id", "ledger_code")
+        }
+
+        rows_to_create: List[EntityStaticAccountMap] = []
+        copied_codes: List[str] = []
+        skipped_existing = 0
+        skipped_unresolved = 0
+        seen_codes = set()
+
+        for source in source_rows:
+            code = source.static_account.code
+            if code in seen_codes:
+                continue
+            seen_codes.add(code)
+
+            if code in existing_codes:
+                skipped_existing += 1
+                continue
+
+            source_ledger_code = None
+            if source.account_id and getattr(source.account, "ledger_id", None):
+                source_ledger_code = getattr(source.account.ledger, "ledger_code", None)
+            if source_ledger_code is None and source.ledger_id:
+                source_ledger_code = getattr(source.ledger, "ledger_code", None)
+
+            if source_ledger_code is None:
+                skipped_unresolved += 1
+                continue
+
+            target_account_row = target_accounts_by_code.get(source_ledger_code)
+            target_ledger_id = (
+                target_account_row["ledger_id"]
+                if target_account_row
+                else target_ledgers_by_code.get(source_ledger_code)
+            )
+            target_account_id = target_account_row["id"] if target_account_row else None
+
+            if target_ledger_id is None and target_account_id is None:
+                skipped_unresolved += 1
+                continue
+
+            rows_to_create.append(
+                EntityStaticAccountMap(
+                    entity_id=target_entity_id,
+                    sub_entity_id=None,
+                    static_account_id=source.static_account_id,
+                    account_id=target_account_id,
+                    ledger_id=target_ledger_id,
+                    createdby=actor if getattr(actor, "id", None) else None,
+                )
+            )
+            copied_codes.append(code)
+
+        if rows_to_create:
+            EntityStaticAccountMap.objects.bulk_create(rows_to_create)
+            StaticAccountService.invalidate(target_entity_id)
+
+        return {
+            "template_entity_id": template_entity_id,
+            "created": len(rows_to_create),
+            "skipped_existing": skipped_existing,
+            "skipped_unresolved": skipped_unresolved,
+            "copied_codes": copied_codes,
+        }

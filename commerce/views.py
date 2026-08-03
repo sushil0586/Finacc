@@ -3,10 +3,13 @@ from __future__ import annotations
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, permissions, status
+from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from catalog.models import Product, ProductBarcode
+from core.entitlements import enforce_operational_entity_access
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 from .models import CommercePromotion, CommercePromotionScope, CommercePromotionSlab
 from .serializers import (
@@ -17,13 +20,25 @@ from .serializers import (
 from .services import BarcodeResolutionService, CommerceLineNormalizationService
 
 
+def _entity_from_request(request):
+    raw = request.query_params.get("entity") or request.data.get("entity")
+    if raw in (None, ""):
+        raise ValidationError({"entity": "entity is required."})
+    return enforce_operational_entity_access(
+        request=request,
+        entity_id=int(raw),
+        feature_code=SubscriptionLimitCodes.FEATURE_SALES,
+        access_mode=SubscriptionService.ACCESS_MODE_OPERATIONAL,
+    )
+
+
 class CommercePromotionListCreateAPIView(generics.ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        entity_id = int(self.request.query_params.get("entity"))
+        entity = _entity_from_request(self.request)
         subentity_id = self.request.query_params.get("subentity")
-        qs = CommercePromotion.objects.filter(entity_id=entity_id).prefetch_related("scopes__product", "scopes__barcode", "slabs")
+        qs = CommercePromotion.objects.filter(entity_id=entity.id).prefetch_related("scopes__product", "scopes__barcode", "slabs")
         if subentity_id in (None, ""):
             return qs.filter(subentity__isnull=True).order_by("code", "id")
         return qs.filter(subentity_id=int(subentity_id)).order_by("code", "id")
@@ -42,8 +57,9 @@ class CommercePromotionListCreateAPIView(generics.ListCreateAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
+        entity = _entity_from_request(request)
         promotion = CommercePromotion.objects.create(
-            entity_id=payload["entity"],
+            entity_id=entity.id,
             subentity_id=payload.get("subentity"),
             code=payload["code"],
             name=payload["name"],
@@ -96,7 +112,8 @@ class CommercePromotionDetailAPIView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        return CommercePromotion.objects.prefetch_related("scopes__product", "scopes__barcode", "slabs")
+        entity = _entity_from_request(self.request)
+        return CommercePromotion.objects.filter(entity_id=entity.id).prefetch_related("scopes__product", "scopes__barcode", "slabs")
 
     def get_serializer_class(self):
         if self.request.method.upper() == "GET":
@@ -152,6 +169,7 @@ class CommerceBarcodeResolveAPIView(APIView):
         barcode = request.query_params.get("code")
         if not entity or not barcode:
             return Response({"detail": "Query params ?entity=<id>&code=<barcode> are required."}, status=400)
+        _entity_from_request(request)
         resolved = BarcodeResolutionService.resolve(
             entity_id=int(entity),
             code=barcode,
@@ -181,6 +199,7 @@ class CommerceLineNormalizeAPIView(APIView):
         serializer = CommerceLineNormalizeSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
+        _entity_from_request(request)
         normalized = CommerceLineNormalizationService.normalize_line(
             entity_id=payload["entity"],
             subentity_id=payload.get("subentity"),

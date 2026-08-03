@@ -10,6 +10,7 @@ from rest_framework.test import APIClient, APITestCase
 from Authentication.models import User
 from catalog.models import Product, ProductCategory, UnitOfMeasure
 from entity.models import Entity, EntityFinancialYear, GstRegistrationType, Godown, SubEntity
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
 @override_settings(ROOT_URLCONF="FA.urls", AUTH_PASSWORD_VALIDATORS=[])
@@ -149,3 +150,19 @@ class RetailOversizedValidationTests(APITestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("closing_note", response.json())
+
+    def test_retail_meta_is_blocked_when_sales_feature_disabled(self):
+        customer_account = SubscriptionService.register_entity_creation(entity=self.entity, owner=self.user)
+        subscription = SubscriptionService.ensure_active_subscription(customer_account=customer_account)
+        sales_limit = subscription.plan.limits.get(key=SubscriptionLimitCodes.FEATURE_SALES)
+        sales_limit.bool_value = False
+        sales_limit.save(update_fields=["bool_value", "updated_at"])
+
+        response = self.client.get(
+            reverse("retail:meta"),
+            {"entity": self.entity.id, "subentity": self.subentity.id},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["code"], "subscription_feature_disabled")
+        self.assertEqual(response.json()["feature_code"], SubscriptionLimitCodes.FEATURE_SALES)
