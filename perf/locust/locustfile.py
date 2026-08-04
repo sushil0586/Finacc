@@ -251,21 +251,34 @@ class FinaccDjangoUser(HttpUser):
     def _get_financial_meta(self) -> Dict[str, Any]:
         if self._financial_meta_cache is not None:
             return self._financial_meta_cache
-        with self.client.get(
-            self.financial_meta_path,
-            params=self._entity_scope_params(),
-            name="reports/financial/meta [seed]",
-            catch_response=True,
-        ) as response:
-            if response.status_code >= 400:
-                response.failure(f"{response.status_code}: {response.text[:200]}")
-                return {}
-            try:
-                payload = response.json()
-            except ValueError:
-                response.failure("Financial meta returned invalid JSON")
-                return {}
-        self._financial_meta_cache = payload if isinstance(payload, dict) else {}
+        for attempt in range(2):
+            with self.client.get(
+                self.financial_meta_path,
+                params=self._entity_scope_params(),
+                name="reports/financial/meta [seed]",
+                catch_response=True,
+            ) as response:
+                if response.status_code >= 400:
+                    response.failure(f"{response.status_code}: {response.text[:200]}")
+                    return {}
+                try:
+                    payload = response.json()
+                except ValueError:
+                    if attempt == 0:
+                        response.success()
+                        continue
+                    response.failure("Financial meta returned invalid JSON")
+                    return {}
+                if not isinstance(payload, dict):
+                    if attempt == 0:
+                        response.success()
+                        continue
+                    response.failure("Financial meta returned non-object payload")
+                    return {}
+                self._financial_meta_cache = payload
+                response.success()
+                return self._financial_meta_cache
+        self._financial_meta_cache = {}
         return self._financial_meta_cache
 
     def _pick_financial_ledger_id(self) -> int | None:
@@ -485,32 +498,43 @@ class FinaccDjangoUser(HttpUser):
         return payload
 
     def _fetch_purchase_detail_payload(self, *, line_mode: str) -> Dict[str, Any] | None:
-        invoice_id = self._fetch_purchase_lookup_invoice_id(line_mode=line_mode)
-        if not invoice_id:
-            return None
-        with self.client.get(
-            self._build_purchase_detail_path(invoice_id, line_mode=line_mode),
-            params=self._entity_scope_params(),
-            name=f"purchase/{line_mode}-detail [seed]",
-            catch_response=True,
-        ) as response:
-            if response.status_code >= 400:
-                response.failure(f"Purchase detail seed fetch failed ({response.status_code}): {response.text[:2000]}")
+        cache_attr = "_seed_purchase_service_invoice_id" if line_mode == "service" else "_seed_purchase_invoice_id"
+        for refresh in (False, True):
+            invoice_id = self._fetch_purchase_lookup_invoice_id(line_mode=line_mode, refresh=refresh)
+            if not invoice_id:
                 return None
-            try:
-                payload = response.json()
-            except Exception:
-                content_type = response.headers.get("Content-Type", "")
-                response.failure(
-                    "Purchase detail seed fetch returned invalid JSON "
-                    f"(content-type={content_type!r}, body={response.text[:500]!r})"
-                )
-                return None
-            if not isinstance(payload, dict):
-                response.failure("Purchase detail seed fetch returned non-object payload")
-                return None
-            response.success()
-            return payload
+            with self.client.get(
+                self._build_purchase_detail_path(invoice_id, line_mode=line_mode),
+                params=self._entity_scope_params(),
+                name=f"purchase/{line_mode}-detail [seed]",
+                catch_response=True,
+            ) as response:
+                if response.status_code >= 400:
+                    response.failure(f"Purchase detail seed fetch failed ({response.status_code}): {response.text[:2000]}")
+                    return None
+                try:
+                    payload = response.json()
+                except Exception:
+                    if not refresh:
+                        setattr(self, cache_attr, None)
+                        response.success()
+                        continue
+                    content_type = response.headers.get("Content-Type", "")
+                    response.failure(
+                        "Purchase detail seed fetch returned invalid JSON "
+                        f"(content-type={content_type!r}, body={response.text[:500]!r})"
+                    )
+                    return None
+                if not isinstance(payload, dict):
+                    if not refresh:
+                        setattr(self, cache_attr, None)
+                        response.success()
+                        continue
+                    response.failure("Purchase detail seed fetch returned non-object payload")
+                    return None
+                response.success()
+                return payload
+        return None
 
     def _create_purchase_draft_from_seed(
         self,
@@ -957,38 +981,47 @@ class FinaccDjangoUser(HttpUser):
             response.success()
             return invoice_id
 
-    def _fetch_lookup_invoice_id(self, *, line_mode: str = "goods") -> int | None:
+    def _fetch_lookup_invoice_id(self, *, line_mode: str = "goods", refresh: bool = False) -> int | None:
         cache_attr = "_seed_service_invoice_id" if line_mode == "service" else "_seed_invoice_id"
+        if refresh:
+            setattr(self, cache_attr, None)
         cached_id = getattr(self, cache_attr, None)
         if cached_id:
             return cached_id
 
         path = self.sales_service_invoice_lookup_path if line_mode == "service" else self.sales_invoice_lookup_path
-        with self.client.get(
-            path,
-            params={**self._entity_scope_params(), "limit": 1, "include_total": "false"},
-            name=f"sales/{line_mode}-lookup [seed-id]",
-            catch_response=True,
-        ) as response:
-            if response.status_code >= 400:
-                response.failure(f"Lookup seed fetch failed ({response.status_code})")
-                return None
-            try:
-                invoice_id = self._extract_lookup_invoice_id(response.json())
-            except Exception:
-                invoice_id = None
-            if not invoice_id:
+        for attempt_refresh in (refresh, True):
+            with self.client.get(
+                path,
+                params={**self._entity_scope_params(), "limit": 1, "include_total": "false"},
+                name=f"sales/{line_mode}-lookup [seed-id]",
+                catch_response=True,
+            ) as response:
+                if response.status_code >= 400:
+                    response.failure(f"Lookup seed fetch failed ({response.status_code})")
+                    return None
+                try:
+                    invoice_id = self._extract_lookup_invoice_id(response.json())
+                except Exception:
+                    invoice_id = None
+                if invoice_id:
+                    setattr(self, cache_attr, invoice_id)
+                    response.success()
+                    return invoice_id
+                if not attempt_refresh:
+                    response.success()
+                    continue
                 response.failure("No invoice id found for lookup/navigation seed")
                 return None
-            setattr(self, cache_attr, invoice_id)
-            response.success()
-            return invoice_id
+        return None
 
-    def _fetch_purchase_lookup_invoice_id(self, *, line_mode: str = "goods") -> int | None:
+    def _fetch_purchase_lookup_invoice_id(self, *, line_mode: str = "goods", refresh: bool = False) -> int | None:
         cache_attr = "_seed_purchase_service_invoice_id" if line_mode == "service" else "_seed_purchase_invoice_id"
         last_created_attr = (
             "_last_created_purchase_service_invoice_id" if line_mode == "service" else "_last_created_purchase_invoice_id"
         )
+        if refresh:
+            setattr(self, cache_attr, None)
         cached_id = getattr(self, cache_attr, None)
         if cached_id:
             return cached_id
@@ -1082,7 +1115,7 @@ class FinaccDjangoUser(HttpUser):
     def list_sales_invoices(self) -> None:
         with self.client.get(
             self.sales_invoice_path,
-            params=self._scope_params(),
+            params={**self._scope_params(), "limit": 100},
             name="sales/invoices [list]",
             catch_response=True,
         ) as response:

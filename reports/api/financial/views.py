@@ -58,6 +58,7 @@ from reports.schemas.financial_reports import FinancialReportScopeSerializer, Le
 from reports.services.financial.meta import REPORT_DEFAULTS, build_financial_report_meta
 from reports.services.financial.ledger_book import build_ledger_book
 from reports.services.financial.ledger_summary import build_ledger_summary
+from reports.services.financial_perf import profile_financial_reports_block
 from reports.services.financial.reporting_policy import resolve_financial_reporting_policy
 from reports.services.financial.statements import build_balance_sheet, build_profit_and_loss
 from reports.services.financial.trial_balance import build_trial_balance
@@ -2396,31 +2397,38 @@ class TrialBalanceAPIView(_BaseFinancialReportAPIView):
 
     def get(self, request):
         scope = self.get_scope(request)
-        data = build_trial_balance(
+        with profile_financial_reports_block(
+            "trial_balance.api_get",
             entity_id=scope["entity"],
-            entityfin_id=scope.get("entityfinid"),
-            subentity_id=scope.get("subentity"),
-            ledger_ids=scope.get("ledger_ids"),
-            from_date=scope.get("from_date"),
-            to_date=scope.get("to_date"),
-            as_of_date=scope.get("as_of_date"),
-            account_group=scope.get("account_group") or scope.get("group_by"),
-            include_zero_balances=scope.get(
-                "include_zero_balances",
-                REPORT_DEFAULTS["show_zero_balances_default"],
-            ),
-            posted_only=scope.get("posted_only", True),
-            search=scope.get("search"),
-            sort_by=scope.get("sort_by"),
-            sort_order=scope.get("sort_order", "asc"),
-            page=scope.get("page", 1),
-            page_size=scope.get("page_size", REPORT_DEFAULTS["default_page_size"]),
-            period_by=scope.get("period_by"),
-            view_type=scope.get("view_type"),
-            include_opening=_trial_balance_scope_includes_opening(scope),
-            include_movement=scope.get("include_movement", True),
-            include_closing=scope.get("include_closing", True),
-        )
+            group_by=scope.get("account_group") or scope.get("group_by") or "ledger",
+            view_type=scope.get("view_type") or "summary",
+            period_by=scope.get("period_by") or "none",
+        ):
+            data = build_trial_balance(
+                entity_id=scope["entity"],
+                entityfin_id=scope.get("entityfinid"),
+                subentity_id=scope.get("subentity"),
+                ledger_ids=scope.get("ledger_ids"),
+                from_date=scope.get("from_date"),
+                to_date=scope.get("to_date"),
+                as_of_date=scope.get("as_of_date"),
+                account_group=scope.get("account_group") or scope.get("group_by"),
+                include_zero_balances=scope.get(
+                    "include_zero_balances",
+                    REPORT_DEFAULTS["show_zero_balances_default"],
+                ),
+                posted_only=scope.get("posted_only", True),
+                search=scope.get("search"),
+                sort_by=scope.get("sort_by"),
+                sort_order=scope.get("sort_order", "asc"),
+                page=scope.get("page", 1),
+                page_size=scope.get("page_size", REPORT_DEFAULTS["default_page_size"]),
+                period_by=scope.get("period_by"),
+                view_type=scope.get("view_type"),
+                include_opening=_trial_balance_scope_includes_opening(scope),
+                include_movement=scope.get("include_movement", True),
+                include_closing=scope.get("include_closing", True),
+            )
         response = build_report_envelope(
             report_code="trial_balance",
             report_name="Trial Balance",
@@ -2445,28 +2453,35 @@ class _BaseTrialBalanceExportAPIView(_BaseFinancialReportAPIView):
         settings_payload = get_financial_hub_settings_payload(user=request.user, entity_id=scope["entity"])
         settings = get_effective_trial_balance_settings(settings_payload)
         settings = apply_amount_display_unit_override(settings, scope.get("amount_display_unit"))
-        data = build_trial_balance(
+        with profile_financial_reports_block(
+            "trial_balance.export_report_data",
             entity_id=scope["entity"],
-            entityfin_id=scope.get("entityfinid"),
-            subentity_id=scope.get("subentity"),
-            ledger_ids=scope.get("ledger_ids"),
-            from_date=scope.get("from_date"),
-            to_date=scope.get("to_date"),
-            as_of_date=scope.get("as_of_date"),
-            account_group=scope.get("account_group") or scope.get("group_by"),
-            include_zero_balances=scope.get("include_zero_balances", REPORT_DEFAULTS["show_zero_balances_default"]),
-            posted_only=scope.get("posted_only", True),
-            search=scope.get("search"),
-            sort_by=scope.get("sort_by"),
-            sort_order=scope.get("sort_order", "asc"),
-            page=1,
-            page_size=100000,
-            period_by=scope.get("period_by"),
-            view_type=scope.get("view_type"),
-            include_opening=_trial_balance_scope_includes_opening(scope),
-            include_movement=scope.get("include_movement", True),
-            include_closing=scope.get("include_closing", True),
-        )
+            group_by=scope.get("account_group") or scope.get("group_by") or "ledger",
+            view_type=scope.get("view_type") or "summary",
+            period_by=scope.get("period_by") or "none",
+        ):
+            data = build_trial_balance(
+                entity_id=scope["entity"],
+                entityfin_id=scope.get("entityfinid"),
+                subentity_id=scope.get("subentity"),
+                ledger_ids=scope.get("ledger_ids"),
+                from_date=scope.get("from_date"),
+                to_date=scope.get("to_date"),
+                as_of_date=scope.get("as_of_date"),
+                account_group=scope.get("account_group") or scope.get("group_by"),
+                include_zero_balances=scope.get("include_zero_balances", REPORT_DEFAULTS["show_zero_balances_default"]),
+                posted_only=scope.get("posted_only", True),
+                search=scope.get("search"),
+                sort_by=scope.get("sort_by"),
+                sort_order=scope.get("sort_order", "asc"),
+                page=1,
+                page_size=100000,
+                period_by=scope.get("period_by"),
+                view_type=scope.get("view_type"),
+                include_opening=_trial_balance_scope_includes_opening(scope),
+                include_movement=scope.get("include_movement", True),
+                include_closing=scope.get("include_closing", True),
+            )
         scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
         headers, rows = _trial_balance_export_table(data)
         subtitle = _trial_balance_subtitle(scope_names, scope)
@@ -2900,24 +2915,30 @@ class LedgerSummaryAPIView(_BaseFinancialReportAPIView):
         settings = get_effective_ledger_summary_settings(settings_payload)
         settings = apply_amount_display_unit_override(settings, scope.get("amount_display_unit"))
         report_defaults = settings.get("report_defaults") or {}
-        data = build_ledger_summary(
+        with profile_financial_reports_block(
+            "ledger_summary.api_get",
             entity_id=scope["entity"],
-            entityfin_id=scope.get("entityfinid"),
-            subentity_id=scope.get("subentity"),
-            from_date=scope.get("from_date"),
-            to_date=scope.get("to_date"),
-            as_of_date=scope.get("as_of_date"),
-            group_by=scope.get("account_group") or scope.get("group_by") or report_defaults.get("default_group_by"),
-            include_zero_balance=scope.get("include_zero_balances", report_defaults.get("include_zero_balances", False)),
-            include_opening=_scope_includes_separate_opening(scope),
-            posted_only=scope.get("posted_only", report_defaults.get("posted_only", True)),
-            search=scope.get("search"),
-            sort_by=scope.get("sort_by"),
-            sort_order=scope.get("sort_order") or report_defaults.get("default_sort_order") or "asc",
-            page=scope.get("page", 1),
-            page_size=scope.get("page_size", REPORT_DEFAULTS["default_page_size"]),
+            group_by=scope.get("account_group") or scope.get("group_by") or report_defaults.get("default_group_by") or "ledger",
             view_type=scope.get("view_type") or report_defaults.get("default_view_type") or "summary",
-        )
+        ):
+            data = build_ledger_summary(
+                entity_id=scope["entity"],
+                entityfin_id=scope.get("entityfinid"),
+                subentity_id=scope.get("subentity"),
+                from_date=scope.get("from_date"),
+                to_date=scope.get("to_date"),
+                as_of_date=scope.get("as_of_date"),
+                group_by=scope.get("account_group") or scope.get("group_by") or report_defaults.get("default_group_by"),
+                include_zero_balance=scope.get("include_zero_balances", report_defaults.get("include_zero_balances", False)),
+                include_opening=_scope_includes_separate_opening(scope),
+                posted_only=scope.get("posted_only", report_defaults.get("posted_only", True)),
+                search=scope.get("search"),
+                sort_by=scope.get("sort_by"),
+                sort_order=scope.get("sort_order") or report_defaults.get("default_sort_order") or "asc",
+                page=scope.get("page", 1),
+                page_size=scope.get("page_size", REPORT_DEFAULTS["default_page_size"]),
+                view_type=scope.get("view_type") or report_defaults.get("default_view_type") or "summary",
+            )
         response = build_report_envelope(
             report_code="ledger_summary",
             report_name="Ledger Summary",
@@ -2943,24 +2964,30 @@ class _BaseLedgerSummaryExportAPIView(_BaseFinancialReportAPIView):
         settings = get_effective_ledger_summary_settings(settings_payload)
         settings = apply_amount_display_unit_override(settings, scope.get("amount_display_unit"))
         report_defaults = settings.get("report_defaults") or {}
-        data = build_ledger_summary(
+        with profile_financial_reports_block(
+            "ledger_summary.export_report_data",
             entity_id=scope["entity"],
-            entityfin_id=scope.get("entityfinid"),
-            subentity_id=scope.get("subentity"),
-            from_date=scope.get("from_date"),
-            to_date=scope.get("to_date"),
-            as_of_date=scope.get("as_of_date"),
-            group_by=scope.get("account_group") or scope.get("group_by") or report_defaults.get("default_group_by"),
-            include_zero_balance=scope.get("include_zero_balances", report_defaults.get("include_zero_balances", False)),
-            include_opening=_scope_includes_separate_opening(scope),
-            posted_only=scope.get("posted_only", report_defaults.get("posted_only", True)),
-            search=scope.get("search"),
-            sort_by=scope.get("sort_by"),
-            sort_order=scope.get("sort_order") or report_defaults.get("default_sort_order") or "asc",
-            page=1,
-            page_size=100000,
+            group_by=scope.get("account_group") or scope.get("group_by") or report_defaults.get("default_group_by") or "ledger",
             view_type=scope.get("view_type") or report_defaults.get("default_view_type") or "summary",
-        )
+        ):
+            data = build_ledger_summary(
+                entity_id=scope["entity"],
+                entityfin_id=scope.get("entityfinid"),
+                subentity_id=scope.get("subentity"),
+                from_date=scope.get("from_date"),
+                to_date=scope.get("to_date"),
+                as_of_date=scope.get("as_of_date"),
+                group_by=scope.get("account_group") or scope.get("group_by") or report_defaults.get("default_group_by"),
+                include_zero_balance=scope.get("include_zero_balances", report_defaults.get("include_zero_balances", False)),
+                include_opening=_scope_includes_separate_opening(scope),
+                posted_only=scope.get("posted_only", report_defaults.get("posted_only", True)),
+                search=scope.get("search"),
+                sort_by=scope.get("sort_by"),
+                sort_order=scope.get("sort_order") or report_defaults.get("default_sort_order") or "asc",
+                page=1,
+                page_size=100000,
+                view_type=scope.get("view_type") or report_defaults.get("default_view_type") or "summary",
+            )
         scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
         subtitle = _ledger_summary_subtitle(scope_names, scope, data)
         return scope, data, subtitle, settings

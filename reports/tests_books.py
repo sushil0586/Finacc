@@ -1562,6 +1562,32 @@ class BookReportAPITests(APITestCase):
         self.assertEqual(Decimal(str(rows["Cash In Hand"]["opening"])), Decimal("100.00"))
         self.assertEqual(Decimal(str(rows["Main Bank"]["opening"])), Decimal("200.00"))
 
+    def test_trial_balance_accounthead_summary_skips_group_children_payload(self):
+        response = self.client.get(
+            reverse("reports_api:financial-trial-balance"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "scope_mode": "custom",
+                "from_date": "2025-04-01",
+                "to_date": "2025-04-30",
+                "group_by": "accounthead",
+                "view_type": "summary",
+                "posted_only": True,
+                "include_opening": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        rows = {row["label"]: row for row in data["rows"]}
+
+        cash_group = rows["Cash Head"]
+        self.assertEqual(cash_group["child_count"], 1)
+        self.assertEqual(cash_group["children"], [])
+        self.assertEqual(Decimal(str(cash_group["opening"])), Decimal("100.00"))
+        self.assertEqual(Decimal(str(cash_group["debit"])), Decimal("50.00"))
+        self.assertEqual(Decimal(str(cash_group["closing"])), Decimal("150.00"))
+
     def test_trial_balance_handles_ledger_without_account_heads(self):
         orphan_ledger = Ledger.objects.create(
             entity=self.entity,

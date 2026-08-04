@@ -44,6 +44,7 @@ from purchase.models.purchase_ap import (
 from purchase.models.purchase_core import PurchaseInvoiceHeader
 from purchase.models.purchase_core import PurchaseInvoiceLine
 from reports.selectors.financial import normalize_scope_ids, resolve_date_window
+from reports.services.payables_perf import profile_payables_block
 
 ZERO = Decimal("0.00")
 Q2P = Decimal("0.01")
@@ -91,83 +92,99 @@ def vendor_queryset(
     include_untyped=False,
 ):
     """Return vendor masters eligible for AP reports within the entity scope."""
-    qs = account.objects.filter(entity_id=entity_id)
-    party_type_filter = Q(commercial_profile__partytype__in=["Vendor", "Both"])
-    if include_untyped:
-        party_type_filter |= (
-            Q(ledger__is_party=True)
-            & (Q(commercial_profile__partytype__isnull=True) | Q(commercial_profile__partytype=""))
-        )
-    qs = qs.filter(party_type_filter)
-    if vendor_id:
-        qs = qs.filter(id=vendor_id)
-    if vendor_ids:
-        qs = qs.filter(id__in=list(vendor_ids))
-    if vendor_group:
-        qs = qs.filter(commercial_profile__agent__iexact=vendor_group)
-    if region_id:
-        qs = qs.filter(
-            addresses__isprimary=True,
-            addresses__isactive=True,
-            addresses__state_id=region_id,
-        )
-    if currency:
-        qs = qs.filter(commercial_profile__currency__iexact=currency)
-    if gst_registered is True:
-        qs = qs.filter(compliance_profile__gstno__isnull=False).exclude(compliance_profile__gstno="")
-    elif gst_registered is False:
-        qs = qs.filter(Q(compliance_profile__gstno__isnull=True) | Q(compliance_profile__gstno=""))
-    if msme is True:
-        qs = qs.filter(
-            Q(compliance_profile__msme__isnull=False) & ~Q(compliance_profile__msme="")
-            | Q(compliance_profile__msme_status__in=["micro", "small"])
-        )
-    elif msme is False:
-        qs = qs.filter(
-            Q(compliance_profile__msme__isnull=True) | Q(compliance_profile__msme="")
-        ).exclude(compliance_profile__msme_status__in=["micro", "small"])
-    if search:
-        token = str(search).strip()
-        qs = qs.filter(
-            Q(accountname__icontains=token)
-            | Q(legalname__icontains=token)
-            | Q(ledger__ledger_code__icontains=token)
-            | Q(compliance_profile__gstno__icontains=token)
-        )
-    primary_address_qs = AccountAddress.objects.filter(isprimary=True, isactive=True).select_related("state")
-    return (
-        qs.select_related("ledger", "commercial_profile", "compliance_profile")
-        .only(
-            "id",
-            "entity_id",
-            "ledger_id",
-            "ledger__id",
-            "ledger__ledger_code",
-            "ledger__name",
-            "ledger__accounthead_id",
-            "accountname",
-            "legalname",
-            "commercial_profile__partytype",
-            "commercial_profile__currency",
-            "commercial_profile__agent",
-            "commercial_profile__creditdays",
-            "commercial_profile__creditlimit",
-            "compliance_profile__gstno",
-            "compliance_profile__msme",
-            "compliance_profile__msme_status",
-            "compliance_profile__udyam_no",
-            "compliance_profile__has_written_payment_terms",
-            "compliance_profile__msme_credit_days",
-        )
-        .prefetch_related(
-            Prefetch(
-                "addresses",
-                queryset=primary_address_qs,
-                to_attr="prefetched_primary_addresses",
+    with profile_payables_block(
+        "payables_selector.vendor_queryset",
+        entity_id=entity_id,
+        vendor_id=vendor_id,
+        vendor_ids_count=len(vendor_ids or []),
+        vendor_group=bool(vendor_group),
+        region_id=region_id,
+        currency=currency,
+        search=bool(search),
+        include_untyped=bool(include_untyped),
+    ) as state:
+        qs = account.objects.filter(entity_id=entity_id)
+        party_type_filter = Q(commercial_profile__partytype__in=["Vendor", "Both"])
+        if include_untyped:
+            party_type_filter |= (
+                Q(ledger__is_party=True)
+                & (Q(commercial_profile__partytype__isnull=True) | Q(commercial_profile__partytype=""))
             )
+        qs = qs.filter(party_type_filter)
+        if vendor_id:
+            qs = qs.filter(id=vendor_id)
+        if vendor_ids:
+            qs = qs.filter(id__in=list(vendor_ids))
+        if vendor_group:
+            qs = qs.filter(commercial_profile__agent__iexact=vendor_group)
+        if region_id:
+            qs = qs.filter(
+                addresses__isprimary=True,
+                addresses__isactive=True,
+                addresses__state_id=region_id,
+            )
+        if currency:
+            qs = qs.filter(commercial_profile__currency__iexact=currency)
+        if gst_registered is True:
+            qs = qs.filter(compliance_profile__gstno__isnull=False).exclude(compliance_profile__gstno="")
+        elif gst_registered is False:
+            qs = qs.filter(Q(compliance_profile__gstno__isnull=True) | Q(compliance_profile__gstno=""))
+        if msme is True:
+            qs = qs.filter(
+                Q(compliance_profile__msme__isnull=False) & ~Q(compliance_profile__msme="")
+                | Q(compliance_profile__msme_status__in=["micro", "small"])
+            )
+        elif msme is False:
+            qs = qs.filter(
+                Q(compliance_profile__msme__isnull=True) | Q(compliance_profile__msme="")
+            ).exclude(compliance_profile__msme_status__in=["micro", "small"])
+        if search:
+            token = str(search).strip()
+            qs = qs.filter(
+                Q(accountname__icontains=token)
+                | Q(legalname__icontains=token)
+                | Q(ledger__ledger_code__icontains=token)
+                | Q(compliance_profile__gstno__icontains=token)
+            )
+        if state is not None:
+            try:
+                state["result_count"] = qs.count()
+            except Exception:
+                pass
+        primary_address_qs = AccountAddress.objects.filter(isprimary=True, isactive=True).select_related("state")
+        return (
+            qs.select_related("ledger", "commercial_profile", "compliance_profile")
+            .only(
+                "id",
+                "entity_id",
+                "ledger_id",
+                "ledger__id",
+                "ledger__ledger_code",
+                "ledger__name",
+                "ledger__accounthead_id",
+                "accountname",
+                "legalname",
+                "commercial_profile__partytype",
+                "commercial_profile__currency",
+                "commercial_profile__agent",
+                "commercial_profile__creditdays",
+                "commercial_profile__creditlimit",
+                "compliance_profile__gstno",
+                "compliance_profile__msme",
+                "compliance_profile__msme_status",
+                "compliance_profile__udyam_no",
+                "compliance_profile__has_written_payment_terms",
+                "compliance_profile__msme_credit_days",
+            )
+            .prefetch_related(
+                Prefetch(
+                    "addresses",
+                    queryset=primary_address_qs,
+                    to_attr="prefetched_primary_addresses",
+                )
+            )
+            .order_by("accountname", "id")
         )
-        .order_by("accountname", "id")
-    )
 
 
 def scope_filter(qs, *, entity_id, entityfin_id, subentity_id):
@@ -434,16 +451,27 @@ def _advance_balance_queryset(*, entity_id, entityfin_id, subentity_id, upto_dat
 
 def asof_open_item_balances(*, entity_id, entityfin_id, subentity_id, upto_date, vendor_ids=None, search=None):
     """Return open items with balances annotated up to the supplied reporting date."""
-    return list(
-        iter_asof_open_item_balances(
-            entity_id=entity_id,
-            entityfin_id=entityfin_id,
-            subentity_id=subentity_id,
-            upto_date=upto_date,
-            vendor_ids=vendor_ids,
-            search=search,
+    with profile_payables_block(
+        "payables_selector.asof_open_item_balances",
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        vendor_ids_count=len(vendor_ids or []),
+        search=bool(search),
+    ) as state:
+        rows = list(
+            iter_asof_open_item_balances(
+                entity_id=entity_id,
+                entityfin_id=entityfin_id,
+                subentity_id=subentity_id,
+                upto_date=upto_date,
+                vendor_ids=vendor_ids,
+                search=search,
+            )
         )
-    )
+        if state is not None:
+            state["row_count"] = len(rows)
+        return rows
 
 
 def iter_asof_open_item_balances(*, entity_id, entityfin_id, subentity_id, upto_date, vendor_ids=None, search=None):
@@ -557,20 +585,30 @@ def open_item_vendor_aging_bucket_summary(*, entity_id, entityfin_id, subentity_
         upto_date - timedelta(days=90),
         upto_date - timedelta(days=90),
     ]
-    with connection.cursor() as cursor:
-        cursor.execute(sql, [*bucket_params, *settle_params, *params])
-        rows = cursor.fetchall()
-    return {
-        row[0]: {
-            "current": q2(row[1]),
-            "bucket_1_30": q2(row[2]),
-            "bucket_31_60": q2(row[3]),
-            "bucket_61_90": q2(row[4]),
-            "bucket_90_plus": q2(row[5]),
-            "credit_total": q2(row[6]),
+    with profile_payables_block(
+        "payables_selector.open_item_vendor_aging_bucket_summary",
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        vendor_ids_count=len(vendor_ids or []),
+        search=bool(search),
+    ) as state:
+        with connection.cursor() as cursor:
+            cursor.execute(sql, [*bucket_params, *settle_params, *params])
+            rows = cursor.fetchall()
+        if state is not None:
+            state["vendor_row_count"] = len(rows)
+        return {
+            row[0]: {
+                "current": q2(row[1]),
+                "bucket_1_30": q2(row[2]),
+                "bucket_31_60": q2(row[3]),
+                "bucket_61_90": q2(row[4]),
+                "bucket_90_plus": q2(row[5]),
+                "credit_total": q2(row[6]),
+            }
+            for row in rows
         }
-        for row in rows
-    }
 
 
 def open_item_vendor_summary(*, entity_id, entityfin_id, subentity_id, upto_date, vendor_ids=None):
@@ -604,18 +642,27 @@ def open_item_vendor_summary(*, entity_id, entityfin_id, subentity_id, upto_date
 
 def asof_advances(*, entity_id, entityfin_id, subentity_id, upto_date, vendor_ids=None):
     """Return vendor advances with adjusted and outstanding values as of the date."""
-    qs = _advance_balance_queryset(
+    with profile_payables_block(
+        "payables_selector.asof_advances",
         entity_id=entity_id,
         entityfin_id=entityfin_id,
         subentity_id=subentity_id,
-        upto_date=upto_date,
-        vendor_ids=vendor_ids,
-        lightweight=True,
-    )
-    rows = []
-    for adv in qs.iterator(chunk_size=2000):
-        rows.append((adv, q2(adv.adjusted_asof), q2(adv.outstanding_asof)))
-    return rows
+        vendor_ids_count=len(vendor_ids or []),
+    ) as state:
+        qs = _advance_balance_queryset(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            upto_date=upto_date,
+            vendor_ids=vendor_ids,
+            lightweight=True,
+        )
+        rows = []
+        for adv in qs.iterator(chunk_size=2000):
+            rows.append((adv, q2(adv.adjusted_asof), q2(adv.outstanding_asof)))
+        if state is not None:
+            state["row_count"] = len(rows)
+        return rows
 
 
 def advance_vendor_summary(*, entity_id, entityfin_id, subentity_id, upto_date, vendor_ids=None):
@@ -661,20 +708,29 @@ def posted_payment_totals(*, entity_id, entityfin_id, subentity_id, from_date, t
 
 def all_last_payment_dates(*, entity_id, entityfin_id, subentity_id, upto_date, vendor_ids=None):
     """Last posted payment date per vendor up to the report date."""
-    qs = VendorSettlement.objects.filter(
+    with profile_payables_block(
+        "payables_selector.all_last_payment_dates",
         entity_id=entity_id,
-        status=VendorSettlement.Status.POSTED,
-        settlement_type=VendorSettlement.SettlementType.PAYMENT,
-        settlement_date__lte=upto_date,
-    )
-    if entityfin_id:
-        qs = qs.filter(entityfinid_id=entityfin_id)
-    if subentity_id is not None:
-        qs = qs.filter(Q(subentity_id=subentity_id) | Q(subentity__isnull=True))
-    if vendor_ids:
-        qs = qs.filter(vendor_id__in=list(vendor_ids))
-    rows = qs.values("vendor_id").annotate(last_payment_date=Max("settlement_date"))
-    return {row["vendor_id"]: row["last_payment_date"] for row in rows}
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        vendor_ids_count=len(vendor_ids or []),
+    ) as state:
+        qs = VendorSettlement.objects.filter(
+            entity_id=entity_id,
+            status=VendorSettlement.Status.POSTED,
+            settlement_type=VendorSettlement.SettlementType.PAYMENT,
+            settlement_date__lte=upto_date,
+        )
+        if entityfin_id:
+            qs = qs.filter(entityfinid_id=entityfin_id)
+        if subentity_id is not None:
+            qs = qs.filter(Q(subentity_id=subentity_id) | Q(subentity__isnull=True))
+        if vendor_ids:
+            qs = qs.filter(vendor_id__in=list(vendor_ids))
+        rows = list(qs.values("vendor_id").annotate(last_payment_date=Max("settlement_date")))
+        if state is not None:
+            state["vendor_row_count"] = len(rows)
+        return {row["vendor_id"]: row["last_payment_date"] for row in rows}
 
 
 def period_bill_credit_totals(*, entity_id, entityfin_id, subentity_id, from_date, to_date, vendor_ids=None):

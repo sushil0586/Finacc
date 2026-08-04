@@ -20,6 +20,7 @@ from reports.services.payables import (
 )
 from reports.services.payables_config import PAYABLE_REPORT_DEFAULTS, get_payables_report_config, resolve_report_columns
 from reports.services.payables_meta import build_payables_report_meta
+from reports.services.payables_perf import profile_payables_block
 from reports.services.report_preferences import list_user_report_preferences
 from reports.selectors.financial import resolve_scope_names
 from rbac.services import EffectivePermissionService
@@ -243,60 +244,71 @@ class ApAgingReportAPIView(_BasePayableAPIView):
     serializer_class = PayableAgingScopeSerializer
 
     def get(self, request):
-        scope = self.get_scope(request)
-        self.assert_report_permission(request, scope, "ap_aging", view=scope.get("view") or "summary")
-        data = build_ap_aging_report(
-            entity_id=scope["entity"],
-            entityfin_id=scope.get("entityfinid"),
-            subentity_id=scope.get("subentity"),
-            as_of_date=scope.get("as_of_date") or scope.get("to_date"),
-            vendor_id=scope.get("vendor"),
-            vendor_group=scope.get("vendor_group"),
-            region_id=scope.get("region"),
-            currency=scope.get("currency"),
-            overdue_only=scope.get("overdue_only", False),
-            credit_limit_exceeded=scope.get("credit_limit_exceeded", False),
-            search=scope.get("search"),
-            sort_by=scope.get("sort_by"),
-            sort_order=scope.get("sort_order", "desc"),
-            page=scope.get("page", 1),
-            page_size=scope.get("page_size", PAYABLE_DEFAULTS["default_page_size"]),
-            view=scope.get("view") or "summary",
-            include_trace=scope.get("include_trace", True),
-            user=request.user,
-        )
-        return Response(
-            self.build_envelope(
-                report_code="ap_aging",
-                report_name="AP Aging Report",
-                payload=data,
-                scope=scope,
-                request=request,
-                export_base_path="/api/reports/payables/aging/",
+        with profile_payables_block("ap_aging.api_get", user_id=getattr(request.user, "id", None)) as state:
+            scope = self.get_scope(request)
+            self.assert_report_permission(request, scope, "ap_aging", view=scope.get("view") or "summary")
+            data = build_ap_aging_report(
+                entity_id=scope["entity"],
+                entityfin_id=scope.get("entityfinid"),
+                subentity_id=scope.get("subentity"),
+                as_of_date=scope.get("as_of_date") or scope.get("to_date"),
+                vendor_id=scope.get("vendor"),
+                vendor_group=scope.get("vendor_group"),
+                region_id=scope.get("region"),
+                currency=scope.get("currency"),
+                overdue_only=scope.get("overdue_only", False),
+                credit_limit_exceeded=scope.get("credit_limit_exceeded", False),
+                search=scope.get("search"),
+                sort_by=scope.get("sort_by"),
+                sort_order=scope.get("sort_order", "desc"),
+                page=scope.get("page", 1),
+                page_size=scope.get("page_size", PAYABLE_DEFAULTS["default_page_size"]),
+                view=scope.get("view") or "summary",
+                include_trace=scope.get("include_trace", True),
+                user=request.user,
             )
-        )
+            if state is not None:
+                state["entity_id"] = scope["entity"]
+                state["view"] = scope.get("view") or "summary"
+                state["page"] = scope.get("page", 1)
+                state["page_size"] = scope.get("page_size", PAYABLE_DEFAULTS["default_page_size"])
+            return Response(
+                self.build_envelope(
+                    report_code="ap_aging",
+                    report_name="AP Aging Report",
+                    payload=data,
+                    scope=scope,
+                    request=request,
+                    export_base_path="/api/reports/payables/aging/",
+                )
+            )
 
 
 class PayablesReportsMetaAPIView(_BasePayableAPIView):
     serializer_class = PayableReportScopeSerializer
 
     def get(self, request):
-        scope = self.get_scope(request)
-        permission_codes = self.get_permission_codes(request, scope)
-        payload = build_payables_report_meta(
-            entity_id=scope["entity"],
-            entityfinid_id=scope.get("entityfinid"),
-            subentity_id=scope.get("subentity"),
-            permission_codes=permission_codes,
-        )
-        if not payload.get("reports"):
-            raise PermissionDenied("You do not have permission to access payables reports.")
-        payload["user_preferences"] = list_user_report_preferences(
-            user=request.user,
-            entity_id=scope["entity"],
-            report_codes=[row["code"] for row in payload["reports"]],
-        )
-        return Response(payload)
+        with profile_payables_block("payables_meta.api_get", user_id=getattr(request.user, "id", None)) as state:
+            scope = self.get_scope(request)
+            permission_codes = self.get_permission_codes(request, scope)
+            payload = build_payables_report_meta(
+                entity_id=scope["entity"],
+                entityfinid_id=scope.get("entityfinid"),
+                subentity_id=scope.get("subentity"),
+                permission_codes=permission_codes,
+            )
+            if not payload.get("reports"):
+                raise PermissionDenied("You do not have permission to access payables reports.")
+            payload["user_preferences"] = list_user_report_preferences(
+                user=request.user,
+                entity_id=scope["entity"],
+                report_codes=[row["code"] for row in payload["reports"]],
+            )
+            if state is not None:
+                state["entity_id"] = scope["entity"]
+                state["permission_code_count"] = len(permission_codes or [])
+                state["report_count"] = len(payload.get("reports") or [])
+            return Response(payload)
 
 
 class PayablesDashboardSummaryAPIView(_BasePayableAPIView):

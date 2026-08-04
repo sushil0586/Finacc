@@ -5261,14 +5261,17 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
         mocked_require_permission.assert_called_once()
 
     @patch("sales.views.sales_invoice_views.SalesInvoiceListSerializer")
+    @patch("sales.views.sales_invoice_views.profile_sales_block")
     @patch.object(SalesInvoiceListCreateAPIView, "filter_queryset")
     @patch.object(SalesInvoiceListCreateAPIView, "get_queryset")
     def test_list_view_uses_lightweight_serializer(
         self,
         mocked_get_queryset,
         mocked_filter_queryset,
+        mocked_profile_sales_block,
         mocked_list_serializer,
     ):
+        mocked_profile_sales_block.return_value.__enter__.return_value = {}
         mocked_get_queryset.return_value = [self.header]
         mocked_filter_queryset.return_value = [self.header]
         mocked_list_serializer.return_value.data = [{"id": 10, "invoice_number": "INV-10"}]
@@ -5280,14 +5283,50 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
 
         self.assertEqual(response.status_code, 200)
         mocked_list_serializer.assert_called_once()
+        mocked_profile_sales_block.assert_called_once()
         self.assertEqual(response.data, [{"id": 10, "invoice_number": "INV-10"}])
+
+    @patch("sales.views.sales_invoice_views.profile_sales_block")
+    @patch("sales.views.sales_invoice_views.SalesInvoiceListSerializer")
+    @patch.object(SalesInvoiceListCreateAPIView, "filter_queryset")
+    @patch.object(SalesInvoiceListCreateAPIView, "get_queryset")
+    def test_list_view_records_perf_state_when_enabled(
+        self,
+        mocked_get_queryset,
+        mocked_filter_queryset,
+        mocked_list_serializer,
+        mocked_profile_sales_block,
+    ):
+        perf_state = {}
+        mocked_profile_sales_block.return_value.__enter__.return_value = perf_state
+        mocked_get_queryset.return_value = [self.header]
+        mocked_filter_queryset.return_value = [self.header]
+        mocked_list_serializer.return_value.data = [{"id": 10, "invoice_number": "INV-10"}]
+
+        request = self.factory.get("/api/sales/invoices/?entity=1&limit=25&offset=5")
+        force_authenticate(request, user=self.user)
+
+        response = SalesInvoiceListCreateAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            perf_state,
+            {
+                "limit": 25,
+                "offset": 5,
+                "returned_count": 1,
+            },
+        )
 
     def test_lookup_view_returns_limited_payload(self):
         mocked_queryset = MagicMock()
         mocked_queryset.__getitem__.return_value = [self.header, self.header]
         with patch.object(SalesInvoiceLookupAPIView, "_base_queryset", return_value=mocked_queryset), patch(
+            "sales.views.sales_invoice_views.profile_sales_block"
+        ) as mocked_profile_sales_block, patch(
             "sales.views.sales_invoice_views.SalesInvoiceLookupSerializer"
         ) as mocked_lookup_serializer:
+            mocked_profile_sales_block.return_value.__enter__.return_value = {}
             mocked_lookup_serializer.return_value.data = [{"id": 10, "invoice_number": "INV-10"}]
 
             request = self.factory.get("/api/sales/invoices/lookup/?entity=1&limit=1")
@@ -5307,6 +5346,35 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
                     "returned_count": 1,
                     "limit": 1,
                     "offset": 0,
+                    "has_more": True,
+                },
+            )
+
+    def test_lookup_view_records_perf_state_when_enabled(self):
+        mocked_queryset = MagicMock()
+        mocked_queryset.__getitem__.return_value = [self.header, self.header]
+        with patch.object(SalesInvoiceLookupAPIView, "_base_queryset", return_value=mocked_queryset), patch(
+            "sales.views.sales_invoice_views.profile_sales_block"
+        ) as mocked_profile_sales_block, patch(
+            "sales.views.sales_invoice_views.SalesInvoiceLookupSerializer"
+        ) as mocked_lookup_serializer:
+            perf_state = {}
+            mocked_profile_sales_block.return_value.__enter__.return_value = perf_state
+            mocked_lookup_serializer.return_value.data = [{"id": 10, "invoice_number": "INV-10"}]
+
+            request = self.factory.get("/api/sales/invoices/lookup/?entity=1&limit=1")
+            force_authenticate(request, user=self.user)
+
+            response = SalesInvoiceLookupAPIView.as_view()(request)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(
+                perf_state,
+                {
+                    "limit": 1,
+                    "offset": 0,
+                    "include_total": False,
+                    "returned_count": 1,
                     "has_more": True,
                 },
             )

@@ -568,6 +568,62 @@ class SalesApiEndToEndTests(APITestCase):
         self.assertEqual(line.igst_amount, Decimal("180.00"))
         self.assertEqual(line.line_total, Decimal("1180.00"))
 
+    def test_create_sales_invoice_allows_header_only_draft_when_require_lines_policy_is_off(self):
+        settings_obj = SalesSettingsService.get_settings(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            entityfinid_id=self.entityfin.id,
+        )
+        settings_obj.policy_controls = {"require_lines_on_confirm": "off"}
+        settings_obj.save(update_fields=["policy_controls"])
+
+        payload = self._invoice_payload(lines=[], reference="SO-HDR-OFF")
+        response = self.client.post("/api/sales/invoices/", payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.json())
+        body = response.json()
+        self.assertEqual(body["status"], int(SalesInvoiceHeader.Status.DRAFT))
+        self.assertEqual(len(body["lines"]), 0)
+
+    def test_create_sales_invoice_allows_header_only_draft_when_require_lines_policy_is_warn(self):
+        settings_obj = SalesSettingsService.get_settings(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            entityfinid_id=self.entityfin.id,
+        )
+        settings_obj.policy_controls = {"require_lines_on_confirm": "warn"}
+        settings_obj.save(update_fields=["policy_controls"])
+
+        payload = self._invoice_payload(lines=[], reference="SO-HDR-WARN")
+        response = self.client.post("/api/sales/invoices/", payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.json())
+        body = response.json()
+        self.assertEqual(body["status"], int(SalesInvoiceHeader.Status.DRAFT))
+        self.assertEqual(len(body["lines"]), 0)
+
+    def test_confirm_sales_invoice_allows_header_only_draft_when_require_lines_policy_is_warn(self):
+        settings_obj = SalesSettingsService.get_settings(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            entityfinid_id=self.entityfin.id,
+        )
+        settings_obj.policy_controls = {"require_lines_on_confirm": "warn"}
+        settings_obj.save(update_fields=["policy_controls"])
+
+        payload = self._invoice_payload(lines=[], reference="SO-HDR-WARN-CONF")
+        create_response = self.client.post("/api/sales/invoices/", payload, format="json")
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED, create_response.json())
+        invoice_id = create_response.json()["id"]
+
+        confirm_response = self.client.post(
+            f"/api/sales/invoices/{invoice_id}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(confirm_response.status_code, status.HTTP_200_OK, confirm_response.json())
+        self.assertEqual(confirm_response.json()["status"], int(SalesInvoiceHeader.Status.CONFIRMED))
+
     @patch("sales.services.sales_invoice_service.SalesInvoiceService._run_auto_compliance")
     @patch("sales.services.sales_invoice_service.SalesArService.sync_open_item_for_header")
     @patch("sales.services.sales_invoice_service.SalesInvoicePostingAdapter.post_sales_invoice")

@@ -14,6 +14,7 @@ from reports.selectors.financial import (
     resolve_date_window,
     resolve_scope_names,
 )
+from reports.services.financial_perf import profile_financial_reports_block
 from reports.services.financial.opening_balance_source import (
     effective_opening_map_for_ledger_ids,
     effective_opening_map_for_ledgers,
@@ -179,13 +180,27 @@ def _raw_trial_balance_rows(
         )
         ledgers = list(
             Ledger.objects.filter(id__in=ledger_ids)
-            .select_related("accounthead", "creditaccounthead", "accounttype", "account_profile__commercial_profile")
+            .select_related(
+                "accounthead",
+                "accounthead__accounttype",
+                "creditaccounthead",
+                "creditaccounthead__accounttype",
+                "accounttype",
+                "account_profile__commercial_profile",
+            )
             .order_by("ledger_code", "name")
         )
     elif include_zero_balances:
         candidate_ledgers = list(
             Ledger.objects.filter(entity_id=entity_id)
-            .select_related("accounthead", "creditaccounthead", "accounttype", "account_profile__commercial_profile")
+            .select_related(
+                "accounthead",
+                "accounthead__accounttype",
+                "creditaccounthead",
+                "creditaccounthead__accounttype",
+                "accounttype",
+                "account_profile__commercial_profile",
+            )
             .order_by("ledger_code", "name")
         )
         opening_map = effective_opening_map_for_ledgers(
@@ -212,7 +227,14 @@ def _raw_trial_balance_rows(
         })
         ledgers = list(
             Ledger.objects.filter(id__in=relevant_ledger_ids)
-            .select_related("accounthead", "creditaccounthead", "accounttype", "account_profile__commercial_profile")
+            .select_related(
+                "accounthead",
+                "accounthead__accounttype",
+                "creditaccounthead",
+                "creditaccounthead__accounttype",
+                "accounttype",
+                "account_profile__commercial_profile",
+            )
             .order_by("ledger_code", "name")
         )
 
@@ -268,7 +290,7 @@ def _raw_trial_balance_rows(
     return entity_id, entityfin_id, subentity_id, from_date, to_date, scope_names, rows
 
 
-def _group_rows(rows, group_by, sort_by, sort_order):
+def _group_rows(rows, group_by, sort_by, sort_order, *, include_children=True):
     reverse = (sort_order or "asc").lower() == "desc"
     if group_by == "ledger":
         out = [dict(row) for row in rows]
@@ -290,8 +312,10 @@ def _group_rows(rows, group_by, sort_by, sort_order):
         credit = sum((child["credit_value"] for child in children), Decimal("0.00"))
         closing = sum((child["closing_value"] for child in children), Decimal("0.00"))
         abnormal_children = [child for child in children if child.get("is_abnormal_balance")]
-        child_rows = [dict(child) for child in children]
-        child_rows.sort(key=lambda item: _sort_key(item, sort_by), reverse=reverse)
+        child_rows = []
+        if include_children:
+            child_rows = [dict(child) for child in children]
+            child_rows.sort(key=lambda item: _sort_key(item, sort_by), reverse=reverse)
         out.append(
             {
                 "group_id": group_id,
@@ -305,7 +329,7 @@ def _group_rows(rows, group_by, sort_by, sort_order):
                 "credit_value": credit,
                 "closing_value": closing,
                 "children": child_rows,
-                "child_count": len(child_rows),
+                "child_count": len(children),
                 "is_abnormal_balance": bool(abnormal_children) or _is_abnormal_balance(closing, None),
             }
         )
@@ -402,6 +426,7 @@ def _build_snapshot(
     ledger_ids,
     posted_only,
     group_by,
+    include_children,
     include_zero_balances,
     include_opening,
     search,
@@ -447,7 +472,7 @@ def _build_snapshot(
     totals["opening"] = max(opening_debit_total, opening_credit_total)
     totals["closing"] = max(closing_debit_total, closing_credit_total)
 
-    grouped_rows = _group_rows(rows, group_by, sort_by, sort_order)
+    grouped_rows = _group_rows(rows, group_by, sort_by, sort_order, include_children=include_children)
     effective_page = 1 if not include_pagination else page
     effective_page_size = max(len(grouped_rows), 1) if not include_pagination else page_size
     paged_rows, total_rows = _paginate(grouped_rows, effective_page, effective_page_size)
@@ -541,25 +566,33 @@ def build_trial_balance(
     page = max(int(page or 1), 1)
     page_size = max(int(page_size or 100), 1)
 
-    snapshot = _build_snapshot(
+    with profile_financial_reports_block(
+        "trial_balance.builder",
         entity_id=entity_id,
-        entityfin_id=entityfin_id,
-        subentity_id=subentity_id,
-        from_date=from_date,
-        to_date=to_date,
-        ledger_ids=ledger_ids,
-        posted_only=posted_only,
         group_by=group_by,
-        include_zero_balances=include_zero_balances,
-        include_opening=include_opening,
-        search=search,
-        sort_by=sort_by,
-        sort_order=sort_order,
-        page=page,
-        page_size=page_size,
-        include_pagination=True,
-        scope_names=scope_names,
-    )
+        view_type=view_type or ("detailed" if group_by != "ledger" else "summary"),
+        period_by=period_by or "none",
+    ):
+        snapshot = _build_snapshot(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            from_date=from_date,
+            to_date=to_date,
+            ledger_ids=ledger_ids,
+            posted_only=posted_only,
+            group_by=group_by,
+            include_children=view_type == "detailed",
+            include_zero_balances=include_zero_balances,
+            include_opening=include_opening,
+            search=search,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            page=page,
+            page_size=page_size,
+            include_pagination=True,
+            scope_names=scope_names,
+        )
     selected_ledger_ids = snapshot.pop("_selected_ledger_ids", None)
 
     response = {
@@ -589,25 +622,35 @@ def build_trial_balance(
         period_meta = []
         period_maps = []
         for index, (period_start, period_end) in enumerate(_iter_period_ranges(from_date, to_date, period_by), start=1):
-            period_snapshot = _build_snapshot(
+            with profile_financial_reports_block(
+                "trial_balance.period_snapshot",
                 entity_id=entity_id,
-                entityfin_id=entityfin_id,
-                subentity_id=subentity_id,
-                from_date=period_start,
-                to_date=period_end,
-                ledger_ids=selected_ledger_ids or ledger_ids,
-                posted_only=posted_only,
                 group_by=group_by,
-                include_zero_balances=include_zero_balances,
-                include_opening=include_opening,
-                search=search,
-                sort_by=sort_by,
-                sort_order=sort_order,
-                page=1,
-                page_size=page_size,
-                include_pagination=False,
-                scope_names=scope_names,
-            )
+                view_type=view_type or ("detailed" if group_by != "ledger" else "summary"),
+                period_by=period_by,
+                period_start=period_start,
+                period_end=period_end,
+            ):
+                period_snapshot = _build_snapshot(
+                    entity_id=entity_id,
+                    entityfin_id=entityfin_id,
+                    subentity_id=subentity_id,
+                    from_date=period_start,
+                    to_date=period_end,
+                    ledger_ids=selected_ledger_ids or ledger_ids,
+                    posted_only=posted_only,
+                    group_by=group_by,
+                    include_children=view_type == "detailed",
+                    include_zero_balances=include_zero_balances,
+                    include_opening=include_opening,
+                    search=search,
+                    sort_by=sort_by,
+                    sort_order=sort_order,
+                    page=1,
+                    page_size=page_size,
+                    include_pagination=False,
+                    scope_names=scope_names,
+                )
             period_snapshot.pop("_selected_ledger_ids", None)
             period_snapshot["period_key"] = (
                 f"Q{index}"

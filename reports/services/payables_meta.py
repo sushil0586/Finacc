@@ -22,6 +22,7 @@ from reports.services.payables_config import (
     get_payables_registry_meta,
     get_payables_registry_payload,
 )
+from reports.services.payables_perf import profile_payables_block
 
 _PAYABLES_META_NAMESPACE = "reports.payables.meta"
 
@@ -161,18 +162,23 @@ def _catalog_cache_key(entity_id: int) -> str:
 
 
 def _build_catalog(entity_id: int) -> dict:
-    financial_years = _financial_years(entity_id)
-    subentities = _subentities(entity_id)
-    vendors = _vendors(entity_id)
-    return {
-        "financial_years": financial_years,
-        "subentities": subentities,
-        "vendors": vendors,
-        "vendor_groups": _vendor_groups(vendors),
-        "regions": _regions(vendors),
-        "currencies": _currencies(vendors),
-        "date_presets": _date_presets(financial_years),
-    }
+    with profile_payables_block("payables_meta.catalog", entity_id=entity_id) as state:
+        financial_years = _financial_years(entity_id)
+        subentities = _subentities(entity_id)
+        vendors = _vendors(entity_id)
+        if state is not None:
+            state["financial_year_count"] = len(financial_years)
+            state["subentity_count"] = len(subentities)
+            state["vendor_count"] = len(vendors)
+        return {
+            "financial_years": financial_years,
+            "subentities": subentities,
+            "vendors": vendors,
+            "vendor_groups": _vendor_groups(vendors),
+            "regions": _regions(vendors),
+            "currencies": _currencies(vendors),
+            "date_presets": _date_presets(financial_years),
+        }
 
 
 def _get_catalog(entity_id: int) -> dict:
@@ -327,13 +333,24 @@ def build_payables_report_meta(
     normalized_permission_codes = sorted(code for code in (permission_codes or set()) if code)
 
     def _builder():
-        return _build_payables_report_meta_uncached(
+        with profile_payables_block(
+            "payables_meta.builder",
             entity_id=entity_id,
-            entityfinid_id=entityfinid_id,
+            entityfin_id=entityfinid_id,
             subentity_id=subentity_id,
-            permission_codes=set(normalized_permission_codes) if normalized_permission_codes else None,
-            user_preferences=None,
-        )
+            permission_code_count=len(normalized_permission_codes),
+        ) as state:
+            payload = _build_payables_report_meta_uncached(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                permission_codes=set(normalized_permission_codes) if normalized_permission_codes else None,
+                user_preferences=None,
+            )
+            if state is not None:
+                reports = payload.get("reports") if isinstance(payload, dict) else None
+                state["report_count"] = len(reports) if isinstance(reports, list) else 0
+            return payload
 
     if getattr(settings, "PAYABLES_META_CACHE_ENABLED", True):
         cache_key = build_meta_cache_key(
@@ -343,15 +360,30 @@ def build_payables_report_meta(
             subentity_id=subentity_id,
             extra={"permission_codes": normalized_permission_codes},
         )
-        payload = get_or_set_meta_cache(
-            cache_key,
-            _builder,
-            timeout=int(getattr(settings, "PAYABLES_META_CACHE_TTL_SECONDS", 300)),
-        )
+        with profile_payables_block(
+            "payables_meta.cache_lookup",
+            entity_id=entity_id,
+            entityfin_id=entityfinid_id,
+            subentity_id=subentity_id,
+            permission_code_count=len(normalized_permission_codes),
+        ) as state:
+            payload = get_or_set_meta_cache(
+                cache_key,
+                _builder,
+                timeout=int(getattr(settings, "PAYABLES_META_CACHE_TTL_SECONDS", 300)),
+            )
+            if state is not None:
+                state["cache_key_present"] = bool(cache_key)
     else:
         payload = _builder()
 
-    payload = dict(payload)
-    payload["user_preferences"] = user_preferences or {}
-    payload["generated_at"] = timezone.now().isoformat()
-    return payload
+    with profile_payables_block(
+        "payables_meta.user_preferences",
+        entity_id=entity_id,
+        entityfin_id=entityfinid_id,
+        subentity_id=subentity_id,
+    ):
+        payload = dict(payload)
+        payload["user_preferences"] = user_preferences or {}
+        payload["generated_at"] = timezone.now().isoformat()
+        return payload

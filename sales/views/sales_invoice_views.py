@@ -27,6 +27,7 @@ from sales.serializers.sales_transport_serializers import SalesInvoiceTransportS
 from sales.services.sales_invoice_service import SalesInvoiceService
 from sales.services.sales_nav_service import SalesInvoiceNavService
 from sales.services.sales_settings_service import SalesSettingsService
+from sales.services.performance import profile_sales_block
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 import qrcode
 
@@ -159,6 +160,24 @@ class _SalesScopeMixin:
 class SalesInvoiceListCreateAPIView(_SalesScopeMixin, generics.ListCreateAPIView):
     serializer_class = SalesInvoiceHeaderSerializer
 
+    def _parse_limit(self) -> int | None:
+        raw_limit = self.request.query_params.get("limit")
+        if raw_limit in (None, "", "null"):
+            return None
+        try:
+            return max(1, min(int(raw_limit), 250))
+        except (TypeError, ValueError):
+            return None
+
+    def _parse_offset(self) -> int:
+        raw_offset = self.request.query_params.get("offset")
+        if raw_offset in (None, "", "null"):
+            return 0
+        try:
+            return max(0, int(raw_offset))
+        except (TypeError, ValueError):
+            return 0
+
     def get_queryset(self):
         scope_filters = self._scope_filters(self.request)
         entity_id = scope_filters.get("entity_id")
@@ -237,13 +256,27 @@ class SalesInvoiceListCreateAPIView(_SalesScopeMixin, generics.ListCreateAPIView
         )
 
     def list(self, request, *args, **kwargs):
-        queryset = self.filter_queryset(self.get_queryset())
-        serializer = SalesInvoiceListSerializer(
-            queryset,
-            many=True,
-            context=self.get_serializer_context(),
-        )
-        return Response(serializer.data)
+        with profile_sales_block(
+            "sales_invoice.list",
+            user_id=getattr(request.user, "id", None),
+            line_mode=self._get_line_mode() or "all",
+        ) as state:
+            queryset = self.filter_queryset(self.get_queryset())
+            limit = self._parse_limit()
+            offset = 0
+            if limit is not None:
+                offset = self._parse_offset()
+                queryset = queryset[offset:offset + limit]
+            serializer = SalesInvoiceListSerializer(
+                queryset,
+                many=True,
+                context=self.get_serializer_context(),
+            )
+            if state is not None:
+                state["limit"] = limit if limit is not None else "none"
+                state["offset"] = offset
+                state["returned_count"] = len(serializer.data)
+            return Response(serializer.data)
 
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
@@ -378,28 +411,39 @@ class SalesInvoiceLookupAPIView(_SalesScopeMixin, APIView):
         )
 
     def get(self, request, *args, **kwargs):
-        queryset = self._base_queryset()
-        limit = self._parse_limit()
-        offset = self._parse_offset()
-        include_total = self._include_total()
-        fetch_limit = limit if include_total else (limit + 1)
-        items = queryset[offset:offset + fetch_limit]
-        has_more = (len(items) > limit) if not include_total else False
-        if has_more:
-            items = items[:limit]
-        serializer = SalesInvoiceLookupSerializer(items, many=True, context={"request": request})
-        returned_count = len(serializer.data)
-        total_count = queryset.count() if include_total else None
-        return Response(
-            {
-                "items": serializer.data,
-                "total_count": total_count,
-                "returned_count": returned_count,
-                "limit": limit,
-                "offset": offset,
-                "has_more": (total_count > (offset + returned_count)) if total_count is not None else has_more,
-            }
-        )
+        with profile_sales_block(
+            "sales_invoice.lookup",
+            user_id=getattr(request.user, "id", None),
+            line_mode=self._get_line_mode() or "all",
+        ) as state:
+            queryset = self._base_queryset()
+            limit = self._parse_limit()
+            offset = self._parse_offset()
+            include_total = self._include_total()
+            fetch_limit = limit if include_total else (limit + 1)
+            items = queryset[offset:offset + fetch_limit]
+            has_more = (len(items) > limit) if not include_total else False
+            if has_more:
+                items = items[:limit]
+            serializer = SalesInvoiceLookupSerializer(items, many=True, context={"request": request})
+            returned_count = len(serializer.data)
+            total_count = queryset.count() if include_total else None
+            if state is not None:
+                state["limit"] = limit
+                state["offset"] = offset
+                state["include_total"] = include_total
+                state["returned_count"] = returned_count
+                state["has_more"] = (total_count > (offset + returned_count)) if total_count is not None else has_more
+            return Response(
+                {
+                    "items": serializer.data,
+                    "total_count": total_count,
+                    "returned_count": returned_count,
+                    "limit": limit,
+                    "offset": offset,
+                    "has_more": (total_count > (offset + returned_count)) if total_count is not None else has_more,
+                }
+            )
 
 
 class SalesInvoiceCrossModeNavigationAPIView(_SalesScopeMixin, APIView):

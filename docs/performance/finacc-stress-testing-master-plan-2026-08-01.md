@@ -49,6 +49,7 @@ After each phase:
 Phase-specific execution runbooks:
 
 - [finacc-stress-phase1-write-plan-2026-08-01.md](/Users/ansh/finacc-angular/finacc-django/Finacc/docs/performance/finacc-stress-phase1-write-plan-2026-08-01.md:1)
+- [finacc-next-hardening-plan-2026-08-03.md](/Users/ansh/finacc-angular/finacc-django/Finacc/docs/performance/finacc-next-hardening-plan-2026-08-03.md:1)
 - [finacc-saas-1000-user-readiness-plan-2026-08-01.md](/Users/ansh/finacc-angular/finacc-django/Finacc/docs/performance/finacc-saas-1000-user-readiness-plan-2026-08-01.md:1)
 
 ---
@@ -708,9 +709,9 @@ Severity guideline:
 | Phase | Name | Status | Owner | Last Run | Result | Rerun Needed | Notes |
 |---|---|---|---|---|---|---|---|
 | 0 | Baseline And Instrumentation | In Progress | Codex + User | 2026-08-01 | Smoke read-only, modern-read, post-fix read baselines, plus 10-user, 15-user, and 20-user modern working-load probes completed; zero failures across all probes; 20 users is the clear local saturation point | Yes | `sales/invoices [list]` improved sharply at smoke load, but purchase and sales cross-mode navigation plus heavier lookup/report routes still define the local ceiling |
-| 1 | Read-Heavy Stress | Planned | TBD | Not started | Pending | Yes | Includes dropdowns and reports |
+| 1 | Read-Heavy Stress | In Progress | Codex + User | 2026-08-03 | Payables and receivables report stress both have meaningful execution evidence; receivables is healthy at the current `100-user` tier and payables is healthy on fresh clean reruns, with earlier tail-heavy behavior now treated as runtime-sensitive rather than a confirmed steady-state code bottleneck | Yes | Read/report reruns should now focus on reproducibility across runtime stacks and any remaining high-tier read overlap |
 | 2 | Transaction Mutation Stress | In Progress | Codex + User | 2026-08-03 | Sales, purchase, payment, and receipt write stress are functionally clean through multiple reruns; sales is mostly complete for the current mutation-stress tier, purchase now also has a clean mixed 100-user rerun after detail-read stabilization, and vouchers are broadly stable through the 100-user mixed tier with the receipt approval conflict rerun also completing cleanly on the corrected pooled local stack | Yes | Purchase remaining gap is concentrated in isolated 100-user draft-write pressure; sales remaining gaps are mostly settings-tail polish and wider receivables overlap; voucher remaining gap is now more about tail latency and broader mixed overlap than stale-submit correctness |
-| 3 | Reporting And Export Stress | In Progress | Codex + User | 2026-08-02 | Heavy financial/report smoke and mixed report-write runs exist with focused optimizations already validated | Yes | Higher-tier report stress and export overlap still need broader execution |
+| 3 | Reporting And Export Stress | In Progress | Codex + User | 2026-08-03 | Heavy financial/report smoke and mixed report-write runs exist with focused optimizations already validated; payables now looks healthy on clean reruns, so the clearest remaining report-hardening focus shifts to financial-report tail latency and export overlap | Yes | Higher-tier financial report stress and export overlap still need broader execution, with payables retained mainly as a reproducibility check |
 | 4 | Onboarding, Access, And Bootstrap Stress | Planned | TBD | Not started | Pending | Yes | Includes new user and new entity |
 | 5 | Mixed Concurrency And Breakpoint Testing | Planned | TBD | Not started | Pending | Yes | Final resilience and saturation phase |
 
@@ -1138,17 +1139,25 @@ Severity guideline:
 
 ## Phase 1 Notes
 
-- Status: `Not started`
+- Status: `In progress`
 - Summary:
-  - Pending execution
+  - Read-heavy stress is now partially executed rather than untouched.
+  - Receivables has a healthy `100-user` story in the current evidence set.
+  - Payables no longer looks like a stable top read-path bottleneck on fresh clean stacks.
 - Observations:
-  - None yet
+  - Earlier payables `100-user / 45-second` evidence on the older `127.0.0.1:8010` stack was tail-heavy.
+  - Fresh clean reruns on `127.0.0.1:8011` and `127.0.0.1:8012` were both healthy at the same payables tier.
+  - The simple `threads` explanation did not hold, because both clean `threads=8` and clean `threads=2` reruns stayed healthy.
+  - Payables should now be tracked as a runtime-comparison and reproducibility problem before being treated as a pure query-optimization problem again.
 - Metrics:
-  - Pending
+  - See:
+    - `Finacc/docs/performance/finacc-stress-phase1-execution-matrix-2026-08-01.md`
+    - `Finacc/docs/performance/payables-runtime-comparison-checklist-2026-08-03.md`
 - Defects:
-  - None yet
+  - No confirmed payables correctness defect in the current reruns.
+  - The remaining defect class is unexplained runtime divergence between older and fresh server stacks.
 - Decision:
-  - Pending
+  - Keep Phase 1 open for reproducibility checks and broader read overlap, but do not keep classifying payables as the clearest pure read-path bottleneck unless the slow behavior reproduces on a fresh clean stack.
 
 ## Phase 2 Notes
 
@@ -1166,17 +1175,22 @@ Severity guideline:
 
 ## Phase 3 Notes
 
-- Status: `Not started`
+- Status: `In progress`
 - Summary:
-  - Pending execution
+  - Reporting stress has meaningful execution evidence and several validated optimizations.
+  - With payables healthy on fresh clean reruns, the clearest remaining Phase 3 hardening target is now financial-report tail latency.
 - Observations:
-  - None yet
+  - Payables and receivables report paths both have materially better evidence than the early read bottleneck picture suggested.
+  - Financial reports remain correctness-safe through current stress tiers, but their peak tail is still the more convincing unresolved reporting bottleneck.
+  - Export overlap and higher-tier mixed report stress still need broader execution after the current tail focus.
 - Metrics:
-  - Pending
+  - See:
+    - `Finacc/docs/performance/financial-reports-performance-stress-plan-2026-08-02.md`
+    - `Finacc/docs/performance/finacc-stress-phase1-execution-matrix-2026-08-01.md`
 - Defects:
-  - None yet
+  - Financial-report peak tail remains an active tuning target.
 - Decision:
-  - Pending
+  - Prioritize financial-report tail-cost reduction and only keep payables in this phase as a reproducibility guardrail.
 
 ## Phase 4 Notes
 

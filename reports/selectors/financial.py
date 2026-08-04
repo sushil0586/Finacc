@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from functools import lru_cache
 
 from django.db.models import F
 from django.db.models.functions import Coalesce
@@ -16,12 +17,46 @@ def normalize_scope_ids(entity_id, entityfin_id=None, subentity_id=None):
     return entity_id, entityfin_id, subentity_id
 
 
+@lru_cache(maxsize=256)
+def _financial_year_window(entityfin_id: int):
+    fy = EntityFinancialYear.objects.only("id", "finstartyear", "finendyear").get(id=entityfin_id)
+    return ensure_date(fy.finstartyear), ensure_date(fy.finendyear)
+
+
+@lru_cache(maxsize=512)
+def _scope_name_parts(entity_id: int, entityfin_id: int | None, subentity_id: int | None):
+    entity = Entity.objects.filter(id=entity_id).only("id", "entityname").first()
+    entityfin = (
+        EntityFinancialYear.objects.filter(id=entityfin_id)
+        .only("id", "desc", "year_code", "finstartyear", "finendyear")
+        .first()
+        if entityfin_id
+        else None
+    )
+    subentity = (
+        SubEntity.objects.filter(id=subentity_id).only("id", "subentityname").first() if subentity_id else None
+    )
+    entityfin_name = None
+    if entityfin:
+        entityfin_name = getattr(entityfin, "desc", None) or getattr(entityfin, "year_code", None)
+        if not entityfin_name:
+            start_date = ensure_date(getattr(entityfin, "finstartyear", None))
+            end_date = ensure_date(getattr(entityfin, "finendyear", None))
+            if start_date and end_date:
+                entityfin_name = f"FY {start_date.year}-{str(end_date.year)[-2:]}"
+    return (
+        entity.entityname if entity else None,
+        entityfin_name,
+        subentity.subentityname if subentity else None,
+    )
+
+
 def resolve_date_window(entityfin_id=None, from_date=None, to_date=None):
     explicit_from = ensure_date(from_date)
     explicit_to = ensure_date(to_date)
     if entityfin_id:
-        fy = EntityFinancialYear.objects.get(id=entityfin_id)
-        return explicit_from or ensure_date(fy.finstartyear), explicit_to or ensure_date(fy.finendyear)
+        fy_start, fy_end = _financial_year_window(int(entityfin_id))
+        return explicit_from or fy_start, explicit_to or fy_end
     return explicit_from, explicit_to
 
 
@@ -88,27 +123,9 @@ def ensure_date(value):
 
 def resolve_scope_names(entity_id, entityfin_id=None, subentity_id=None):
     entity_id, entityfin_id, subentity_id = normalize_scope_ids(entity_id, entityfin_id, subentity_id)
-    entity = Entity.objects.filter(id=entity_id).only("id", "entityname").first()
-    entityfin = (
-        EntityFinancialYear.objects.filter(id=entityfin_id)
-        .only("id", "desc", "year_code", "finstartyear", "finendyear")
-        .first()
-        if entityfin_id
-        else None
-    )
-    subentity = (
-        SubEntity.objects.filter(id=subentity_id).only("id", "subentityname").first() if subentity_id else None
-    )
-    entityfin_name = None
-    if entityfin:
-        entityfin_name = getattr(entityfin, "desc", None) or getattr(entityfin, "year_code", None)
-        if not entityfin_name:
-            start_date = ensure_date(getattr(entityfin, "finstartyear", None))
-            end_date = ensure_date(getattr(entityfin, "finendyear", None))
-            if start_date and end_date:
-                entityfin_name = f"FY {start_date.year}-{str(end_date.year)[-2:]}"
+    entity_name, entityfin_name, subentity_name = _scope_name_parts(entity_id, entityfin_id, subentity_id)
     return {
-        "entity_name": entity.entityname if entity else None,
+        "entity_name": entity_name,
         "entityfin_name": entityfin_name,
-        "subentity_name": subentity.subentityname if subentity else None,
+        "subentity_name": subentity_name,
     }

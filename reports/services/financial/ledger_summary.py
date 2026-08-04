@@ -7,6 +7,7 @@ from reports.services.financial.trial_balance import (
     _raw_trial_balance_rows,
     _resolve_trial_balance_window,
 )
+from reports.services.financial_perf import profile_financial_reports_block
 
 
 GROUP_BY_CHOICES = {"ledger", "accounthead", "accounttype"}
@@ -110,99 +111,112 @@ def build_ledger_summary(
 ):
     from_date, to_date = _resolve_trial_balance_window(entityfin_id, from_date, to_date, as_of_date)
 
-    _, entityfin_id, subentity_id, from_date, to_date, scope_names, raw_rows = _raw_trial_balance_rows(
+    with profile_financial_reports_block(
+        "ledger_summary.builder",
         entity_id=entity_id,
-        entityfin_id=entityfin_id,
-        subentity_id=subentity_id,
-        from_date=from_date,
-        to_date=to_date,
-        ledger_ids=None,
-        posted_only=posted_only,
-        include_zero_balances=include_zero_balance,
-        include_opening=include_opening,
-        search=search,
-        resolve_window=False,
-    )
+        group_by=group_by or "ledger",
+        view_type=view_type or "summary",
+    ):
+        _, entityfin_id, subentity_id, from_date, to_date, scope_names, raw_rows = _raw_trial_balance_rows(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            from_date=from_date,
+            to_date=to_date,
+            ledger_ids=None,
+            posted_only=posted_only,
+            include_zero_balances=include_zero_balance,
+            include_opening=include_opening,
+            search=search,
+            resolve_window=False,
+        )
 
-    resolved_group_by = (group_by or "ledger").strip().lower()
-    if resolved_group_by not in GROUP_BY_CHOICES:
-        resolved_group_by = "ledger"
+        resolved_group_by = (group_by or "ledger").strip().lower()
+        if resolved_group_by not in GROUP_BY_CHOICES:
+            resolved_group_by = "ledger"
 
-    resolved_view_type = (view_type or "summary").strip().lower()
-    if resolved_view_type not in VIEW_TYPE_CHOICES:
-        resolved_view_type = "summary"
+        resolved_view_type = (view_type or "summary").strip().lower()
+        if resolved_view_type not in VIEW_TYPE_CHOICES:
+            resolved_view_type = "summary"
 
-    resolved_sort_by = SORT_BY_MAP.get((sort_by or "account_name").strip().lower(), "ledger_name")
-    resolved_sort_order = (sort_order or "asc").strip().lower()
-    if resolved_sort_order not in {"asc", "desc"}:
-        resolved_sort_order = "asc"
+        resolved_sort_by = SORT_BY_MAP.get((sort_by or "account_name").strip().lower(), "ledger_name")
+        resolved_sort_order = (sort_order or "asc").strip().lower()
+        if resolved_sort_order not in {"asc", "desc"}:
+            resolved_sort_order = "asc"
 
-    if resolved_group_by == "ledger":
-        prepared_rows = [_map_ledger_row(row) for row in raw_rows]
-    else:
-        grouped_rows = _group_rows(raw_rows, resolved_group_by, resolved_sort_by, resolved_sort_order)
-        prepared_rows = [
-            _map_group_row(group_row, include_children=resolved_view_type == "detailed")
-            for group_row in grouped_rows
-        ]
+        if resolved_group_by == "ledger":
+            prepared_rows = [_map_ledger_row(row) for row in raw_rows]
+        else:
+            grouped_rows = _group_rows(
+                raw_rows,
+                resolved_group_by,
+                resolved_sort_by,
+                resolved_sort_order,
+                include_children=resolved_view_type == "detailed",
+            )
+            prepared_rows = [
+                _map_group_row(group_row, include_children=resolved_view_type == "detailed")
+                for group_row in grouped_rows
+            ]
 
-    total_records = len(prepared_rows)
-    try:
-        safe_page_size = max(int(page_size or 100), 1)
-    except (TypeError, ValueError):
-        safe_page_size = 100
-    total_pages = max((total_records + safe_page_size - 1) // safe_page_size, 1)
-    safe_page = min(max(int(page or 1), 1), total_pages)
-    start = (safe_page - 1) * safe_page_size
-    end = start + safe_page_size
-    paged_rows = prepared_rows[start:end]
+        total_records = len(prepared_rows)
+        try:
+            safe_page_size = max(int(page_size or 100), 1)
+        except (TypeError, ValueError):
+            safe_page_size = 100
+        total_pages = max((total_records + safe_page_size - 1) // safe_page_size, 1)
+        safe_page = min(max(int(page or 1), 1), total_pages)
+        start = (safe_page - 1) * safe_page_size
+        end = start + safe_page_size
+        paged_rows = prepared_rows[start:end]
 
-    opening_values = [row.get("opening_value") or Decimal("0.00") for row in raw_rows]
-    balance_values = [row.get("closing_value") or Decimal("0.00") for row in raw_rows]
-    total_opening_debit = _positive_total(opening_values)
-    total_opening_credit = _negative_total(opening_values)
-    total_balance_debit = _positive_total(balance_values)
-    total_balance_credit = _negative_total(balance_values)
-    total_opening = max(total_opening_debit, total_opening_credit)
-    total_debit = sum((row.get("debit_value") or Decimal("0.00") for row in raw_rows), Decimal("0.00"))
-    total_credit = sum((row.get("credit_value") or Decimal("0.00") for row in raw_rows), Decimal("0.00"))
-    total_closing = max(total_balance_debit, total_balance_credit)
+        opening_values = [row.get("opening_value") or Decimal("0.00") for row in raw_rows]
+        balance_values = [row.get("closing_value") or Decimal("0.00") for row in raw_rows]
+        total_opening_debit = _positive_total(opening_values)
+        total_opening_credit = _negative_total(opening_values)
+        total_balance_debit = _positive_total(balance_values)
+        total_balance_credit = _negative_total(balance_values)
+        total_opening = max(total_opening_debit, total_opening_credit)
+        total_debit = sum((row.get("debit_value") or Decimal("0.00") for row in raw_rows), Decimal("0.00"))
+        total_credit = sum((row.get("credit_value") or Decimal("0.00") for row in raw_rows), Decimal("0.00"))
+        total_closing = max(total_balance_debit, total_balance_credit)
 
-    return {
-        "entity_id": entity_id,
-        "entity_name": scope_names["entity_name"],
-        "entityfin_id": entityfin_id,
-        "entityfin_name": scope_names["entityfin_name"],
-        "subentity_id": subentity_id,
-        "subentity_name": scope_names["subentity_name"],
-        "from_date": from_date,
-        "to_date": to_date,
-        "rows": paged_rows,
-        "totals": {
-            "opening": _format_amount(total_opening),
-            "debit": _format_amount(total_debit),
-            "credit": _format_amount(total_credit),
-            "balance": _format_amount(total_closing),
-            "opening_debit": _format_amount(total_opening_debit),
-            "opening_credit": _format_amount(total_opening_credit),
-            "balance_debit": _format_amount(total_balance_debit),
-            "balance_credit": _format_amount(total_balance_credit),
-        },
-        "pagination": {
-            "page": safe_page,
-            "page_size": safe_page_size,
-            "total_pages": total_pages,
-            "total_records": total_records,
-        },
-        "reporting": {
-            "basis": "ledger_summary",
-            "group_by": resolved_group_by,
-            "view_type": resolved_view_type,
-            "sort_by": resolved_sort_by,
-            "sort_order": resolved_sort_order,
-            "include_zero_balances": include_zero_balance,
-            "include_opening": include_opening,
-            "posted_only": posted_only,
-            "search": search,
-        },
-    }
+        return {
+            "entity_id": entity_id,
+            "entity_name": scope_names["entity_name"],
+            "entityfin_id": entityfin_id,
+            "entityfin_name": scope_names["entityfin_name"],
+            "subentity_id": subentity_id,
+            "subentity_name": scope_names["subentity_name"],
+            "from_date": from_date,
+            "to_date": to_date,
+            "rows": paged_rows,
+            "totals": {
+                "opening": _format_amount(total_opening),
+                "debit": _format_amount(total_debit),
+                "credit": _format_amount(total_credit),
+                "balance": _format_amount(total_closing),
+                "opening_debit": _format_amount(total_opening_debit),
+                "opening_credit": _format_amount(total_opening_credit),
+                "balance_debit": _format_amount(total_balance_debit),
+                "balance_credit": _format_amount(total_balance_credit),
+            },
+            "pagination": {
+                "page": safe_page,
+                "page_size": safe_page_size,
+                "total_pages": total_pages,
+                "total_records": total_records,
+            },
+            "reporting": {
+                "basis": "ledger_summary",
+                "group_by": resolved_group_by,
+                "view_type": resolved_view_type,
+                "sort_by": resolved_sort_by,
+                "sort_order": resolved_sort_order,
+                "include_zero_balances": include_zero_balance,
+                "include_opening": include_opening,
+                "posted_only": posted_only,
+                "search": search,
+            },
+        }
+    

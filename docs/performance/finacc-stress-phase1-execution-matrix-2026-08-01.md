@@ -7333,3 +7333,106 @@ Payables report 100-user rerun after meta caching on `2026-08-03`:
   - it does not materially collapse the stressed tail by itself
   - `reports/payables/aging [get]` remains the dominant purchase-report bottleneck at this tier
   - the next purchase stress-hardening step should stay focused on AP-aging read cost and request-overhead trimming rather than shifting modules prematurely
+
+Payables report 100-user rerun on clean instrumented gunicorn stack on `2026-08-03`:
+- command:
+  - `LOCUST_HOST=http://127.0.0.1:8011 venv/bin/locust -f perf/locust/locustfile.py --headless --users 100 --spawn-rate 10 --run-time 45s --tags payables-reports --csv perf/locust/results_phase1_payables_reports_100u_45s_2026_08_03_r14_with_perf_logging_clean --html perf/locust/results_phase1_payables_reports_100u_45s_2026_08_03_r14_with_perf_logging_clean.html`
+- runtime notes:
+  - backend served by `gunicorn` on `127.0.0.1:8011`
+  - `PAYABLES_PERF_LOGGING=true`
+  - fresh run used the same entity scope from `perf/locust/.env`
+- artifacts:
+  - [results_phase1_payables_reports_100u_45s_2026_08_03_r14_with_perf_logging_clean_stats.csv](/Users/ansh/finacc-angular/finacc-django/Finacc/perf/locust/results_phase1_payables_reports_100u_45s_2026_08_03_r14_with_perf_logging_clean_stats.csv)
+  - [results_phase1_payables_reports_100u_45s_2026_08_03_r14_with_perf_logging_clean_stats_history.csv](/Users/ansh/finacc-angular/finacc-django/Finacc/perf/locust/results_phase1_payables_reports_100u_45s_2026_08_03_r14_with_perf_logging_clean_stats_history.csv)
+  - [results_phase1_payables_reports_100u_45s_2026_08_03_r14_with_perf_logging_clean.html](/Users/ansh/finacc-angular/finacc-django/Finacc/perf/locust/results_phase1_payables_reports_100u_45s_2026_08_03_r14_with_perf_logging_clean.html)
+  - [payables_perf.log](/Users/ansh/finacc-angular/finacc-django/Finacc/logs/payables_perf.log:1)
+- result:
+  - total requests: `2149`
+  - failures: `0`
+  - aggregate average: about `60 ms`
+  - aggregate median: about `39 ms`
+  - aggregate p95: about `200 ms`
+  - aggregate p99: about `330 ms`
+- key endpoints:
+  - `reports/payables/aging [get]`
+    - requests: `1203`
+    - avg: about `55 ms`
+    - median: about `42 ms`
+    - p95: about `120 ms`
+    - p99: about `260 ms`
+    - max: about `442 ms`
+  - `reports/payables/meta [get]`
+    - requests: `746`
+    - avg: about `34 ms`
+    - median: about `27 ms`
+    - p95: about `73 ms`
+    - p99: about `160 ms`
+    - max: about `234 ms`
+- payables perf log highlights:
+  - `ap_aging.api_get`
+    - calls: `1225`
+    - avg duration: about `44 ms`
+    - max duration: about `426 ms`
+  - `ap_aging.builder`
+    - calls: `12`
+    - avg duration: about `153 ms`
+    - max duration: about `323 ms`
+  - `payables_meta.api_get`
+    - calls: `755`
+    - avg duration: about `23 ms`
+    - max duration: about `203 ms`
+  - `payables_meta.builder`
+    - calls: `4`
+    - avg duration: about `49 ms`
+    - max duration: about `62 ms`
+  - selector cold-path candidates:
+    - `payables_selector.all_last_payment_dates`: avg about `14 ms`, max about `62 ms`
+    - `payables_selector.asof_advances`: avg about `10 ms`, max about `54 ms`
+    - `payables_selector.vendor_queryset`: avg about `4 ms`, max about `21 ms`
+    - `payables_selector.open_item_vendor_aging_bucket_summary`: avg about `3 ms`, max about `6 ms`
+- interpretation:
+  - payables is fully healthy on this clean instrumented `gunicorn` stack at the same `100-user / 45-second` load shape
+  - this materially contradicts the much heavier earlier `8010` payables runs
+  - the current evidence now says the earlier payables bottleneck is at least partly runtime / environment specific, not purely a report-query ceiling
+  - caching is working as intended, with only a small number of cold builder executions across the full run
+  - before doing more payables query hardening, we should compare the `8010` and `8011` runtime differences directly
+
+Payables report 100-user rerun on clean instrumented gunicorn stack with `threads=2` on `2026-08-03`:
+- command:
+  - `LOCUST_HOST=http://127.0.0.1:8012 venv/bin/locust -f perf/locust/locustfile.py --headless --users 100 --spawn-rate 10 --run-time 45s --tags payables-reports --csv perf/locust/results_phase1_payables_reports_100u_45s_2026_08_03_r15_with_perf_logging_threads2 --html perf/locust/results_phase1_payables_reports_100u_45s_2026_08_03_r15_with_perf_logging_threads2.html`
+- runtime notes:
+  - backend served by fresh `gunicorn` on `127.0.0.1:8012`
+  - `PAYABLES_PERF_LOGGING=true`
+  - worker model: `--workers 4 --threads 2`
+- artifacts:
+  - [results_phase1_payables_reports_100u_45s_2026_08_03_r15_with_perf_logging_threads2_stats.csv](/Users/ansh/finacc-angular/finacc-django/Finacc/perf/locust/results_phase1_payables_reports_100u_45s_2026_08_03_r15_with_perf_logging_threads2_stats.csv)
+  - [results_phase1_payables_reports_100u_45s_2026_08_03_r15_with_perf_logging_threads2_stats_history.csv](/Users/ansh/finacc-angular/finacc-django/Finacc/perf/locust/results_phase1_payables_reports_100u_45s_2026_08_03_r15_with_perf_logging_threads2_stats_history.csv)
+  - [results_phase1_payables_reports_100u_45s_2026_08_03_r15_with_perf_logging_threads2.html](/Users/ansh/finacc-angular/finacc-django/Finacc/perf/locust/results_phase1_payables_reports_100u_45s_2026_08_03_r15_with_perf_logging_threads2.html)
+  - [payables_perf.log](/Users/ansh/finacc-angular/finacc-django/Finacc/logs/payables_perf.log:1)
+- result:
+  - total requests: `2196`
+  - failures: `0`
+  - aggregate average: about `58 ms`
+  - aggregate median: about `40 ms`
+  - aggregate p95: about `160 ms`
+  - aggregate p99: about `300 ms`
+- key endpoints:
+  - `reports/payables/aging [get]`
+    - requests: `1213`
+    - avg: about `54 ms`
+    - median: about `42 ms`
+    - p95: about `120 ms`
+    - p99: about `200 ms`
+    - max: about `378 ms`
+  - `reports/payables/meta [get]`
+    - requests: `783`
+    - avg: about `37 ms`
+    - median: about `27 ms`
+    - p95: about `87 ms`
+    - p99: about `140 ms`
+    - max: about `342 ms`
+- interpretation:
+  - clean `threads=2` runtime also stayed healthy at the same `100-user / 45-second` load shape
+  - this means the earlier slow `8010` behavior is not explained by thread-count difference alone
+  - the most likely remaining explanation is stale runtime state, cache/process drift, surrounding pressure, or another environment-specific factor on the older `8010` stack
+  - the `threads` hypothesis is now not supported by the fresh rerun evidence

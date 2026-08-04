@@ -14,6 +14,7 @@ from catalog.taxability import resolve_product_default_taxability
 from sales.services.sales_nav_service import SalesInvoiceNavService
 
 from sales.services.sales_invoice_service import SalesInvoiceService
+from sales.services.sales_settings_service import SalesSettingsService
 from sales.services.sales_compliance_service import SalesComplianceService
 from sales.services.sales_settings_service import SalesSettingsService
 from helpers.utils.document_actions import build_document_action_flags
@@ -774,7 +775,32 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
         lines = self._merge_client_line_amount_fields(lines, raw_lines)
 
         if not lines:
-            raise serializers.ValidationError({"lines": "At least one line is required."})
+            entity = validated_data.get("entity")
+            entityfinid = validated_data.get("entityfinid")
+            subentity = validated_data.get("subentity")
+            entity_id = int(getattr(entity, "id", entity or request.data.get("entity") or 0) or 0)
+            entityfinid_id = int(getattr(entityfinid, "id", entityfinid or request.data.get("entityfinid") or 0) or 0)
+            subentity_id = int(getattr(subentity, "id", subentity or 0) or 0) or None
+            settings_obj = SalesSettingsService.get_settings(
+                entity_id=entity_id,
+                subentity_id=subentity_id,
+                entityfinid_id=entityfinid_id,
+            )
+            controls = SalesInvoiceService._policy_controls(
+                SalesInvoiceHeader(
+                    entity_id=entity_id,
+                    entityfinid_id=entityfinid_id,
+                    subentity_id=subentity_id,
+                ),
+                settings_obj=settings_obj,
+            )
+            require_lines_level = SalesInvoiceService._policy_level(
+                controls,
+                "require_lines_on_confirm",
+                default="hard",
+            )
+            if require_lines_level == "hard":
+                raise serializers.ValidationError({"lines": "At least one line is required."})
 
         # Pop scope as ids
         entity = validated_data.pop("entity", None)

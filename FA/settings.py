@@ -145,6 +145,21 @@ PAYABLES_META_CACHE_TTL_SECONDS = config(
     default=300,
     cast=int,
 )
+PAYABLES_PERF_LOGGING = config(
+    'PAYABLES_PERF_LOGGING',
+    default=False,
+    cast=_cast_boolish_env,
+)
+FINANCIAL_REPORTS_PERF_LOGGING = config(
+    'FINANCIAL_REPORTS_PERF_LOGGING',
+    default=False,
+    cast=_cast_boolish_env,
+)
+SALES_PERF_LOGGING = config(
+    'SALES_PERF_LOGGING',
+    default=False,
+    cast=_cast_boolish_env,
+)
 
 # GST reconciliation rollout/performance controls.
 # Keep defaults conservative for pilot rollout.
@@ -503,6 +518,24 @@ LOGGING = {
             'filename': os.path.join(LOG_DIR, 'purchase_perf.log'),
             'formatter': 'simple',
         },
+        'payables_perf_file': {
+            'level': 'INFO',
+            'class': 'logging.FileHandler',
+            'filename': os.path.join(LOG_DIR, 'payables_perf.log'),
+            'formatter': 'simple',
+        },
+        'financial_reports_perf_file': {
+            'level': 'INFO',
+            'class': 'logging.FileHandler',
+            'filename': os.path.join(LOG_DIR, 'financial_reports_perf.log'),
+            'formatter': 'simple',
+        },
+        'sales_perf_file': {
+            'level': 'INFO',
+            'class': 'logging.FileHandler',
+            'filename': os.path.join(LOG_DIR, 'sales_perf.log'),
+            'formatter': 'simple',
+        },
     },
     'loggers': {
         'django': {
@@ -512,6 +545,21 @@ LOGGING = {
         },
         'purchase.perf': {
             'handlers': ['purchase_perf_file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'payables.perf': {
+            'handlers': ['payables_perf_file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'financial_reports.perf': {
+            'handlers': ['financial_reports_perf_file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'sales.perf': {
+            'handlers': ['sales_perf_file'],
             'level': 'INFO',
             'propagate': False,
         },

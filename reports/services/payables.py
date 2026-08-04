@@ -58,6 +58,7 @@ from reports.services.payables_config import (
     resolve_supported_filters,
     resolve_view_modes,
 )
+from reports.services.payables_perf import profile_payables_block
 from reports.services.payables_settings import get_payables_settings_response
 
 ZERO = Decimal("0.00")
@@ -1608,27 +1609,42 @@ def build_ap_aging_report(
     user=None,
 ):
     def _builder():
-        return _build_ap_aging_report_uncached(
+        with profile_payables_block(
+            "ap_aging.builder",
             entity_id=entity_id,
             entityfin_id=entityfin_id,
             subentity_id=subentity_id,
-            as_of_date=as_of_date,
-            vendor_id=vendor_id,
-            vendor_group=vendor_group,
-            region_id=region_id,
-            currency=currency,
-            overdue_only=overdue_only,
-            credit_limit_exceeded=credit_limit_exceeded,
-            search=search,
-            sort_by=sort_by,
-            sort_order=sort_order,
             page=page,
             page_size=page_size,
             view=view,
-            include_trace=include_trace,
-            include_drilldown=include_drilldown,
-            user=None,
-        )
+            overdue_only=bool(overdue_only),
+            search=bool(search),
+        ) as state:
+            payload = _build_ap_aging_report_uncached(
+                entity_id=entity_id,
+                entityfin_id=entityfin_id,
+                subentity_id=subentity_id,
+                as_of_date=as_of_date,
+                vendor_id=vendor_id,
+                vendor_group=vendor_group,
+                region_id=region_id,
+                currency=currency,
+                overdue_only=overdue_only,
+                credit_limit_exceeded=credit_limit_exceeded,
+                search=search,
+                sort_by=sort_by,
+                sort_order=sort_order,
+                page=page,
+                page_size=page_size,
+                view=view,
+                include_trace=include_trace,
+                include_drilldown=include_drilldown,
+                user=None,
+            )
+            if state is not None:
+                rows = payload.get("rows") if isinstance(payload, dict) else None
+                state["row_count"] = len(rows) if isinstance(rows, list) else 0
+            return payload
 
     normalized_entity_id, normalized_entityfin_id, normalized_subentity_id = normalize_scope_ids(
         entity_id, entityfin_id, subentity_id
@@ -1663,35 +1679,53 @@ def build_ap_aging_report(
                 "include_drilldown": bool(include_drilldown),
             },
         )
-        payload = get_or_set_meta_cache(
-            cache_key,
-            _builder,
-            timeout=int(getattr(settings, "PAYABLES_AP_AGING_CACHE_TTL_SECONDS", 15)),
-        )
+        with profile_payables_block(
+            "ap_aging.cache_lookup",
+            entity_id=normalized_entity_id,
+            entityfin_id=normalized_entityfin_id,
+            subentity_id=normalized_subentity_id,
+            page=page,
+            page_size=page_size,
+            view=view,
+        ) as state:
+            payload = get_or_set_meta_cache(
+                cache_key,
+                _builder,
+                timeout=int(getattr(settings, "PAYABLES_AP_AGING_CACHE_TTL_SECONDS", 15)),
+            )
+            if state is not None:
+                state["cache_key_present"] = bool(cache_key)
     else:
         payload = _builder()
 
     if user is None:
         return payload
 
-    payload = dict(payload)
-    payload.update(
-        _report_meta_payload(
-            report_code="ap_aging",
-            report_name="AP Aging Report",
-            entity_id=payload.get("entity_id"),
-            entityfin_id=payload.get("entityfin_id"),
-            subentity_id=payload.get("subentity_id"),
-            as_of_date=payload.get("as_of_date"),
-            view=payload.get("view"),
-            vendor_id=vendor_id,
-            required_menu_code="reports.accountspayableaging",
-            required_permissions=["reports.accountspayableaging.view"],
-            feature_state={"view": payload.get("view"), "include_trace": include_trace},
-            user=user,
+    with profile_payables_block(
+        "ap_aging.user_meta",
+        entity_id=payload.get("entity_id"),
+        entityfin_id=payload.get("entityfin_id"),
+        subentity_id=payload.get("subentity_id"),
+        view=payload.get("view"),
+    ):
+        payload = dict(payload)
+        payload.update(
+            _report_meta_payload(
+                report_code="ap_aging",
+                report_name="AP Aging Report",
+                entity_id=payload.get("entity_id"),
+                entityfin_id=payload.get("entityfin_id"),
+                subentity_id=payload.get("subentity_id"),
+                as_of_date=payload.get("as_of_date"),
+                view=payload.get("view"),
+                vendor_id=vendor_id,
+                required_menu_code="reports.accountspayableaging",
+                required_permissions=["reports.accountspayableaging.view"],
+                feature_state={"view": payload.get("view"), "include_trace": include_trace},
+                user=user,
+            )
         )
-    )
-    return payload
+        return payload
 
 
 def build_msme_overdue_report(
