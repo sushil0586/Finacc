@@ -84,6 +84,10 @@ from payroll.views.payroll_run_views import (
     PayrollRunSummaryAPIView,
 )
 from payroll.views.payroll_setup_views import (
+    ContractAttendanceAdjustmentListCreateAPIView,
+    ContractAttendanceAdjustmentRetrieveUpdateAPIView,
+    ContractAttendanceSummaryListCreateAPIView,
+    ContractAttendanceSummaryRetrieveUpdateAPIView,
     ContractPayrollInputSnapshotListCreateAPIView,
     ContractPayrollInputSnapshotRetrieveUpdateAPIView,
     ContractStatutoryProfileListCreateAPIView,
@@ -205,6 +209,10 @@ __all__ = [
     "ESISummaryReportExportAPIView",
     "FnFSettlementRegisterReportAPIView",
     "FnFSettlementRegisterReportExportAPIView",
+    "ContractAttendanceAdjustmentListCreateAPIView",
+    "ContractAttendanceAdjustmentRetrieveUpdateAPIView",
+    "ContractAttendanceSummaryListCreateAPIView",
+    "ContractAttendanceSummaryRetrieveUpdateAPIView",
     "ContractPayrollInputSnapshotListCreateAPIView",
     "ContractPayrollInputSnapshotRetrieveUpdateAPIView",
     "ContractStatutoryProfileListCreateAPIView",

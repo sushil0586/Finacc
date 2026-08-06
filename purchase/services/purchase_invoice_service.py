@@ -1213,7 +1213,8 @@ class PurchaseInvoiceService:
             entity_id = getattr(entity, "id", entity)
             vendor_id = getattr(vendor, "id", vendor)
             subentity_id = getattr(subentity, "id", subentity)
-            entityfinid_id = attrs.get("entityfinid_id", (instance.entityfinid_id if instance else None))
+            entityfin = attrs.get("entityfinid") or (instance.entityfinid if instance else None)
+            entityfinid_id = attrs.get("entityfinid_id", getattr(entityfin, "id", entityfin))
 
             if int(getattr(ref_document, "entity_id", 0) or 0) != int(entity_id):
                 raise ValueError("ref_document must belong to same entity.")

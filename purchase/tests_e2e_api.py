@@ -1798,6 +1798,59 @@ class PurchaseApiEndToEndTests(APITestCase):
         self.assertEqual(body["note_reason"], PurchaseInvoiceHeader.NoteReason.QUANTITY_RETURN)
         self.assertTrue(body["affects_inventory"])
 
+    def test_purchase_note_update_persists_custom_fields(self):
+        created = self._create_invoice(supplier_invoice_number="INV-CN-CUSTOM-FIELD")
+        invoice_id = created["id"]
+
+        create_note_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{invoice_id}/create-credit-note/{self._scope_qs()}",
+            {
+                "note_reason": PurchaseInvoiceHeader.NoteReason.PRICE_DIFFERENCE,
+                "reason": "Custom field persistence check",
+            },
+            format="json",
+        )
+        self.assertEqual(create_note_resp.status_code, status.HTTP_201_CREATED, create_note_resp.json())
+        note_id = int(create_note_resp.json()["data"]["id"])
+
+        update_resp = self.client.patch(
+            f"/api/purchase/purchase-invoices/{note_id}/{self._scope_qs()}",
+            {"custom_fields": {"note_tag": "persist-me"}},
+            format="json",
+        )
+        self.assertEqual(update_resp.status_code, status.HTTP_200_OK, update_resp.json())
+
+        note_header = PurchaseInvoiceHeader.objects.get(pk=note_id)
+        self.assertEqual(note_header.custom_fields_json, {"note_tag": "persist-me"})
+
+    def test_create_credit_note_direct_post_accepts_entityfinid_and_null_location(self):
+        created = self._create_invoice(supplier_invoice_number="INV-CN-DIRECT")
+        invoice_id = created["id"]
+
+        payload = self._invoice_payload(
+            lines=[self._goods_line_payload(qty="1.0000", rate="10000.00")],
+            supplier_invoice_number="INV-CN-DIRECT-NOTE",
+        )
+        payload.update(
+            {
+                "doc_type": int(PurchaseInvoiceHeader.DocType.CREDIT_NOTE),
+                "doc_code": "PCN",
+                "ref_document": invoice_id,
+                "location": None,
+                "note_reason": PurchaseInvoiceHeader.NoteReason.QUANTITY_RETURN,
+                "affects_inventory": True,
+            }
+        )
+
+        response = self.client.post("/api/purchase/purchase-invoices/", payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.json())
+        body = response.json()
+        self.assertEqual(body["doc_type"], int(PurchaseInvoiceHeader.DocType.CREDIT_NOTE))
+        self.assertEqual(body["ref_document"], invoice_id)
+        self.assertEqual(body["note_reason"], PurchaseInvoiceHeader.NoteReason.QUANTITY_RETURN)
+        self.assertTrue(body["affects_inventory"])
+
     def test_create_debit_note_action_from_invoice(self):
         created = self._create_invoice(supplier_invoice_number="INV-DN-ACTION")
         invoice_id = created["id"]

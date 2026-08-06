@@ -28,6 +28,9 @@ from payroll.models import (
     SalaryStructureVersion,
 )
 from payroll.services import PayrollPaymentBatchService, PayrollRunService
+from payroll.services.contract_payroll_profile_service import ContractPayrollProfileService
+from payroll.services.contract_salary_assignment_service import ContractSalaryAssignmentService
+from payroll.services.payslip_service import PayslipService
 from rbac.seeding import PayrollRBACSeedService, RBACSeedService
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
@@ -105,16 +108,6 @@ class Command(BaseCommand):
             Group.objects.get_or_create(name=group_name)[0].user_set.add(user)
 
     def _resolve_scope(self, *, entity: Entity) -> dict[str, object]:
-        period = PayrollPeriod.objects.filter(entity=entity, status=PayrollPeriod.Status.OPEN).order_by("-period_start", "-id").first()
-        if period:
-            subentity = period.subentity
-            entityfinid = period.entityfinid
-            return {
-                "period": period,
-                "subentity": subentity,
-                "entityfinid": entityfinid,
-            }
-
         entityfinid = EntityFinancialYear.objects.filter(entity=entity).order_by("-finstartyear", "-id").first()
         if entityfinid is None:
             raise CommandError("No financial year exists for the selected entity.")
@@ -143,6 +136,27 @@ class Command(BaseCommand):
                 "status": PayrollPeriod.Status.OPEN,
             },
         )
+        fields_to_update: list[str] = []
+        if period.entityfinid_id != entityfinid.id:
+            period.entityfinid = entityfinid
+            fields_to_update.append("entityfinid")
+        if period.subentity_id != subentity.id:
+            period.subentity = subentity
+            fields_to_update.append("subentity")
+        if period.period_start != period_start:
+            period.period_start = period_start
+            fields_to_update.append("period_start")
+        if period.period_end != period_end:
+            period.period_end = period_end
+            fields_to_update.append("period_end")
+        if period.payout_date != period_end:
+            period.payout_date = period_end
+            fields_to_update.append("payout_date")
+        if period.status != PayrollPeriod.Status.OPEN:
+            period.status = PayrollPeriod.Status.OPEN
+            fields_to_update.append("status")
+        if fields_to_update:
+            period.save(update_fields=[*fields_to_update, "updated_at"])
         return {
             "period": period,
             "subentity": subentity,
@@ -153,6 +167,7 @@ class Command(BaseCommand):
         entityfinid: EntityFinancialYear = scope["entityfinid"]
         subentity: SubEntity = scope["subentity"]
         period: PayrollPeriod = scope["period"]
+        subentity_id = subentity.id if subentity else None
 
         account_type, _ = accounttype.objects.get_or_create(
             entity=entity,
@@ -223,17 +238,26 @@ class Command(BaseCommand):
             },
         )
 
-        structure, _ = SalaryStructure.objects.get_or_create(
-            entity=entity,
-            entityfinid=entityfinid,
-            subentity=subentity,
-            code="PW_PAYROLL_E2E",
-            defaults={
-                "name": "Playwright Payroll E2E Structure",
-                "status": SalaryStructure.Status.ACTIVE,
-                "is_active": True,
-            },
+        structure = (
+            SalaryStructure.objects.filter(
+                entity=entity,
+                entityfinid=entityfinid,
+                subentity=subentity,
+                code="PW_PAYROLL_E2E",
+            )
+            .order_by("id")
+            .first()
         )
+        if structure is None:
+            structure = SalaryStructure.objects.create(
+                entity=entity,
+                entityfinid=entityfinid,
+                subentity=subentity,
+                code="PW_PAYROLL_E2E",
+                name="Playwright Payroll E2E Structure",
+                status=SalaryStructure.Status.ACTIVE,
+                is_active=True,
+            )
         version = structure.current_version
         if version is None:
             version = SalaryStructureVersion.objects.create(
@@ -315,7 +339,7 @@ class Command(BaseCommand):
                 "lifecycle_status": HrEmployee.LifecycleStatus.ACTIVE,
             },
         )
-        if employee.linked_user_id != user.id or employee.subentity_id != subentity.id:
+        if employee.linked_user_id != user.id or employee.subentity_id != subentity_id:
             employee.linked_user = user
             employee.subentity = subentity
             employee.work_email = user.email
@@ -337,12 +361,116 @@ class Command(BaseCommand):
                 "is_payroll_eligible": True,
             },
         )
-        if contract.subentity_id != subentity.id or contract.status != HrEmploymentContract.ContractStatus.ACTIVE or not contract.is_payroll_eligible:
+        if contract.subentity_id != subentity_id or contract.status != HrEmploymentContract.ContractStatus.ACTIVE or not contract.is_payroll_eligible:
             contract.subentity = subentity
             contract.status = HrEmploymentContract.ContractStatus.ACTIVE
             contract.is_payroll_eligible = True
             contract.payroll_effective_from = date(2025, 4, 1)
             contract.save(update_fields=["subentity", "status", "is_payroll_eligible", "payroll_effective_from", "updated_at"])
+
+        profile_seed_email = f"playwright.profile.{entity.id}@example.com"
+        profile_seed_employee, _ = HrEmployee.objects.get_or_create(
+            entity=entity,
+            employee_number="PW-E2E-EMP-PROFILE",
+            defaults={
+                "subentity": subentity,
+                "linked_user": user,
+                "legal_first_name": "Playwright",
+                "legal_last_name": "Profile",
+                "display_name": "Playwright Profile Candidate",
+                "work_email": profile_seed_email,
+                "lifecycle_status": HrEmployee.LifecycleStatus.ACTIVE,
+            },
+        )
+        if (
+            profile_seed_employee.linked_user_id != user.id
+            or profile_seed_employee.subentity_id != subentity_id
+            or profile_seed_employee.lifecycle_status != HrEmployee.LifecycleStatus.ACTIVE
+        ):
+            profile_seed_employee.linked_user = user
+            profile_seed_employee.subentity = subentity
+            profile_seed_employee.work_email = profile_seed_email
+            profile_seed_employee.lifecycle_status = HrEmployee.LifecycleStatus.ACTIVE
+            profile_seed_employee.save(update_fields=["linked_user", "subentity", "work_email", "lifecycle_status", "updated_at"])
+
+        profile_seed_contract, _ = HrEmploymentContract.objects.get_or_create(
+            entity=entity,
+            employee=profile_seed_employee,
+            contract_code="PW-E2E-CONTRACT-NEW",
+            defaults={
+                "subentity": subentity,
+                "status": HrEmploymentContract.ContractStatus.ACTIVE,
+                "contract_type": HrEmploymentContract.ContractType.PERMANENT,
+                "work_model": HrEmploymentContract.WorkModel.ONSITE,
+                "compensation_basis": HrEmploymentContract.CompensationBasis.ANNUAL,
+                "start_date": date(2025, 4, 1),
+                "payroll_effective_from": date(2025, 4, 1),
+                "is_payroll_eligible": True,
+            },
+        )
+        if (
+            profile_seed_contract.subentity_id != subentity_id
+            or profile_seed_contract.status != HrEmploymentContract.ContractStatus.ACTIVE
+            or not profile_seed_contract.is_payroll_eligible
+        ):
+            profile_seed_contract.subentity = subentity
+            profile_seed_contract.status = HrEmploymentContract.ContractStatus.ACTIVE
+            profile_seed_contract.is_payroll_eligible = True
+            profile_seed_contract.payroll_effective_from = date(2025, 4, 1)
+            profile_seed_contract.save(update_fields=["subentity", "status", "is_payroll_eligible", "payroll_effective_from", "updated_at"])
+
+        ContractPayrollProfile.objects.filter(hrms_contract=profile_seed_contract).delete()
+
+        overlap_seed_email = f"playwright.overlap.{entity.id}@example.com"
+        overlap_seed_employee, _ = HrEmployee.objects.get_or_create(
+            entity=entity,
+            employee_number="PW-E2E-EMP-OVERLAP",
+            defaults={
+                "subentity": subentity,
+                "linked_user": user,
+                "legal_first_name": "Playwright",
+                "legal_last_name": "Overlap",
+                "display_name": "Playwright Overlap Candidate",
+                "work_email": overlap_seed_email,
+                "lifecycle_status": HrEmployee.LifecycleStatus.ACTIVE,
+            },
+        )
+        if (
+            overlap_seed_employee.linked_user_id != user.id
+            or overlap_seed_employee.subentity_id != subentity_id
+            or overlap_seed_employee.lifecycle_status != HrEmployee.LifecycleStatus.ACTIVE
+        ):
+            overlap_seed_employee.linked_user = user
+            overlap_seed_employee.subentity = subentity
+            overlap_seed_employee.work_email = overlap_seed_email
+            overlap_seed_employee.lifecycle_status = HrEmployee.LifecycleStatus.ACTIVE
+            overlap_seed_employee.save(update_fields=["linked_user", "subentity", "work_email", "lifecycle_status", "updated_at"])
+
+        overlap_seed_contract, _ = HrEmploymentContract.objects.get_or_create(
+            entity=entity,
+            employee=overlap_seed_employee,
+            contract_code="PW-E2E-CONTRACT-OVERLAP",
+            defaults={
+                "subentity": subentity,
+                "status": HrEmploymentContract.ContractStatus.ACTIVE,
+                "contract_type": HrEmploymentContract.ContractType.PERMANENT,
+                "work_model": HrEmploymentContract.WorkModel.ONSITE,
+                "compensation_basis": HrEmploymentContract.CompensationBasis.ANNUAL,
+                "start_date": date(2025, 4, 1),
+                "payroll_effective_from": date(2025, 4, 1),
+                "is_payroll_eligible": True,
+            },
+        )
+        if (
+            overlap_seed_contract.subentity_id != subentity_id
+            or overlap_seed_contract.status != HrEmploymentContract.ContractStatus.ACTIVE
+            or not overlap_seed_contract.is_payroll_eligible
+        ):
+            overlap_seed_contract.subentity = subentity
+            overlap_seed_contract.status = HrEmploymentContract.ContractStatus.ACTIVE
+            overlap_seed_contract.is_payroll_eligible = True
+            overlap_seed_contract.payroll_effective_from = date(2025, 4, 1)
+            overlap_seed_contract.save(update_fields=["subentity", "status", "is_payroll_eligible", "payroll_effective_from", "updated_at"])
 
         contract_profile, _ = ContractPayrollProfile.objects.get_or_create(
             entity=entity,
@@ -379,6 +507,22 @@ class Command(BaseCommand):
             ]
         )
 
+        overlap_profile = ContractPayrollProfileService.create_or_update_profile(
+            {
+                "entity": entity,
+                "hrms_contract": overlap_seed_contract,
+                "pay_frequency": "MONTHLY",
+                "payroll_status": ContractPayrollProfile.PayrollStatus.ACTIVE,
+                "payment_mode": "BANK_TRANSFER",
+                "bank_account": payable_account,
+                "payroll_start_date": date(2025, 4, 1),
+                "attendance_required": True,
+                "is_active": True,
+                "metadata": {"seed": self.marker_prefix, "case": "overlap"},
+            },
+            instance=ContractPayrollProfile.objects.filter(hrms_contract=overlap_seed_contract).first(),
+        )
+
         ContractSalaryStructureAssignment.objects.update_or_create(
             contract_payroll_profile=contract_profile,
             salary_structure=structure,
@@ -391,6 +535,23 @@ class Command(BaseCommand):
                 "is_active": True,
             },
         )
+        overlap_assignment = ContractSalaryStructureAssignment.objects.filter(
+            contract_payroll_profile=overlap_profile
+        ).order_by("-effective_from", "-id").first()
+        if overlap_assignment is None:
+            overlap_assignment = ContractSalaryAssignmentService.assign_salary_structure(
+                {
+                    "contract_payroll_profile": overlap_profile,
+                    "salary_structure": structure,
+                    "salary_structure_version": version,
+                    "effective_from": date(2025, 4, 1),
+                    "assignment_status": ContractSalaryStructureAssignment.AssignmentStatus.ACTIVE,
+                    "ctc_amount": "144000.00",
+                    "gross_amount": "12000.00",
+                    "is_active": True,
+                    "metadata": {"seed": self.marker_prefix, "case": "overlap"},
+                }
+            )
 
         ContractAttendanceSummary.objects.update_or_create(
             entity=entity,
@@ -441,6 +602,11 @@ class Command(BaseCommand):
 
         return {
             "contract_payroll_profile_id": str(contract_profile.id),
+            "new_contract_id": str(profile_seed_contract.id),
+            "new_contract_code": profile_seed_contract.contract_code,
+            "overlap_contract_profile_id": str(overlap_profile.id),
+            "overlap_contract_code": overlap_seed_contract.contract_code,
+            "overlap_assignment_id": str(overlap_assignment.id),
             "salary_structure_id": structure.id,
             "salary_structure_version_id": version.id,
             "ledger_policy_code": "PW_PLAYWRIGHT_LEDGER",
@@ -496,21 +662,23 @@ class Command(BaseCommand):
         name: str,
         approver_roles: list[str],
     ) -> None:
-        EntityApprovalPolicy.objects.update_or_create(
-            entity=entity,
-            subentity=subentity,
-            policy_key=policy_key,
-            code=code,
-            defaults={
-                "name": name,
-                "approval_mode": EntityApprovalPolicy.ApprovalMode.FIXED_USERS,
-                "approver_roles": approver_roles,
-                "min_approvers": 1,
-                "createdby": user,
-                "status": EntityApprovalPolicy.Status.ACTIVE,
-                "isactive": True,
-            },
+        policy = (
+            EntityApprovalPolicy.objects.filter(entity=entity, code=code)
+            .order_by("id")
+            .first()
         )
+        if policy is None:
+            policy = EntityApprovalPolicy(entity=entity, code=code, createdby=user)
+
+        policy.subentity = subentity
+        policy.policy_key = policy_key
+        policy.name = name
+        policy.approval_mode = EntityApprovalPolicy.ApprovalMode.FIXED_USERS
+        policy.approver_roles = approver_roles
+        policy.min_approvers = 1
+        policy.status = EntityApprovalPolicy.Status.ACTIVE
+        policy.isactive = True
+        policy.save()
 
     def _stage_runs_and_batches(self, *, entity: Entity, user: User, scope: dict[str, object]) -> dict[str, object]:
         entityfinid: EntityFinancialYear = scope["entityfinid"]
@@ -588,6 +756,15 @@ class Command(BaseCommand):
             user=user,
             after_create="post",
         )
+        invalid_batch_run = self._create_seeded_run(
+            marker="BATCH_INVALID",
+            entity=entity,
+            entityfinid=entityfinid,
+            subentity=subentity,
+            period=period,
+            user=user,
+            after_create="approve",
+        )
 
         batch = self._create_seeded_batch(
             run=batch_source_run,
@@ -612,6 +789,12 @@ class Command(BaseCommand):
             marker="EXPORTED",
             after_create="export",
         )
+        invalid_validated_batch = self._create_seeded_invalid_validated_batch(
+            run=invalid_batch_run,
+            user=user,
+            marker="INVALID",
+        )
+        seeded_payslip = self._create_seeded_payslip(run=exported_batch_run, user=user)
 
         request = self._approval_request_for_run(run=submitted_run)
 
@@ -633,6 +816,8 @@ class Command(BaseCommand):
             "approved_batch_run_number": approved_batch_run.run_number,
             "exported_batch_run_id": exported_batch_run.id,
             "exported_batch_run_number": exported_batch_run.run_number,
+            "invalid_batch_run_id": invalid_batch_run.id,
+            "invalid_batch_run_number": invalid_batch_run.run_number,
             "payment_batch_id": batch.id,
             "payment_batch_name": batch.batch_name,
             "validated_payment_batch_id": validated_batch.id,
@@ -641,7 +826,26 @@ class Command(BaseCommand):
             "approved_payment_batch_name": approved_batch.batch_name,
             "exported_payment_batch_id": exported_batch.id,
             "exported_payment_batch_name": exported_batch.batch_name,
+            "invalid_validated_payment_batch_id": invalid_validated_batch.id,
+            "invalid_validated_payment_batch_name": invalid_validated_batch.batch_name,
+            "ess_payslip_id": seeded_payslip.id,
+            "ess_payslip_number": seeded_payslip.payslip_number,
         }
+
+    def _create_seeded_payslip(self, *, run: PayrollRun, user: User):
+        run_employee = run.employee_runs.select_related(
+            "contract_payroll_profile__hrms_contract__employee",
+            "payroll_run",
+        ).prefetch_related("components").order_by("id").first()
+        if run_employee is None:
+            raise CommandError(f"Unable to build seeded payslip because payroll run {run.id} has no employee rows.")
+
+        payslip = PayslipService.build_for_run_employee(run_employee)
+        if payslip.published_at is None or payslip.published_by_id != user.id:
+            payslip.published_at = timezone.now()
+            payslip.published_by = user
+            payslip.save(update_fields=["published_at", "published_by", "updated_at"])
+        return payslip
 
     def _create_seeded_batch(
         self,
@@ -676,6 +880,33 @@ class Command(BaseCommand):
                 export_format=batch.export_format,
                 comment=f"{self.marker_prefix} export {marker}",
             ).batch
+        batch.refresh_from_db()
+        return batch
+
+    def _create_seeded_invalid_validated_batch(
+        self,
+        *,
+        run: PayrollRun,
+        user: User,
+        marker: str,
+    ) -> PayrollPaymentBatch:
+        batch = PayrollPaymentBatchService.create_from_payroll_run(
+            run=run,
+            user_id=user.id,
+            batch_name=f"{self.marker_prefix}-BATCH-{marker}-{timezone.now().strftime('%H%M%S%f')}",
+        )
+        line = batch.lines.order_by("sequence", "id").first()
+        if line is None:
+            raise CommandError(f"Unable to create invalid seeded batch because batch {batch.id} has no lines.")
+        line.payment_account = None
+        line.account_number = ""
+        line.ifsc_code = ""
+        line.save(update_fields=["payment_account", "account_number", "ifsc_code", "updated_at"])
+        batch = PayrollPaymentBatchService.validate_batch(
+            batch=batch,
+            user_id=user.id,
+            comment=f"{self.marker_prefix} validate {marker}",
+        )
         batch.refresh_from_db()
         return batch
 

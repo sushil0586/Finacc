@@ -1,6 +1,10 @@
 from django.urls import path
 
 from payroll.views import (
+    ContractAttendanceAdjustmentListCreateAPIView,
+    ContractAttendanceAdjustmentRetrieveUpdateAPIView,
+    ContractAttendanceSummaryListCreateAPIView,
+    ContractAttendanceSummaryRetrieveUpdateAPIView,
     ContractPayrollInputSnapshotListCreateAPIView,
     ContractPayrollInputSnapshotRetrieveUpdateAPIView,
     ContractPayrollProfileListCreateAPIView,
@@ -174,6 +178,10 @@ urlpatterns = [
     path("recurring-pay-items/<uuid:pk>/", RecurringPayItemRetrieveUpdateAPIView.as_view(), name="payroll-recurring-pay-item-detail"),
     path("one-time-pay-items/", OneTimePayItemListCreateAPIView.as_view(), name="payroll-one-time-pay-item-list-create"),
     path("one-time-pay-items/<uuid:pk>/", OneTimePayItemRetrieveUpdateAPIView.as_view(), name="payroll-one-time-pay-item-detail"),
+    path("attendance-adjustments/", ContractAttendanceAdjustmentListCreateAPIView.as_view(), name="payroll-attendance-adjustment-list-create"),
+    path("attendance-adjustments/<uuid:pk>/", ContractAttendanceAdjustmentRetrieveUpdateAPIView.as_view(), name="payroll-attendance-adjustment-detail"),
+    path("attendance-summaries/", ContractAttendanceSummaryListCreateAPIView.as_view(), name="payroll-attendance-summary-list-create"),
+    path("attendance-summaries/<uuid:pk>/", ContractAttendanceSummaryRetrieveUpdateAPIView.as_view(), name="payroll-attendance-summary-detail"),
     path("dashboard/summary/", PayrollDashboardSummaryAPIView.as_view(), name="payroll-dashboard-summary"),
     path("reports/payroll-register/", PayrollRegisterReportAPIView.as_view(), name="payroll-report-payroll-register"),
     path("reports/payroll-register/export/", PayrollRegisterReportExportAPIView.as_view(), name="payroll-report-payroll-register-export"),

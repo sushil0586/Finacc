@@ -8,6 +8,8 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from payroll.models import (
+    ContractAttendanceAdjustment,
+    ContractAttendanceSummary,
     ContractPayrollInputSnapshot,
     ContractPayrollProfile,
     ContractSalaryStructureAssignment,
@@ -325,6 +327,8 @@ class ContractTaxDeclarationLineSerializer(serializers.ModelSerializer):
         ]
         extra_kwargs = {
             "declaration": {"required": False},
+            "declaration_category": {"required": False, "allow_null": True},
+            "declaration_code": {"required": False, "allow_blank": True},
         }
 
 
@@ -499,6 +503,72 @@ class OneTimePayItemSerializer(serializers.ModelSerializer):
             "source_type",
             "metadata",
             "is_active",
+        ]
+
+
+class ContractAttendanceAdjustmentSerializer(serializers.ModelSerializer):
+    entity_name = serializers.CharField(source="entity.entityname", read_only=True)
+    contract_code = serializers.CharField(source="contract_payroll_profile.hrms_contract.contract_code", read_only=True)
+    employee_number = serializers.CharField(source="contract_payroll_profile.hrms_contract.employee.employee_number", read_only=True)
+    employee_name = serializers.CharField(source="contract_payroll_profile.hrms_contract.employee.display_name", read_only=True)
+    payroll_period_name = serializers.CharField(source="payroll_period.code", read_only=True)
+
+    class Meta:
+        model = ContractAttendanceAdjustment
+        fields = [
+            "id",
+            "entity",
+            "entity_name",
+            "contract_payroll_profile",
+            "contract_code",
+            "employee_number",
+            "employee_name",
+            "payroll_period",
+            "payroll_period_name",
+            "adjustment_type",
+            "adjustment_value",
+            "remarks",
+            "approval_status",
+            "metadata",
+            "is_active",
+            "created_at",
+            "updated_at",
+        ]
+
+
+class ContractAttendanceSummarySerializer(serializers.ModelSerializer):
+    entity_name = serializers.CharField(source="entity.entityname", read_only=True)
+    contract_code = serializers.CharField(source="contract_payroll_profile.hrms_contract.contract_code", read_only=True)
+    employee_number = serializers.CharField(source="contract_payroll_profile.hrms_contract.employee.employee_number", read_only=True)
+    employee_name = serializers.CharField(source="contract_payroll_profile.hrms_contract.employee.display_name", read_only=True)
+    payroll_period_name = serializers.CharField(source="payroll_period.code", read_only=True)
+
+    class Meta:
+        model = ContractAttendanceSummary
+        fields = [
+            "id",
+            "entity",
+            "entity_name",
+            "contract_payroll_profile",
+            "contract_code",
+            "employee_number",
+            "employee_name",
+            "payroll_period",
+            "payroll_period_name",
+            "attendance_days",
+            "payable_days",
+            "lop_days",
+            "weekly_off_days",
+            "holiday_days",
+            "overtime_hours",
+            "late_count",
+            "half_days",
+            "source",
+            "approval_status",
+            "metadata",
+            "is_active",
+            "created_at",
+            "updated_at",
         ]
 
 

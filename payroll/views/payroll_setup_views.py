@@ -9,6 +9,7 @@ from rest_framework.response import Response
 
 from hrms.models import HrEmploymentContract
 from payroll.models import (
+    ContractAttendanceAdjustment,
     ContractAttendanceSummary,
     ContractPayrollInputSnapshot,
     ContractStatutoryProfile,
@@ -30,6 +31,8 @@ from payroll.models import (
     StatutorySlab,
 )
 from payroll.serializers.payroll_setup_serializers import (
+    ContractAttendanceAdjustmentSerializer,
+    ContractAttendanceSummarySerializer,
     ContractPayrollInputSnapshotSerializer,
     ContractStatutoryProfileSerializer,
     ContractPayrollProfileSerializer,
@@ -50,6 +53,8 @@ from payroll.serializers.payroll_setup_serializers import (
     StatutorySlabSerializer,
 )
 from payroll.services import (
+    ContractAttendanceAdjustmentService,
+    ContractAttendanceSummaryService,
     ContractPayrollInputSnapshotService,
     ContractStatutoryProfileService,
     ContractPayrollProfileService,
@@ -1367,6 +1372,223 @@ class OneTimePayItemRetrieveUpdateAPIView(PayrollSetupScopedAPIView, generics.Re
         serializer.is_valid(raise_exception=True)
         try:
             item = OneTimePayItemService.create_or_update_item(serializer.validated_data, instance=obj)
+        except ValueError as err:
+            detail = err.args[0] if err.args else str(err)
+            raise ValidationError(detail if isinstance(detail, (dict, list)) else {"detail": str(detail)})
+        return Response(self.get_serializer(item).data)
+
+
+class ContractAttendanceAdjustmentListCreateAPIView(PayrollSetupScopedAPIView, PayrollSetupQuerysetMixin, generics.ListCreateAPIView):
+    serializer_class = ContractAttendanceAdjustmentSerializer
+    filter_backends = [DjangoFilterBackend, SearchFilter]
+    filterset_fields = ["entity", "contract_payroll_profile", "payroll_period", "adjustment_type", "approval_status", "is_active"]
+    search_fields = [
+        "contract_payroll_profile__hrms_contract__contract_code",
+        "contract_payroll_profile__hrms_contract__employee__employee_number",
+        "contract_payroll_profile__hrms_contract__employee__display_name",
+        "payroll_period__code",
+        "remarks",
+    ]
+    scope_fields = ("entity",)
+
+    def get_queryset(self):
+        entity_id, _, _ = self._scope_from_query(self.request, require_entity=True)
+        is_active_param = self.request.query_params.get("is_active")
+        return ContractAttendanceAdjustmentService.list_adjustments(
+            entity_id=entity_id,
+            search=self.request.query_params.get("search"),
+            contract_payroll_profile_id=self.request.query_params.get("contract_payroll_profile"),
+            payroll_period_id=int(self.request.query_params["payroll_period"]) if self.request.query_params.get("payroll_period") else None,
+            adjustment_type=self.request.query_params.get("adjustment_type"),
+            approval_status=self.request.query_params.get("approval_status"),
+            is_active=None if is_active_param in (None, "") else is_active_param == "true",
+        )
+
+    def get(self, request, *args, **kwargs):
+        entity_id, _, _ = self._scope_from_query(request, require_entity=True)
+        self._assert_setup_permission(
+            request,
+            entity_id=entity_id,
+            permission_key="attendance_adjustment_view",
+            label="view attendance adjustments",
+            legacy_groups={"payroll_operator", "payroll_admin"},
+            legacy_permissions={"payroll.view_payrollrun"},
+        )
+        return super().get(request, *args, **kwargs)
+
+    def post(self, request, *args, **kwargs):
+        if not isinstance(request.data, dict):
+            raise ValidationError({"detail": "Expected an object payload."})
+        entity_id, _, _ = self._scope_from_payload(request, request.data)
+        self._assert_setup_permission(
+            request,
+            entity_id=entity_id,
+            permission_key="attendance_adjustment_create",
+            label="create attendance adjustments",
+            legacy_groups={"payroll_operator", "payroll_admin"},
+            legacy_permissions={"payroll.change_payrollrun"},
+        )
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            item = ContractAttendanceAdjustmentService.create_or_update_adjustment(serializer.validated_data)
+        except ValueError as err:
+            detail = err.args[0] if err.args else str(err)
+            raise ValidationError(detail if isinstance(detail, (dict, list)) else {"detail": str(detail)})
+        return Response(self.get_serializer(item).data, status=201)
+
+
+class ContractAttendanceAdjustmentRetrieveUpdateAPIView(PayrollSetupScopedAPIView, generics.RetrieveUpdateAPIView):
+    serializer_class = ContractAttendanceAdjustmentSerializer
+
+    def get_queryset(self):
+        return ContractAttendanceAdjustment.objects.select_related(
+            "entity",
+            "contract_payroll_profile",
+            "contract_payroll_profile__hrms_contract",
+            "contract_payroll_profile__hrms_contract__employee",
+            "payroll_period",
+        )
+
+    def get_object(self):
+        obj = super().get_object()
+        self._enforce_object_scope(self.request, obj)
+        return obj
+
+    def get(self, request, *args, **kwargs):
+        obj = self.get_object()
+        self._assert_setup_permission(
+            request,
+            entity_id=obj.entity_id,
+            permission_key="attendance_adjustment_view",
+            label="view attendance adjustments",
+            legacy_groups={"payroll_operator", "payroll_admin"},
+            legacy_permissions={"payroll.view_payrollrun"},
+        )
+        return Response(self.get_serializer(obj).data)
+
+    def patch(self, request, *args, **kwargs):
+        obj = self.get_object()
+        self._assert_setup_permission(
+            request,
+            entity_id=obj.entity_id,
+            permission_key="attendance_adjustment_edit",
+            label="edit attendance adjustments",
+            legacy_groups={"payroll_operator", "payroll_admin"},
+            legacy_permissions={"payroll.change_payrollrun"},
+        )
+        serializer = self.get_serializer(obj, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        try:
+            item = ContractAttendanceAdjustmentService.create_or_update_adjustment(serializer.validated_data, instance=obj)
+        except ValueError as err:
+            detail = err.args[0] if err.args else str(err)
+            raise ValidationError(detail if isinstance(detail, (dict, list)) else {"detail": str(detail)})
+        return Response(self.get_serializer(item).data)
+
+
+class ContractAttendanceSummaryListCreateAPIView(PayrollSetupScopedAPIView, PayrollSetupQuerysetMixin, generics.ListCreateAPIView):
+    serializer_class = ContractAttendanceSummarySerializer
+    filter_backends = [DjangoFilterBackend, SearchFilter]
+    filterset_fields = ["entity", "contract_payroll_profile", "payroll_period", "approval_status", "source", "is_active"]
+    search_fields = [
+        "contract_payroll_profile__hrms_contract__contract_code",
+        "contract_payroll_profile__hrms_contract__employee__employee_number",
+        "contract_payroll_profile__hrms_contract__employee__display_name",
+        "payroll_period__code",
+    ]
+    scope_fields = ("entity",)
+
+    def get_queryset(self):
+        entity_id, _, _ = self._scope_from_query(self.request, require_entity=True)
+        is_active_param = self.request.query_params.get("is_active")
+        return ContractAttendanceSummaryService.list_summaries(
+            entity_id=entity_id,
+            search=self.request.query_params.get("search"),
+            contract_payroll_profile_id=self.request.query_params.get("contract_payroll_profile"),
+            payroll_period_id=int(self.request.query_params["payroll_period"]) if self.request.query_params.get("payroll_period") else None,
+            approval_status=self.request.query_params.get("approval_status"),
+            source=self.request.query_params.get("source"),
+            is_active=None if is_active_param in (None, "") else is_active_param == "true",
+        )
+
+    def get(self, request, *args, **kwargs):
+        entity_id, _, _ = self._scope_from_query(request, require_entity=True)
+        self._assert_setup_permission(
+            request,
+            entity_id=entity_id,
+            permission_key="attendance_summary_view",
+            label="view attendance summaries",
+            legacy_groups={"payroll_operator", "payroll_admin"},
+            legacy_permissions={"payroll.view_payrollrun"},
+        )
+        return super().get(request, *args, **kwargs)
+
+    def post(self, request, *args, **kwargs):
+        if not isinstance(request.data, dict):
+            raise ValidationError({"detail": "Expected an object payload."})
+        entity_id, _, _ = self._scope_from_payload(request, request.data)
+        self._assert_setup_permission(
+            request,
+            entity_id=entity_id,
+            permission_key="attendance_summary_create",
+            label="create attendance summaries",
+            legacy_groups={"payroll_operator", "payroll_admin"},
+            legacy_permissions={"payroll.change_payrollrun"},
+        )
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            item = ContractAttendanceSummaryService.create_or_update_summary(serializer.validated_data)
+        except ValueError as err:
+            detail = err.args[0] if err.args else str(err)
+            raise ValidationError(detail if isinstance(detail, (dict, list)) else {"detail": str(detail)})
+        return Response(self.get_serializer(item).data, status=201)
+
+
+class ContractAttendanceSummaryRetrieveUpdateAPIView(PayrollSetupScopedAPIView, generics.RetrieveUpdateAPIView):
+    serializer_class = ContractAttendanceSummarySerializer
+
+    def get_queryset(self):
+        return ContractAttendanceSummary.objects.select_related(
+            "entity",
+            "contract_payroll_profile",
+            "contract_payroll_profile__hrms_contract",
+            "contract_payroll_profile__hrms_contract__employee",
+            "payroll_period",
+        )
+
+    def get_object(self):
+        obj = super().get_object()
+        self._enforce_object_scope(self.request, obj)
+        return obj
+
+    def get(self, request, *args, **kwargs):
+        obj = self.get_object()
+        self._assert_setup_permission(
+            request,
+            entity_id=obj.entity_id,
+            permission_key="attendance_summary_view",
+            label="view attendance summaries",
+            legacy_groups={"payroll_operator", "payroll_admin"},
+            legacy_permissions={"payroll.view_payrollrun"},
+        )
+        return Response(self.get_serializer(obj).data)
+
+    def patch(self, request, *args, **kwargs):
+        obj = self.get_object()
+        self._assert_setup_permission(
+            request,
+            entity_id=obj.entity_id,
+            permission_key="attendance_summary_edit",
+            label="edit attendance summaries",
+            legacy_groups={"payroll_operator", "payroll_admin"},
+            legacy_permissions={"payroll.change_payrollrun"},
+        )
+        serializer = self.get_serializer(obj, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        try:
+            item = ContractAttendanceSummaryService.create_or_update_summary(serializer.validated_data, instance=obj)
         except ValueError as err:
             detail = err.args[0] if err.args else str(err)
             raise ValidationError(detail if isinstance(detail, (dict, list)) else {"detail": str(detail)})
