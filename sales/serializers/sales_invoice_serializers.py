@@ -69,6 +69,8 @@ class SalesInvoiceLineSerializer(serializers.ModelSerializer):
             "taxability_name",
             "gst_rate",
             "cess_percent",
+            "cess_type",
+            "cess_specific_amount",
             "cess_amount",
             # computed
             "taxable_value",
@@ -88,8 +90,14 @@ class SalesInvoiceLineSerializer(serializers.ModelSerializer):
             "line_total",
         ]
         extra_kwargs = {
+            "cess_type": {
+                "help_text": "Cess mode: none, ad_valorem, specific, or composite."
+            },
+            "cess_specific_amount": {
+                "help_text": "Specific cess amount per unit for specific/composite cess."
+            },
             "cess_amount": {
-                "help_text": "Provisional only. Backend recomputes when cess_percent > 0; manual cess survives only when cess_percent is 0."
+                "help_text": "Provisional only. Backend recomputes from cess mode, cess percent, quantity, and taxable value."
             },
             "batch_number": {"help_text": "Optional batch number for batch-managed products."},
             "manufacture_date": {"help_text": "Optional manufacture date for batch-managed products."},
@@ -171,14 +179,63 @@ class SalesInvoiceLineSerializer(serializers.ModelSerializer):
         )
         gst_rate = Decimal(str(attrs.get("gst_rate", getattr(self.instance, "gst_rate", "0.00")) or "0.00"))
         cess_percent = Decimal(str(attrs.get("cess_percent", getattr(self.instance, "cess_percent", "0.00")) or "0.00"))
+        raw_cess_type = attrs.get("cess_type", getattr(self.instance, "cess_type", SalesInvoiceLine.CessType.NONE))
+        cess_type = str(raw_cess_type or SalesInvoiceLine.CessType.NONE).strip().lower()
+        cess_specific_amount = Decimal(
+            str(attrs.get("cess_specific_amount", getattr(self.instance, "cess_specific_amount", "0.00")) or "0.00")
+        )
         cess_amount = Decimal(str(attrs.get("cess_amount", getattr(self.instance, "cess_amount", "0.00")) or "0.00"))
+        if cess_specific_amount < Decimal("0.00"):
+            raise serializers.ValidationError({"cess_specific_amount": "Specific cess amount cannot be negative."})
+        if "cess_type" not in attrs:
+            if cess_percent > Decimal("0.00") and cess_specific_amount > Decimal("0.00"):
+                cess_type = SalesInvoiceLine.CessType.COMPOSITE
+            elif cess_percent > Decimal("0.00"):
+                cess_type = SalesInvoiceLine.CessType.AD_VALOREM
+            elif cess_specific_amount > Decimal("0.00"):
+                cess_type = SalesInvoiceLine.CessType.SPECIFIC
+            else:
+                cess_type = SalesInvoiceLine.CessType.NONE
         if taxability != int(SalesInvoiceHeader.Taxability.TAXABLE):
             if gst_rate > Decimal("0.00"):
                 raise serializers.ValidationError({"gst_rate": "Must be 0 for non-taxable line."})
             if cess_percent > Decimal("0.00"):
                 raise serializers.ValidationError({"cess_percent": "Must be 0 for non-taxable line."})
+            if cess_type != SalesInvoiceLine.CessType.NONE:
+                raise serializers.ValidationError({"cess_type": "Must be 'none' for non-taxable line."})
+            if cess_specific_amount > Decimal("0.00"):
+                raise serializers.ValidationError({"cess_specific_amount": "Must be 0 for non-taxable line."})
             if cess_amount > Decimal("0.00"):
                 raise serializers.ValidationError({"cess_amount": "Must be 0 for non-taxable line."})
+
+        if cess_percent < Decimal("0.00") or cess_percent > Decimal("100.00"):
+            raise serializers.ValidationError({"cess_percent": "Cess percent must be between 0 and 100."})
+
+        if cess_type == SalesInvoiceLine.CessType.NONE:
+            if cess_percent > Decimal("0.00"):
+                raise serializers.ValidationError({"cess_percent": "Must be 0 when cess_type is none."})
+            if cess_specific_amount > Decimal("0.00"):
+                raise serializers.ValidationError({"cess_specific_amount": "Must be 0 when cess_type is none."})
+        elif cess_type == SalesInvoiceLine.CessType.AD_VALOREM:
+            if cess_percent <= Decimal("0.00"):
+                raise serializers.ValidationError({"cess_percent": "Must be > 0 for ad valorem cess."})
+            if cess_specific_amount > Decimal("0.00"):
+                raise serializers.ValidationError({"cess_specific_amount": "Must be 0 for ad valorem cess."})
+        elif cess_type == SalesInvoiceLine.CessType.SPECIFIC:
+            if cess_percent > Decimal("0.00"):
+                raise serializers.ValidationError({"cess_percent": "Must be 0 for specific cess."})
+            if cess_specific_amount <= Decimal("0.00"):
+                raise serializers.ValidationError({"cess_specific_amount": "Must be > 0 for specific cess."})
+        elif cess_type == SalesInvoiceLine.CessType.COMPOSITE:
+            if cess_percent <= Decimal("0.00"):
+                raise serializers.ValidationError({"cess_percent": "Must be > 0 for composite cess."})
+            if cess_specific_amount <= Decimal("0.00"):
+                raise serializers.ValidationError({"cess_specific_amount": "Must be > 0 for composite cess."})
+        else:
+            raise serializers.ValidationError({"cess_type": "Invalid cess type."})
+
+        attrs["cess_type"] = cess_type
+        attrs["cess_specific_amount"] = cess_specific_amount
 
         return attrs
 
@@ -614,6 +671,10 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
         for field in ("place_of_supply_state_code", "place_of_supply_pincode"):
             if field in attrs and attrs[field] is None:
                 attrs[field] = ""
+
+        for field in ("seller_state_code", "customer_state_code", "bill_to_state_code", "place_of_supply_state_code"):
+            if field in attrs:
+                attrs[field] = SalesInvoiceService.normalize_state_code(attrs.get(field))
 
         # hard-block backend-controlled fields if UI tries to push them
         blocked = {

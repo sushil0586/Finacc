@@ -155,8 +155,8 @@ def sales_invoice_ui_contract() -> dict:
             "cess_amount": {
                 "ui_state": "provisional",
                 "backend_authoritative": True,
-                "save_behavior": "manual_only_when_cess_percent_is_zero",
-                "helper_text": "If cess percent is greater than zero, backend recomputes cess. Manual cess only survives when cess percent is zero.",
+                "save_behavior": "recomputed_from_cess_mode",
+                "helper_text": "Backend computes cess from cess type, cess percent, specific amount per unit, quantity, and taxable value.",
             },
             "line_total": {"ui_state": "read_only", "backend_authoritative": True, "save_behavior": "recomputed_on_save"},
         },

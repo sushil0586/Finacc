@@ -2082,6 +2082,44 @@ class SalesInvoiceAdditionalServiceUnitTests(SimpleTestCase):
         self.assertEqual(header_data["seller_state_code"], "03")
         self.assertEqual(header_data["place_of_supply_state_code"], "0")
 
+    def test_align_note_tax_scope_from_original_invoice_preserves_explicit_pos_when_requested(self):
+        header_data = {
+            "seller_gstin": "22AAAAA0000A1Z5",
+            "seller_state_code": "22",
+            "place_of_supply_state_code": "29",
+        }
+        original = SimpleNamespace(
+            seller_gstin="03BNDPG2450J1Z3",
+            seller_state_code="03",
+            place_of_supply_state_code="0",
+        )
+
+        SalesInvoiceService._align_note_tax_scope_from_original_invoice(
+            header_data=header_data,
+            original_invoice=original,
+            preserve_explicit_scope=True,
+        )
+
+        self.assertEqual(header_data["seller_gstin"], "03BNDPG2450J1Z3")
+        self.assertEqual(header_data["seller_state_code"], "03")
+        self.assertEqual(header_data["place_of_supply_state_code"], "29")
+
+    def test_normalize_state_code_resolves_numeric_alias_and_name(self):
+        with patch("sales.services.sales_invoice_service.State.objects") as mocked_state_objects:
+            mocked_state = SimpleNamespace(statecode="27")
+            mocked_state_objects.filter.return_value.order_by.return_value.first.return_value = mocked_state
+
+            self.assertEqual(SalesInvoiceService.normalize_state_code("3"), "03")
+            self.assertEqual(SalesInvoiceService.normalize_state_code("Maharashtra"), "27")
+            self.assertEqual(SalesInvoiceService.normalize_state_code("mh"), "27")
+
+    def test_normalize_state_code_falls_back_to_trimmed_upper_prefix(self):
+        with patch("sales.services.sales_invoice_service.State.objects") as mocked_state_objects:
+            mocked_state_objects.filter.return_value.order_by.return_value.first.return_value = None
+
+            self.assertEqual(SalesInvoiceService.normalize_state_code("tx"), "TX")
+            self.assertEqual(SalesInvoiceService.normalize_state_code(""), "")
+
     def test_validate_doc_linkage_tax_invoice_disallows_original(self):
         original = SimpleNamespace(entity_id=1, entityfinid_id=1, subentity_id=None, customer_id=10)
         with self.assertRaisesMessage(ValueError, "allowed only for Credit Note / Debit Note"):

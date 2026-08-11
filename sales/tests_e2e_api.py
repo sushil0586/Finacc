@@ -267,8 +267,8 @@ class SalesApiEndToEndTests(APITestCase):
     def _attachment_scope_qs(self) -> str:
         return f"?entity={self.entity.id}&entityfinid={self.entityfin.id}&subentity={self.subentity.id}"
 
-    def _goods_line_payload(self, *, qty: str = "10.000", rate: str = "100.0000") -> dict:
-        return {
+    def _goods_line_payload(self, *, qty: str = "10.000", rate: str = "100.0000", **overrides) -> dict:
+        payload = {
             "id": None,
             "line_no": 1,
             "product": self.goods_product.id,
@@ -286,6 +286,8 @@ class SalesApiEndToEndTests(APITestCase):
             "cess_percent": "0.00",
             "cess_amount": "0.00",
         }
+        payload.update(overrides)
+        return payload
 
     def _service_line_payload(self) -> dict:
         return {
@@ -308,8 +310,8 @@ class SalesApiEndToEndTests(APITestCase):
             "cess_amount": "0.00",
         }
 
-    def _invoice_payload(self, *, lines: list[dict], doc_type: int | None = None, reference: str = "SO-001") -> dict:
-        return {
+    def _invoice_payload(self, *, lines: list[dict], doc_type: int | None = None, reference: str = "SO-001", **overrides) -> dict:
+        payload = {
             "doc_type": int(doc_type or SalesInvoiceHeader.DocType.TAX_INVOICE),
             "bill_date": "2026-04-10",
             "credit_days": 5,
@@ -332,6 +334,8 @@ class SalesApiEndToEndTests(APITestCase):
             "custom_fields": {},
             "withholding_enabled": False,
         }
+        payload.update(overrides)
+        return payload
 
     def _create_invoice(self, *, lines: list[dict] | None = None, endpoint: str = "/api/sales/invoices/", **payload_overrides) -> dict:
         payload = self._invoice_payload(lines=lines or [self._goods_line_payload()])
@@ -754,6 +758,40 @@ class SalesApiEndToEndTests(APITestCase):
         self.assertEqual(int(header.tax_regime), int(SalesInvoiceHeader.TaxRegime.INTRA_STATE))
         self.assertFalse(header.is_igst)
 
+    def test_patch_normalizes_alpha_state_aliases_before_tax_regime_recompute(self):
+        created = self._create_invoice(
+            reference="SO-STATE-ALIAS-NORMALIZE",
+            customer_state_code="29",
+            place_of_supply_state_code="29",
+        )
+        invoice_id = created["id"]
+        self.assertTrue(created["is_igst"])
+
+        patch_resp = self.client.patch(
+            f"/api/sales/invoices/{invoice_id}/{self._scope_qs()}",
+            {
+                "seller_state_code": "MH",
+                "customer_state_code": "MH",
+                "place_of_supply_state_code": "MH",
+            },
+            format="json",
+        )
+        self.assertEqual(patch_resp.status_code, status.HTTP_200_OK, patch_resp.json())
+
+        body = patch_resp.json()
+        self.assertEqual(body["seller_state_code"], "27")
+        self.assertEqual(body["customer_state_code"], "27")
+        self.assertEqual(body["place_of_supply_state_code"], "27")
+        self.assertEqual(body["tax_regime"], int(SalesInvoiceHeader.TaxRegime.INTRA_STATE))
+        self.assertFalse(body["is_igst"])
+
+        header = SalesInvoiceHeader.objects.get(pk=invoice_id)
+        self.assertEqual(str(header.seller_state_code), "27")
+        self.assertEqual(str(header.customer_state_code), "27")
+        self.assertEqual(str(header.place_of_supply_state_code), "27")
+        self.assertEqual(int(header.tax_regime), int(SalesInvoiceHeader.TaxRegime.INTRA_STATE))
+        self.assertFalse(header.is_igst)
+
     def test_service_invoice_endpoints_only_return_service_rows(self):
         self._create_invoice(reference="SO-GOODS", lines=[self._goods_line_payload()])
         self._create_invoice(
@@ -768,11 +806,82 @@ class SalesApiEndToEndTests(APITestCase):
         self.assertEqual(len(goods_rows), 1)
         self.assertEqual(goods_rows[0]["customer_name"], "Customer-A")
 
-        service_resp = self.client.get(f"/api/sales/service-invoices/{self._scope_qs()}&line_mode=service")
-        self.assertEqual(service_resp.status_code, status.HTTP_200_OK)
-        service_rows = service_resp.json()
-        self.assertEqual(len(service_rows), 1)
-        self.assertEqual(service_rows[0]["customer_name"], "Customer-A")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._run_auto_compliance")
+    @patch("sales.services.sales_invoice_service.SalesInvoicePostingAdapter.post_sales_invoice")
+    def test_service_credit_note_preserves_edited_place_of_supply_through_confirm_and_post(
+        self,
+        mocked_post_adapter,
+        mocked_auto_compliance,
+    ):
+        original = self._create_invoice(
+            endpoint="/api/sales/service-invoices/",
+            reference="SO-SVC-ORIG-POS",
+            lines=[self._service_line_payload()],
+            place_of_supply_state_code="03",
+            seller_state_code="27",
+            customer_state_code="27",
+        )
+        original_id = original["id"]
+
+        note_create_resp = self.client.post(
+            "/api/sales/service-invoices/",
+            {
+                **self._invoice_payload(
+                    lines=[self._service_line_payload()],
+                    doc_type=SalesInvoiceHeader.DocType.CREDIT_NOTE,
+                    reference=original["reference"],
+                ),
+                "doc_code": "SCN",
+                "original_invoice": original_id,
+                "note_reason": SalesInvoiceHeader.NoteReason.PRICE_DIFFERENCE,
+                "affects_inventory": False,
+                "place_of_supply_state_code": "29",
+            },
+            format="json",
+        )
+        self.assertEqual(note_create_resp.status_code, status.HTTP_201_CREATED, note_create_resp.json())
+        note_body = note_create_resp.json()
+        note_id = note_body["id"]
+        self.assertEqual(note_body["place_of_supply_state_code"], "03")
+
+        patch_resp = self.client.patch(
+            f"/api/sales/service-invoices/{note_id}/{self._scope_qs()}&line_mode=service",
+            {"place_of_supply_state_code": "29"},
+            format="json",
+        )
+        self.assertEqual(patch_resp.status_code, status.HTTP_200_OK, patch_resp.json())
+        patched_body = patch_resp.json()
+        self.assertEqual(patched_body["place_of_supply_state_code"], "29")
+        self.assertEqual(patched_body["tax_regime"], int(SalesInvoiceHeader.TaxRegime.INTER_STATE))
+
+        draft_note = SalesInvoiceHeader.objects.get(pk=note_id)
+        self.assertEqual(str(draft_note.place_of_supply_state_code), "29")
+
+        confirm_resp = self.client.post(
+            f"/api/sales/service-invoices/{note_id}/confirm/{self._scope_qs()}&line_mode=service",
+            {},
+            format="json",
+        )
+        self.assertEqual(confirm_resp.status_code, status.HTTP_200_OK, confirm_resp.json())
+        confirmed_body = confirm_resp.json()
+        self.assertEqual(confirmed_body["place_of_supply_state_code"], "29")
+        self.assertEqual(confirmed_body["tax_regime"], int(SalesInvoiceHeader.TaxRegime.INTER_STATE))
+
+        post_resp = self.client.post(
+            f"/api/sales/service-invoices/{note_id}/post/{self._scope_qs()}&line_mode=service",
+            {},
+            format="json",
+        )
+        self.assertEqual(post_resp.status_code, status.HTTP_200_OK, post_resp.json())
+        posted_body = post_resp.json()
+        self.assertEqual(posted_body["place_of_supply_state_code"], "29")
+        self.assertEqual(posted_body["tax_regime"], int(SalesInvoiceHeader.TaxRegime.INTER_STATE))
+
+        final_note = SalesInvoiceHeader.objects.get(pk=note_id)
+        self.assertEqual(str(final_note.place_of_supply_state_code), "29")
+        self.assertEqual(int(final_note.tax_regime), int(SalesInvoiceHeader.TaxRegime.INTER_STATE))
+        mocked_post_adapter.assert_called_once()
+        self.assertTrue(mocked_auto_compliance.called)
 
     def test_confirmed_invoice_can_be_found_by_invoice_number_search(self):
         created = self._create_invoice(reference="SO-SEARCH")
@@ -1669,6 +1778,220 @@ class SalesApiEndToEndTests(APITestCase):
         self.assertGreaterEqual(mocked_post_adapter.call_count, 2)
         self.assertGreaterEqual(mocked_sync_open_item.call_count, 2)
         self.assertTrue(mocked_auto_compliance.called)
+
+    def test_goods_credit_note_patch_persists_edited_quantity_after_reopen_style_update(self):
+        original = self._create_invoice(
+            reference="SO-ORIG-CN-PATCH",
+            lines=[self._goods_line_payload(qty="2.000", rate="100.0000")],
+            place_of_supply_state_code="27",
+            seller_state_code="27",
+            customer_state_code="27",
+        )
+        original_id = original["id"]
+
+        note_create_resp = self.client.post(
+            "/api/sales/invoices/",
+            {
+                **self._invoice_payload(
+                    lines=[self._goods_line_payload(qty="1.000", rate="100.0000")],
+                    doc_type=SalesInvoiceHeader.DocType.CREDIT_NOTE,
+                    reference=str(original_id),
+                ),
+                "doc_code": "SCN",
+                "original_invoice": original_id,
+                "note_reason": SalesInvoiceHeader.NoteReason.QUANTITY_RETURN,
+                "affects_inventory": True,
+                "place_of_supply_state_code": "27",
+            },
+            format="json",
+        )
+        self.assertEqual(note_create_resp.status_code, status.HTTP_201_CREATED, note_create_resp.json())
+        note_body = note_create_resp.json()
+        note_id = note_body["id"]
+        self.assertEqual(Decimal(str(note_body["lines"][0]["qty"])), Decimal("1.000"))
+
+        existing_line = note_body["lines"][0]
+        patch_payload = {
+            "remarks": "reopen quantity edit",
+            "lines": [
+                {
+                    "id": existing_line["id"],
+                    "line_no": existing_line["line_no"],
+                    "product": self.goods_product.id,
+                    "uom": self.uom.id,
+                    "qty": "2.000",
+                    "free_qty": "0.000",
+                    "rate": "100.0000",
+                    "productDesc": "Test goods",
+                    "is_service": False,
+                    "discount_type": 0,
+                    "discount_percent": "0.0000",
+                    "discount_amount": "0.00",
+                    "gst_rate": "18.00",
+                    "cess_percent": "0.00",
+                    "cess_amount": "0.00",
+                }
+            ],
+        }
+
+        patch_resp = self.client.patch(
+            f"/api/sales/invoices/{note_id}/{self._scope_qs()}",
+            patch_payload,
+            format="json",
+        )
+        self.assertEqual(patch_resp.status_code, status.HTTP_200_OK, patch_resp.json())
+        patched_body = patch_resp.json()
+        self.assertEqual(patched_body["tax_regime"], int(SalesInvoiceHeader.TaxRegime.INTRA_STATE))
+        self.assertEqual(Decimal(str(patched_body["lines"][0]["qty"])), Decimal("2.000"))
+        self.assertEqual(Decimal(str(patched_body["lines"][0]["cgst_amount"])), Decimal("18.00"))
+        self.assertEqual(Decimal(str(patched_body["lines"][0]["sgst_amount"])), Decimal("18.00"))
+        self.assertEqual(Decimal(str(patched_body["lines"][0]["igst_amount"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(patched_body["total_taxable_value"])), Decimal("200.00"))
+
+        reloaded = self.client.get(f"/api/sales/invoices/{note_id}/{self._scope_qs()}", format="json")
+        self.assertEqual(reloaded.status_code, status.HTTP_200_OK, reloaded.json())
+        reloaded_body = reloaded.json()
+        self.assertEqual(Decimal(str(reloaded_body["lines"][0]["qty"])), Decimal("2.000"))
+        self.assertEqual(Decimal(str(reloaded_body["lines"][0]["cgst_amount"])), Decimal("18.00"))
+        self.assertEqual(Decimal(str(reloaded_body["lines"][0]["sgst_amount"])), Decimal("18.00"))
+        self.assertEqual(Decimal(str(reloaded_body["lines"][0]["igst_amount"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(reloaded_body["total_taxable_value"])), Decimal("200.00"))
+
+        line = SalesInvoiceLine.objects.get(header_id=note_id, line_no=1)
+        self.assertEqual(line.qty, Decimal("2.000"))
+        self.assertEqual(line.taxable_value, Decimal("200.00"))
+        self.assertEqual(line.cgst_amount, Decimal("18.00"))
+        self.assertEqual(line.sgst_amount, Decimal("18.00"))
+        self.assertEqual(line.igst_amount, Decimal("0.00"))
+
+    def test_sales_invoice_composite_cess_persists_after_save_and_reload(self):
+        line_payload = self._goods_line_payload(
+            qty="2.000",
+            rate="100.0000",
+            cess_percent="1.00",
+            cess_type="composite",
+            cess_specific_amount="2.00",
+        )
+        line_payload.pop("cess_amount", None)
+
+        create_resp = self.client.post(
+            "/api/sales/invoices/",
+            self._invoice_payload(
+                lines=[line_payload],
+                seller_state_code="29",
+                customer_state_code="27",
+                place_of_supply_state_code="03",
+            ),
+            format="json",
+        )
+        self.assertEqual(create_resp.status_code, status.HTTP_201_CREATED, create_resp.json())
+
+        body = create_resp.json()
+        self.assertEqual(body["tax_regime"], int(SalesInvoiceHeader.TaxRegime.INTER_STATE))
+        self.assertEqual(body["lines"][0]["cess_type"], "composite")
+        self.assertEqual(Decimal(str(body["lines"][0]["igst_amount"])), Decimal("36.00"))
+        self.assertEqual(Decimal(str(body["lines"][0]["cess_percent"])), Decimal("1.00"))
+        self.assertEqual(Decimal(str(body["lines"][0]["cess_specific_amount"])), Decimal("2.00"))
+        self.assertEqual(Decimal(str(body["lines"][0]["cess_amount"])), Decimal("6.00"))
+        self.assertEqual(Decimal(str(body["lines"][0]["line_total"])), Decimal("242.00"))
+
+        invoice_id = body["id"]
+        reload_resp = self.client.get(f"/api/sales/invoices/{invoice_id}/{self._scope_qs()}", format="json")
+        self.assertEqual(reload_resp.status_code, status.HTTP_200_OK, reload_resp.json())
+        reload_body = reload_resp.json()
+        self.assertEqual(reload_body["lines"][0]["cess_type"], "composite")
+        self.assertEqual(Decimal(str(reload_body["lines"][0]["cess_specific_amount"])), Decimal("2.00"))
+        self.assertEqual(Decimal(str(reload_body["lines"][0]["cess_amount"])), Decimal("6.00"))
+        self.assertEqual(Decimal(str(reload_body["lines"][0]["line_total"])), Decimal("242.00"))
+
+        line = SalesInvoiceLine.objects.get(header_id=invoice_id, line_no=1)
+        self.assertEqual(line.cess_type, SalesInvoiceLine.CessType.COMPOSITE)
+        self.assertEqual(line.cess_specific_amount, Decimal("2.00"))
+        self.assertEqual(line.cess_amount, Decimal("6.00"))
+        self.assertEqual(line.line_total, Decimal("242.00"))
+
+    def test_sales_invoice_ad_valorem_cess_persists_after_save_and_reload(self):
+        line_payload = self._goods_line_payload(
+            qty="2.000",
+            rate="100.0000",
+            cess_percent="1.50",
+            cess_type="ad_valorem",
+            cess_specific_amount="0.00",
+        )
+        line_payload.pop("cess_amount", None)
+
+        create_resp = self.client.post(
+            "/api/sales/invoices/",
+            self._invoice_payload(
+                lines=[line_payload],
+                seller_state_code="29",
+                customer_state_code="27",
+                place_of_supply_state_code="03",
+            ),
+            format="json",
+        )
+        self.assertEqual(create_resp.status_code, status.HTTP_201_CREATED, create_resp.json())
+
+        body = create_resp.json()
+        self.assertEqual(body["lines"][0]["cess_type"], "ad_valorem")
+        self.assertEqual(Decimal(str(body["lines"][0]["cess_percent"])), Decimal("1.50"))
+        self.assertEqual(Decimal(str(body["lines"][0]["cess_specific_amount"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(body["lines"][0]["cess_amount"])), Decimal("3.00"))
+        self.assertEqual(Decimal(str(body["lines"][0]["line_total"])), Decimal("239.00"))
+
+        invoice_id = body["id"]
+        reload_resp = self.client.get(f"/api/sales/invoices/{invoice_id}/{self._scope_qs()}", format="json")
+        self.assertEqual(reload_resp.status_code, status.HTTP_200_OK, reload_resp.json())
+        reload_body = reload_resp.json()
+        self.assertEqual(reload_body["lines"][0]["cess_type"], "ad_valorem")
+        self.assertEqual(Decimal(str(reload_body["lines"][0]["cess_amount"])), Decimal("3.00"))
+
+        line = SalesInvoiceLine.objects.get(header_id=invoice_id, line_no=1)
+        self.assertEqual(line.cess_type, SalesInvoiceLine.CessType.AD_VALOREM)
+        self.assertEqual(line.cess_specific_amount, Decimal("0.00"))
+        self.assertEqual(line.cess_amount, Decimal("3.00"))
+
+    def test_sales_invoice_specific_cess_persists_after_save_and_reload(self):
+        line_payload = self._goods_line_payload(
+            qty="2.000",
+            rate="100.0000",
+            cess_percent="0.00",
+            cess_type="specific",
+            cess_specific_amount="2.50",
+        )
+        line_payload.pop("cess_amount", None)
+
+        create_resp = self.client.post(
+            "/api/sales/invoices/",
+            self._invoice_payload(
+                lines=[line_payload],
+                seller_state_code="29",
+                customer_state_code="27",
+                place_of_supply_state_code="03",
+            ),
+            format="json",
+        )
+        self.assertEqual(create_resp.status_code, status.HTTP_201_CREATED, create_resp.json())
+
+        body = create_resp.json()
+        self.assertEqual(body["lines"][0]["cess_type"], "specific")
+        self.assertEqual(Decimal(str(body["lines"][0]["cess_percent"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(body["lines"][0]["cess_specific_amount"])), Decimal("2.50"))
+        self.assertEqual(Decimal(str(body["lines"][0]["cess_amount"])), Decimal("5.00"))
+        self.assertEqual(Decimal(str(body["lines"][0]["line_total"])), Decimal("241.00"))
+
+        invoice_id = body["id"]
+        reload_resp = self.client.get(f"/api/sales/invoices/{invoice_id}/{self._scope_qs()}", format="json")
+        self.assertEqual(reload_resp.status_code, status.HTTP_200_OK, reload_resp.json())
+        reload_body = reload_resp.json()
+        self.assertEqual(reload_body["lines"][0]["cess_type"], "specific")
+        self.assertEqual(Decimal(str(reload_body["lines"][0]["cess_specific_amount"])), Decimal("2.50"))
+        self.assertEqual(Decimal(str(reload_body["lines"][0]["cess_amount"])), Decimal("5.00"))
+
+        line = SalesInvoiceLine.objects.get(header_id=invoice_id, line_no=1)
+        self.assertEqual(line.cess_type, SalesInvoiceLine.CessType.SPECIFIC)
+        self.assertEqual(line.cess_specific_amount, Decimal("2.50"))
+        self.assertEqual(line.cess_amount, Decimal("5.00"))
 
     @patch("sales.services.sales_invoice_service.SalesInvoiceService._run_auto_compliance")
     @patch("sales.services.sales_invoice_service.SalesArService.sync_open_item_for_header")

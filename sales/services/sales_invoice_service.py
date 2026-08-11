@@ -31,6 +31,7 @@ from posting.adapters.sales_invoice import SalesInvoicePostingAdapter, SalesInvo
 from posting.models import TxnType, Entry, EntryStatus, JournalLine, InventoryMove
 from posting.common.location_resolver import resolve_posting_location_id
 from posting.services.posting_service import PostingService, JLInput, IMInput
+from geography.models import State
 
 
 
@@ -1003,15 +1004,26 @@ class SalesInvoiceService:
             )
 
     @classmethod
-    def _align_note_tax_scope_from_original_invoice(cls, *, header_data: dict, original_invoice: SalesInvoiceHeader) -> None:
+    def _align_note_tax_scope_from_original_invoice(
+        cls,
+        *,
+        header_data: dict,
+        original_invoice: SalesInvoiceHeader,
+        preserve_explicit_scope: bool = False,
+    ) -> None:
         """
         Credit/Debit notes should inherit the original invoice tax scope.
         This keeps tax regime derivation and downstream caps aligned with the
-        source invoice instead of letting the note drift to a different state
-        combination.
+        source invoice by default. During note edits we may preserve an
+        explicitly supplied POS so ship-to driven GST recalculation can be
+        saved back onto the draft note.
         """
         header_data["seller_gstin"] = (original_invoice.seller_gstin or "").strip()
         header_data["seller_state_code"] = (original_invoice.seller_state_code or "").strip()
+        if preserve_explicit_scope:
+            explicit_pos = str(header_data.get("place_of_supply_state_code") or "").strip()
+            if explicit_pos:
+                return
         header_data["place_of_supply_state_code"] = (original_invoice.place_of_supply_state_code or "").strip()
 
     @classmethod
@@ -1839,8 +1851,15 @@ class SalesInvoiceService:
             )
             if original_invoice is not None:
                 header_data["original_invoice"] = original_invoice
-        if original_invoice is not None and doc_type in (int(SalesInvoiceHeader.DocType.CREDIT_NOTE), int(SalesInvoiceHeader.DocType.DEBIT_NOTE)):
-            cls._align_note_tax_scope_from_original_invoice(header_data=header_data, original_invoice=original_invoice)
+        if original_invoice is not None and doc_type in (
+            int(SalesInvoiceHeader.DocType.CREDIT_NOTE),
+            int(SalesInvoiceHeader.DocType.DEBIT_NOTE),
+        ):
+            cls._align_note_tax_scope_from_original_invoice(
+                header_data=header_data,
+                original_invoice=original_invoice,
+                preserve_explicit_scope=True,
+            )
         cls._validate_doc_linkage(
             doc_type=doc_type,
             original_invoice=original_invoice,
@@ -1927,7 +1946,9 @@ class SalesInvoiceService:
             "updated_by",
             "updated_at",
         ])
-
+        if hasattr(header, "_prefetched_objects_cache"):
+            header._prefetched_objects_cache = {}
+        header.refresh_from_db()
 
         return header
 
@@ -1949,13 +1970,33 @@ class SalesInvoiceService:
             due = header.bill_date
         header.due_date = due
 
+    @classmethod
+    def normalize_state_code(cls, value: Any) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        if raw.isdigit():
+            return raw.zfill(2)[:2]
+
+        state = (
+            State.objects.filter(Q(statecode__iexact=raw) | Q(statename__iexact=raw), isactive=True)
+            .order_by("id")
+            .first()
+        )
+        if state is not None:
+            return str(state.statecode or "").strip().zfill(2)[:2]
+
+        return raw.upper()[:2]
+
     @staticmethod
     def derive_tax_regime(header: SalesInvoiceHeader):
         """
         If seller_state != place_of_supply => IGST, else CGST+SGST.
         """
-        seller = (header.seller_state_code or "").strip()
-        pos = (header.place_of_supply_state_code or "").strip()
+        seller = SalesInvoiceService.normalize_state_code(header.seller_state_code)
+        pos = SalesInvoiceService.normalize_state_code(header.place_of_supply_state_code)
+        header.seller_state_code = seller
+        header.place_of_supply_state_code = pos
         if seller and pos and seller != pos:
             header.tax_regime = SalesInvoiceHeader.TaxRegime.INTER_STATE
             header.is_igst = True
@@ -2130,6 +2171,8 @@ class SalesInvoiceService:
             "taxability",
             "gst_rate",
             "cess_percent",
+            "cess_type",
+            "cess_specific_amount",
             "cess_amount",
             "sales_account",
         ]:
@@ -2207,19 +2250,57 @@ class SalesInvoiceService:
         elif gst_rate > ZERO4:
             tax_total = q2(taxable * gst_rate / Decimal("100"))
 
-        # Align with purchase + UI preview behavior:
-        # ad-valorem cess should be derived from the taxable base, not the
-        # gross inclusive amount, otherwise inclusive-GST invoices can post a
-        # different total than the user saw on screen.
-        if taxability == int(SalesInvoiceHeader.Taxability.TAXABLE) and q4(line.cess_percent) > ZERO4:
-            cess_amt = q2(taxable * q4(line.cess_percent) / Decimal("100"))
+        cess_type = str(
+            getattr(line, "cess_type", SalesInvoiceLine.CessType.NONE) or SalesInvoiceLine.CessType.NONE
+        ).strip().lower()
+        cess_percent = q4(getattr(line, "cess_percent", ZERO2))
+        if cess_percent < ZERO4:
+            cess_percent = ZERO4
+        cess_percent = min(cess_percent, Decimal("100.0000"))
+        cess_specific_amount = q2(getattr(line, "cess_specific_amount", ZERO2))
+        if cess_specific_amount < ZERO2:
+            cess_specific_amount = ZERO2
+        if cess_type == SalesInvoiceLine.CessType.NONE:
+            if cess_percent > ZERO4 and cess_specific_amount > ZERO2:
+                cess_type = SalesInvoiceLine.CessType.COMPOSITE
+            elif cess_percent > ZERO4:
+                cess_type = SalesInvoiceLine.CessType.AD_VALOREM
+            elif cess_specific_amount > ZERO2:
+                cess_type = SalesInvoiceLine.CessType.SPECIFIC
+
+        if taxability != int(SalesInvoiceHeader.Taxability.TAXABLE):
+            cess_type = SalesInvoiceLine.CessType.NONE
+            cess_percent = ZERO4
+            cess_specific_amount = ZERO2
+            cess_amt = ZERO2
+        elif cess_type == SalesInvoiceLine.CessType.AD_VALOREM:
+            cess_amt = q2(taxable * cess_percent / Decimal("100"))
+            cess_specific_amount = ZERO2
+        elif cess_type == SalesInvoiceLine.CessType.SPECIFIC:
+            cess_amt = q2(bill_qty * cess_specific_amount)
+            cess_percent = ZERO4
+        elif cess_type == SalesInvoiceLine.CessType.COMPOSITE:
+            cess_amt = q2((taxable * cess_percent / Decimal("100")) + (bill_qty * cess_specific_amount))
         else:
-            cess_amt = ZERO2 if taxability != int(SalesInvoiceHeader.Taxability.TAXABLE) else q2(line.cess_amount)
+            legacy_manual_cess = q2(getattr(line, "cess_amount", ZERO2))
+            if legacy_manual_cess > ZERO2:
+                cess_type = SalesInvoiceLine.CessType.NONE
+                cess_percent = ZERO4
+                cess_specific_amount = ZERO2
+                cess_amt = legacy_manual_cess
+            else:
+                cess_type = SalesInvoiceLine.CessType.NONE
+                cess_percent = ZERO4
+                cess_specific_amount = ZERO2
+                cess_amt = ZERO2
 
         # Reverse-charge invoices should not carry GST/CESS amounts on invoice lines.
         if bool(getattr(header, "is_reverse_charge", False)):
             tax_total = ZERO2
             cess_amt = ZERO2
+            cess_type = SalesInvoiceLine.CessType.NONE
+            cess_percent = ZERO4
+            cess_specific_amount = ZERO2
 
         if header.is_igst:
             igst = tax_total
@@ -2232,6 +2313,9 @@ class SalesInvoiceService:
         line.cgst_amount = cgst
         line.sgst_amount = sgst
         line.igst_amount = igst
+        line.cess_type = cess_type
+        line.cess_percent = q2(cess_percent)
+        line.cess_specific_amount = cess_specific_amount
         line.cess_amount = cess_amt
         line.discount_amount = disc  # normalize
 
@@ -2530,8 +2614,12 @@ class SalesInvoiceService:
         charges: Optional[list[SalesChargeLine]] = None,
     ) -> tuple[list[SalesInvoiceLine], list[SalesChargeLine]]:
         return (
-            lines if lines is not None else list(header.lines.all()),
-            charges if charges is not None else list(header.charges.all()),
+            lines if lines is not None else list(
+                SalesInvoiceLine.objects.filter(header_id=header.id).order_by("line_no", "id")
+            ),
+            charges if charges is not None else list(
+                SalesChargeLine.objects.filter(header_id=header.id).order_by("line_no", "id")
+            ),
         )
 
     @classmethod

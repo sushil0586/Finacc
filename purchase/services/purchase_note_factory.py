@@ -194,8 +194,10 @@ class PurchaseNoteFactory:
             doc_no=allocated.doc_no,
             purchase_number=allocated.display_no,
 
-            supplier_invoice_number=None,
-            supplier_invoice_date=None,
+            # Carry forward the source supplier invoice identity so note drafts
+            # remain immediately saveable/reopenable under shared validation rules.
+            supplier_invoice_number=src.supplier_invoice_number,
+            supplier_invoice_date=src.supplier_invoice_date,
 
             ref_document=src,
 

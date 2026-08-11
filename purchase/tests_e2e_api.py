@@ -15,7 +15,15 @@ from Authentication.models import User
 from assets.models import AssetCategory
 from catalog.models import HsnSac, Product, ProductCategory, ProductGstRate, ProductPurchaseBehavior, UnitOfMeasure
 from entity.models import Entity, EntityAddress, EntityFinancialYear, EntityGstRegistration, Godown, GstRegistrationType, SubEntity
-from financial.models import AccountCommercialProfile, AccountComplianceProfile, Ledger, account, accountHead, accounttype
+from financial.models import (
+    AccountCommercialProfile,
+    AccountComplianceProfile,
+    InvoiceCustomFieldDefinition,
+    Ledger,
+    account,
+    accountHead,
+    accounttype,
+)
 from financial.services import create_account_with_synced_ledger
 from geography.models import City, Country, District, State
 from numbering.models import DocumentNumberSeries, DocumentType
@@ -1795,12 +1803,29 @@ class PurchaseApiEndToEndTests(APITestCase):
         body = response.json()["data"]
         self.assertEqual(body["doc_type"], int(PurchaseInvoiceHeader.DocType.CREDIT_NOTE))
         self.assertEqual(body["ref_document"], invoice_id)
+        self.assertEqual(body["supplier_invoice_number"], "INV-CN-ACTION")
+        self.assertIsNotNone(body["supplier_invoice_date"])
         self.assertEqual(body["note_reason"], PurchaseInvoiceHeader.NoteReason.QUANTITY_RETURN)
         self.assertTrue(body["affects_inventory"])
 
     def test_purchase_note_update_persists_custom_fields(self):
         created = self._create_invoice(supplier_invoice_number="INV-CN-CUSTOM-FIELD")
         invoice_id = created["id"]
+
+        InvoiceCustomFieldDefinition.objects.create(
+            entity=self.entity,
+            subentity=None,
+            module="purchase_invoice",
+            key="note_tag",
+            label="Note Tag",
+            field_type="text",
+            is_required=False,
+            order_no=1,
+            help_text="",
+            options_json=[],
+            applies_to_account=None,
+            isactive=True,
+        )
 
         create_note_resp = self.client.post(
             f"/api/purchase/purchase-invoices/{invoice_id}/create-credit-note/{self._scope_qs()}",
@@ -1813,9 +1838,23 @@ class PurchaseApiEndToEndTests(APITestCase):
         self.assertEqual(create_note_resp.status_code, status.HTTP_201_CREATED, create_note_resp.json())
         note_id = int(create_note_resp.json()["data"]["id"])
 
-        update_resp = self.client.patch(
+        detail_resp = self.client.get(f"/api/purchase/purchase-invoices/{note_id}/{self._scope_qs()}")
+        self.assertEqual(detail_resp.status_code, status.HTTP_200_OK, detail_resp.json())
+        payload = detail_resp.json()
+        payload["custom_fields"] = {"note_tag": "persist-me"}
+        note_header = PurchaseInvoiceHeader.objects.get(pk=note_id)
+        payload["bill_date"] = note_header.bill_date.strftime("%Y-%m-%d") if note_header.bill_date else None
+        payload["due_date"] = note_header.due_date.strftime("%Y-%m-%d") if note_header.due_date else None
+        payload["posting_date"] = note_header.posting_date.strftime("%Y-%m-%d") if note_header.posting_date else None
+        payload["supplier_invoice_date"] = (
+            note_header.supplier_invoice_date.strftime("%Y-%m-%d")
+            if note_header.supplier_invoice_date
+            else None
+        )
+
+        update_resp = self.client.put(
             f"/api/purchase/purchase-invoices/{note_id}/{self._scope_qs()}",
-            {"custom_fields": {"note_tag": "persist-me"}},
+            payload,
             format="json",
         )
         self.assertEqual(update_resp.status_code, status.HTTP_200_OK, update_resp.json())
@@ -1864,6 +1903,8 @@ class PurchaseApiEndToEndTests(APITestCase):
         body = response.json()["data"]
         self.assertEqual(body["doc_type"], int(PurchaseInvoiceHeader.DocType.DEBIT_NOTE))
         self.assertEqual(body["ref_document"], invoice_id)
+        self.assertEqual(body["supplier_invoice_number"], "INV-DN-ACTION")
+        self.assertIsNotNone(body["supplier_invoice_date"])
         self.assertEqual(body["note_reason"], PurchaseInvoiceHeader.NoteReason.QUANTITY_RETURN)
         self.assertTrue(body["affects_inventory"])
 

@@ -334,6 +334,12 @@ class SalesInvoiceLine(EntityScopedModel):
         PERCENT = 1, "Percent"
         AMOUNT = 2, "Amount"
 
+    class CessType(models.TextChoices):
+        NONE = "none", "None"
+        AD_VALOREM = "ad_valorem", "Ad Valorem"
+        SPECIFIC = "specific", "Specific"
+        COMPOSITE = "composite", "Composite"
+
     header = models.ForeignKey(SalesInvoiceHeader, on_delete=models.CASCADE, related_name="lines")
     line_no = models.PositiveIntegerField(default=1)
 
@@ -375,6 +381,8 @@ class SalesInvoiceLine(EntityScopedModel):
     )
     gst_rate = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
     cess_percent = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
+    cess_type = models.CharField(max_length=20, choices=CessType.choices, default=CessType.NONE)
+    cess_specific_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"))
     cess_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"))
 
     # computed (service)
@@ -410,6 +418,7 @@ class SalesInvoiceLine(EntityScopedModel):
                     & Q(gst_rate__lte=100)
                     & Q(cess_percent__gte=0)
                     & Q(cess_percent__lte=100)
+                    & Q(cess_specific_amount__gte=0)
                     & Q(taxable_value__gte=0)
                     & Q(cgst_amount__gte=0)
                     & Q(sgst_amount__gte=0)

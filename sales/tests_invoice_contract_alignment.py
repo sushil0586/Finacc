@@ -1431,6 +1431,37 @@ class SalesInvoiceContractAlignmentTests(APITestCase):
         SalesInvoiceService.compute_line_amounts(header, manual_line)
         self.assertEqual(manual_line.cess_amount, Decimal("7.50"))
 
+    def test_sales_compute_line_amounts_supports_composite_cess(self):
+        header = SalesInvoiceHeader(is_igst=True)
+
+        composite_line = SalesInvoiceLine(
+            line_no=4,
+            product=self.product,
+            uom=self.uom,
+            qty=Decimal("2.000"),
+            free_qty=Decimal("0.000"),
+            rate=Decimal("100.0000"),
+            discount_type=SalesInvoiceLine.DiscountType.NONE,
+            discount_percent=Decimal("0.0000"),
+            discount_amount=Decimal("0.00"),
+            gst_rate=Decimal("18.0000"),
+            cess_type=SalesInvoiceLine.CessType.COMPOSITE,
+            cess_percent=Decimal("1.0000"),
+            cess_specific_amount=Decimal("2.00"),
+            cess_amount=Decimal("0.00"),
+            hsn_sac_code="8471",
+        )
+
+        SalesInvoiceService.compute_line_amounts(header, composite_line)
+
+        self.assertEqual(composite_line.taxable_value, Decimal("200.00"))
+        self.assertEqual(composite_line.igst_amount, Decimal("36.00"))
+        self.assertEqual(composite_line.cess_type, SalesInvoiceLine.CessType.COMPOSITE)
+        self.assertEqual(composite_line.cess_percent, Decimal("1.00"))
+        self.assertEqual(composite_line.cess_specific_amount, Decimal("2.00"))
+        self.assertEqual(composite_line.cess_amount, Decimal("6.00"))
+        self.assertEqual(composite_line.line_total, Decimal("242.00"))
+
     def test_sales_compute_line_amounts_uses_taxable_base_for_inclusive_cess(self):
         header = SalesInvoiceHeader(is_igst=True)
 
