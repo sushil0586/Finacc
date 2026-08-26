@@ -8,6 +8,15 @@ from rest_framework.test import APIClient
 
 from decimal import Decimal, ROUND_HALF_UP
 
+from hrms.models import (
+    AttendancePolicy,
+    ContractLeaveBalanceSnapshot,
+    DailyAttendance,
+    LeavePolicy,
+    LeavePolicyRule,
+    LeaveType,
+)
+from hrms.services import AttendanceCaptureService, LeaveApplicationService, LeaveApprovalService
 from payroll.models import ContractAttendanceSummary, ContractPayrollProfile, PayrollRunActionLog
 from payroll.services import (
     ContractAttendanceSummaryService,
@@ -19,6 +28,7 @@ from payroll.services import (
     PayrollRunService,
     RecurringPayItemService,
 )
+from payroll.services.payroll_run_service import PayrollCalculationError
 from payroll.tests.factories import PayrollFactory
 
 
@@ -358,7 +368,7 @@ class PayrollRunReadinessIntegrationServiceTests(TestCase):
             liability_account=self.setup["liability_account"],
             payable_account=self.setup["payable_account"],
         )
-        _, contract_profile = self._create_contract_profile(tax_regime="OLD")
+        _, contract_profile = self._create_contract_profile(tax_regime="OLD", tds_applicable=True)
         ContractSalaryAssignmentService.assign_salary_structure(
             {
                 "contract_payroll_profile": contract_profile,
@@ -425,6 +435,295 @@ class PayrollRunReadinessIntegrationServiceTests(TestCase):
         self.assertEqual(row.calculation_payload["source_markers"]["attendance_source"], "contract_native")
         self.assertEqual(row.calculation_payload["attendance_snapshot"]["summary_id"], str(summary.id))
         self.assertEqual(component_row.calculation_basis_snapshot["source_markers"]["attendance_source"], "contract_native")
+
+    @override_settings(PAYROLL_USE_CONTRACT_READINESS=True)
+    def test_hrms_closed_attendance_requirement_gates_payroll_proration(self):
+        self.setup["line"].calculation_basis = self.setup["line"].CalculationBasis.PERCENT_OF_CTC
+        self.setup["line"].rate = "100.0000"
+        self.setup["line"].fixed_amount = "0.00"
+        self.setup["line"].save(update_fields=["calculation_basis", "rate", "fixed_amount"])
+        contract, contract_profile = self._create_contract_profile()
+        ContractSalaryAssignmentService.assign_salary_structure(
+            {
+                "contract_payroll_profile": contract_profile,
+                "salary_structure": self.setup["structure"],
+                "salary_structure_version": self.setup["version"],
+                "effective_from": date(2025, 4, 1),
+                "assignment_status": "ACTIVE",
+                "ctc_amount": "30000.00",
+                "gross_amount": "0.00",
+                "is_active": True,
+            },
+            instance=self.setup["salary_assignment"],
+        )
+        self._create_policy()
+        AttendancePolicy.objects.filter(entity=self.setup["entity"]).update(is_default=False, is_active=False)
+        AttendancePolicy.objects.create(
+            entity=self.setup["entity"],
+            subentity=self.setup["subentity"],
+            code="ATT-CLOSED-PAYROLL",
+            name="Closed Attendance Payroll Gate",
+            is_default=True,
+            policy_json={"payroll_attendance_requirement": "CLOSED"},
+            created_by=self.setup["user"],
+            updated_by=self.setup["user"],
+        )
+        self.assertEqual(
+            AttendanceCaptureService.resolve_payroll_requirement(contract=contract).level,
+            "CLOSED",
+        )
+        AttendanceCaptureService.upsert_daily_entry(
+            attrs={
+                "contract": contract,
+                "attendance_date": self.setup["period"].period_start,
+                "status": DailyAttendance.AttendanceStatus.PRESENT,
+            },
+            actor=self.setup["user"],
+        )
+        approval = AttendanceCaptureService.submit_approval(
+            contract=contract,
+            payroll_period=self.setup["period"],
+            actor=self.setup["user"],
+        )
+        AttendanceCaptureService.approve_approval(
+            approval=approval,
+            actor=self.setup["user"],
+            review_note="approved before payroll close gate",
+        )
+        summary = ContractAttendanceSummary.objects.get(
+            contract_payroll_profile=contract_profile,
+            payroll_period=self.setup["period"],
+        )
+        self.assertFalse(
+            AttendanceCaptureService.summary_is_payroll_eligible(
+                contract=contract,
+                payroll_period=self.setup["period"],
+                summary=summary,
+            )
+        )
+
+        before_close_run = self._create_run()
+        with self.assertRaisesMessage(PayrollCalculationError, "requires CLOSED attendance"):
+            PayrollRunService.calculate_run(before_close_run)
+        self.assertFalse(
+            AttendanceCaptureService.summary_is_payroll_eligible(
+                contract=contract,
+                payroll_period=self.setup["period"],
+                summary=summary,
+            )
+        )
+
+        monthly_close = AttendanceCaptureService.get_or_create_monthly_close(
+            entity_id=self.setup["entity"].id,
+            subentity_id=self.setup["subentity"].id,
+            payroll_period=self.setup["period"],
+        )
+        monthly_close = AttendanceCaptureService.submit_monthly_close(monthly_close=monthly_close, actor=self.setup["user"])
+        monthly_close = AttendanceCaptureService.approve_monthly_close(monthly_close=monthly_close, actor=self.setup["user"])
+        AttendanceCaptureService.close_monthly_close(
+            monthly_close=monthly_close,
+            actor=self.setup["user"],
+            close_note="closed before payroll calculation",
+        )
+
+        after_close_run = self._create_run()
+        PayrollRunService.calculate_run(after_close_run)
+        after_close_row = after_close_run.employee_runs.get(contract_payroll_profile=contract_profile)
+        after_close_component = after_close_row.components.get(component=self.setup["component"])
+        period_days = Decimal((after_close_run.payroll_period.period_end - after_close_run.payroll_period.period_start).days + 1)
+        expected_multiplier = (Decimal("1.00") / period_days).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+        expected_amount = (Decimal("30000.00") * expected_multiplier).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+        self.assertEqual(after_close_component.amount, expected_amount)
+        self.assertTrue(
+            AttendanceCaptureService.summary_is_payroll_eligible(
+                contract=contract,
+                payroll_period=self.setup["period"],
+                summary=summary,
+            )
+        )
+        self.assertEqual(after_close_row.calculation_payload["source_markers"]["attendance_source"], "contract_native")
+        self.assertEqual(after_close_row.calculation_payload["attendance_snapshot"]["summary_id"], str(summary.id))
+        self.assertEqual(after_close_row.calculation_payload["attendance_snapshot"]["payroll_eligibility_requirement"], "CLOSED")
+        self.assertEqual(after_close_row.calculation_payload["attendance_snapshot"]["approval_status"], "APPROVED")
+
+    @override_settings(PAYROLL_USE_CONTRACT_READINESS=True)
+    def test_hrms_approved_leave_flows_into_payroll_without_double_counting(self):
+        self.setup["line"].calculation_basis = self.setup["line"].CalculationBasis.PERCENT_OF_CTC
+        self.setup["line"].rate = "100.0000"
+        self.setup["line"].fixed_amount = "0.00"
+        self.setup["line"].save(update_fields=["calculation_basis", "rate", "fixed_amount"])
+        contract, contract_profile = self._create_contract_profile(attendance_required=True)
+        ContractSalaryAssignmentService.assign_salary_structure(
+            {
+                "contract_payroll_profile": contract_profile,
+                "salary_structure": self.setup["structure"],
+                "salary_structure_version": self.setup["version"],
+                "effective_from": date(2025, 4, 1),
+                "assignment_status": "ACTIVE",
+                "ctc_amount": "30000.00",
+                "gross_amount": "0.00",
+                "is_active": True,
+            },
+            instance=self.setup["salary_assignment"],
+        )
+        self._create_policy()
+        AttendancePolicy.objects.filter(entity=self.setup["entity"]).update(is_default=False, is_active=False)
+        AttendancePolicy.objects.create(
+            entity=self.setup["entity"],
+            subentity=self.setup["subentity"],
+            code="ATT-APPROVED-PAYROLL",
+            name="Approved Attendance Payroll Gate",
+            is_default=True,
+            policy_json={"payroll_attendance_requirement": "APPROVED"},
+            created_by=self.setup["user"],
+            updated_by=self.setup["user"],
+        )
+        leave_policy = LeavePolicy.objects.create(
+            entity=self.setup["entity"],
+            subentity=self.setup["subentity"],
+            code="PAYROLL-LEAVE",
+            name="Payroll Leave Policy",
+            status=LeavePolicy.Status.ACTIVE,
+            is_default=True,
+            employee_category=LeavePolicy.EmployeeCategory.SERVICES,
+            effective_from=date(2025, 4, 1),
+            created_by=self.setup["user"],
+            updated_by=self.setup["user"],
+        )
+        paid_leave_type = LeaveType.objects.create(
+            entity=self.setup["entity"],
+            subentity=self.setup["subentity"],
+            code="PL-PAY",
+            name="Paid Payroll Leave",
+            category=LeaveType.Category.EARNED,
+            is_paid=True,
+            requires_balance=True,
+            counts_towards_attendance=True,
+            payroll_impact_code="PAID_LEAVE",
+            effective_from=date(2025, 4, 1),
+            created_by=self.setup["user"],
+            updated_by=self.setup["user"],
+        )
+        unpaid_leave_type = LeaveType.objects.create(
+            entity=self.setup["entity"],
+            subentity=self.setup["subentity"],
+            code="UL-PAY",
+            name="Unpaid Payroll Leave",
+            category=LeaveType.Category.LOP,
+            is_paid=False,
+            requires_balance=False,
+            counts_towards_attendance=False,
+            payroll_impact_code="UNPAID_LEAVE",
+            effective_from=date(2025, 4, 1),
+            created_by=self.setup["user"],
+            updated_by=self.setup["user"],
+        )
+        LeavePolicyRule.objects.create(
+            entity=self.setup["entity"],
+            subentity=self.setup["subentity"],
+            leave_policy=leave_policy,
+            leave_type=paid_leave_type,
+            rule_code="PL-PAY-RULE",
+            rule_name="Paid Payroll Leave Rule",
+            rule_json={"annual_quota": 12, "accrual_frequency": "yearly"},
+            effective_from=date(2025, 4, 1),
+            created_by=self.setup["user"],
+            updated_by=self.setup["user"],
+        )
+        LeavePolicyRule.objects.create(
+            entity=self.setup["entity"],
+            subentity=self.setup["subentity"],
+            leave_policy=leave_policy,
+            leave_type=unpaid_leave_type,
+            rule_code="UL-PAY-RULE",
+            rule_name="Unpaid Payroll Leave Rule",
+            rule_json={"payroll_impact": {"force_unpaid": True}},
+            effective_from=date(2025, 4, 1),
+            created_by=self.setup["user"],
+            updated_by=self.setup["user"],
+        )
+        ContractLeaveBalanceSnapshot.objects.create(
+            entity=self.setup["entity"],
+            subentity=self.setup["subentity"],
+            contract=contract,
+            leave_policy=leave_policy,
+            leave_type=paid_leave_type,
+            payroll_period_code=self.setup["period"].code,
+            snapshot_date=self.setup["period"].period_start,
+            snapshot_source=ContractLeaveBalanceSnapshot.SnapshotSource.OPENING,
+            opening_balance=Decimal("5.00"),
+            closing_balance=Decimal("5.00"),
+            attendance_percentage=Decimal("100.00"),
+        )
+        for leave_type, leave_date, reason in (
+            (paid_leave_type, date(2025, 4, 2), "Paid leave in payroll"),
+            (unpaid_leave_type, date(2025, 4, 3), "Unpaid leave in payroll"),
+        ):
+            application = LeaveApplicationService.create_application(
+                attrs={
+                    "contract": contract,
+                    "leave_type": leave_type,
+                    "leave_policy": leave_policy,
+                    "start_date": leave_date,
+                    "end_date": leave_date,
+                    "requested_days": Decimal("1.00"),
+                    "reason": reason,
+                    "created_via": "payroll-integration-test",
+                },
+                actor=self.setup["user"],
+            )
+            LeaveApprovalService.approve(
+                application=application,
+                approver=self.setup["user"],
+                approved_days=Decimal("1.00"),
+                manager_note=f"approve {reason}",
+            )
+
+        AttendanceCaptureService.upsert_daily_entry(
+            attrs={
+                "contract": contract,
+                "attendance_date": self.setup["period"].period_start,
+                "status": DailyAttendance.AttendanceStatus.PRESENT,
+            },
+            actor=self.setup["user"],
+        )
+        approval = AttendanceCaptureService.submit_approval(
+            contract=contract,
+            payroll_period=self.setup["period"],
+            actor=self.setup["user"],
+        )
+        AttendanceCaptureService.approve_approval(
+            approval=approval,
+            actor=self.setup["user"],
+            review_note="approved with HRMS leave impact",
+        )
+        summary = ContractAttendanceSummary.objects.get(
+            contract_payroll_profile=contract_profile,
+            payroll_period=self.setup["period"],
+        )
+        self.assertEqual(str(summary.attendance_days), "2.00")
+        self.assertEqual(str(summary.payable_days), "2.00")
+        self.assertEqual(str(summary.lop_days), "1.00")
+        self.assertEqual(summary.metadata["paid_leave_days"], "1.00")
+        self.assertEqual(summary.metadata["unpaid_leave_days"], "1.00")
+        self.assertTrue(summary.metadata["leave_impact_applied"])
+
+        run = self._create_run()
+        PayrollRunService.calculate_run(run)
+        row = run.employee_runs.get(contract_payroll_profile=contract_profile)
+        component_row = row.components.get(component=self.setup["component"])
+        period_days = Decimal((run.payroll_period.period_end - run.payroll_period.period_start).days + 1)
+        expected_multiplier = (Decimal("2.00") / period_days).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+        expected_amount = (Decimal("30000.00") * expected_multiplier).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+        self.assertEqual(component_row.amount, expected_amount)
+        self.assertEqual(row.calculation_payload["attendance_snapshot"]["paid_leave_days"], "1.00")
+        self.assertEqual(row.calculation_payload["attendance_snapshot"]["unpaid_leave_days"], "1.00")
+        self.assertEqual(row.calculation_payload["attendance_snapshot"]["leave_impact"]["already_applied"], True)
+        self.assertEqual(row.calculation_payload["payable_days_snapshot"]["payable_days"], "2.00")
+        self.assertEqual(row.calculation_payload["payable_days_snapshot"]["lop_days"], "1.00")
+        self.assertEqual(row.calculation_payload["source_markers"]["attendance_source"], "contract_native")
 
     @override_settings(PAYROLL_USE_CONTRACT_READINESS=True)
     def test_contract_native_pay_items_and_policy_snapshot_are_stored(self):

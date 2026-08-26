@@ -160,6 +160,45 @@ class _SalesScopeMixin:
 class SalesInvoiceListCreateAPIView(_SalesScopeMixin, generics.ListCreateAPIView):
     serializer_class = SalesInvoiceHeaderSerializer
 
+    def _apply_default_workflow_action(self, header: SalesInvoiceHeader, user) -> SalesInvoiceHeader:
+        if int(header.doc_type) != int(SalesInvoiceHeader.DocType.TAX_INVOICE):
+            return header
+        if int(header.status) != int(SalesInvoiceHeader.Status.DRAFT):
+            return header
+
+        policy = SalesSettingsService.get_policy(
+            header.entity_id,
+            header.subentity_id,
+            entityfinid_id=getattr(header, "entityfinid_id", None),
+        )
+        workflow = str(policy.default_action or "draft").strip().lower()
+        if workflow == "confirm":
+            require_sales_request_permission(
+                user=user,
+                entity_id=header.entity_id,
+                doc_type=header.doc_type,
+                action="confirm",
+                feature_code=SubscriptionLimitCodes.FEATURE_SALES,
+            )
+            return SalesInvoiceService.confirm(header=header, user=user)
+        if workflow == "post":
+            require_sales_request_permission(
+                user=user,
+                entity_id=header.entity_id,
+                doc_type=header.doc_type,
+                action="confirm",
+                feature_code=SubscriptionLimitCodes.FEATURE_SALES,
+            )
+            require_sales_request_permission(
+                user=user,
+                entity_id=header.entity_id,
+                doc_type=header.doc_type,
+                action="post",
+                feature_code=SubscriptionLimitCodes.FEATURE_SALES,
+            )
+            return SalesInvoiceService.post(header=header, user=user)
+        return header
+
     def _parse_limit(self) -> int | None:
         raw_limit = self.request.query_params.get("limit")
         if raw_limit in (None, "", "null"):
@@ -301,7 +340,13 @@ class SalesInvoiceListCreateAPIView(_SalesScopeMixin, generics.ListCreateAPIView
             feature_code=SubscriptionLimitCodes.FEATURE_SALES,
         )
         try:
-            return super().create(request, *args, **kwargs)
+            serializer = self.get_serializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            self.perform_create(serializer)
+            header = self._apply_default_workflow_action(serializer.instance, request.user)
+            response_serializer = self.get_serializer(header)
+            headers = self.get_success_headers(response_serializer.data)
+            return Response(response_serializer.data, status=status.HTTP_201_CREATED, headers=headers)
         except (ValueError, DjangoValidationError, DRFValidationError) as e:
             return Response(self._error_payload(e), status=status.HTTP_400_BAD_REQUEST)
 
@@ -492,6 +537,9 @@ class SalesInvoiceCrossModeNavigationAPIView(_SalesScopeMixin, APIView):
 class SalesInvoiceRetrieveUpdateAPIView(_SalesScopeMixin, generics.RetrieveUpdateDestroyAPIView):
     serializer_class = SalesInvoiceHeaderSerializer
 
+    def _apply_default_workflow_action(self, header: SalesInvoiceHeader, user) -> SalesInvoiceHeader:
+        return SalesInvoiceListCreateAPIView()._apply_default_workflow_action(header, user)
+
     def get_queryset(self):
         lines_qs = SalesInvoiceLine.objects.select_related("product", "uom", "sales_account").order_by("line_no")
 
@@ -543,6 +591,7 @@ class SalesInvoiceRetrieveUpdateAPIView(_SalesScopeMixin, generics.RetrieveUpdat
         instance.delete()
 
     def update(self, request, *args, **kwargs):
+        partial = kwargs.pop("partial", False)
         instance = self.get_object()
         require_sales_request_permission(
             user=request.user,
@@ -552,23 +601,17 @@ class SalesInvoiceRetrieveUpdateAPIView(_SalesScopeMixin, generics.RetrieveUpdat
             feature_code=SubscriptionLimitCodes.FEATURE_SALES,
         )
         try:
-            return super().update(request, *args, **kwargs)
+            serializer = self.get_serializer(instance, data=request.data, partial=partial)
+            serializer.is_valid(raise_exception=True)
+            self.perform_update(serializer)
+            header = self._apply_default_workflow_action(serializer.instance, request.user)
+            return Response(self.get_serializer(header).data)
         except (ValueError, DjangoValidationError, DRFValidationError) as e:
             return Response(self._error_payload(e), status=status.HTTP_400_BAD_REQUEST)
 
     def partial_update(self, request, *args, **kwargs):
-        instance = self.get_object()
-        require_sales_request_permission(
-            user=request.user,
-            entity_id=instance.entity_id,
-            doc_type=instance.doc_type,
-            action="update",
-            feature_code=SubscriptionLimitCodes.FEATURE_SALES,
-        )
-        try:
-            return super().partial_update(request, *args, **kwargs)
-        except (ValueError, DjangoValidationError, DRFValidationError) as e:
-            return Response(self._error_payload(e), status=status.HTTP_400_BAD_REQUEST)
+        kwargs["partial"] = True
+        return self.update(request, *args, **kwargs)
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()

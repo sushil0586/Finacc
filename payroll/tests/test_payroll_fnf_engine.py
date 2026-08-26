@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from django.test import TestCase
 
+from hrms.models import ContractLeaveBalanceSnapshot, LeavePolicy, LeavePolicyRule, LeaveType
 from payroll.models import (
     ContractPayrollInputSnapshot,
     FnFSettlement,
@@ -66,6 +67,51 @@ class PayrollFnFEngineTests(TestCase):
             instance=existing,
         )
 
+    def _seed_encashable_leave_balance(self):
+        leave_type = LeaveType.objects.create(
+            entity=self.setup["entity"],
+            subentity=self.setup["subentity"],
+            code=f"EL{self.setup['entity'].id}",
+            name="Earned Leave",
+            category=LeaveType.Category.EARNED,
+            is_paid=True,
+            requires_balance=True,
+            counts_towards_attendance=True,
+            effective_from=date(2025, 4, 1),
+        )
+        policy = LeavePolicy.objects.create(
+            entity=self.setup["entity"],
+            subentity=self.setup["subentity"],
+            code=f"ELPOL{self.setup['entity'].id}",
+            name="Earned Leave Policy",
+            status=LeavePolicy.Status.ACTIVE,
+            is_default=True,
+            effective_from=date(2025, 4, 1),
+            effective_to=date(2026, 3, 31),
+        )
+        LeavePolicyRule.objects.create(
+            entity=self.setup["entity"],
+            subentity=self.setup["subentity"],
+            leave_policy=policy,
+            leave_type=leave_type,
+            rule_code=f"ELEN{self.setup['entity'].id}",
+            rule_name="FnF Encashment",
+            sequence=100,
+            rule_json={"encashment": {"enabled": True, "max_days": 10}},
+            effective_from=date(2025, 4, 1),
+        )
+        ContractLeaveBalanceSnapshot.objects.create(
+            entity=self.setup["entity"],
+            subentity=self.setup["subentity"],
+            contract=self.setup["hrms_contract"],
+            leave_policy=policy,
+            leave_type=leave_type,
+            snapshot_date=date(2025, 4, 30),
+            snapshot_source=ContractLeaveBalanceSnapshot.SnapshotSource.OPENING,
+            opening_balance=Decimal("12.00"),
+            closing_balance=Decimal("12.00"),
+        )
+
     def test_calculate_fnf_earned_salary_till_last_working_day(self):
         settlement = PayrollFnFEngine.calculate_fnf(
             self.setup["hrms_contract"].id,
@@ -105,6 +151,7 @@ class PayrollFnFEngineTests(TestCase):
         }
         self.setup["version"].save(update_fields=["calculation_policy_json"])
         self._set_fixed_salary("3000.00")
+        self._seed_encashable_leave_balance()
         settlement = PayrollFnFEngine.calculate_fnf(
             self.setup["hrms_contract"].id,
             separation_date=date(2025, 4, 30),

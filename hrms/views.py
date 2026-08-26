@@ -81,6 +81,11 @@ from hrms.services import (
 from subscriptions.services import SubscriptionService
 
 
+def _raise_service_validation(err: ValueError):
+    detail = err.args[0] if err.args else str(err)
+    raise ValidationError(detail if isinstance(detail, (dict, list)) else {"detail": str(detail)})
+
+
 class HrmsScopedAPIView(ScopedEntitlementMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     subscription_access_mode = SubscriptionService.ACCESS_MODE_SETUP
@@ -1211,13 +1216,13 @@ class AttendanceMonthlyCloseListCreateAPIView(HrmsScopedAPIView):
             permission_key="attendance_monthly_close_view",
             label="view attendance monthly closes",
         )
-        queryset = AttendanceMonthlyClose.objects.select_related("payroll_period").filter(
+        queryset = AttendanceMonthlyClose.objects.select_related("attendance_policy").filter(
             entity_id=entity_id,
             deleted_at__isnull=True,
         )
         if subentity_id is not None:
             queryset = queryset.filter(subentity_id=subentity_id)
-        return Response(AttendanceMonthlyCloseSerializer(queryset.order_by("-payroll_period__period_start"), many=True).data)
+        return Response(AttendanceMonthlyCloseSerializer(queryset.order_by("-period_start"), many=True).data)
 
     def post(self, request):
         from payroll.models import PayrollPeriod
@@ -1257,7 +1262,10 @@ class AttendanceMonthlyCloseSubmitAPIView(HrmsScopedAPIView):
             permission_key="attendance_monthly_close_submit",
             label="submit attendance monthly closes",
         )
-        updated = AttendanceCaptureService.submit_monthly_close(monthly_close=monthly_close, actor=request.user)
+        try:
+            updated = AttendanceCaptureService.submit_monthly_close(monthly_close=monthly_close, actor=request.user)
+        except ValueError as err:
+            _raise_service_validation(err)
         return Response(AttendanceMonthlyCloseSerializer(updated).data)
 
 
@@ -1273,7 +1281,10 @@ class AttendanceMonthlyCloseApproveAPIView(HrmsScopedAPIView):
             permission_key="attendance_monthly_close_approve",
             label="approve attendance monthly closes",
         )
-        updated = AttendanceCaptureService.approve_monthly_close(monthly_close=monthly_close, actor=request.user)
+        try:
+            updated = AttendanceCaptureService.approve_monthly_close(monthly_close=monthly_close, actor=request.user)
+        except ValueError as err:
+            _raise_service_validation(err)
         return Response(AttendanceMonthlyCloseSerializer(updated).data)
 
 
@@ -1289,11 +1300,14 @@ class AttendanceMonthlyCloseCloseAPIView(HrmsScopedAPIView):
             permission_key="attendance_monthly_close_close",
             label="close attendance monthly closes",
         )
-        updated = AttendanceCaptureService.close_monthly_close(
-            monthly_close=monthly_close,
-            actor=request.user,
-            close_note=str(request.data.get("close_note") or ""),
-        )
+        try:
+            updated = AttendanceCaptureService.close_monthly_close(
+                monthly_close=monthly_close,
+                actor=request.user,
+                close_note=str(request.data.get("close_note") or ""),
+            )
+        except ValueError as err:
+            _raise_service_validation(err)
         return Response(AttendanceMonthlyCloseSerializer(updated).data)
 
 

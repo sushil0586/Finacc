@@ -11,7 +11,8 @@ from rest_framework.test import APIRequestFactory, force_authenticate
 from catalog.models import ProductBulkJob
 from entity.models import Entity, EntityFinancialYear, SubEntity
 from financial.models import account
-from sales.models import SalesInvoiceHeader
+from numbering.models import DocumentNumberSeries
+from sales.models import SalesInvoiceHeader, SalesSettings
 from sales.serializers.sales_ar import CustomerSettlementCreateInputSerializer
 from sales.serializers.sales_charge_serializers import SalesChargeLineSerializer, SalesChargeTypeSerializer
 from sales.serializers.sales_invoice_serializers import SalesInvoiceHeaderSerializer
@@ -210,6 +211,86 @@ class SalesSettingsApiTests(SalesApiTestBase):
         mocked_bump_cache.assert_called_once()
         self.assertEqual(resp.data["settings"]["enable_einvoice"], False)
         self.assertEqual(resp.data["settings"]["default_doc_code_invoice"], "NSI")
+
+    @patch("sales.views.sales_settings_views.SalesChoicesService.get_choices")
+    @patch("sales.views.sales_settings_views.SalesSettingsService.get_current_doc_numbers_batch")
+    @patch("sales.views.sales_settings_views.SalesSettingsService.get_seller_profile")
+    def test_entity_level_doc_code_patch_cascades_to_default_branch_rows(
+        self,
+        mocked_get_seller_profile,
+        mocked_get_current_doc_numbers_batch,
+        mocked_get_choices,
+    ):
+        entity = Entity.objects.create(entityname="Sales Settings Cascade Entity", createdby=self.user)
+        entityfin = EntityFinancialYear.objects.create(
+            entity=entity,
+            desc="FY 2026-27",
+            year_code="2026-27",
+            finstartyear=timezone.make_aware(datetime(2026, 4, 1)),
+            finendyear=timezone.make_aware(datetime(2027, 3, 31)),
+            isactive=True,
+            createdby=self.user,
+        )
+        inherited_branch = SubEntity.objects.create(entity=entity, subentityname="Inherited Branch")
+        custom_branch = SubEntity.objects.create(entity=entity, subentityname="Custom Branch")
+        self.permission_entity.id = entity.id
+
+        SalesSettings.objects.create(
+            entity=entity,
+            entityfinid=entityfin,
+            subentity=None,
+            default_doc_code_invoice="SINV",
+            default_doc_code_cn="SCN",
+            default_doc_code_dn="SDN",
+            tcs_credit_note_policy="REVERSE",
+        )
+        inherited_settings = SalesSettings.objects.create(
+            entity=entity,
+            entityfinid=entityfin,
+            subentity=inherited_branch,
+            default_doc_code_invoice="SINV",
+            default_doc_code_cn="SCN",
+            default_doc_code_dn="SDN",
+            tcs_credit_note_policy="REVERSE",
+        )
+        custom_settings = SalesSettings.objects.create(
+            entity=entity,
+            entityfinid=entityfin,
+            subentity=custom_branch,
+            default_doc_code_invoice="CUSTOM",
+            default_doc_code_cn="SCN",
+            default_doc_code_dn="SDN",
+            tcs_credit_note_policy="ALLOW",
+        )
+        mocked_get_seller_profile.return_value = {"entity_id": entity.id}
+        mocked_get_current_doc_numbers_batch.return_value = {}
+        mocked_get_choices.return_value = {"DocType": [{"key": "TAX_INVOICE", "label": "Tax Invoice", "enabled": True}]}
+
+        resp = self.client.patch(
+            f"/api/sales/settings/?entity_id={entity.id}&entityfinid={entityfin.id}",
+            {"settings": {"default_doc_code_invoice": "NEWSI", "tcs_credit_note_policy": "DISALLOW"}},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        inherited_settings.refresh_from_db()
+        custom_settings.refresh_from_db()
+        self.assertEqual(resp.data["settings"]["default_doc_code_invoice"], "NEWSI")
+        self.assertEqual(resp.data["settings"]["tcs_credit_note_policy"], "DISALLOW")
+        self.assertEqual(inherited_settings.default_doc_code_invoice, "NEWSI")
+        self.assertEqual(inherited_settings.tcs_credit_note_policy, "DISALLOW")
+        self.assertEqual(custom_settings.default_doc_code_invoice, "CUSTOM")
+        self.assertEqual(custom_settings.tcs_credit_note_policy, "ALLOW")
+        self.assertTrue(
+            DocumentNumberSeries.objects.filter(
+                entity=entity,
+                entityfinid=entityfin,
+                subentity__isnull=True,
+                doc_code="NEWSI",
+                doc_type__module="sales",
+                doc_type__doc_key="sales_invoice",
+            ).exists()
+        )
 
 
 class SalesInvoiceEntitlementApiTests(SalesApiTestBase):

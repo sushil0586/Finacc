@@ -560,7 +560,7 @@ class PayrollStatutoryEngine:
         trace: dict[str, Any],
     ) -> PayrollStatutoryResult:
         policy = policy or {}
-        snapshot = getattr(calculation_input, "tax_projection_snapshot", None) or {}
+        snapshot = cls._snapshot_for_tds_reprojection(getattr(calculation_input, "tax_projection_snapshot", None) or {})
         result = PayrollTDSEngine.build_projection(
             contract_payroll_profile=getattr(calculation_input, "contract_payroll_profile", None),
             salary_assignment=getattr(calculation_input, "salary_assignment", None),
@@ -583,6 +583,37 @@ class PayrollStatutoryEngine:
         else:
             trace["applicability_decision"] = "tds projection snapshot"
         return PayrollStatutoryResult(amount=q2(result.monthly_tds), trace=trace)
+
+    @staticmethod
+    def _snapshot_for_tds_reprojection(snapshot: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(snapshot, dict):
+            return {}
+        normalized = dict(snapshot)
+        tds_trace = normalized.get("tds_trace") if isinstance(normalized.get("tds_trace"), dict) else {}
+        if tds_trace.get("engine") != "payroll_tds_engine":
+            return normalized
+
+        generated_keys = {
+            "annual_exemption_total",
+            "annual_deduction_total",
+            "tax_already_deducted",
+            "balance_tax",
+            "tds_trace",
+        }
+        for key in generated_keys:
+            normalized.pop(key, None)
+        if not tds_trace.get("explicit_annual_gross_used"):
+            normalized.pop("annual_gross_projection", None)
+        if not tds_trace.get("explicit_taxable_income_used"):
+            normalized.pop("projected_taxable_income", None)
+            normalized.pop("annual_taxable_income", None)
+        if not tds_trace.get("explicit_annual_tax_used"):
+            normalized.pop("projected_annual_tax", None)
+            normalized.pop("annual_tax", None)
+        if not tds_trace.get("explicit_monthly_tds_used"):
+            normalized.pop("projected_monthly_tds", None)
+            normalized.pop("monthly_tds", None)
+        return normalized
 
     @classmethod
     def _match_slab(cls, *, slabs: list[Any], wage_base: Decimal) -> tuple[Decimal, dict[str, Any]]:

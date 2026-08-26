@@ -2402,7 +2402,7 @@ class PaymentRuntimeWithholdingTests(SimpleTestCase):
     @patch("payments.services.payment_voucher_service.StaticAccountService.get_account_id")
     @patch("payments.services.payment_voucher_service.compute_withholding_preview")
     @patch("payments.services.payment_voucher_service.PaymentVoucherService._resolve_entity_runtime_tds_mapping")
-    def test_runtime_withholding_blocks_when_only_static_fallback_available(
+    def test_runtime_withholding_marks_missing_posting_map_when_only_static_fallback_available(
         self,
         mock_resolve_entity,
         mock_preview,
@@ -2424,18 +2424,40 @@ class PaymentRuntimeWithholdingTests(SimpleTestCase):
             reason="auto",
             reason_code="OK",
         )
-        with self.assertRaisesMessage(ValueError, "Runtime TDS mapping missing for selected section"):
-            PaymentVoucherService._apply_runtime_withholding_to_adjustments(
-                entity_id=1,
-                entityfinid_id=1,
-                subentity_id=17,
-                paid_to_id=55,
-                voucher_date=None,
-                cash_paid_amount=Decimal("100.00"),
-                allocations=[{"open_item": 1, "settled_amount": Decimal("100.00")}],
-                adjustments=[],
-                workflow_payload={"withholding": {"enabled": True, "section_id": 10, "mode": "AUTO"}},
-            )
+        adjustments, payload = PaymentVoucherService._apply_runtime_withholding_to_adjustments(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=17,
+            paid_to_id=55,
+            voucher_date=None,
+            cash_paid_amount=Decimal("100.00"),
+            allocations=[{"open_item": 1, "settled_amount": Decimal("100.00")}],
+            adjustments=[],
+            workflow_payload={"withholding": {"enabled": True, "section_id": 10, "mode": "AUTO"}},
+        )
+        self.assertEqual(adjustments, [])
+        runtime = payload.get("withholding_runtime_result", {})
+        self.assertEqual(runtime.get("reason_code"), "MISSING_POSTING_MAP")
+        self.assertEqual(runtime.get("amount"), "10.00")
+        self.assertIn("Runtime TDS mapping missing", runtime.get("reason", ""))
+
+    def test_runtime_withholding_support_amount_uses_missing_posting_map_amount(self):
+        amount = PaymentVoucherService._runtime_withholding_support_amount({
+            "withholding_runtime_result": {
+                "reason_code": "MISSING_POSTING_MAP",
+                "amount": "5.00",
+            }
+        })
+        self.assertEqual(amount, Decimal("5.00"))
+
+    def test_runtime_withholding_support_amount_ignores_other_runtime_states(self):
+        amount = PaymentVoucherService._runtime_withholding_support_amount({
+            "withholding_runtime_result": {
+                "reason_code": "OK",
+                "amount": "5.00",
+            }
+        })
+        self.assertEqual(amount, Decimal("0.00"))
 
     @patch("payments.services.payment_voucher_service.WithholdingSection.objects.filter")
     @patch("payments.services.payment_voucher_service.StaticAccountService.get_ledger_id")

@@ -1599,6 +1599,49 @@ class PaymentVoucherAdvanceEdgeCaseTests(SimpleTestCase):
         self.assertEqual(adv_row.adjusted_amount, Decimal("40000.00"))
         adv_row.save.assert_called_once()
 
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._sync_runtime_tcs_computation")
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._validate_advance_adjustments")
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._validate_adjustment_allocation_links")
+    @patch("receipts.services.receipt_voucher_service.ReceiptSettingsService.get_policy")
+    def test_draft_update_on_account_with_empty_allocations_skips_allocation_amount_match(
+        self,
+        mock_get_policy,
+        mock_validate_adj_links,
+        mock_validate_adv,
+        _mock_sync_tcs,
+    ):
+        instance = SimpleNamespace(
+            id=9169,
+            entity_id=10,
+            entityfinid_id=8,
+            subentity_id=8,
+            status=ReceiptVoucherHeader.Status.DRAFT,
+            receipt_type=ReceiptVoucherHeader.ReceiptType.ON_ACCOUNT,
+            workflow_payload={},
+            cash_received_amount=Decimal("311.10"),
+            exchange_rate=Decimal("1.000000"),
+            advance_adjustments=SimpleNamespace(all=lambda: []),
+            allocations=SimpleNamespace(all=lambda: []),
+            adjustments=SimpleNamespace(all=lambda: [], values=lambda *args, **kwargs: []),
+            save=MagicMock(),
+        )
+        mock_get_policy.return_value = SimpleNamespace(controls={
+            "allow_edit_after_submit": "on",
+            "over_settlement_rule": "block",
+            "allocation_amount_match_rule": "hard",
+        })
+
+        ReceiptVoucherService.update_voucher.__wrapped__(instance, {
+            "cash_received_amount": Decimal("311.10"),
+            "allocations": [],
+            "advance_adjustments": [],
+            "adjustments": [],
+        })
+
+        instance.save.assert_called_once()
+        mock_validate_adj_links.assert_called_once()
+        mock_validate_adv.assert_called_once()
+
 
 class PaymentVoucherSerializerContractTests(SimpleTestCase):
     def test_detail_serializer_exposes_navigation_and_advance_totals(self):
@@ -2427,7 +2470,7 @@ class ReceiptRuntimeWithholdingTests(SimpleTestCase):
     @patch("receipts.services.receipt_voucher_service.StaticAccountService.get_account_id")
     @patch("receipts.services.receipt_voucher_service.compute_withholding_preview")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._resolve_entity_runtime_tcs_mapping")
-    def test_runtime_withholding_blocks_when_only_static_fallback_available(
+    def test_runtime_withholding_marks_missing_posting_map_when_only_static_fallback_available(
         self,
         mock_resolve_entity,
         mock_preview,
@@ -2444,18 +2487,23 @@ class ReceiptRuntimeWithholdingTests(SimpleTestCase):
             reason="auto",
             reason_code="OK",
         )
-        with self.assertRaisesMessage(ValueError, "Runtime TCS mapping missing for selected section"):
-            ReceiptVoucherService._apply_runtime_withholding_to_adjustments(
-                entity_id=1,
-                entityfinid_id=1,
-                subentity_id=17,
-                received_from_id=55,
-                voucher_date=None,
-                cash_received_amount=Decimal("100.00"),
-                allocations=[{"open_item": 1, "settled_amount": Decimal("100.00")}],
-                adjustments=[],
-                workflow_payload={"withholding": {"enabled": True, "section_id": 10, "mode": "AUTO"}},
-            )
+        adjustments, payload = ReceiptVoucherService._apply_runtime_withholding_to_adjustments(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=17,
+            received_from_id=55,
+            voucher_date=None,
+            cash_received_amount=Decimal("100.00"),
+            allocations=[{"open_item": 1, "settled_amount": Decimal("100.00")}],
+            adjustments=[],
+            workflow_payload={"withholding": {"enabled": True, "section_id": 10, "mode": "AUTO"}},
+        )
+        self.assertEqual(adjustments, [])
+        runtime = payload.get("withholding_runtime_result", {})
+        self.assertEqual(runtime.get("reason_code"), "MISSING_POSTING_MAP")
+        self.assertEqual(runtime.get("amount"), "10.00")
+        self.assertIn("Runtime TCS mapping missing", runtime.get("reason", ""))
+
 
 
 class ReceiptVoucherDetailFormMetaAttachmentTests(TestCase):

@@ -6,7 +6,7 @@ from typing import Any
 
 from django.db.models import Q
 
-from hrms.models import HrEmploymentContract
+from hrms.models import AttendanceMonthlyClose, HrEmploymentContract
 from payroll.models import (
     ContractPayrollProfile,
     ContractSalaryStructureAssignment,
@@ -59,6 +59,11 @@ class PayrollRunReadinessResult:
 
     def to_summary(self) -> dict[str, Any]:
         snapshot = self.generated_snapshot_json or {}
+        payroll_profile = snapshot.get("payroll_profile") or {}
+        salary_structure = snapshot.get("salary_structure") or {}
+        salary_structure_version = snapshot.get("salary_structure_version") or {}
+        payroll_policy = snapshot.get("payroll_policy") or {}
+        attendance_close = snapshot.get("attendance_monthly_close") or {}
         return {
             "contract_id": str(self.contract.id),
             "contract_code": self.contract.contract_code,
@@ -69,10 +74,12 @@ class PayrollRunReadinessResult:
             "readiness_status": self.readiness_status,
             "warnings": self.warnings,
             "blocking_issues": self.blocking_issues,
-            "pay_frequency": snapshot.get("payroll_profile", {}).get("pay_frequency"),
-            "salary_structure_code": snapshot.get("salary_structure", {}).get("code"),
-            "salary_structure_version_no": snapshot.get("salary_structure_version", {}).get("version_no"),
-            "payroll_policy_code": snapshot.get("payroll_policy", {}).get("code"),
+            "pay_frequency": payroll_profile.get("pay_frequency"),
+            "salary_structure_code": salary_structure.get("code"),
+            "salary_structure_version_no": salary_structure_version.get("version_no"),
+            "payroll_policy_code": payroll_policy.get("code"),
+            "attendance_close_status": attendance_close.get("status"),
+            "attendance_close_code": attendance_close.get("payroll_period_code"),
             "recurring_item_count": len(self.recurring_items),
             "one_time_item_count": len(self.one_time_items),
             "statutory_profile_count": len(self.statutory_profiles),
@@ -113,6 +120,58 @@ class PayrollRunReadinessResolverService:
         if include_entity and hasattr(instance, "entity_id"):
             payload["entity_id"] = getattr(instance, "entity_id")
         return payload
+
+    @classmethod
+    def _resolve_payroll_period(
+        cls,
+        *,
+        contract: HrEmploymentContract,
+        payroll_date: date,
+        payroll_period: PayrollPeriod | None,
+    ) -> PayrollPeriod | None:
+        if payroll_period is not None:
+            return payroll_period
+        queryset = PayrollPeriod.objects.filter(
+            entity_id=contract.entity_id,
+            period_start__lte=payroll_date,
+            period_end__gte=payroll_date,
+        )
+        if contract.subentity_id:
+            queryset = queryset.filter(Q(subentity_id=contract.subentity_id) | Q(subentity_id__isnull=True))
+        else:
+            queryset = queryset.filter(subentity_id__isnull=True)
+        candidates = list(queryset.order_by("-period_start", "-id")[:10])
+        return next((period for period in candidates if period.subentity_id == contract.subentity_id), None) or (candidates[0] if candidates else None)
+
+    @staticmethod
+    def _serialize_attendance_monthly_close(monthly_close: AttendanceMonthlyClose | None) -> dict[str, Any] | None:
+        if monthly_close is None:
+            return None
+        return {
+            "id": str(monthly_close.id),
+            "payroll_period_code": monthly_close.payroll_period_code,
+            "period_start": monthly_close.period_start.isoformat() if monthly_close.period_start else None,
+            "period_end": monthly_close.period_end.isoformat() if monthly_close.period_end else None,
+            "status": monthly_close.status,
+            "closed_at": monthly_close.closed_at.isoformat() if monthly_close.closed_at else None,
+            "summary": monthly_close.summary_json or {},
+        }
+
+    @classmethod
+    def _resolve_attendance_monthly_close(
+        cls,
+        *,
+        contract: HrEmploymentContract,
+        payroll_period: PayrollPeriod | None,
+    ) -> AttendanceMonthlyClose | None:
+        if payroll_period is None:
+            return None
+        return AttendanceMonthlyClose.objects.filter(
+            entity_id=contract.entity_id,
+            subentity_id=contract.subentity_id,
+            payroll_period_code=payroll_period.code,
+            deleted_at__isnull=True,
+        ).order_by("-period_end", "-id").first()
 
     @classmethod
     def _serialize_contract(cls, contract: HrEmploymentContract) -> dict[str, Any]:
@@ -325,6 +384,15 @@ class PayrollRunReadinessResolverService:
         payroll_period: PayrollPeriod | None = None,
     ) -> PayrollRunReadinessResult:
         result = PayrollRunReadinessResult(contract=contract)
+        resolved_payroll_period = cls._resolve_payroll_period(
+            contract=contract,
+            payroll_date=payroll_date,
+            payroll_period=payroll_period,
+        )
+        attendance_monthly_close = cls._resolve_attendance_monthly_close(
+            contract=contract,
+            payroll_period=resolved_payroll_period,
+        )
 
         if not contract.is_payroll_eligible:
             result.blocking_issues.append("Contract is not marked payroll eligible.")
@@ -467,6 +535,8 @@ class PayrollRunReadinessResolverService:
                 **(cls._model_ref(result.payroll_policy, include_entity=True) or {}),
                 "pay_frequency": getattr(result.payroll_policy, "pay_frequency", None),
             } if result.payroll_policy else None,
+            "payroll_period": cls._model_ref(resolved_payroll_period, include_entity=True),
+            "attendance_monthly_close": cls._serialize_attendance_monthly_close(attendance_monthly_close),
             "recurring_items": [cls._serialize_recurring_item(item) for item in result.recurring_items],
             "one_time_items": [cls._serialize_one_time_item(item) for item in result.one_time_items],
             "statutory_profiles": [cls._serialize_statutory_profile(item) for item in result.statutory_profiles],

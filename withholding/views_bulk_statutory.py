@@ -16,13 +16,18 @@ from entity.models import Entity
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 from withholding.bulk_statutory import (
     CONFIGS_SHEET,
+    RULES_SHEET,
     SECTIONS_SHEET,
     commit_configs_payload,
+    commit_rules_payload,
     commit_sections_payload,
     configs_export_payload,
     configs_template_payload,
     parse_payload,
     render_payload,
+    rules_export_payload,
+    rules_template_payload,
+    validate_rules_payload,
     sections_export_payload,
     sections_template_payload,
     validate_configs_payload,
@@ -160,6 +165,101 @@ class TcsSectionsBulkImportCommitAPIView(_BaseBulkMixin, APIView):
         upsert_mode = request.data.get("upsert_mode") or vjob.upsert_mode or ProductBulkJob.UpsertMode.UPSERT
         duplicate_strategy = request.data.get("duplicate_strategy") or vjob.duplicate_strategy or ProductBulkJob.DuplicateStrategy.FAIL
         result = commit_sections_payload(vjob.payload or {}, upsert_mode=upsert_mode, duplicate_strategy=duplicate_strategy)
+        job = ProductBulkJob.objects.create(
+            entity=entity,
+            created_by=request.user,
+            job_type=ProductBulkJob.JobType.IMPORT,
+            status=ProductBulkJob.JobStatus.COMPLETED if not result.errors else ProductBulkJob.JobStatus.FAILED,
+            file_format=vjob.file_format,
+            upsert_mode=upsert_mode,
+            duplicate_strategy=duplicate_strategy,
+            summary=result.summary,
+            errors=result.errors,
+        )
+        return Response({"job_id": job.id, "summary": result.summary, "errors": result.errors, "status": job.status})
+
+
+class TcsRulesBulkTemplateAPIView(_BaseBulkMixin, APIView):
+    def get(self, request):
+        _entity_from_request(request)
+        fmt = _fmt(request)
+        content = render_payload(rules_template_payload(), fmt)
+        if fmt == "xlsx":
+            resp = HttpResponse(content, content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            resp["Content-Disposition"] = 'attachment; filename="tcs_rules_bulk_template.xlsx"'
+            return resp
+        resp = HttpResponse(content, content_type="application/zip")
+        resp["Content-Disposition"] = 'attachment; filename="tcs_rules_bulk_template_csv.zip"'
+        return resp
+
+
+class TcsRulesBulkExportAPIView(_BaseBulkMixin, APIView):
+    def get(self, request):
+        entity = _entity_from_request(request)
+        fmt = _fmt(request)
+        search = (request.query_params.get("search") or "").strip()
+        data = rules_export_payload(search=search)
+        content = render_payload(data, fmt)
+        ProductBulkJob.objects.create(
+            entity=entity,
+            created_by=request.user,
+            job_type=ProductBulkJob.JobType.EXPORT,
+            status=ProductBulkJob.JobStatus.COMPLETED,
+            file_format=fmt,
+            summary={"rows": {RULES_SHEET: len(data.get(RULES_SHEET, []))}},
+        )
+        if fmt == "xlsx":
+            resp = HttpResponse(content, content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            resp["Content-Disposition"] = 'attachment; filename="tcs_rules_bulk_export.xlsx"'
+            return resp
+        resp = HttpResponse(content, content_type="application/zip")
+        resp["Content-Disposition"] = 'attachment; filename="tcs_rules_bulk_export_csv.zip"'
+        return resp
+
+
+class TcsRulesBulkImportValidateAPIView(_BaseBulkMixin, APIView):
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        entity = _entity_from_request(request)
+        upload = request.FILES.get("file")
+        if not upload:
+            raise ValidationError({"file": "Upload file is required."})
+        fmt = _fmt(request)
+        upsert_mode = request.data.get("upsert_mode") or ProductBulkJob.UpsertMode.UPSERT
+        duplicate_strategy = request.data.get("duplicate_strategy") or ProductBulkJob.DuplicateStrategy.FAIL
+        payload = parse_payload(upload.read(), fmt, RULES_SHEET)
+        result = validate_rules_payload(payload, upsert_mode=upsert_mode)
+        token = secrets.token_hex(24)
+        job = ProductBulkJob.objects.create(
+            entity=entity,
+            created_by=request.user,
+            job_type=ProductBulkJob.JobType.VALIDATE,
+            status=ProductBulkJob.JobStatus.COMPLETED if not result.errors else ProductBulkJob.JobStatus.FAILED,
+            file_format=fmt,
+            upsert_mode=upsert_mode,
+            duplicate_strategy=duplicate_strategy,
+            validation_token=token,
+            input_filename=upload.name,
+            payload=payload,
+            summary=result.summary,
+            errors=result.errors,
+        )
+        return self._job_response(result, job)
+
+
+class TcsRulesBulkImportCommitAPIView(_BaseBulkMixin, APIView):
+    def post(self, request):
+        entity = _entity_from_request(request)
+        token = (request.data.get("validation_token") or "").strip()
+        if not token:
+            raise ValidationError({"validation_token": "validation_token is required."})
+        vjob = get_object_or_404(ProductBulkJob, entity=entity, validation_token=token, job_type=ProductBulkJob.JobType.VALIDATE)
+        if vjob.errors:
+            raise ValidationError({"detail": "Cannot commit while validation has errors.", "error_count": len(vjob.errors)})
+        upsert_mode = request.data.get("upsert_mode") or vjob.upsert_mode or ProductBulkJob.UpsertMode.UPSERT
+        duplicate_strategy = request.data.get("duplicate_strategy") or vjob.duplicate_strategy or ProductBulkJob.DuplicateStrategy.FAIL
+        result = commit_rules_payload(vjob.payload or {}, upsert_mode=upsert_mode, duplicate_strategy=duplicate_strategy)
         job = ProductBulkJob.objects.create(
             entity=entity,
             created_by=request.user,

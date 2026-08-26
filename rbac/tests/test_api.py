@@ -91,6 +91,96 @@ class RBACAPITests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(any(row["code"] == f"{self.prefix}.sales.invoice.view" for row in response.data))
 
+    def test_permission_admin_catalog_is_platform_admin_only_for_tenant_admin(self):
+        self._grant_admin_permissions(
+            entity=self.entity_a,
+            user=self.user,
+            codes=(
+                "admin.role.view",
+                "admin.role.create",
+                "admin.role.update",
+                "admin.role_access.view",
+                "admin.role_access.update",
+                "admin.user_access.update",
+            ),
+        )
+        permission = Permission.objects.create(
+            code=f"{self.prefix}.catalog.existing.view",
+            name="Existing Catalog Permission",
+            module="catalog",
+            resource="permission",
+            action="view",
+            is_system_defined=True,
+        )
+
+        responses = [
+            self.client.get("/api/rbac/admin/permissions"),
+            self.client.post(
+                "/api/rbac/admin/permissions",
+                {
+                    "code": f"{self.prefix}.catalog.created.view",
+                    "name": "Created Catalog Permission",
+                    "module": "catalog",
+                    "resource": "permission",
+                    "action": "view",
+                },
+                format="json",
+            ),
+            self.client.get(f"/api/rbac/admin/permissions/{permission.id}"),
+            self.client.patch(f"/api/rbac/admin/permissions/{permission.id}", {"name": "Tampered"}, format="json"),
+            self.client.delete(f"/api/rbac/admin/permissions/{permission.id}"),
+        ]
+
+        for response in responses:
+            self.assertEqual(response.status_code, 403)
+            self.assertEqual(response.data["code"], "rbac_platform_admin_required")
+            self.assertEqual(response.data["detail"], "Only platform administrators can manage the global RBAC catalog.")
+        permission.refresh_from_db()
+        self.assertTrue(permission.isactive)
+        self.assertEqual(permission.name, "Existing Catalog Permission")
+        self.assertFalse(Permission.objects.filter(code=f"{self.prefix}.catalog.created.view").exists())
+
+    def test_permission_admin_catalog_crud_is_available_to_platform_admin(self):
+        platform_admin = User.objects.create_superuser(
+            username="platform-admin",
+            email="platform-admin@example.com",
+            password="Platform@123",
+        )
+        self.client.force_authenticate(user=platform_admin)
+
+        create_response = self.client.post(
+            "/api/rbac/admin/permissions",
+            {
+                "code": f"{self.prefix}.platform.catalog.view",
+                "name": "Platform Catalog Permission",
+                "module": "catalog",
+                "resource": "permission",
+                "action": "view",
+                "is_system_defined": True,
+            },
+            format="json",
+        )
+        self.assertEqual(create_response.status_code, 201)
+        permission = Permission.objects.get(code=f"{self.prefix}.platform.catalog.view")
+
+        list_response = self.client.get("/api/rbac/admin/permissions", {"search": "platform.catalog"})
+        self.assertEqual(list_response.status_code, 200)
+        self.assertTrue(any(row["id"] == permission.id for row in list_response.data))
+
+        update_response = self.client.patch(
+            f"/api/rbac/admin/permissions/{permission.id}",
+            {"name": "Updated Platform Catalog Permission"},
+            format="json",
+        )
+        self.assertEqual(update_response.status_code, 200)
+        permission.refresh_from_db()
+        self.assertEqual(permission.name, "Updated Platform Catalog Permission")
+
+        delete_response = self.client.delete(f"/api/rbac/admin/permissions/{permission.id}")
+        self.assertEqual(delete_response.status_code, 204)
+        permission.refresh_from_db()
+        self.assertFalse(permission.isactive)
+
     def test_user_menu_endpoints_return_recursive_tree_for_entity(self):
         root = Menu.objects.create(name="Sales", code=f"{self.prefix}.entity.sales", menu_type=Menu.TYPE_GROUP)
         child = Menu.objects.create(name="Invoices", code=f"{self.prefix}.entity.sales.invoices", parent=root)
@@ -701,7 +791,11 @@ class RBACAPITests(TestCase):
             action="view",
         )
         RolePermission.objects.create(role=role, permission=permission)
-        self._grant_admin_permissions(entity=self.entity_a, user=self.user, codes=("admin.role.create",))
+        self._grant_admin_permissions(
+            entity=self.entity_a,
+            user=self.user,
+            codes=("admin.role.create", "admin.role_access.update"),
+        )
 
         response = self.client.post(
             f"/api/rbac/admin/roles/{role.id}/clone?entity={self.entity_a.id}",
@@ -798,9 +892,45 @@ class RBACAPITests(TestCase):
                 "can_view_menus": True,
                 "can_manage_menus": True,
                 "can_view_role_access": True,
-                "can_manage_role_access": True,
+                "can_manage_role_access": False,
                 "can_view_user_access": True,
                 "can_manage_user_access": False,
+                "can_preview_access": True,
+                "can_view_audit": True,
+            },
+        )
+
+    def test_admin_bootstrap_exposes_explicit_customer_self_service_capabilities(self):
+        self._grant_admin_permissions(
+            entity=self.entity_a,
+            user=self.user,
+            codes=(
+                "admin.rbac_management.view",
+                "admin.menu.view",
+                "admin.menu.update",
+                "admin.role_access.view",
+                "admin.role_access.update",
+                "admin.user_access.view",
+                "admin.user_access.update",
+                "admin.access_preview.view",
+                "admin.audit_log.view",
+            ),
+        )
+
+        response = self.client.get(f"/api/rbac/admin/bootstrap?entity={self.entity_a.id}")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.data["capabilities"],
+            {
+                "can_view_roles": False,
+                "can_manage_roles": False,
+                "can_view_menus": True,
+                "can_manage_menus": True,
+                "can_view_role_access": True,
+                "can_manage_role_access": True,
+                "can_view_user_access": True,
+                "can_manage_user_access": True,
                 "can_preview_access": True,
                 "can_view_audit": True,
             },

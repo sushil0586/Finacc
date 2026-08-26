@@ -133,6 +133,20 @@ class NumberingTests(TestCase):
         self.assertEqual(res_sub.doc_no, 11)
         self.assertEqual(sub_series.current_number, 11)
 
+    def test_branch_without_series_inherits_entity_level_series(self):
+        allocated = DocumentNumberService.allocate_final(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            doc_type_id=self.doc_type.id,
+            doc_code="TV",
+            on_date=date(2026, 4, 1),
+        )
+
+        self.assertEqual(allocated.doc_no, 1)
+        self.series.refresh_from_db()
+        self.assertEqual(self.series.current_number, 2)
+
     def test_ensure_document_type_and_series_are_idempotent(self):
         dt2 = ensure_document_type(module="testmod", doc_key="TEST_VOUCHER", name="Test Voucher", default_code="TV")
         series2, created = ensure_series(

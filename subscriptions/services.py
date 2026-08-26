@@ -435,6 +435,13 @@ class SubscriptionService:
                     "code": "tenant_membership_owner_protected",
                 }
             )
+        if deactivated_by is not None and membership.user_id == deactivated_by.id:
+            raise ValidationError(
+                {
+                    "detail": "Use another tenant admin to deactivate your membership so you do not lock yourself out.",
+                    "code": "tenant_membership_self_deactivation_denied",
+                }
+            )
 
         if not membership.is_active:
             return membership

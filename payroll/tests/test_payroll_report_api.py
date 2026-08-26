@@ -140,12 +140,14 @@ class PayrollReportApiTests(TestCase):
             is_active=True,
         )
         self.payslip = PayrollFactory.payslip(payroll_run_employee=self.employee_row)
-        self.payslip.payload = {
-            "payroll_period_code": self.setup["period"].code,
-            "run_number": self.run.run_number or "PRUN-1",
-            "contract_code": self.setup["hrms_contract"].contract_code,
-        }
-        self.payslip.save(update_fields=["payload", "updated_at"])
+        type(self.payslip).objects.filter(id=self.payslip.id).update(
+            payload={
+                "payroll_period_code": self.setup["period"].code,
+                "run_number": self.run.run_number or "PRUN-1",
+                "contract_code": self.setup["hrms_contract"].contract_code,
+            }
+        )
+        self.payslip.refresh_from_db()
 
     def _xlsx_first_row(self, content: bytes) -> list[str]:
         with ZipFile(BytesIO(content)) as archive:
@@ -265,9 +267,12 @@ class PayrollReportApiTests(TestCase):
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
         first_row = self._xlsx_first_row(response.content)
-        self.assertEqual(first_row[:5], ["Period", "Employee Code", "Employee Name", "Department", "Status"])
+        self.assertEqual(first_row[:5], ["Period", "Employee Code", "Employee", "Contract", "Department"])
         self.assertIn(self.basic_component.name, first_row)
         self.assertIn(self.hra_component.name, first_row)
+        self.assertIn("Gross", first_row)
+        self.assertIn("Deductions", first_row)
+        self.assertIn("Net Pay", first_row)
 
     def test_admin_payslip_pdf_export_returns_pdf_file(self):
         response = self.client.get(

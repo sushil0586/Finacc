@@ -1,5 +1,6 @@
 from datetime import timedelta
 
+from django.core import mail
 from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
@@ -14,7 +15,7 @@ from entity.models import Entity
 
 from .models import CustomerAccount, CustomerSubscription, PlanLimit, SubscriptionPlan, UserEntityAccess
 from .services import SubscriptionLimitCodes, SubscriptionService
-from rbac.models import Permission, Role, RolePermission, UserRoleAssignment
+from rbac.models import Permission, RBACAuditLog, Role, RolePermission, UserRoleAssignment
 
 
 class SubscriptionServiceTests(TestCase):
@@ -782,6 +783,9 @@ class TenantMembershipApiTests(APITestCase):
         self.assertEqual(response.data["entity_id"], self.entity.id)
         self.assertEqual(len(response.data["members"]), 1)
         self.assertEqual(response.data["members"][0]["email"], self.owner.email)
+        self.assertIn("invitation_status", response.data["members"][0])
+        self.assertIn("can_resend_invite", response.data["members"][0])
+        self.assertTrue(response.data["members"][0]["is_current_user"])
 
     def test_create_membership_creates_user_and_membership(self):
         response = self.client.post(
@@ -806,6 +810,14 @@ class TenantMembershipApiTests(APITestCase):
                 user=created_user,
                 role=UserEntityAccess.Role.MEMBER,
                 is_active=True,
+            ).exists()
+        )
+        self.assertTrue(
+            RBACAuditLog.objects.filter(
+                entity=self.entity,
+                object_type="tenant_membership",
+                action=RBACAuditLog.ACTION_CREATE,
+                message__icontains="member1@example.com",
             ).exists()
         )
 
@@ -852,6 +864,48 @@ class TenantMembershipApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         membership.refresh_from_db()
         self.assertEqual(membership.role, UserEntityAccess.Role.ADMIN)
+        self.assertTrue(
+            RBACAuditLog.objects.filter(
+                entity=self.entity,
+                object_type="tenant_membership",
+                object_id=membership.id,
+                action=RBACAuditLog.ACTION_UPDATE,
+                message__icontains="tenant-member@example.com",
+            ).exists()
+        )
+
+    def test_patch_membership_blocks_self_management_to_prevent_lockout(self):
+        self.account.owner = None
+        self.account.save(update_fields=["owner", "updated_at"])
+        owner_membership = UserEntityAccess.objects.get(customer_account=self.account, user=self.owner)
+        owner_membership.role = UserEntityAccess.Role.ADMIN
+        owner_membership.save(update_fields=["role", "updated_at"])
+
+        response = self.client.patch(
+            reverse("subscriptions_api:admin-membership-detail", args=[owner_membership.id]) + f"?entity={self.entity.id}",
+            {"role": UserEntityAccess.Role.MEMBER},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["code"], "tenant_membership_self_management_denied")
+        owner_membership.refresh_from_db()
+        self.assertEqual(owner_membership.role, UserEntityAccess.Role.ADMIN)
+
+    def test_patch_membership_blocks_owner_membership_with_code(self):
+        owner_membership = UserEntityAccess.objects.get(customer_account=self.account, user=self.owner)
+
+        response = self.client.patch(
+            reverse("subscriptions_api:admin-membership-detail", args=[owner_membership.id]) + f"?entity={self.entity.id}",
+            {"role": UserEntityAccess.Role.MEMBER},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["code"], "tenant_membership_owner_protected")
+        self.assertEqual(response.data["detail"], "Owner membership cannot be changed here.")
+        owner_membership.refresh_from_db()
+        self.assertEqual(owner_membership.role, UserEntityAccess.Role.OWNER)
 
     def test_delete_membership_deactivates_membership_and_assignments(self):
         member = User.objects.create_user(
@@ -889,6 +943,260 @@ class TenantMembershipApiTests(APITestCase):
         assignment.refresh_from_db()
         self.assertFalse(membership.is_active)
         self.assertFalse(assignment.isactive)
+        self.assertTrue(
+            RBACAuditLog.objects.filter(
+                entity=self.entity,
+                object_type="tenant_membership",
+                object_id=membership.id,
+                action=RBACAuditLog.ACTION_DEACTIVATE,
+                message__icontains="tenant-assigned@example.com",
+            ).exists()
+        )
+
+    def test_delete_membership_blocks_self_deactivation_to_prevent_lockout(self):
+        self.account.owner = None
+        self.account.save(update_fields=["owner", "updated_at"])
+        owner_membership = UserEntityAccess.objects.get(customer_account=self.account, user=self.owner)
+        owner_membership.role = UserEntityAccess.Role.ADMIN
+        owner_membership.save(update_fields=["role", "updated_at"])
+
+        response = self.client.delete(
+            reverse("subscriptions_api:admin-membership-detail", args=[owner_membership.id]) + f"?entity={self.entity.id}"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["code"], "tenant_membership_self_deactivation_denied")
+        owner_membership.refresh_from_db()
+        self.assertTrue(owner_membership.is_active)
+
+    def test_reset_membership_password_updates_password_and_revokes_sessions(self):
+        member = User.objects.create_user(
+            username="reset-member",
+            email="reset-member@example.com",
+            password="OldPass@12345",
+        )
+        membership = SubscriptionService.ensure_account_membership(
+            customer_account=self.account,
+            user=member,
+            role=UserEntityAccess.Role.MEMBER,
+            granted_by=self.owner,
+        )
+
+        response = self.client.post(
+            reverse("subscriptions_api:admin-membership-reset-password", args=[membership.id]) + f"?entity={self.entity.id}",
+            {"new_password": "NewPass@12345"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        member.refresh_from_db()
+        self.assertTrue(member.check_password("NewPass@12345"))
+        self.assertEqual(response.data["membership"]["email"], member.email)
+        self.assertTrue(
+            RBACAuditLog.objects.filter(
+                entity=self.entity,
+                object_type="tenant_membership",
+                object_id=membership.id,
+                action=RBACAuditLog.ACTION_UPDATE,
+                changes__security_action="password_reset",
+            ).exists()
+        )
+
+    def test_reset_membership_password_blocks_owner_membership(self):
+        owner_membership = UserEntityAccess.objects.get(customer_account=self.account, user=self.owner)
+
+        response = self.client.post(
+            reverse("subscriptions_api:admin-membership-reset-password", args=[owner_membership.id]) + f"?entity={self.entity.id}",
+            {"new_password": "NewPass@12345"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["code"], "tenant_membership_owner_protected")
+
+    def test_reset_membership_password_blocks_inactive_membership(self):
+        member = User.objects.create_user(
+            username="inactive-reset-member",
+            email="inactive-reset-member@example.com",
+            password="OldPass@12345",
+        )
+        membership = SubscriptionService.ensure_account_membership(
+            customer_account=self.account,
+            user=member,
+            role=UserEntityAccess.Role.MEMBER,
+            granted_by=self.owner,
+        )
+        membership.is_active = False
+        membership.save(update_fields=["is_active", "updated_at"])
+
+        response = self.client.post(
+            reverse("subscriptions_api:admin-membership-reset-password", args=[membership.id]) + f"?entity={self.entity.id}",
+            {"new_password": "NewPass@12345"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["code"], "tenant_membership_inactive")
+
+    def test_resend_invite_generates_verification_otp_and_stamps_metadata(self):
+        mail.outbox = []
+        member = User.objects.create_user(
+            username="invite-member",
+            email="invite-member@example.com",
+            password="Invite@12345",
+        )
+        member.email_verified = False
+        member.save(update_fields=["email_verified", "updated_at"])
+        membership = SubscriptionService.ensure_account_membership(
+            customer_account=self.account,
+            user=member,
+            role=UserEntityAccess.Role.MEMBER,
+            granted_by=self.owner,
+        )
+
+        response = self.client.post(
+            reverse("subscriptions_api:admin-membership-resend-invite", args=[membership.id]) + f"?entity={self.entity.id}",
+            {"entity": self.entity.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["detail"], "Verification invite resent successfully.")
+        self.assertFalse(response.data["membership"]["email_verified"])
+        self.assertEqual(response.data["membership"]["invitation_status"], "pending_verification")
+        self.assertTrue(response.data["membership"]["last_invite_sent_at"])
+        membership.refresh_from_db()
+        self.assertEqual(membership.metadata["invite_resend_count"], 1)
+        self.assertEqual(membership.metadata["invite_last_sent_by_id"], self.owner.id)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertTrue(
+            RBACAuditLog.objects.filter(
+                entity=self.entity,
+                object_type="tenant_membership",
+                object_id=membership.id,
+                action=RBACAuditLog.ACTION_UPDATE,
+                changes__security_action="resend_invite",
+            ).exists()
+        )
+
+    def test_resend_invite_reports_already_verified_without_email(self):
+        mail.outbox = []
+        member = User.objects.create_user(
+            username="verified-invite-member",
+            email="verified-invite-member@example.com",
+            password="Invite@12345",
+        )
+        member.email_verified = True
+        member.save(update_fields=["email_verified", "updated_at"])
+        membership = SubscriptionService.ensure_account_membership(
+            customer_account=self.account,
+            user=member,
+            role=UserEntityAccess.Role.MEMBER,
+            granted_by=self.owner,
+        )
+
+        response = self.client.post(
+            reverse("subscriptions_api:admin-membership-resend-invite", args=[membership.id]) + f"?entity={self.entity.id}",
+            {"entity": self.entity.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["detail"], "Email is already verified.")
+        self.assertTrue(response.data["membership"]["email_verified"])
+        self.assertEqual(response.data["membership"]["invitation_status"], "active")
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_resend_invite_blocks_expired_membership(self):
+        member = User.objects.create_user(
+            username="expired-invite-member",
+            email="expired-invite-member@example.com",
+            password="Invite@12345",
+        )
+        membership = SubscriptionService.ensure_account_membership(
+            customer_account=self.account,
+            user=member,
+            role=UserEntityAccess.Role.MEMBER,
+            granted_by=self.owner,
+        )
+        membership.expires_at = timezone.now() - timedelta(days=1)
+        membership.save(update_fields=["expires_at", "updated_at"])
+
+        response = self.client.post(
+            reverse("subscriptions_api:admin-membership-resend-invite", args=[membership.id]) + f"?entity={self.entity.id}",
+            {"entity": self.entity.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["code"], "tenant_membership_expired")
+
+    def test_resend_invite_blocks_self_membership(self):
+        self.account.owner = None
+        self.account.save(update_fields=["owner", "updated_at"])
+        owner_membership = UserEntityAccess.objects.get(customer_account=self.account, user=self.owner)
+        owner_membership.role = UserEntityAccess.Role.ADMIN
+        owner_membership.save(update_fields=["role", "updated_at"])
+
+        response = self.client.post(
+            reverse("subscriptions_api:admin-membership-resend-invite", args=[owner_membership.id]) + f"?entity={self.entity.id}",
+            {"entity": self.entity.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["code"], "tenant_membership_self_invite_resend_denied")
+
+    def test_membership_write_actions_require_matching_permission(self):
+        view_only_role = Role.objects.create(
+            entity=self.entity,
+            name="View Only Membership",
+            code="entity.view.only.membership",
+            role_level=Role.LEVEL_ENTITY,
+            createdby=self.owner,
+        )
+        update_permission = Permission.objects.get(code="admin.user.update")
+        delete_permission = Permission.objects.get(code="admin.user.delete")
+        RolePermission.objects.filter(role=self.role, permission__in=[update_permission, delete_permission]).delete()
+        member = User.objects.create_user(
+            username="permission-target",
+            email="permission-target@example.com",
+            password="Target@12345",
+        )
+        membership = SubscriptionService.ensure_account_membership(
+            customer_account=self.account,
+            user=member,
+            role=UserEntityAccess.Role.MEMBER,
+            granted_by=self.owner,
+        )
+        view_permission = Permission.objects.get(code="admin.user.view")
+        RolePermission.objects.create(role=view_only_role, permission=view_permission)
+        UserRoleAssignment.objects.filter(user=self.owner, entity=self.entity, role=self.role).delete()
+        UserRoleAssignment.objects.create(
+            user=self.owner,
+            entity=self.entity,
+            role=view_only_role,
+            assigned_by=self.owner,
+            is_primary=True,
+        )
+
+        patch_response = self.client.patch(
+            reverse("subscriptions_api:admin-membership-detail", args=[membership.id]) + f"?entity={self.entity.id}",
+            {"role": UserEntityAccess.Role.ADMIN},
+            format="json",
+        )
+        delete_response = self.client.delete(
+            reverse("subscriptions_api:admin-membership-detail", args=[membership.id]) + f"?entity={self.entity.id}"
+        )
+        reset_response = self.client.post(
+            reverse("subscriptions_api:admin-membership-reset-password", args=[membership.id]) + f"?entity={self.entity.id}",
+            {"new_password": "NewPass@12345"},
+            format="json",
+        )
+
+        self.assertEqual(patch_response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(delete_response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(reset_response.status_code, status.HTTP_403_FORBIDDEN)
 
 
 class SubscriptionPlanAdminApiTests(APITestCase):

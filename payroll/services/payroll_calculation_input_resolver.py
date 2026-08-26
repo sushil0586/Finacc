@@ -182,20 +182,37 @@ class PayrollCalculationInputResolver:
             pass
         half_days += cls._decimal(totals_by_type.get("HALF_DAY"))
 
-        leave_impact_applied = bool((summary.metadata or {}).get("leave_impact_applied"))
-        leave_impact = (
-            {"paid_leave_days": "0", "unpaid_leave_days": "0", "lop_days": "0", "items": []}
-            if leave_impact_applied
-            else LeavePayrollImpactService.summarize_period(
+        metadata = summary.metadata or {}
+        leave_impact_applied = bool(metadata.get("leave_impact_applied"))
+        if leave_impact_applied:
+            paid_leave_days = cls._decimal(
+                metadata.get("paid_leave_days")
+                or metadata.get("approved_paid_leave_days")
+                or metadata.get("leave_days_paid")
+            )
+            unpaid_leave_days = cls._decimal(
+                metadata.get("unpaid_leave_days")
+                or metadata.get("approved_unpaid_leave_days")
+                or metadata.get("leave_days_unpaid")
+            )
+            leave_impact = {
+                "paid_leave_days": str(paid_leave_days),
+                "unpaid_leave_days": str(unpaid_leave_days),
+                "lop_days": str(unpaid_leave_days),
+                "items": [],
+                "already_applied": True,
+            }
+        else:
+            leave_impact = LeavePayrollImpactService.summarize_period(
                 contract=contract_payroll_profile.hrms_contract,
                 payroll_period=payroll_period,
             )
-        )
-        paid_leave_days = cls._decimal(leave_impact.get("paid_leave_days"))
-        unpaid_leave_days = cls._decimal(leave_impact.get("unpaid_leave_days"))
-        if paid_leave_days:
+            paid_leave_days = cls._decimal(leave_impact.get("paid_leave_days"))
+            unpaid_leave_days = cls._decimal(leave_impact.get("unpaid_leave_days"))
+
+        if paid_leave_days and not leave_impact_applied:
             payable_days += paid_leave_days
-        if unpaid_leave_days:
+        if unpaid_leave_days and not leave_impact_applied:
             lop_days += unpaid_leave_days
             payable_days -= unpaid_leave_days
 
@@ -280,8 +297,8 @@ class PayrollCalculationInputResolver:
         if not declaration:
             return {}
         snapshot: dict[str, Any] = {
+            "declared_annual_income": str(declaration.declared_annual_income or Decimal("0")),
             "annual_taxable_income": str(declaration.declared_annual_income or Decimal("0")),
-            "projected_taxable_income": str(declaration.declared_annual_income or Decimal("0")),
             "previous_employer_income": str(declaration.previous_employer_income or Decimal("0")),
             "previous_employer_taxable_income": str(declaration.previous_employer_income or Decimal("0")),
             "previous_employer_tds": str(declaration.previous_employer_tds or Decimal("0")),
@@ -512,6 +529,9 @@ class PayrollCalculationInputResolver:
         )
         salary_structure = getattr(salary_assignment, "salary_structure", None)
         salary_structure_version = getattr(salary_assignment, "salary_structure_version", None)
+        monthly_gross_amount = cls._decimal(getattr(salary_assignment, "gross_amount", None))
+        if monthly_gross_amount <= Decimal("0"):
+            monthly_gross_amount = cls._decimal(manual_input_snapshot.get("fixed_salary"))
         tax_projection_snapshot = PayrollTDSEngine.build_projection(
             contract_payroll_profile=contract_payroll_profile,
             salary_assignment=salary_assignment,
@@ -523,7 +543,7 @@ class PayrollCalculationInputResolver:
             policy=getattr(salary_structure_version, "calculation_policy_json", None) or {},
             existing_snapshot=tax_projection_snapshot,
             payroll_period=payroll_period,
-            monthly_gross_amount=cls._decimal(getattr(salary_assignment, "gross_amount", None)),
+            monthly_gross_amount=monthly_gross_amount,
             monthly_ctc_amount=cls._decimal(getattr(salary_assignment, "ctc_amount", None)),
         ).snapshot
         if tax_projection_snapshot:

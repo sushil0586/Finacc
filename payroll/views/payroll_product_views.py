@@ -52,6 +52,7 @@ def _readiness_summary_payload(result) -> dict:
     salary_structure = snapshot.get("salary_structure") or {}
     salary_structure_version = snapshot.get("salary_structure_version") or {}
     payroll_policy = snapshot.get("payroll_policy") or {}
+    attendance_close = snapshot.get("attendance_monthly_close") or {}
     return {
         "contract_id": str(result.contract.id),
         "contract_code": result.contract.contract_code,
@@ -66,6 +67,8 @@ def _readiness_summary_payload(result) -> dict:
         "salary_structure_code": salary_structure.get("code"),
         "salary_structure_version_no": salary_structure_version.get("version_no"),
         "payroll_policy_code": payroll_policy.get("code"),
+        "attendance_close_status": attendance_close.get("status"),
+        "attendance_close_code": attendance_close.get("payroll_period_code"),
         "recurring_item_count": len(result.recurring_items),
         "one_time_item_count": len(result.one_time_items),
         "statutory_profile_count": len(result.statutory_profiles),

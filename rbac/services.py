@@ -261,6 +261,19 @@ class RBACAuditService:
 
 
 class AssignmentSemanticsService:
+    ADMIN_LOCKOUT_PERMISSION_CODES = (
+        "admin.user.create",
+        "admin.user.update",
+        "admin.user.delete",
+        "admin.role.create",
+        "admin.role.update",
+        "admin.role.delete",
+        "admin.role_access.update",
+        "admin.menu.update",
+        "admin.menu.delete",
+        "admin.user_access.update",
+    )
+
     @staticmethod
     def _current_entity_wide_queryset(*, user, entity, exclude_id=None):
         now = timezone.now()
@@ -277,6 +290,118 @@ class AssignmentSemanticsService:
         if exclude_id is not None:
             queryset = queryset.exclude(pk=exclude_id)
         return queryset
+
+    @staticmethod
+    def _assignment_grants_admin_access(*, role):
+        if role is None or not role.isactive:
+            return False
+        return RolePermission.objects.filter(
+            role=role,
+            isactive=True,
+            permission__isactive=True,
+            permission__code__in=AssignmentSemanticsService.ADMIN_LOCKOUT_PERMISSION_CODES,
+        ).exists()
+
+    @staticmethod
+    def _permission_ids_grant_admin_access(permission_ids):
+        return Permission.objects.filter(
+            id__in=permission_ids,
+            isactive=True,
+            code__in=AssignmentSemanticsService.ADMIN_LOCKOUT_PERMISSION_CODES,
+        ).exists()
+
+    @staticmethod
+    def _current_admin_assignment_queryset(*, entity):
+        now = timezone.now()
+        return UserRoleAssignment.objects.filter(
+            entity=entity,
+            isactive=True,
+            role__isactive=True,
+            subentity__isnull=True,
+            role__role_permissions__isactive=True,
+            role__role_permissions__permission__isactive=True,
+            role__role_permissions__permission__code__in=AssignmentSemanticsService.ADMIN_LOCKOUT_PERMISSION_CODES,
+            user__customer_accesses__customer_account=SubscriptionService._customer_account_for_entity(entity),
+            user__customer_accesses__is_active=True,
+        ).filter(
+            Q(effective_from__isnull=True) | Q(effective_from__lte=now),
+            Q(effective_to__isnull=True) | Q(effective_to__gte=now),
+        ).distinct()
+
+    @staticmethod
+    def _assignment_is_current_entity_wide_admin_grant(*, assignment=None, user=None, entity=None, role=None, subentity=None, isactive=True, effective_from=None, effective_to=None):
+        now = timezone.now()
+        user = user if user is not None else getattr(assignment, "user", None)
+        entity = entity if entity is not None else getattr(assignment, "entity", None)
+        role = role if role is not None else getattr(assignment, "role", None)
+        subentity = subentity if subentity is not None else getattr(assignment, "subentity", None)
+        isactive = isactive if assignment is None else getattr(assignment, "isactive", isactive)
+        effective_from = effective_from if effective_from is not None else getattr(assignment, "effective_from", None)
+        effective_to = effective_to if effective_to is not None else getattr(assignment, "effective_to", None)
+
+        if not user or not entity or not isactive or subentity is not None:
+            return False
+        if effective_from and effective_from > now:
+            return False
+        if effective_to and effective_to < now:
+            return False
+        if not SubscriptionService.active_memberships_queryset(
+            user=user,
+            customer_account=SubscriptionService._customer_account_for_entity(entity),
+        ).exists():
+            return False
+        return AssignmentSemanticsService._assignment_grants_admin_access(role=role)
+
+    @staticmethod
+    def has_other_current_admin_assignment(*, assignment):
+        return AssignmentSemanticsService._current_admin_assignment_queryset(
+            entity=assignment.entity,
+        ).exclude(pk=assignment.pk).exists()
+
+    @staticmethod
+    def validate_role_permission_lockout_transition(*, role, next_permission_ids):
+        if role is None or not AssignmentSemanticsService._assignment_grants_admin_access(role=role):
+            return
+        if AssignmentSemanticsService._permission_ids_grant_admin_access(next_permission_ids):
+            return
+
+        current_role_assignments = AssignmentSemanticsService._current_admin_assignment_queryset(
+            entity=role.entity,
+        ).filter(role=role)
+        if not current_role_assignments.exists():
+            return
+
+        other_admin_assignments = AssignmentSemanticsService._current_admin_assignment_queryset(
+            entity=role.entity,
+        ).exclude(role=role)
+        if other_admin_assignments.exists():
+            return
+
+        raise ValueError(
+            "Cannot remove the last admin-capable permission set. Grant another active role user/RBAC admin access before changing this role."
+        )
+
+    @staticmethod
+    def validate_admin_lockout_transition(*, assignment, next_role=None, next_subentity=None, next_isactive=None, next_effective_from=None, next_effective_to=None):
+        if assignment is None or not AssignmentSemanticsService._assignment_is_current_entity_wide_admin_grant(assignment=assignment):
+            return
+
+        remains_admin_grant = AssignmentSemanticsService._assignment_is_current_entity_wide_admin_grant(
+            user=assignment.user,
+            entity=assignment.entity,
+            role=next_role if next_role is not None else assignment.role,
+            subentity=next_subentity if next_subentity is not None else assignment.subentity,
+            isactive=next_isactive if next_isactive is not None else assignment.isactive,
+            effective_from=next_effective_from if next_effective_from is not None else assignment.effective_from,
+            effective_to=next_effective_to if next_effective_to is not None else assignment.effective_to,
+        )
+        if remains_admin_grant:
+            return
+        if AssignmentSemanticsService.has_other_current_admin_assignment(assignment=assignment):
+            return
+        raise ValueError(
+            "Cannot remove the last active customer-admin access. Assign another admin role before changing this assignment."
+        )
 
     @staticmethod
     def validate_assignment_shape(*, role, is_primary, subentity, isactive):
@@ -536,4 +661,3 @@ class RoleCloneService:
             changes={"source_role_id": source_role.id},
         )
         return clone
-

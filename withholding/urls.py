@@ -51,6 +51,10 @@ from withholding.views_bulk_statutory import (
     TcsConfigsBulkImportCommitAPIView,
     TcsBulkJobDetailAPIView,
     TcsBulkJobErrorsExportAPIView,
+    TcsRulesBulkTemplateAPIView,
+    TcsRulesBulkExportAPIView,
+    TcsRulesBulkImportValidateAPIView,
+    TcsRulesBulkImportCommitAPIView,
 )
 
 urlpatterns = [
@@ -64,6 +68,10 @@ urlpatterns = [
     path("tcs/sections/bulk/import/commit/", TcsSectionsBulkImportCommitAPIView.as_view(), name="tcs-sections-bulk-import-commit"),
     path("tcs/rules/", TcsSectionListCreateAPIView.as_view(), name="tcs-rules"),
     path("tcs/rules/<int:pk>/", TcsSectionRetrieveUpdateDestroyAPIView.as_view(), name="tcs-rule-detail"),
+    path("tcs/rules/bulk/template/", TcsRulesBulkTemplateAPIView.as_view(), name="tcs-rules-bulk-template"),
+    path("tcs/rules/bulk/export/", TcsRulesBulkExportAPIView.as_view(), name="tcs-rules-bulk-export"),
+    path("tcs/rules/bulk/import/validate/", TcsRulesBulkImportValidateAPIView.as_view(), name="tcs-rules-bulk-import-validate"),
+    path("tcs/rules/bulk/import/commit/", TcsRulesBulkImportCommitAPIView.as_view(), name="tcs-rules-bulk-import-commit"),
     path("tcs/configs/", TcsEntityConfigListCreateAPIView.as_view(), name="tcs-configs"),
     path("tcs/configs/<int:pk>/", TcsEntityConfigRetrieveUpdateDestroyAPIView.as_view(), name="tcs-config-detail"),
     path("tcs/configs/bulk/template/", TcsConfigsBulkTemplateAPIView.as_view(), name="tcs-configs-bulk-template"),

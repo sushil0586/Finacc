@@ -15,6 +15,7 @@ from withholding.models import EntityWithholdingConfig, WithholdingSection
 from withholding.serializers import EntityWithholdingConfigSerializer, WithholdingSectionSerializer
 
 SECTIONS_SHEET = "tcs_sections"
+RULES_SHEET = "tcs_rules"
 CONFIGS_SHEET = "tcs_configs"
 
 
@@ -165,8 +166,10 @@ def sections_template_payload() -> dict[str, list[dict[str, Any]]]:
     }
 
 
-def sections_export_payload(search: str = "") -> dict[str, list[dict[str, Any]]]:
+def sections_export_payload(search: str = "", law_type: str | None = None) -> dict[str, list[dict[str, Any]]]:
     qs = WithholdingSection.objects.filter(tax_type=2).order_by("section_code", "-effective_from")
+    if law_type:
+        qs = qs.filter(law_type=law_type)
     if search:
         qs = qs.filter(section_code__icontains=search) | qs.filter(description__icontains=search)
     rows = [
@@ -188,6 +191,64 @@ def sections_export_payload(search: str = "") -> dict[str, list[dict[str, Any]]]
         for row in qs
     ]
     return {SECTIONS_SHEET: rows}
+
+
+def _rules_payload_as_sections_payload(payload: dict[str, list[dict[str, Any]]]) -> dict[str, list[dict[str, Any]]]:
+    rows = payload.get(RULES_SHEET, payload.get(SECTIONS_SHEET, []))
+    return {
+        SECTIONS_SHEET: [
+            {
+                **row,
+                # TCS Rules represent Income-tax TCS rules; GST TCS is handled separately.
+                "law_type": "INCOME_TAX",
+            }
+            for row in rows
+        ]
+    }
+
+
+def _rules_result(result: ImportResult) -> ImportResult:
+    summary = dict(result.summary or {})
+    if isinstance(summary.get("rows"), dict) and SECTIONS_SHEET in summary["rows"]:
+        rows = dict(summary["rows"])
+        rows[RULES_SHEET] = rows.pop(SECTIONS_SHEET)
+        summary["rows"] = rows
+    errors = [
+        {
+            **error,
+            "sheet": RULES_SHEET if error.get("sheet") == SECTIONS_SHEET else error.get("sheet"),
+        }
+        for error in result.errors
+    ]
+    return ImportResult(summary=summary, errors=errors)
+
+
+def rules_template_payload() -> dict[str, list[dict[str, Any]]]:
+    return {RULES_SHEET: sections_template_payload()[SECTIONS_SHEET]}
+
+
+def rules_export_payload(search: str = "") -> dict[str, list[dict[str, Any]]]:
+    data = sections_export_payload(search=search, law_type="INCOME_TAX")
+    return {RULES_SHEET: data.get(SECTIONS_SHEET, [])}
+
+
+def validate_rules_payload(payload: dict[str, list[dict[str, Any]]], *, upsert_mode: str) -> ImportResult:
+    return _rules_result(validate_sections_payload(_rules_payload_as_sections_payload(payload), upsert_mode=upsert_mode))
+
+
+def commit_rules_payload(
+    payload: dict[str, list[dict[str, Any]]],
+    *,
+    upsert_mode: str,
+    duplicate_strategy: str,
+) -> ImportResult:
+    return _rules_result(
+        commit_sections_payload(
+            _rules_payload_as_sections_payload(payload),
+            upsert_mode=upsert_mode,
+            duplicate_strategy=duplicate_strategy,
+        )
+    )
 
 
 def configs_template_payload(default_entity: int | None, default_entityfin: int | None) -> dict[str, list[dict[str, Any]]]:

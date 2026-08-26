@@ -24,6 +24,7 @@ from hrms.models import (
     LeaveType,
 )
 from hrms.services import HrmsGlobalAdoptionService, HrmsRuntimePolicyService
+from rbac.models import Permission, Role, RolePermission, UserRoleAssignment
 
 
 class HrmsGlobalSeedCommandTests(TestCase):
@@ -135,7 +136,27 @@ class HrmsOnboardingApiTests(APITestCase):
             password="testpass123",
         )
         self.entity = Entity.objects.create(entityname="HRMS Onboarding API Entity", createdby=self.user)
+        self._grant_hrms_onboarding_permissions("hrms.onboarding.view", "hrms.onboarding.adopt")
         self.client.force_authenticate(self.user)
+
+    def _grant_hrms_onboarding_permissions(self, *codes):
+        role = Role.objects.create(
+            entity=self.entity,
+            name="HRMS Onboarding Operator",
+            code=f"hrms_onboarding_operator_{self.entity.id}_{self.user.id}",
+        )
+        for code in codes:
+            permission, _ = Permission.objects.get_or_create(
+                code=code,
+                defaults={
+                    "name": code,
+                    "module": "hrms",
+                    "resource": "onboarding",
+                    "action": code.rsplit(".", 1)[-1],
+                },
+            )
+            RolePermission.objects.get_or_create(role=role, permission=permission)
+        UserRoleAssignment.objects.create(user=self.user, entity=self.entity, role=role, is_primary=True)
 
     def test_adoption_preview_api_works(self):
         response = self.client.get(

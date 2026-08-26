@@ -6,6 +6,7 @@ from unittest.mock import patch
 from django.test import TestCase
 from rest_framework.test import APIClient
 
+from hrms.models import AttendanceMonthlyClose
 from payroll.models import ContractSalaryStructureAssignment
 from payroll.services import (
     ContractPayrollProfileService,
@@ -148,6 +149,26 @@ class PayrollRuntimeReadinessResolverServiceTests(TestCase):
         self.assertEqual(result.readiness_status, "BLOCKED")
         self.assertIn("Missing active salary structure assignment.", result.blocking_issues)
 
+    def test_missing_payroll_profile_summary_is_null_safe(self):
+        contract_without_profile = PayrollFactory.hrms_contract(
+            entity=self.scope["entity"],
+            subentity=self.scope["subentity"],
+            contract_code="NO-PROFILE",
+        )
+
+        result = PayrollRunReadinessResolverService.resolve_contract_readiness(
+            contract=contract_without_profile,
+            payroll_date=date(2026, 5, 31),
+        )
+        summary = result.to_summary()
+
+        self.assertEqual(summary["readiness_status"], "BLOCKED")
+        self.assertIn("Missing active contract payroll profile.", summary["blocking_issues"])
+        self.assertIsNone(summary["pay_frequency"])
+        self.assertIsNone(summary["salary_structure_code"])
+        self.assertIsNone(summary["salary_structure_version_no"])
+        self.assertIsNone(summary["payroll_policy_code"])
+
     def test_inactive_policy_blocked(self):
         self._create_assignment()
         self._create_policy(is_active=False, is_default=False)
@@ -238,6 +259,41 @@ class PayrollRuntimeReadinessResolverServiceTests(TestCase):
         self.assertEqual(result.generated_snapshot_json["salary_structure"]["code"], self.structure.code)
         self.assertEqual(result.generated_snapshot_json["payroll_policy"]["code"], "MONTHLY_DEFAULT")
 
+    def test_readiness_snapshot_includes_hrms_monthly_close_evidence(self):
+        self._create_assignment()
+        self._create_policy()
+        self._create_statutory_links()
+        period = PayrollFactory.payroll_period(
+            entity=self.scope["entity"],
+            entityfinid=self.scope["entityfinid"],
+            subentity=self.scope["subentity"],
+            code="MAY-2026",
+        )
+        period.period_start = date(2026, 5, 1)
+        period.period_end = date(2026, 5, 31)
+        period.payout_date = date(2026, 5, 31)
+        period.save(update_fields=["period_start", "period_end", "payout_date", "updated_at"])
+        monthly_close = AttendanceMonthlyClose.objects.create(
+            entity=self.scope["entity"],
+            subentity=self.scope["subentity"],
+            payroll_period_code=period.code,
+            period_start=period.period_start,
+            period_end=period.period_end,
+            status=AttendanceMonthlyClose.Status.CLOSED,
+            summary_json={"approved": 1},
+        )
+
+        result = PayrollRunReadinessResolverService.resolve_contract_readiness(
+            contract=self.contract,
+            payroll_date=period.period_end,
+            payroll_period=period,
+        )
+
+        self.assertEqual(result.readiness_status, "READY")
+        self.assertEqual(result.generated_snapshot_json["attendance_monthly_close"]["id"], str(monthly_close.id))
+        self.assertEqual(result.generated_snapshot_json["attendance_monthly_close"]["status"], AttendanceMonthlyClose.Status.CLOSED)
+        self.assertEqual(result.to_summary()["attendance_close_status"], AttendanceMonthlyClose.Status.CLOSED)
+
 
 class PayrollRuntimeReadinessApiTests(TestCase):
     def setUp(self):
@@ -307,3 +363,40 @@ class PayrollRuntimeReadinessApiTests(TestCase):
         payload = response.json()
         self.assertEqual(payload["counts"]["total"], 1)
         self.assertEqual(payload["results"][0]["contract_code"], self.contract.contract_code)
+
+    @patch("core.entitlements.SubscriptionService.assert_entity_access")
+    @patch("payroll.views.payroll_setup_views.PayrollPermissionService.has_entity_permission_access", return_value=True)
+    def test_runtime_readiness_preview_infers_hrms_monthly_close_for_payroll_date(self, _perm, _scope):
+        period = PayrollFactory.payroll_period(
+            entity=self.scope["entity"],
+            entityfinid=self.scope["entityfinid"],
+            subentity=self.scope["subentity"],
+            code="MAY-2026",
+        )
+        period.period_start = date(2026, 5, 1)
+        period.period_end = date(2026, 5, 31)
+        period.payout_date = date(2026, 5, 31)
+        period.save(update_fields=["period_start", "period_end", "payout_date", "updated_at"])
+        AttendanceMonthlyClose.objects.create(
+            entity=self.scope["entity"],
+            subentity=self.scope["subentity"],
+            payroll_period_code=period.code,
+            period_start=period.period_start,
+            period_end=period.period_end,
+            status=AttendanceMonthlyClose.Status.CLOSED,
+        )
+
+        response = self.client.post(
+            "/api/payroll/runtime/readiness-preview/",
+            {
+                "entity": self.scope["entity"].id,
+                "payroll_date": "2026-05-31",
+                "contract_ids": [str(self.contract.id)],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        payload = response.json()
+        self.assertEqual(payload["results"][0]["attendance_close_status"], AttendanceMonthlyClose.Status.CLOSED)
+        self.assertEqual(payload["results"][0]["attendance_close_code"], period.code)

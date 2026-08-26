@@ -352,6 +352,7 @@ class PayrollRunPayslipAPIView(PayrollScopedAPIView, generics.RetrieveAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = PayslipSerializer
     lookup_url_kwarg = "employee_run_id"
+    lookup_field = "payroll_run_employee_id"
 
     def get_queryset(self):
         return Payslip.objects.select_related(
@@ -373,6 +374,7 @@ class PayrollRunPayslipAPIView(PayrollScopedAPIView, generics.RetrieveAPIView):
 class PayrollRunPayslipPdfAPIView(PayrollScopedAPIView, generics.RetrieveAPIView):
     permission_classes = [permissions.IsAuthenticated]
     lookup_url_kwarg = "employee_run_id"
+    lookup_field = "payroll_run_employee_id"
 
     def get_queryset(self):
         return Payslip.objects.select_related(

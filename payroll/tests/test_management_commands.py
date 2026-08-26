@@ -126,6 +126,11 @@ class PayrollManagementCommandTests(TestCase):
 
 
 class GlobalPayrollCatalogSeedCommandTests(TestCase):
+    def setUp(self):
+        GlobalSalaryStructureTemplate.objects.all().delete()
+        GlobalPayrollComponent.objects.all().delete()
+        GlobalPayrollComponentGroup.objects.all().delete()
+
     def test_seed_command_supports_dry_run(self):
         out = StringIO()
 

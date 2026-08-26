@@ -125,8 +125,8 @@ class PayrollTDSEngine:
         if declaration is None:
             return {}
         snapshot: dict[str, Any] = {
+            "declared_annual_income": str(q2(declaration.declared_annual_income)),
             "annual_taxable_income": str(q2(declaration.declared_annual_income)),
-            "projected_taxable_income": str(q2(declaration.projected_taxable_income)),
             "previous_employer_income": str(q2(declaration.previous_employer_income)),
             "previous_employer_taxable_income": str(q2(declaration.previous_employer_income)),
             "previous_employer_tds": str(q2(declaration.previous_employer_tds)),
@@ -199,6 +199,24 @@ class PayrollTDSEngine:
         if nested_key and tds_policy.get(nested_key) not in (None, ""):
             return tds_policy.get(nested_key)
         return cls.DEFAULT_POLICY.get(key, default)
+
+    @classmethod
+    def _policy_has_explicit_value(cls, policy: dict[str, Any] | None, key: str) -> bool:
+        policy = policy or {}
+        if key in policy and policy.get(key) not in (None, ""):
+            return True
+        tax_policy = policy.get("tax_policy") if isinstance(policy.get("tax_policy"), dict) else {}
+        tds_policy = tax_policy.get("tds") if isinstance(tax_policy.get("tds"), dict) else {}
+        nested_key_map = {
+            "tds_projection_rate": "projection_rate",
+            "tds_projection_rate_old_regime": "projection_rate_old_regime",
+            "tds_projection_rate_new_regime": "projection_rate_new_regime",
+            "tds_old_regime_slabs": "old_regime_slabs",
+            "tds_new_regime_slabs": "new_regime_slabs",
+            "tds_health_education_cess_rate": "health_education_cess_rate",
+        }
+        nested_key = nested_key_map.get(key)
+        return bool(nested_key and tds_policy.get(nested_key) not in (None, ""))
 
     @staticmethod
     def _decimal(value: Any) -> Decimal:
@@ -279,19 +297,65 @@ class PayrollTDSEngine:
         return max(q2(annual_tax - min(annual_tax, rebate_max)), ZERO2)
 
     @classmethod
-    def _resolve_surcharge_rate(
+    def _resolve_surcharge_bracket(
         cls,
         *,
         projected_taxable_income: Decimal,
         tax_regime: str,
         policy: dict[str, Any] | None,
-    ) -> Decimal:
+    ) -> dict[str, Decimal]:
+        if projected_taxable_income <= ZERO2:
+            return {"rate": ZERO2, "threshold_income": ZERO2, "previous_rate": ZERO2}
         slabs = cls._resolve_surcharge_slabs(tax_regime=tax_regime, policy=policy)
+        if not slabs:
+            return {"rate": ZERO2, "threshold_income": ZERO2, "previous_rate": ZERO2}
+        previous_rate = ZERO2
+        previous_upper_limit = ZERO2
         for slab in slabs:
             upper_limit = slab.get("upto")
+            rate = q2(slab.get("rate"))
             if upper_limit is None or projected_taxable_income <= q2(upper_limit):
-                return q2(slab.get("rate"))
-        return ZERO2
+                return {"rate": rate, "threshold_income": previous_upper_limit, "previous_rate": previous_rate}
+            previous_rate = rate
+            previous_upper_limit = q2(upper_limit)
+        return {"rate": ZERO2, "threshold_income": ZERO2, "previous_rate": ZERO2}
+
+    @classmethod
+    def _apply_marginal_relief(
+        cls,
+        *,
+        subtotal_with_surcharge: Decimal,
+        projected_taxable_income: Decimal,
+        tax_regime: str,
+        policy: dict[str, Any] | None,
+    ) -> Decimal:
+        if subtotal_with_surcharge <= ZERO2:
+            return ZERO2
+        if not cls._policy_flag(policy, "tds_apply_marginal_relief", True):
+            return subtotal_with_surcharge
+        surcharge_bracket = cls._resolve_surcharge_bracket(
+            projected_taxable_income=projected_taxable_income,
+            tax_regime=tax_regime,
+            policy=policy,
+        )
+        current_rate = q2(surcharge_bracket.get("rate"))
+        previous_rate = q2(surcharge_bracket.get("previous_rate"))
+        threshold_income = q2(surcharge_bracket.get("threshold_income"))
+        if current_rate <= previous_rate or threshold_income <= ZERO2 or projected_taxable_income <= threshold_income:
+            return subtotal_with_surcharge
+        slabs = cls._resolve_policy_slabs(tax_regime=tax_regime, policy=policy)
+        if not slabs:
+            return subtotal_with_surcharge
+        threshold_tax = cls._compute_tax_from_slabs(taxable_income=threshold_income, slabs=slabs)
+        threshold_tax = cls._apply_regime_rebate(
+            annual_tax=threshold_tax,
+            projected_taxable_income=threshold_income,
+            tax_regime=tax_regime,
+            policy=policy,
+        )
+        threshold_subtotal = q2(threshold_tax + q2(threshold_tax * previous_rate / Decimal("100.00")))
+        max_subtotal = q2(threshold_subtotal + q2(projected_taxable_income - threshold_income))
+        return min(subtotal_with_surcharge, max_subtotal)
 
     @classmethod
     def _apply_surcharge_and_cess(
@@ -304,12 +368,19 @@ class PayrollTDSEngine:
     ) -> Decimal:
         if annual_tax <= ZERO2:
             return ZERO2
-        surcharge_rate = cls._resolve_surcharge_rate(
+        surcharge_bracket = cls._resolve_surcharge_bracket(
             projected_taxable_income=projected_taxable_income,
             tax_regime=tax_regime,
             policy=policy,
         )
+        surcharge_rate = q2(surcharge_bracket.get("rate"))
         subtotal = q2(annual_tax + q2(annual_tax * surcharge_rate / Decimal("100.00")))
+        subtotal = cls._apply_marginal_relief(
+            subtotal_with_surcharge=subtotal,
+            projected_taxable_income=projected_taxable_income,
+            tax_regime=tax_regime,
+            policy=policy,
+        )
         cess_rate = cls._decimal(cls._policy_value(policy, "tds_health_education_cess_rate", ZERO2))
         if cess_rate <= ZERO2:
             return subtotal
@@ -336,6 +407,11 @@ class PayrollTDSEngine:
             annual_basic_received = q2(annual_gross * Decimal("0.40"))
         if rent_paid_annual <= ZERO2 or metro_flag is None:
             return declared_hra
+        rent_months = q2(snapshot.get("hra_rent_months"))
+        if Decimal("1.00") <= rent_months <= Decimal("12.00"):
+            month_multiplier = (rent_months / Decimal("12.00")).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+            annual_hra_received = q2(annual_hra_received * month_multiplier)
+            annual_basic_received = q2(annual_basic_received * month_multiplier)
         city_basic_percent = Decimal("0.50") if bool(metro_flag) else Decimal("0.40")
         rent_minus_basic_threshold = max(q2(rent_paid_annual - q2(annual_basic_received * Decimal("0.10"))), ZERO2)
         city_cap = q2(annual_basic_received * city_basic_percent)
@@ -394,6 +470,7 @@ class PayrollTDSEngine:
         if monthly_ctc <= ZERO2:
             monthly_ctc = q2(getattr(salary_assignment, "ctc_amount", ZERO2))
         annual_gross = q2(snapshot.get("annual_gross") or snapshot.get("annual_gross_projection"))
+        explicit_annual_gross = annual_gross > ZERO2
         if annual_gross <= ZERO2:
             annual_gross = q2(snapshot.get("declared_annual_income") or getattr(declaration, "declared_annual_income", ZERO2))
         if annual_gross <= ZERO2:
@@ -403,14 +480,18 @@ class PayrollTDSEngine:
 
         annual_other_income = q2(snapshot.get("other_income") or snapshot.get("annual_other_income") or getattr(declaration, "annual_other_income", ZERO2))
         previous_employer_income = q2(snapshot.get("previous_employer_taxable_income") or snapshot.get("previous_employer_income") or getattr(declaration, "previous_employer_income", ZERO2))
-        standard_deduction = q2(snapshot.get("standard_deduction_amount") or cls._policy_value(
-            policy,
-            "tds_standard_deduction_new_regime" if regime == "new_regime" else "tds_standard_deduction_old_regime",
-            "50000.00",
-        ))
+        standard_deduction = q2(snapshot.get("standard_deduction_amount"))
+        if standard_deduction <= ZERO2:
+            standard_deduction = q2(
+                cls._policy_value(
+                    policy,
+                    "tds_standard_deduction_new_regime" if regime == "new_regime" else "tds_standard_deduction_old_regime",
+                    "50000.00",
+                )
+            )
         deduction_80c = ZERO2
         deduction_80d = ZERO2
-        other_deductions = q2(snapshot.get("other_old_regime_deductions"))
+        other_deductions = q2(snapshot.get("other_old_regime_deductions") or snapshot.get("declared_deductions"))
         annual_hra = cls._estimate_component_annual(
             resolved=resolved,
             component_map=component_map,
@@ -442,6 +523,7 @@ class PayrollTDSEngine:
         annual_deductions = q2(standard_deduction + deduction_80c + deduction_80d + other_deductions + professional_tax)
 
         explicit_taxable_income = q2(snapshot.get("projected_taxable_income"))
+        explicit_taxable_income_used = explicit_taxable_income > ZERO2
         projected_taxable_income = explicit_taxable_income
         if projected_taxable_income <= ZERO2:
             projected_taxable_income = max(
@@ -450,10 +532,16 @@ class PayrollTDSEngine:
             )
 
         explicit_annual_tax = q2(snapshot.get("annual_tax") or snapshot.get("projected_annual_tax"))
+        explicit_annual_tax_used = explicit_annual_tax > ZERO2
         projected_annual_tax = explicit_annual_tax
         if projected_annual_tax <= ZERO2:
+            slab_key = "tds_new_regime_slabs" if regime == "new_regime" else "tds_old_regime_slabs"
+            rate_key = "tds_projection_rate_new_regime" if regime == "new_regime" else "tds_projection_rate_old_regime"
+            has_explicit_slabs = cls._policy_has_explicit_value(policy, slab_key)
+            has_explicit_rate = cls._policy_has_explicit_value(policy, rate_key) or cls._policy_has_explicit_value(policy, "tds_projection_rate")
             slabs = cls._resolve_policy_slabs(tax_regime=regime, policy=policy)
-            if slabs:
+            tax_basis = "none"
+            if slabs and (has_explicit_slabs or not has_explicit_rate):
                 projected_annual_tax = cls._compute_tax_from_slabs(taxable_income=projected_taxable_income, slabs=slabs)
                 projected_annual_tax = cls._apply_regime_rebate(
                     annual_tax=projected_annual_tax,
@@ -461,11 +549,26 @@ class PayrollTDSEngine:
                     tax_regime=regime,
                     policy=policy,
                 )
+                tax_basis = "explicit_slabs" if has_explicit_slabs else "default_slabs"
+            elif has_explicit_rate:
+                projection_rate = cls._decimal(
+                    cls._policy_value(
+                        policy,
+                        rate_key,
+                        cls._policy_value(policy, "tds_projection_rate", "10.00"),
+                    )
+                )
+                projected_annual_tax = q2(projected_taxable_income * projection_rate / Decimal("100.00"))
+                tax_basis = "projection_rate"
+            if projected_annual_tax > ZERO2:
+                cess_policy = policy
+                if tax_basis != "default_slabs" and not cls._policy_has_explicit_value(policy, "tds_health_education_cess_rate"):
+                    cess_policy = {**(policy or {}), "tds_health_education_cess_rate": "0.00"}
                 projected_annual_tax = cls._apply_surcharge_and_cess(
                     annual_tax=projected_annual_tax,
                     projected_taxable_income=projected_taxable_income,
                     tax_regime=regime,
-                    policy=policy,
+                    policy=cess_policy,
                 )
 
         tax_paid_ytd = q2(snapshot.get("tax_paid_ytd") or snapshot.get("tds_deducted_ytd"))
@@ -481,6 +584,7 @@ class PayrollTDSEngine:
             remaining_periods = Decimal("1.00")
 
         explicit_monthly_tds = q2(snapshot.get("monthly_tds") or snapshot.get("projected_monthly_tds") or snapshot.get("current_month_tds"))
+        explicit_monthly_tds_used = explicit_monthly_tds > ZERO2
         monthly_tds = explicit_monthly_tds if explicit_monthly_tds > ZERO2 else q2(balance_tax / remaining_periods)
 
         trace = {
@@ -508,7 +612,11 @@ class PayrollTDSEngine:
             "balance_tax": str(balance_tax),
             "remaining_periods": str(remaining_periods),
             "monthly_tds": str(monthly_tds),
-            "manual_override": explicit_monthly_tds > ZERO2,
+            "manual_override": explicit_monthly_tds_used,
+            "explicit_annual_gross_used": explicit_annual_gross,
+            "explicit_taxable_income_used": explicit_taxable_income_used,
+            "explicit_annual_tax_used": explicit_annual_tax_used,
+            "explicit_monthly_tds_used": explicit_monthly_tds_used,
         }
         normalized_snapshot = {
             **snapshot,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any, Optional
 
 from django.db import transaction
@@ -10,7 +11,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from numbering.models import DocumentNumberSeries
-from numbering.services import ensure_document_types_batch, ensure_series, validate_unique_series_pattern
+from numbering.services import ensure_document_type, ensure_document_types_batch, ensure_series, validate_unique_series_pattern
 from sales.models import SalesChoiceOverride, SalesLockPeriod
 from sales.models.sales_settings import SalesSettings
 from sales.services.sales_choices_service import SalesChoicesService
@@ -148,6 +149,11 @@ SALES_DOC_TYPES = {
     "invoice": {"doc_key": "sales_invoice", "name": "Sales Invoice", "default_code_field": "default_doc_code_invoice", "fallback_code": "SINV"},
     "credit_note": {"doc_key": "sales_credit_note", "name": "Sales Credit Note", "default_code_field": "default_doc_code_cn", "fallback_code": "SCN"},
     "debit_note": {"doc_key": "sales_debit_note", "name": "Sales Debit Note", "default_code_field": "default_doc_code_dn", "fallback_code": "SDN"},
+}
+
+DOC_CODE_FALLBACKS = {
+    config["default_code_field"]: config["fallback_code"]
+    for config in SALES_DOC_TYPES.values()
 }
 
 
@@ -335,6 +341,143 @@ class SalesSettingsAPIView(APIView):
             )
         return rows
 
+    @staticmethod
+    def _get_doc_type(doc_key: str, name: str, default_code: str):
+        return ensure_document_type(module="sales", doc_key=doc_key, name=name, default_code=default_code)
+
+    @staticmethod
+    def _doc_code_defaults(settings_obj) -> dict[str, str]:
+        return {
+            field: str(getattr(settings_obj, field, "") or "").strip()
+            for field in DOC_CODE_FALLBACKS
+        }
+
+    @staticmethod
+    def _setting_values(settings_obj) -> dict[str, Any]:
+        return {
+            field: deepcopy(getattr(settings_obj, field, None))
+            for field in EDITABLE_FIELDS
+        }
+
+    @staticmethod
+    def _model_field_default(field_name: str) -> Any:
+        field = SalesSettings._meta.get_field(field_name)
+        default = field.default
+        if callable(default):
+            default = default()
+        return deepcopy(default)
+
+    @staticmethod
+    def _settings_values_match(left: Any, right: Any) -> bool:
+        if left == right:
+            return True
+        if left in (None, "") and right in (None, ""):
+            return True
+        return str(left) == str(right)
+
+    @staticmethod
+    def _propagate_entity_doc_code_defaults(
+        *,
+        entity_id: int,
+        subentity_id: Optional[int],
+        settings_obj,
+        previous_defaults: dict[str, str],
+    ) -> None:
+        if subentity_id is not None:
+            return
+
+        for field, fallback_code in DOC_CODE_FALLBACKS.items():
+            previous_value = str(previous_defaults.get(field) or "").strip()
+            next_value = str(getattr(settings_obj, field, "") or "").strip()
+            if not next_value or next_value == previous_value:
+                continue
+
+            # Branch rows that still carry the old entity code or stock fallback are inherited in practice.
+            # Preserve branches that have been intentionally customized to a different code.
+            SalesSettings.objects.filter(
+                entity_id=entity_id,
+                subentity__isnull=False,
+            ).filter(
+                **{f"{field}__in": [previous_value, fallback_code, ""]}
+            ).update(**{field: next_value})
+
+    def _ensure_default_numbering_series(
+        self,
+        *,
+        entity_id: int,
+        entityfinid_id: Optional[int],
+        subentity_id: Optional[int],
+        settings_obj,
+        previous_defaults: dict[str, str],
+        user_id: Optional[int],
+    ) -> None:
+        if not entityfinid_id:
+            return
+
+        for config in SALES_DOC_TYPES.values():
+            field = config["default_code_field"]
+            doc_code = str(getattr(settings_obj, field, "") or config["fallback_code"]).strip()
+            previous_doc_code = str(previous_defaults.get(field) or "").strip()
+            if not doc_code or doc_code == previous_doc_code:
+                continue
+
+            doc_type = self._get_doc_type(config["doc_key"], config["name"], doc_code)
+            series, _ = ensure_series(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                doc_type_id=doc_type.id,
+                doc_code=doc_code,
+                prefix=doc_code,
+                start=1,
+                padding=5,
+                reset="yearly",
+                include_year=True,
+                include_month=False,
+            )
+            if user_id and not series.created_by_id:
+                series.created_by_id = user_id
+                series.save(update_fields=["created_by"])
+
+    @classmethod
+    def _propagate_entity_setting_defaults(
+        cls,
+        *,
+        entity_id: int,
+        subentity_id: Optional[int],
+        settings_obj,
+        previous_values: dict[str, Any],
+        updated_fields: set[str],
+    ) -> None:
+        if subentity_id is not None:
+            return
+
+        fields_to_check = [
+            field
+            for field in updated_fields
+            if field in EDITABLE_FIELDS and field not in DOC_CODE_FALLBACKS
+        ]
+        if not fields_to_check:
+            return
+
+        for branch_settings in SalesSettings.objects.filter(entity_id=entity_id, subentity__isnull=False):
+            branch_update_fields = []
+            for field in fields_to_check:
+                previous_value = previous_values.get(field)
+                next_value = deepcopy(getattr(settings_obj, field, None))
+                if cls._settings_values_match(next_value, previous_value):
+                    continue
+                current_value = getattr(branch_settings, field, None)
+                default_value = cls._model_field_default(field)
+                if (
+                    cls._settings_values_match(current_value, previous_value)
+                    or cls._settings_values_match(current_value, default_value)
+                ):
+                    setattr(branch_settings, field, next_value)
+                    branch_update_fields.append(field)
+            if branch_update_fields:
+                branch_settings.save(update_fields=branch_update_fields)
+
     def _update_numbering_series(self, rows: list[dict], *, entity_id: int, entityfinid_id: int, subentity_id: Optional[int], settings_obj, user_id: Optional[int]) -> None:
         row_map = {row["series_key"]: row for row in rows if isinstance(row, dict) and row.get("series_key") in SALES_DOC_TYPES}
         for series_key, config in SALES_DOC_TYPES.items():
@@ -347,6 +490,15 @@ class SalesSettingsAPIView(APIView):
 
             setattr(settings_obj, config["default_code_field"], doc_code)
             doc_type = self._get_doc_type(config["doc_key"], config["name"], doc_code)
+            if subentity_id and row.get("series_exists") is False:
+                DocumentNumberSeries.objects.filter(
+                    entity_id=entity_id,
+                    entityfinid_id=entityfinid_id,
+                    subentity_id=subentity_id,
+                    doc_type_id=doc_type.id,
+                    doc_code=doc_code,
+                ).delete()
+                continue
             series, _ = ensure_series(
                 entity_id=entity_id,
                 entityfinid_id=entityfinid_id,
@@ -373,7 +525,10 @@ class SalesSettingsAPIView(APIView):
             series.is_active = bool(row.get("is_active", True))
             if user_id and not series.created_by_id:
                 series.created_by_id = user_id
-            validate_unique_series_pattern(series=series, doc_label=config["name"])
+            try:
+                validate_unique_series_pattern(series=series, doc_label=config["name"])
+            except ValueError as exc:
+                raise ValidationError({"numbering_series": str(exc)})
             series.save()
 
         settings_obj.save()
@@ -511,6 +666,9 @@ class SalesSettingsAPIView(APIView):
         settings_updates = nested_settings if nested_settings is not None else request.data
 
         settings_obj = SalesSettingsService.get_settings(entity_id, subentity_id, entityfinid_id=entityfinid_id)
+        previous_doc_code_defaults = self._doc_code_defaults(settings_obj)
+        previous_setting_values = self._setting_values(settings_obj)
+        updated_setting_fields = {key for key in settings_updates if key in EDITABLE_FIELDS}
         try:
             for key, value in settings_updates.items():
                 if key == "stock_policy":
@@ -541,6 +699,28 @@ class SalesSettingsAPIView(APIView):
             self._update_numbering_series(rows, entity_id=entity_id, entityfinid_id=entityfinid_id, subentity_id=subentity_id, settings_obj=settings_obj, user_id=getattr(request.user, "id", None))
         else:
             settings_obj.save()
+
+        self._ensure_default_numbering_series(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            settings_obj=settings_obj,
+            previous_defaults=previous_doc_code_defaults,
+            user_id=getattr(request.user, "id", None),
+        )
+        self._propagate_entity_doc_code_defaults(
+            entity_id=entity_id,
+            subentity_id=subentity_id,
+            settings_obj=settings_obj,
+            previous_defaults=previous_doc_code_defaults,
+        )
+        self._propagate_entity_setting_defaults(
+            entity_id=entity_id,
+            subentity_id=subentity_id,
+            settings_obj=settings_obj,
+            previous_values=previous_setting_values,
+            updated_fields=updated_setting_fields,
+        )
 
         if "lock_periods" in request.data:
             rows = request.data.get("lock_periods") or []

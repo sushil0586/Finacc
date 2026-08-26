@@ -199,6 +199,17 @@ class EntityOnboardingService:
 
         gstno = (profile.get("gstno") or "").strip().upper()
         if gstno:
+            existing_active_gstin = EntityGstRegistration.objects.filter(
+                gstin=gstno,
+                isactive=True,
+            ).exclude(entity=entity).first()
+            if existing_active_gstin:
+                raise ValidationError({
+                    "gstno": [
+                        "An active entity GST registration already exists for this GSTIN."
+                    ]
+                })
+
             # Current operating model keeps one active GST registration per entity.
             # When onboarding changes the GSTIN, retire any previous active row first.
             EntityGstRegistration.objects.filter(

@@ -7,7 +7,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from entity.models import Entity
-from rbac.services import EffectivePermissionService
+from rbac.models import RBACAuditLog
+from rbac.services import EffectivePermissionService, RBACAuditService
 
 from .models import UserEntityAccess
 from .serializers import (
@@ -17,6 +18,8 @@ from .serializers import (
     SubscriptionSnapshotSerializer,
     TenantMembershipCreateSerializer,
     TenantMembershipListResponseSerializer,
+    TenantMembershipPasswordResetSerializer,
+    TenantMembershipResendInviteSerializer,
     TenantMembershipSerializer,
     TenantMembershipUpdateSerializer,
     tenant_membership_queryset_for_entity,
@@ -37,7 +40,7 @@ class SubscriptionAccountAdminMixin:
 class TenantMembershipAccessMixin:
     permission_classes = [permissions.IsAuthenticated]
 
-    def _entity_from_request(self, request):
+    def _entity_from_request(self, request, *, required_permissions=("admin.user.view", "admin.user.create", "admin.user.update")):
         entity_id = request.query_params.get("entity") or request.data.get("entity")
         if entity_id in (None, "", "null"):
             return None, Response({"detail": "entity is required."}, status=status.HTTP_400_BAD_REQUEST)
@@ -51,7 +54,7 @@ class TenantMembershipAccessMixin:
             return None, Response({"detail": "Entity not found or inaccessible."}, status=status.HTTP_404_NOT_FOUND)
 
         permission_codes = EffectivePermissionService.permission_codes_for_user(request.user, entity.id)
-        if not any(code in permission_codes for code in ("admin.user.view", "admin.user.create", "admin.user.update")):
+        if not any(code in permission_codes for code in required_permissions):
             return None, Response({"detail": "Missing user-management permission."}, status=status.HTTP_403_FORBIDDEN)
 
         customer_account = SubscriptionService._customer_account_for_entity(entity)
@@ -205,12 +208,12 @@ class SubscriptionPlanAdminDetailView(APIView):
 
 class TenantMembershipListCreateView(TenantMembershipAccessMixin, APIView):
     def get(self, request):
-        entity, error_response = self._entity_from_request(request)
+        entity, error_response = self._entity_from_request(request, required_permissions=("admin.user.view",))
         if error_response:
             return error_response
 
         queryset = tenant_membership_queryset_for_entity(entity)
-        serializer = TenantMembershipSerializer(queryset, many=True)
+        serializer = TenantMembershipSerializer(queryset, many=True, context={"actor": request.user})
         payload = {
             "entity_id": entity.id,
             "entity_name": entity.entityname,
@@ -226,7 +229,7 @@ class TenantMembershipListCreateView(TenantMembershipAccessMixin, APIView):
         return Response(payload)
 
     def post(self, request):
-        entity, error_response = self._entity_from_request(request)
+        entity, error_response = self._entity_from_request(request, required_permissions=("admin.user.create",))
         if error_response:
             return error_response
 
@@ -242,7 +245,21 @@ class TenantMembershipListCreateView(TenantMembershipAccessMixin, APIView):
 
         queryset = tenant_membership_queryset_for_entity(entity)
         membership = queryset.get(pk=membership.pk)
-        return Response(TenantMembershipSerializer(membership).data, status=status.HTTP_201_CREATED)
+        RBACAuditService.log(
+            actor=request.user,
+            entity=entity,
+            object_type="tenant_membership",
+            object_id=membership.id,
+            action=RBACAuditLog.ACTION_CREATE,
+            message=f"Added tenant member {membership.user.email}.",
+            changes={
+                "user_id": membership.user_id,
+                "email": membership.user.email,
+                "role": membership.role,
+                "expires_at": membership.expires_at.isoformat() if membership.expires_at else None,
+            },
+        )
+        return Response(TenantMembershipSerializer(membership, context={"actor": request.user}).data, status=status.HTTP_201_CREATED)
 
 
 class TenantMembershipDetailView(TenantMembershipAccessMixin, APIView):
@@ -253,14 +270,14 @@ class TenantMembershipDetailView(TenantMembershipAccessMixin, APIView):
         )
 
     def get(self, request, membership_id: int):
-        entity, error_response = self._entity_from_request(request)
+        entity, error_response = self._entity_from_request(request, required_permissions=("admin.user.view",))
         if error_response:
             return error_response
         membership = self.get_object(entity=entity, membership_id=membership_id)
-        return Response(TenantMembershipSerializer(membership).data)
+        return Response(TenantMembershipSerializer(membership, context={"actor": request.user}).data)
 
     def patch(self, request, membership_id: int):
-        entity, error_response = self._entity_from_request(request)
+        entity, error_response = self._entity_from_request(request, required_permissions=("admin.user.update",))
         if error_response:
             return error_response
         membership = self.get_object(entity=entity, membership_id=membership_id)
@@ -269,13 +286,34 @@ class TenantMembershipDetailView(TenantMembershipAccessMixin, APIView):
             context={"membership": membership, "actor": request.user},
             partial=True,
         )
-        serializer.is_valid(raise_exception=True)
+        if not serializer.is_valid():
+            errors = dict(serializer.errors)
+            for key in ("detail", "code"):
+                value = errors.get(key)
+                if isinstance(value, list) and len(value) == 1:
+                    errors[key] = str(value[0])
+            return Response(errors, status=status.HTTP_400_BAD_REQUEST)
         updated_membership = serializer.save()
         updated_membership = tenant_membership_queryset_for_entity(entity).get(pk=updated_membership.pk)
-        return Response(TenantMembershipSerializer(updated_membership).data)
+        RBACAuditService.log(
+            actor=request.user,
+            entity=entity,
+            object_type="tenant_membership",
+            object_id=updated_membership.id,
+            action=RBACAuditLog.ACTION_UPDATE,
+            message=f"Updated tenant member {updated_membership.user.email}.",
+            changes={
+                "user_id": updated_membership.user_id,
+                "email": updated_membership.user.email,
+                "role": updated_membership.role,
+                "is_active": updated_membership.is_active,
+                "expires_at": updated_membership.expires_at.isoformat() if updated_membership.expires_at else None,
+            },
+        )
+        return Response(TenantMembershipSerializer(updated_membership, context={"actor": request.user}).data)
 
     def delete(self, request, membership_id: int):
-        entity, error_response = self._entity_from_request(request)
+        entity, error_response = self._entity_from_request(request, required_permissions=("admin.user.delete",))
         if error_response:
             return error_response
         membership = self.get_object(entity=entity, membership_id=membership_id)
@@ -283,4 +321,98 @@ class TenantMembershipDetailView(TenantMembershipAccessMixin, APIView):
             membership=membership,
             deactivated_by=request.user,
         )
+        RBACAuditService.log(
+            actor=request.user,
+            entity=entity,
+            object_type="tenant_membership",
+            object_id=membership.id,
+            action=RBACAuditLog.ACTION_DEACTIVATE,
+            message=f"Deactivated tenant member {membership.user.email} and related active RBAC assignments.",
+            changes={"user_id": membership.user_id, "email": membership.user.email},
+        )
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class TenantMembershipPasswordResetView(TenantMembershipAccessMixin, APIView):
+    def post(self, request, membership_id: int):
+        entity, error_response = self._entity_from_request(request, required_permissions=("admin.user.update",))
+        if error_response:
+            return error_response
+        membership = get_object_or_404(
+            tenant_membership_queryset_for_entity(entity),
+            pk=membership_id,
+        )
+        serializer = TenantMembershipPasswordResetSerializer(
+            data=request.data,
+            context={"membership": membership, "actor": request.user},
+        )
+        if not serializer.is_valid():
+            errors = dict(serializer.errors)
+            for key in ("detail", "code"):
+                value = errors.get(key)
+                if isinstance(value, list) and len(value) == 1:
+                    errors[key] = str(value[0])
+            return Response(errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer.save()
+        updated_membership = tenant_membership_queryset_for_entity(entity).get(pk=membership.pk)
+        RBACAuditService.log(
+            actor=request.user,
+            entity=entity,
+            object_type="tenant_membership",
+            object_id=updated_membership.id,
+            action=RBACAuditLog.ACTION_UPDATE,
+            message=f"Reset password for tenant member {updated_membership.user.email}.",
+            changes={"user_id": updated_membership.user_id, "email": updated_membership.user.email, "security_action": "password_reset"},
+        )
+        return Response(
+            {
+                "detail": "Password reset successfully. Share the temporary password with the user securely.",
+                "membership": TenantMembershipSerializer(updated_membership, context={"actor": request.user}).data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class TenantMembershipResendInviteView(TenantMembershipAccessMixin, APIView):
+    def post(self, request, membership_id: int):
+        entity, error_response = self._entity_from_request(request, required_permissions=("admin.user.update",))
+        if error_response:
+            return error_response
+        membership = get_object_or_404(
+            tenant_membership_queryset_for_entity(entity),
+            pk=membership_id,
+        )
+        serializer = TenantMembershipResendInviteSerializer(
+            data=request.data,
+            context={"membership": membership, "actor": request.user},
+        )
+        if not serializer.is_valid():
+            errors = dict(serializer.errors)
+            for key in ("detail", "code"):
+                value = errors.get(key)
+                if isinstance(value, list) and len(value) == 1:
+                    errors[key] = str(value[0])
+            return Response(errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer.save()
+        updated_membership = tenant_membership_queryset_for_entity(entity).get(pk=membership.pk)
+        RBACAuditService.log(
+            actor=request.user,
+            entity=entity,
+            object_type="tenant_membership",
+            object_id=updated_membership.id,
+            action=RBACAuditLog.ACTION_UPDATE,
+            message=f"Resent verification invite for tenant member {updated_membership.user.email}.",
+            changes={"user_id": updated_membership.user_id, "email": updated_membership.user.email, "security_action": "resend_invite"},
+        )
+        message = (
+            "Verification invite resent successfully."
+            if not updated_membership.user.email_verified
+            else "Email is already verified."
+        )
+        return Response(
+            {
+                "detail": message,
+                "membership": TenantMembershipSerializer(updated_membership, context={"actor": request.user}).data,
+            },
+            status=status.HTTP_200_OK,
+        )

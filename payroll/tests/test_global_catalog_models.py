@@ -16,6 +16,10 @@ from payroll.models import (
 
 class GlobalPayrollCatalogModelTests(TestCase):
     def setUp(self):
+        GlobalSalaryStructureTemplateLine.objects.all().delete()
+        GlobalSalaryStructureTemplate.objects.all().delete()
+        GlobalPayrollComponent.objects.all().delete()
+        GlobalPayrollComponentGroup.objects.all().delete()
         self.group = GlobalPayrollComponentGroup.objects.create(
             code="EARNINGS",
             name="Earnings",

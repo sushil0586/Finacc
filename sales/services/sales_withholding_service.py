@@ -23,6 +23,14 @@ def q4(x) -> Decimal:
 
 class SalesWithholdingService:
     @staticmethod
+    def _normalize_runtime_reason(*, amount: Decimal, reason: str | None, reason_code: str | None) -> tuple[str | None, str | None]:
+        normalized_reason = str(reason or "").strip() or None
+        normalized_code = str(reason_code or "").strip().upper() or None
+        if amount > ZERO2 and not normalized_code:
+            return normalized_reason or "TCS applicable at resolved rate.", "APPLICABLE"
+        return normalized_reason, normalized_code
+
+    @staticmethod
     def compute_tcs(*, header, customer_account_id: int, invoice_date: date, taxable_total, gross_total) -> WithholdingResult:
         cfg = None
         if getattr(header, "entity_id", None) and getattr(header, "entityfinid_id", None):
@@ -104,28 +112,38 @@ class SalesWithholdingService:
         rate = q4(getattr(section, "rate_default", Decimal("0.0000")))
 
         if effective_base <= ZERO2 or rate <= Decimal("0.0000"):
+            runtime_reason, runtime_reason_code = SalesWithholdingService._normalize_runtime_reason(
+                amount=ZERO2,
+                reason=threshold_reason or rate_resolution.reason,
+                reason_code=threshold_reason_code or rate_resolution.reason_code,
+            )
             return WithholdingResult(
                 True,
                 section,
                 rate_resolution.rate,
                 q2(effective_base),
                 ZERO2,
-                threshold_reason or rate_resolution.reason,
-                threshold_reason_code or rate_resolution.reason_code,
+                runtime_reason,
+                runtime_reason_code,
                 no_pan_applied=rate_resolution.no_pan_applied,
                 sec_206ab_applied=rate_resolution.sec_206ab_applied,
                 lower_rate_applied=rate_resolution.lower_rate_applied,
             )
 
         amt = q2((effective_base * rate_resolution.rate) / Decimal("100.0"))
+        runtime_reason, runtime_reason_code = SalesWithholdingService._normalize_runtime_reason(
+            amount=amt,
+            reason=threshold_reason or rate_resolution.reason,
+            reason_code=threshold_reason_code or rate_resolution.reason_code,
+        )
         return WithholdingResult(
             True,
             section,
             rate_resolution.rate,
             q2(effective_base),
             amt,
-            threshold_reason or rate_resolution.reason,
-            threshold_reason_code or rate_resolution.reason_code,
+            runtime_reason,
+            runtime_reason_code,
             no_pan_applied=rate_resolution.no_pan_applied,
             sec_206ab_applied=rate_resolution.sec_206ab_applied,
             lower_rate_applied=rate_resolution.lower_rate_applied,

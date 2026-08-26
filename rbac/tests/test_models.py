@@ -143,10 +143,12 @@ class RBACModelTests(TestCase):
         first = PayrollRBACSeedService.seed_entity_roles(entity=self.entity, actor=self.user)
         second = PayrollRBACSeedService.seed_entity_roles(entity=self.entity, actor=self.user)
 
-        self.assertEqual(first["permission_count"], 91)
-        self.assertEqual(first["menu_count"], 27)
-        self.assertEqual(second["permission_count"], 91)
-        self.assertEqual(second["menu_count"], 27)
+        expected_permission_count = len(PayrollRBACSeedService.PERMISSION_SPECS)
+        expected_menu_count = len(PayrollRBACSeedService.MENU_SPECS)
+        self.assertEqual(first["permission_count"], expected_permission_count)
+        self.assertEqual(first["menu_count"], expected_menu_count)
+        self.assertEqual(second["permission_count"], expected_permission_count)
+        self.assertEqual(second["menu_count"], expected_menu_count)
 
         self.assertTrue(Permission.objects.filter(code="payroll.run.post", isactive=True).exists())
         self.assertTrue(Menu.objects.filter(code="payroll.runs", route_path="/payroll/runs", isactive=True).exists())
@@ -208,8 +210,42 @@ class RBACModelTests(TestCase):
         self.assertFalse(RolePermission.objects.filter(role=readonly_role, permission__code="reports.payroll.export", isactive=True).exists())
         self.assertEqual(
             RolePermission.objects.filter(role=admin_role, permission__module__in=["payroll", "reports", "payments"], isactive=True).count(),
-            91,
+            expected_permission_count,
         )
+
+    def test_entity_seed_grants_admin_self_service_permissions(self):
+        required_codes = {
+            "admin.user.view",
+            "admin.user.create",
+            "admin.user.update",
+            "admin.user.delete",
+            "admin.role.view",
+            "admin.role.create",
+            "admin.role.update",
+            "admin.role.delete",
+            "admin.menu.view",
+            "admin.menu.update",
+            "admin.role_access.view",
+            "admin.role_access.update",
+            "admin.user_access.view",
+            "admin.user_access.update",
+            "admin.access_preview.view",
+            "admin.audit_log.view",
+        }
+
+        RBACSeedService.seed_entity(entity=self.entity, actor=self.user, seed_default_roles=True)
+
+        customer_admin = Role.objects.get(entity=self.entity, code="admin")
+        owner_admin = Role.objects.get(entity=self.entity, code="entity.super_admin")
+        customer_admin_codes = set(
+            RolePermission.objects.filter(role=customer_admin, isactive=True).values_list("permission__code", flat=True)
+        )
+        owner_admin_codes = set(
+            RolePermission.objects.filter(role=owner_admin, isactive=True).values_list("permission__code", flat=True)
+        )
+
+        self.assertTrue(required_codes.issubset(customer_admin_codes))
+        self.assertTrue(required_codes.issubset(owner_admin_codes))
 
     def test_role_template_service_uses_permission_code_prefixes_not_menu_metadata(self):
         sales_permission = Permission.objects.create(
@@ -235,6 +271,40 @@ class RBACModelTests(TestCase):
 
         self.assertIn(sales_permission.id, template_permissions)
         self.assertNotIn(unrelated_permission.id, template_permissions)
+
+    def test_hrms_runtime_menus_and_permissions_are_seeded_for_launch(self):
+        required_permission_codes = {
+            "hrms.onboarding.view",
+            "hrms.onboarding.adopt",
+            "hrms.attendance_entry.view",
+            "hrms.attendance_import_batch.create",
+            "hrms.attendance_approval.approve",
+            "hrms.attendance_monthly_close.close",
+            "hrms.leave_policy.update",
+            "hrms.leave_application.create",
+            "hrms.leave_application.approve",
+            "hrms.leave_ledger.view",
+        }
+        required_menu_routes = {
+            "/hrms/onboarding",
+            "/hrms/attendance-daily-grid",
+            "/hrms/attendance-monthly-summary",
+            "/hrms/attendance-import",
+            "/hrms/attendance-approval-close",
+            "/hrms/employee-attendance-view",
+            "/hrms/leave-policy-rules",
+            "/hrms/ess-leave-application",
+            "/hrms/manager-leave-approval",
+            "/hrms/leave-balance-ledger",
+        }
+
+        self.assertTrue(
+            required_permission_codes.issubset(set(Permission.objects.filter(isactive=True).values_list("code", flat=True)))
+        )
+        self.assertTrue(required_menu_routes.issubset(set(Menu.objects.filter(isactive=True).values_list("route_path", flat=True))))
+
+        hrms_template_codes = set(RoleTemplateService._permission_queryset_for_template("hrms_user").values_list("code", flat=True))
+        self.assertTrue(required_permission_codes.issubset(hrms_template_codes))
 
     def test_payables_user_template_covers_core_ap_reports_only(self):
         required_codes = {

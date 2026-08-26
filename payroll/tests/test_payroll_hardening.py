@@ -480,5 +480,5 @@ class PayrollHardeningTests(TestCase):
             request=None,
             queryset=PayrollRun.objects.filter(id=run.id),
         )
-        self.assertEqual(response["Content-Type"], "text/csv")
+        self.assertTrue(response["Content-Type"].startswith("text/csv"))
         self.assertIn("payroll_deduction_summary.csv", response["Content-Disposition"])

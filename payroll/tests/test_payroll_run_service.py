@@ -9,7 +9,9 @@ from django.test import TestCase
 from payroll.models import (
     ContractPayrollInputSnapshot,
     ContractSalaryStructureAssignment,
+    EntityPayrollPolicy,
     PayrollComponent,
+    Payslip,
     PayrollRun,
     SalaryStructureLine,
     StatutoryScheme,
@@ -81,6 +83,26 @@ class PayrollRunServiceTests(TestCase):
                     "payroll_period": self.setup["period"],
                     "input_type": ContractPayrollInputSnapshot.InputType.TAX_PROJECTION,
                     "input_json": extra_data.get("tax_projection_snapshot") or {},
+                    "source": ContractPayrollInputSnapshot.SourceType.MANUAL,
+                    "effective_from": self.setup["period"].period_start,
+                    "is_active": True,
+                },
+                instance=existing,
+            )
+
+        if "fixed_salary" in extra_data:
+            existing = ContractPayrollInputSnapshot.objects.filter(
+                contract_payroll_profile=contract_profile,
+                payroll_period=self.setup["period"],
+                input_type=ContractPayrollInputSnapshot.InputType.MANUAL_PAYROLL_INPUT,
+            ).first()
+            ContractPayrollInputSnapshotService.create_or_update_snapshot(
+                {
+                    "entity": self.setup["entity"],
+                    "contract_payroll_profile": contract_profile,
+                    "payroll_period": self.setup["period"],
+                    "input_type": ContractPayrollInputSnapshot.InputType.MANUAL_PAYROLL_INPUT,
+                    "input_json": {"fixed_salary": extra_data.get("fixed_salary")},
                     "source": ContractPayrollInputSnapshot.SourceType.MANUAL,
                     "effective_from": self.setup["period"].period_start,
                     "is_active": True,
@@ -275,6 +297,30 @@ class PayrollRunServiceTests(TestCase):
         run.refresh_from_db()
         self.assertEqual(run.status, PayrollRun.Status.POSTED)
         self.assertIsNotNone(run.posted_entry_id)
+
+    def test_approval_publishes_payslip_when_policy_is_on_approval(self):
+        policy = self._active_payroll_policy()
+        policy.payslip_publish_policy = EntityPayrollPolicy.PayslipPublishPolicy.ON_APPROVAL
+        policy.save(update_fields=["payslip_publish_policy", "updated_at"])
+        run = PayrollRunService.create_run(
+            entity_id=self.setup["entity"].id,
+            entityfinid_id=self.setup["entityfinid"].id,
+            subentity_id=self.setup["subentity"].id,
+            payroll_period_id=self.setup["period"].id,
+            run_type=PayrollRun.RunType.REGULAR,
+            posting_date=self.setup["period"].period_end,
+            payout_date=self.setup["period"].payout_date,
+            created_by_id=self.setup["user"].id,
+        ).run
+
+        PayrollRunService.calculate_run(run)
+        PayrollRunService.submit_run(run, submitted_by_id=self.setup["user"].id, note="submit")
+        PayrollRunService.approve_run(run, approved_by_id=self.setup["user"].id, note="approve")
+        row = self._get_run_employee(run)
+        payslip = Payslip.objects.get(payroll_run_employee=row)
+
+        self.assertIsNotNone(payslip.published_at)
+        self.assertEqual(payslip.published_by_id, self.setup["user"].id)
 
     def test_approve_blocks_when_structure_policy_requires_verified_hra_evidence(self):
         self.setup["version"].calculation_policy_json = {

@@ -15,7 +15,7 @@ from rest_framework.test import APIClient, APITestCase
 from Authentication.models import User
 from catalog.models import Product, ProductCategory, UnitOfMeasure
 from entity.models import Entity, EntityAddress, EntityFinancialYear, EntityGstRegistration, GstRegistrationType, SubEntity
-from financial.models import AccountCommercialProfile, AccountComplianceProfile, Ledger, ShippingDetails, accountHead, accounttype
+from financial.models import AccountCommercialProfile, AccountComplianceProfile, Ledger, ShippingDetails, account, accountHead, accounttype
 from financial.services import create_account_with_synced_ledger
 from geography.models import City, Country, District, State
 from numbering.models import DocumentNumberSeries, DocumentType
@@ -883,6 +883,66 @@ class SalesApiEndToEndTests(APITestCase):
         mocked_post_adapter.assert_called_once()
         self.assertTrue(mocked_auto_compliance.called)
 
+    def test_goods_credit_note_patch_recomputes_tax_scope_from_shipping_detail_even_if_stale_pos_is_sent(self):
+        original = self._create_invoice(
+            reference="SO-GOODS-ORIG-SHIP-POS",
+            lines=[self._goods_line_payload()],
+            place_of_supply_state_code="27",
+            customer_state_code="27",
+        )
+        original_id = original["id"]
+
+        note_create_resp = self.client.post(
+            f"/api/sales/invoices/{self._scope_qs()}&line_mode=goods",
+            {
+                **self._invoice_payload(
+                    lines=[self._goods_line_payload()],
+                    doc_type=SalesInvoiceHeader.DocType.CREDIT_NOTE,
+                    reference=original["reference"],
+                ),
+                "doc_code": "SCN",
+                "original_invoice": original_id,
+                "note_reason": SalesInvoiceHeader.NoteReason.PRICE_DIFFERENCE,
+                "affects_inventory": False,
+            },
+            format="json",
+        )
+        self.assertEqual(note_create_resp.status_code, status.HTTP_201_CREATED, note_create_resp.json())
+        note_id = note_create_resp.json()["id"]
+
+        customer = account.objects.get(pk=self.customer_id)
+        inter_ship = ShippingDetails.objects.create(
+            account=customer,
+            consignee="Inter Ship",
+            address="Inter State Address",
+            state=self.state_29,
+            pincode="560001",
+            city=self.city,
+        )
+
+        patch_resp = self.client.patch(
+            f"/api/sales/invoices/{note_id}/{self._scope_qs()}&line_mode=goods",
+            {
+                "shipping_detail": inter_ship.id,
+                "place_of_supply_state_code": "27",
+                "tax_regime": int(SalesInvoiceHeader.TaxRegime.INTRA_STATE),
+            },
+            format="json",
+        )
+        self.assertEqual(patch_resp.status_code, status.HTTP_200_OK, patch_resp.json())
+
+        body = patch_resp.json()
+        self.assertEqual(body["shipping_detail"], inter_ship.id)
+        self.assertEqual(body["place_of_supply_state_code"], "29")
+        self.assertEqual(body["tax_regime"], int(SalesInvoiceHeader.TaxRegime.INTER_STATE))
+        self.assertTrue(body["is_igst"])
+
+        draft_note = SalesInvoiceHeader.objects.get(pk=note_id)
+        self.assertEqual(int(draft_note.shipping_detail_id or 0), inter_ship.id)
+        self.assertEqual(str(draft_note.place_of_supply_state_code), "29")
+        self.assertEqual(int(draft_note.tax_regime), int(SalesInvoiceHeader.TaxRegime.INTER_STATE))
+        self.assertTrue(draft_note.is_igst)
+
     def test_confirmed_invoice_can_be_found_by_invoice_number_search(self):
         created = self._create_invoice(reference="SO-SEARCH")
         invoice_id = created["id"]
@@ -1155,6 +1215,37 @@ class SalesApiEndToEndTests(APITestCase):
             entityfinid_id=self.entityfin.id,
         )
         settings_obj.policy_controls = {"confirm_lock_check": "off"}
+        settings_obj.save(update_fields=["policy_controls"])
+
+        SalesLockPeriod.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            lock_date="2026-04-30",
+            reason="April books locked",
+        )
+
+        confirm_resp = self.client.post(
+            f"/api/sales/invoices/{invoice_id}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(confirm_resp.status_code, status.HTTP_200_OK, confirm_resp.json())
+        self.assertEqual(confirm_resp.json()["status"], int(SalesInvoiceHeader.Status.CONFIRMED))
+
+    def test_confirm_locked_period_sales_is_allowed_when_policy_is_warn(self):
+        created = self._create_invoice(
+            reference="SO-CONF-LOCK-WARN",
+            bill_date="2026-04-10",
+        )
+        invoice_id = created["id"]
+
+        settings_obj = SalesSettingsService.get_settings(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            entityfinid_id=self.entityfin.id,
+        )
+        settings_obj.policy_controls = {"confirm_lock_check": "warn"}
         settings_obj.save(update_fields=["policy_controls"])
 
         SalesLockPeriod.objects.create(

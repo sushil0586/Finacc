@@ -121,6 +121,40 @@ class FinancialLedgerSyncTests(TestCase):
 
         self.assertEqual(data["ledger_mode"], "direct")
 
+    def test_account_write_serializer_roundtrips_nested_primary_contact_shape(self):
+        head = accountHead.objects.create(
+            entity=self.entity_a,
+            name="Nested Contact Head",
+            code=2004,
+            drcreffect="Credit",
+            createdby=self.user,
+        )
+        serializer = AccountProfileV2WriteSerializer(
+            data={
+                "entity": self.entity_a.id,
+                "accountname": "Nested Contact Writer",
+                "accounthead": head.id,
+                "primary_contact": {
+                    "emailid": "nested@example.com",
+                    "contactno": "7777777777",
+                    "contactperson": "Nested Person",
+                },
+            },
+            context={"request": None},
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        acc = serializer.save()
+
+        primary_contact = ContactDetails.objects.get(account=acc, isprimary=True)
+        self.assertEqual(primary_contact.emailid, "nested@example.com")
+        self.assertEqual(primary_contact.phoneno, "7777777777")
+        self.assertEqual(primary_contact.full_name, "Nested Person")
+
+        data = AccountProfileV2ReadSerializer(acc).data
+        self.assertEqual(data["emailid"], "nested@example.com")
+        self.assertEqual(data["contactno"], "7777777777")
+        self.assertEqual(data["contactperson"], "Nested Person")
+
 
 class FinancialApiContractSmokeTests(TestCase):
     def setUp(self):
@@ -1869,6 +1903,88 @@ class FinancialSeedTemplateTests(TestCase):
         self.assertEqual(primary_contact.full_name, "Write Person")
         self.assertEqual(primary_bank.bankname, "Writer Bank")
         self.assertEqual(primary_bank.banKAcno, "WRITER001")
+
+    def test_account_write_serializer_roundtrips_nested_primary_contact_shape(self):
+        head = accountHead.objects.create(
+            entity=self.entity,
+            name="Nested Contact Head",
+            code=2004,
+            drcreffect="Credit",
+            createdby=self.user,
+        )
+        serializer = AccountProfileV2WriteSerializer(
+            data={
+                "entity": self.entity.id,
+                "accountname": "Nested Contact Writer",
+                "accounthead": head.id,
+                "primary_contact": {
+                    "emailid": "nested@example.com",
+                    "contactno": "7777777777",
+                    "contactperson": "Nested Person",
+                },
+            },
+            context={"request": None},
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        acc = serializer.save()
+
+        primary_contact = ContactDetails.objects.get(account=acc, isprimary=True)
+        self.assertEqual(primary_contact.emailid, "nested@example.com")
+        self.assertEqual(primary_contact.phoneno, "7777777777")
+        self.assertEqual(primary_contact.full_name, "Nested Person")
+
+        data = AccountProfileV2ReadSerializer(acc).data
+        self.assertEqual(data["emailid"], "nested@example.com")
+        self.assertEqual(data["contactno"], "7777777777")
+        self.assertEqual(data["contactperson"], "Nested Person")
+
+    def test_account_write_serializer_update_can_add_primary_contact_to_existing_account(self):
+        head = accountHead.objects.create(
+            entity=self.entity,
+            name="Update Contact Head",
+            code=2005,
+            drcreffect="Credit",
+            createdby=self.user,
+        )
+        acc = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "accountname": "Contact Later Writer",
+                "createdby": self.user,
+            },
+            ledger_overrides={
+                "accounthead": head,
+                "creditaccounthead": head,
+            },
+        )
+
+        serializer = AccountProfileV2WriteSerializer(
+            acc,
+            data={
+                "accountname": "Contact Later Writer",
+                "accounthead": head.id,
+                "primary_contact": {
+                    "emailid": "later@example.com",
+                    "contactno": "9111111111",
+                    "contactperson": "Later Person",
+                },
+            },
+            partial=True,
+            context={"request": None},
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        updated = serializer.save()
+
+        primary_contact = ContactDetails.objects.get(account=updated, isprimary=True)
+        self.assertEqual(primary_contact.emailid, "later@example.com")
+        self.assertEqual(primary_contact.phoneno, "9111111111")
+        self.assertEqual(primary_contact.full_name, "Later Person")
+
+        updated.refresh_from_db()
+        data = AccountProfileV2ReadSerializer(updated).data
+        self.assertEqual(data["emailid"], "later@example.com")
+        self.assertEqual(data["contactno"], "9111111111")
+        self.assertEqual(data["contactperson"], "Later Person")
 
     def test_account_write_serializer_defaults_party_accounting_from_party_type(self):
         FinancialSeedService.seed_entity(entity=self.entity, actor=self.user, template_code="indian_accounting_final")

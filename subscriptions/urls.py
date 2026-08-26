@@ -10,6 +10,8 @@ from .views import (
     SubscriptionPlanAdminListCreateView,
     TenantMembershipDetailView,
     TenantMembershipListCreateView,
+    TenantMembershipPasswordResetView,
+    TenantMembershipResendInviteView,
 )
 
 
@@ -26,4 +28,6 @@ urlpatterns = [
     path("admin/plans/<int:plan_id>", SubscriptionPlanAdminDetailView.as_view(), name="admin-plan-detail"),
     path("admin/memberships", TenantMembershipListCreateView.as_view(), name="admin-memberships"),
     path("admin/memberships/<int:membership_id>", TenantMembershipDetailView.as_view(), name="admin-membership-detail"),
+    path("admin/memberships/<int:membership_id>/reset-password", TenantMembershipPasswordResetView.as_view(), name="admin-membership-reset-password"),
+    path("admin/memberships/<int:membership_id>/resend-invite", TenantMembershipResendInviteView.as_view(), name="admin-membership-resend-invite"),
 ]

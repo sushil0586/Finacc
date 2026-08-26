@@ -1010,6 +1010,7 @@ class SalesInvoiceService:
         header_data: dict,
         original_invoice: SalesInvoiceHeader,
         preserve_explicit_scope: bool = False,
+        shipping_detail_id: Optional[int] = None,
     ) -> None:
         """
         Credit/Debit notes should inherit the original invoice tax scope.
@@ -1021,10 +1022,29 @@ class SalesInvoiceService:
         header_data["seller_gstin"] = (original_invoice.seller_gstin or "").strip()
         header_data["seller_state_code"] = (original_invoice.seller_state_code or "").strip()
         if preserve_explicit_scope:
+            derived_ship_to_pos = cls._resolve_shipping_detail_state_code(shipping_detail_id)
+            if cls._has_meaningful_state_code(derived_ship_to_pos):
+                header_data["place_of_supply_state_code"] = derived_ship_to_pos
+                return
             explicit_pos = str(header_data.get("place_of_supply_state_code") or "").strip()
             if explicit_pos:
                 return
         header_data["place_of_supply_state_code"] = (original_invoice.place_of_supply_state_code or "").strip()
+
+    @classmethod
+    def _resolve_shipping_detail_state_code(cls, shipping_detail_id: Optional[int]) -> str:
+        if not shipping_detail_id:
+            return ""
+        shipping_detail = (
+            ShippingDetails.objects
+            .select_related("state")
+            .filter(id=shipping_detail_id)
+            .only("id", "state__statecode")
+            .first()
+        )
+        if not shipping_detail:
+            return ""
+        return cls._state_code_from_state_obj(getattr(shipping_detail, "state", None))
 
     @classmethod
     def _derive_compliance_flags(cls, *, header: SalesInvoiceHeader, settings_obj: SalesSettings, user=None) -> None:
@@ -1202,6 +1222,36 @@ class SalesInvoiceService:
         return f"{prefix}-{doc_code}-{doc_no}"
 
     @classmethod
+    def _document_number_candidate_is_available(
+        cls,
+        *,
+        header: SalesInvoiceHeader,
+        doc_no: int,
+        invoice_number: str,
+    ) -> bool:
+        qs = SalesInvoiceHeader.objects.filter(
+            entity_id=header.entity_id,
+            entityfinid_id=header.entityfinid_id,
+            doc_type=header.doc_type,
+            doc_code=header.doc_code,
+        )
+        if header.id:
+            qs = qs.exclude(id=header.id)
+
+        scoped_qs = qs.filter(subentity_id=header.subentity_id)
+        if scoped_qs.filter(doc_no=doc_no).exists():
+            return False
+        if invoice_number and scoped_qs.filter(invoice_number__iexact=invoice_number).exists():
+            return False
+
+        seller_gstin = cls._normalize_gstin(getattr(header, "seller_gstin", ""))
+        if seller_gstin and invoice_number:
+            if qs.filter(seller_gstin__iexact=seller_gstin, invoice_number__iexact=invoice_number).exists():
+                return False
+
+        return True
+
+    @classmethod
     def ensure_doc_number(cls, *, header: SalesInvoiceHeader, user=None) -> None:
         """
         Allocate doc_no + invoice_number ONLY when confirming/posting.
@@ -1230,22 +1280,33 @@ class SalesInvoiceService:
         if not dt:
             raise ValueError(f"DocumentType not found: sales/{doc_key}")
 
-        # âœ… consumes number (thread-safe) ONLY now
-        res = DocumentNumberService.allocate_final(
-            entity_id=header.entity_id,
-            entityfinid_id=header.entityfinid_id,
-            subentity_id=header.subentity_id,
-            doc_type_id=dt.id,
-            doc_code=header.doc_code,
-            on_date=header.bill_date,  # keep numbering date aligned to bill date
+        # Consume numbers only at lifecycle transition. If a branch series is stale
+        # because older issued invoices already used its next value, skip forward.
+        max_attempts = 100
+        for _ in range(max_attempts):
+            res = DocumentNumberService.allocate_final(
+                entity_id=header.entity_id,
+                entityfinid_id=header.entityfinid_id,
+                subentity_id=header.subentity_id,
+                doc_type_id=dt.id,
+                doc_code=header.doc_code,
+                on_date=header.bill_date,  # keep numbering date aligned to bill date
+            )
+            doc_no = int(res.doc_no)
+            invoice_number = cls._build_invoice_number(int(header.doc_type), header.doc_code, doc_no)
+            if cls._document_number_candidate_is_available(
+                header=header,
+                doc_no=doc_no,
+                invoice_number=invoice_number,
+            ):
+                header.doc_no = doc_no
+                header.invoice_number = invoice_number
+                return
+
+        raise ValueError(
+            f"Unable to allocate a unique invoice number for doc_code '{header.doc_code}' after {max_attempts} attempts."
         )
 
-        header.doc_no = int(res.doc_no)
-        # You can use res.display_no if you want formatted number
-        # header.invoice_number = res.display_no
-        header.invoice_number = cls._build_invoice_number(
-            int(header.doc_type), header.doc_code, int(header.doc_no)
-        )
     @staticmethod
     def get_settings(entity_id: int, subentity_id: Optional[int], entityfinid_id: Optional[int] = None) -> SalesSettings:
         obj = (
@@ -1760,6 +1821,13 @@ class SalesInvoiceService:
             "compliance_override_reason",
             "compliance_override_at",
             "compliance_override_by",
+            "tcs_section",
+            "tcs_rate",
+            "tcs_base_amount",
+            "tcs_amount",
+            "tcs_reason",
+            "tcs_is_reversal",
+            "legacy_behavior_flags",
             "settled_amount",
             "outstanding_amount",
             "settlement_status",
@@ -1859,6 +1927,7 @@ class SalesInvoiceService:
                 header_data=header_data,
                 original_invoice=original_invoice,
                 preserve_explicit_scope=True,
+                shipping_detail_id=shipping_detail_id,
             )
         cls._validate_doc_linkage(
             doc_type=doc_type,
@@ -1915,7 +1984,12 @@ class SalesInvoiceService:
             grand_total_hint=grand_total_hint,
             persist_header_changes=False,
         )
+        cls.derive_tax_regime(header)
         header.save(update_fields=[
+            "shipping_detail_id",
+            "place_of_supply_state_code",
+            "tax_regime",
+            "is_igst",
             "total_taxable_value",
             "total_cgst",
             "total_sgst",
@@ -2925,7 +2999,9 @@ class SalesInvoiceService:
             "compliance_override_reason", "compliance_override_at", "compliance_override_by",
             "total_taxable_value", "total_cgst", "total_sgst", "total_igst", "total_cess",
             "total_discount", "round_off", "grand_total",
+            "tcs_section",
             "tcs_rate", "tcs_base_amount", "tcs_amount", "tcs_reason", "tcs_is_reversal",
+            "legacy_behavior_flags",
             "settled_amount", "outstanding_amount", "settlement_status",
         ])
 

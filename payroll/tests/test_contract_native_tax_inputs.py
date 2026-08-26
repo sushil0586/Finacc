@@ -185,7 +185,7 @@ class ContractNativeTaxInputServiceTests(TestCase):
         self.assertEqual(resolved.source_markers.get("tax_projection_snapshot"), "contract_native")
         self.assertEqual(resolved.source_markers.get("attendance_snapshot"), "contract_native")
 
-    def test_resolver_returns_empty_tax_projection_when_no_contract_native_tax_input_exists(self):
+    def test_resolver_builds_default_tax_projection_when_no_contract_native_tax_input_exists(self):
         resolved = PayrollCalculationInputResolver.resolve(
             contract_payroll_profile=self.contract_profile,
             salary_assignment=None,
@@ -193,9 +193,11 @@ class ContractNativeTaxInputServiceTests(TestCase):
             payroll_date=self.setup["period"].period_end,
             payroll_period=self.setup["period"],
         )
-        self.assertEqual(resolved.tax_projection_snapshot, {})
+        self.assertEqual(resolved.tax_projection_snapshot["tax_regime"], "NEW")
+        self.assertEqual(resolved.tax_projection_snapshot["monthly_tds"], "0.00")
         self.assertEqual(resolved.attendance_snapshot.get("attendance_days"), "30.00")
-        self.assertIsNone(resolved.source_markers.get("tax_projection_snapshot"))
+        self.assertEqual(resolved.source_markers.get("tax_projection_snapshot"), "contract_native")
+        self.assertEqual(resolved.source_markers.get("tds_projection_engine"), "payroll_tds_engine")
         self.assertEqual(resolved.source_markers.get("attendance_snapshot"), "contract_native")
 
 

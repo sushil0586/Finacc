@@ -5,10 +5,11 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 import zipfile
 
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db.models import Q
 from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 
 from entity.models import Entity
@@ -66,6 +67,7 @@ from withholding.views import (
     _tcs_runtime_quality_flags,
     _invoice_posting_state,
     _tcs_source_route_for_document,
+    TcsComputePreviewAPIView,
 )
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
@@ -218,6 +220,57 @@ class WithholdingPostingStateTests(SimpleTestCase):
         self.assertTrue(is_posted)
         self.assertEqual(posting_state, "posted")
         self.assertEqual(posting_state_label, "Posted")
+
+
+class TcsPreviewViewTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create(
+            username="tcs-preview-user",
+            email="tcs-preview-user@example.test",
+        )
+        self.factory = APIRequestFactory()
+
+    @patch("withholding.views.build_preview_payload")
+    @patch("withholding.views._require_tcs_scope_permission")
+    def test_preview_view_forwards_module_and_note_document_metadata(
+        self,
+        _mocked_scope_permission,
+        mocked_build_preview_payload,
+    ):
+        captured_req = {}
+
+        def _capture(*, req, user=None):
+            captured_req.update(req)
+            return {"ok": True}
+
+        mocked_build_preview_payload.side_effect = _capture
+
+        request = self.factory.post(
+            "/tcs/compute/preview/",
+            {
+                "entity_id": 1,
+                "entityfin_id": 2,
+                "subentity_id": 3,
+                "party_account_id": 4,
+                "tax_type": WithholdingTaxType.TCS,
+                "section_id": 5,
+                "document_type": "credit_note",
+                "document_id": 99,
+                "module_name": "sales",
+                "doc_date": "2026-08-24",
+                "taxable_total": "100.00",
+                "gross_total": "118.00",
+            },
+            format="json",
+        )
+        force_authenticate(request, user=self.user)
+
+        response = TcsComputePreviewAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(captured_req["module_name"], "sales")
+        self.assertEqual(captured_req["document_type"], "credit_note")
+        self.assertEqual(captured_req["document_id"], 99)
 
     def test_invoice_posting_state_accepts_text_posted_status(self):
         is_posted, posting_state, posting_state_label = _invoice_posting_state("posted", posted_value=3)
@@ -2058,6 +2111,133 @@ class WithholdingTcsBulkEntitlementTests(TestCase):
         self.assertEqual(response.data["feature_code"], SubscriptionLimitCodes.FEATURE_FINANCIAL)
 
 
+class WithholdingTcsRulesBulkApiTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = get_user_model().objects.create_user(
+            username="tcs-rules-bulk",
+            email="tcs-rules-bulk@example.com",
+            password="testpass123",
+        )
+        self.client.force_authenticate(user=self.user)
+        self.entity = Entity.objects.create(entityname="TCS Rules Bulk Entity", createdby=self.user)
+
+    @patch("withholding.views_bulk_statutory.SubscriptionService.assert_entity_access")
+    def test_tcs_rules_bulk_template_uses_rule_sheet_and_filename(self, _mocked_access):
+        response = self.client.get(
+            "/api/tcs/rules/bulk/template/",
+            {"entity": self.entity.id, "format": "xlsx"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Disposition"], 'attachment; filename="tcs_rules_bulk_template.xlsx"')
+        workbook = load_workbook(io.BytesIO(response.content), data_only=True)
+        self.assertIn("tcs_rules", workbook.sheetnames)
+        headers = [cell.value for cell in workbook["tcs_rules"][1]]
+        self.assertIn("sub_type", headers)
+        self.assertIn("rate_default", headers)
+        self.assertIn("threshold_default", headers)
+
+    @patch("withholding.views_bulk_statutory.SubscriptionService.assert_entity_access")
+    def test_tcs_rules_bulk_export_filters_income_tax_rules_and_uses_rule_filename(self, _mocked_access):
+        WithholdingSection.objects.create(
+            tax_type=WithholdingTaxType.TCS,
+            law_type="INCOME_TAX",
+            sub_type="206C_1H_LEGACY",
+            section_code="206C(1H)",
+            description="Rule bulk only income tax fixture",
+            base_rule=WithholdingBaseRule.RECEIPT_VALUE,
+            rate_default=Decimal("0.1000"),
+            threshold_default=Decimal("5000000.00"),
+            effective_from=date(2024, 10, 1),
+            is_active=True,
+        )
+        WithholdingSection.objects.create(
+            tax_type=WithholdingTaxType.TCS,
+            law_type="GST",
+            sub_type="GST_SEC_52",
+            section_code="52",
+            description="Rule bulk unrelated GST fixture",
+            base_rule=WithholdingBaseRule.INVOICE_VALUE_EXCL_GST,
+            rate_default=Decimal("1.0000"),
+            threshold_default=Decimal("0.00"),
+            effective_from=date(2024, 4, 1),
+            is_active=True,
+        )
+
+        response = self.client.get(
+            "/api/tcs/rules/bulk/export/",
+            {"entity": self.entity.id, "format": "xlsx", "search": "Rule bulk only income"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Disposition"], 'attachment; filename="tcs_rules_bulk_export.xlsx"')
+        workbook = load_workbook(io.BytesIO(response.content), data_only=True)
+        self.assertIn("tcs_rules", workbook.sheetnames)
+        rows = list(workbook["tcs_rules"].iter_rows(values_only=True))
+        headers = list(rows[0])
+        data_rows = [dict(zip(headers, row)) for row in rows[1:]]
+        self.assertEqual(len(data_rows), 1)
+        self.assertEqual(data_rows[0]["section_code"], "206C(1H)")
+        self.assertEqual(data_rows[0]["sub_type"], "206C_1H_LEGACY")
+        self.assertEqual(data_rows[0]["rate_default"], "0.1000")
+        self.assertEqual(data_rows[0]["threshold_default"], "5000000.00")
+
+    @patch("withholding.views_bulk_statutory.SubscriptionService.assert_entity_access")
+    def test_tcs_rules_bulk_validate_accepts_rule_sheet_and_reports_rule_summary(self, _mocked_access):
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "tcs_rules"
+        sheet.append([
+            "id",
+            "section_code",
+            "description",
+            "law_type",
+            "sub_type",
+            "base_rule",
+            "rate_default",
+            "threshold_default",
+            "requires_pan",
+            "higher_rate_no_pan",
+            "effective_from",
+            "effective_to",
+            "is_active",
+        ])
+        sheet.append([
+            "",
+            "206C(1)",
+            "TCS on scrap",
+            "GST",
+            "206C_1",
+            WithholdingBaseRule.INVOICE_VALUE_EXCL_GST,
+            "1.0000",
+            "0.00",
+            False,
+            "",
+            "2026-04-01",
+            "",
+            True,
+        ])
+        buffer = io.BytesIO()
+        workbook.save(buffer)
+        upload = SimpleUploadedFile(
+            "tcs_rules_bulk_template.xlsx",
+            buffer.getvalue(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+        response = self.client.post(
+            "/api/tcs/rules/bulk/import/validate/",
+            {"entity": self.entity.id, "format": "xlsx", "file": upload},
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["summary"]["rows"]["tcs_rules"], 1)
+        self.assertEqual(response.data["errors"], [])
+        self.assertTrue(response.data["can_commit"])
+
+
 class WithholdingTcsWorkspaceExportTests(TestCase):
     def setUp(self):
         self.factory = APIRequestFactory()
@@ -3109,7 +3289,7 @@ class WithholdingSectionResolutionDateTests(TestCase):
     def test_resolve_section_skips_expired_explicit_section(self):
         section = WithholdingSection.objects.create(
             tax_type=WithholdingTaxType.TDS,
-            section_code="194A",
+            section_code="T194AEXP",
             description="Interest",
             base_rule=WithholdingBaseRule.PAYMENT_VALUE,
             rate_default=Decimal("10.0000"),
@@ -3129,14 +3309,14 @@ class WithholdingSectionResolutionDateTests(TestCase):
     def test_resolve_section_uses_vendor_default_when_explicit_and_cfg_missing(self, mocked_compliance):
         section = WithholdingSection.objects.create(
             tax_type=WithholdingTaxType.TDS,
-            section_code="194J",
+            section_code="T194JDEF",
             description="Professional fees",
             base_rule=WithholdingBaseRule.INVOICE_VALUE_EXCL_GST,
             rate_default=Decimal("10.0000"),
             effective_from=date(2024, 4, 1),
             is_active=True,
         )
-        mocked_compliance.objects.filter.return_value.values_list.return_value.first.return_value = "194J"
+        mocked_compliance.objects.filter.return_value.values_list.return_value.first.return_value = "T194JDEF"
 
         resolved = WithholdingResolver.resolve_section(
             tax_type=WithholdingTaxType.TDS,
@@ -3153,7 +3333,7 @@ class WithholdingSectionResolutionDateTests(TestCase):
     def test_resolve_section_prefers_entity_default_over_vendor_default(self, mocked_compliance):
         vendor_section = WithholdingSection.objects.create(
             tax_type=WithholdingTaxType.TDS,
-            section_code="194J",
+            section_code="T194JVND",
             description="Professional fees",
             base_rule=WithholdingBaseRule.INVOICE_VALUE_EXCL_GST,
             rate_default=Decimal("10.0000"),
@@ -3162,14 +3342,14 @@ class WithholdingSectionResolutionDateTests(TestCase):
         )
         entity_default = WithholdingSection.objects.create(
             tax_type=WithholdingTaxType.TDS,
-            section_code="194C",
+            section_code="T194CENT",
             description="Contractor",
             base_rule=WithholdingBaseRule.INVOICE_VALUE_EXCL_GST,
             rate_default=Decimal("1.0000"),
             effective_from=date(2024, 4, 1),
             is_active=True,
         )
-        mocked_compliance.objects.filter.return_value.values_list.return_value.first.return_value = "194J"
+        mocked_compliance.objects.filter.return_value.values_list.return_value.first.return_value = "T194JVND"
 
         cfg = SimpleNamespace(default_tds_section=entity_default, default_tcs_section=None)
         resolved = WithholdingResolver.resolve_section(
@@ -3184,7 +3364,7 @@ class WithholdingSectionResolutionDateTests(TestCase):
         self.assertNotEqual(resolved.id, vendor_section.id)
 
 
-class WithholdingSerializerGuardTests(SimpleTestCase):
+class WithholdingSerializerGuardTests(TestCase):
     def test_section_identity_fields_are_immutable_on_update(self):
         instance = WithholdingSection(
             tax_type=WithholdingTaxType.TDS,

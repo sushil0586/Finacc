@@ -293,6 +293,16 @@ class HrmsPayrollProductionReadinessSmokeTests(TestCase):
             payroll_period=self.period,
         )
         self.assertGreater(Decimal(str(summary["payable_days"])), Decimal("0.00"))
+        approval = AttendanceCaptureService.submit_approval(
+            contract=self.hrms_contract,
+            payroll_period=self.period,
+            actor=self.user,
+        )
+        AttendanceCaptureService.approve_approval(
+            approval=approval,
+            actor=self.user,
+            review_note="approved for payroll readiness smoke",
+        )
         monthly_close = AttendanceCaptureService.get_or_create_monthly_close(
             entity_id=self.entity.id,
             subentity_id=self.subentity.id,

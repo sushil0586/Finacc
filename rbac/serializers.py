@@ -401,6 +401,21 @@ class UserRoleAssignmentAdminSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({"subentity": message, "is_primary": message})
             if "active" in message:
                 raise serializers.ValidationError({"isactive": message, "is_primary": message})
+        if self.instance:
+            try:
+                AssignmentSemanticsService.validate_admin_lockout_transition(
+                    assignment=self.instance,
+                    next_role=role,
+                    next_subentity=subentity,
+                    next_isactive=isactive,
+                    next_effective_from=effective_from,
+                    next_effective_to=effective_to,
+                )
+            except ValueError as exc:
+                raise serializers.ValidationError({
+                    "detail": str(exc),
+                    "code": "rbac_last_admin_assignment",
+                })
         return attrs
 
     @transaction.atomic

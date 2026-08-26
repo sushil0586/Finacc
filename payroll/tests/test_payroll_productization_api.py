@@ -23,6 +23,7 @@ from payroll.services import (
     PayrollRunService,
 )
 from payroll.tests.factories import PayrollFactory
+from posting.models import EntityStaticAccountMap, StaticAccount
 
 User = get_user_model()
 
@@ -78,7 +79,44 @@ class PayrollProductizationApiTests(TestCase):
             sequence=200,
         )
 
+    def _map_static_account(self, code: str, mapped_account):
+        static, _ = StaticAccount.objects.update_or_create(
+            code=code,
+            defaults={
+                "name": code.replace("_", " ").title(),
+                "group": "OTHER",
+                "is_required": False,
+                "is_active": True,
+            },
+        )
+        return EntityStaticAccountMap.objects.create(
+            entity=self.setup["entity"],
+            sub_entity=self.setup["subentity"],
+            static_account=static,
+            account=mapped_account,
+            ledger=mapped_account.ledger,
+            is_active=True,
+        )
+
     def test_fnf_lifecycle_api_and_payloads(self):
+        bonus_component = PayrollComponent.objects.create(
+            entity=self.setup["entity"],
+            code="BONUS_PAYOUT",
+            name="Bonus Payout",
+            component_type=PayrollComponent.ComponentType.EARNING,
+            posting_behavior=PayrollComponent.PostingBehavior.GROSS_EARNING,
+        )
+        PayrollFactory.component_posting(
+            entity=self.setup["entity"],
+            entityfinid=self.setup["entityfinid"],
+            subentity=self.setup["subentity"],
+            component=bonus_component,
+            expense_account=self.setup["expense_account"],
+            liability_account=self.setup["liability_account"],
+            payable_account=self.setup["payable_account"],
+        )
+        self._map_static_account("PAYROLL_FNF_PAYABLE", self.setup["payable_account"])
+
         calculate_response = self.client.post(
             "/api/payroll/fnf/calculate/",
             {

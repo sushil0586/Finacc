@@ -249,6 +249,16 @@ class PayrollFnFEngine:
         component_type: str = "",
         posting_behavior: str = "",
     ) -> FnFSettlementComponent:
+        if component is None and component_code:
+            component = (
+                PayrollComponent.objects.filter(
+                    entity_id=settlement.entity_id,
+                    code=component_code,
+                    is_active=True,
+                )
+                .order_by("-id")
+                .first()
+            )
         return FnFSettlementComponent.objects.create(
             settlement=settlement,
             component=component,

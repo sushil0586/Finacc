@@ -714,6 +714,16 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
         }
 
     @staticmethod
+    def _runtime_withholding_support_amount(payload: Optional[Dict[str, Any]]) -> Decimal:
+        data = payload if isinstance(payload, dict) else {}
+        runtime = data.get("withholding_runtime_result")
+        if not isinstance(runtime, dict):
+            return ZERO2
+        if str(runtime.get("reason_code") or "").strip().upper() != "MISSING_POSTING_MAP":
+            return ZERO2
+        return q2(runtime.get("amount") or ZERO2)
+
+    @staticmethod
     def _paisa_adjustment_tolerance(controls: Optional[Dict[str, Any]]) -> Decimal:
         raw = (controls or {}).get("paisa_adjustment_tolerance", Decimal("0.50"))
         try:
@@ -1001,10 +1011,21 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
         )
         allow_static_fallback = bool(config.get("allow_static_fallback", False))
         if mapping_source == "STATIC_FALLBACK" and not allow_static_fallback:
-            raise ValueError(
-                "Runtime TCS mapping missing for selected section. "
-                "Please configure Entity Withholding Section Posting Map (entity/subentity + section)."
+            payload["withholding_runtime_result"] = cls._build_runtime_withholding_snapshot(
+                enabled=True,
+                mode=mode,
+                section_id=section_id,
+                section_code=getattr(section_obj, "section_code", None),
+                base_amount=base_amount,
+                rate=rate,
+                amount=amount,
+                reason=(
+                    "Runtime TCS mapping missing for selected section. "
+                    "Please configure Entity Withholding Section Posting Map (entity/subentity + section)."
+                ),
+                reason_code="MISSING_POSTING_MAP",
             )
+            return non_runtime_rows, payload
 
         runtime_row = runtime_rows[0] if runtime_rows else {}
         runtime_row.update(
@@ -1191,6 +1212,10 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
         return warnings
 
     @staticmethod
+    def _receipt_type_requires_allocation_match(receipt_type: Optional[str]) -> bool:
+        return str(receipt_type or "").strip().upper() == str(ReceiptVoucherHeader.ReceiptType.AGAINST_INVOICE).upper()
+
+    @staticmethod
     def _auto_fifo_allocations(
         *,
         entity_id: int,
@@ -1265,6 +1290,7 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
             q2(validated_data.get("cash_received_amount", ZERO2)),
             adjustment_total,
         )
+        effective = q2(effective - ReceiptVoucherService._runtime_withholding_support_amount(workflow_payload))
         validated_data["received_in_ledger_id"] = ReceiptVoucherService._account_ledger_id(validated_data.get("received_in"))
         validated_data["received_from_ledger_id"] = ReceiptVoucherService._account_ledger_id(validated_data.get("received_from"))
 
@@ -1297,6 +1323,7 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
             q2(validated_data.get("cash_received_amount", ZERO2)),
             adjustment_total,
         )
+        effective = q2(effective - ReceiptVoucherService._runtime_withholding_support_amount(workflow_payload))
         total_support = q2(effective + advance_total)
         validated_data["total_adjustment_amount"] = adjustment_total
         validated_data["settlement_effective_amount"] = effective
@@ -1458,6 +1485,7 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
         instance.save()
 
         if allocations is not None:
+            requires_allocation_match = ReceiptVoucherService._receipt_type_requires_allocation_match(instance.receipt_type)
             ReceiptVoucherService._validate_allocations(instance, allocations, over_settlement_rule=over_settlement_rule, controls=policy.controls)
             live_advance_rows = advance_adjustments
             if live_advance_rows is None:
@@ -1490,6 +1518,9 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
                 q2(validated_data.get("cash_received_amount", instance.cash_received_amount)),
                 ReceiptVoucherService._compute_adjustment_total(effective_adjustments),
             )
+            runtime_effective = q2(
+                runtime_effective - ReceiptVoucherService._runtime_withholding_support_amount(workflow_payload)
+            )
             runtime_total_support = q2(runtime_effective + ReceiptVoucherService._sum_advance_adjustments(live_advance_rows))
             effective_adjustments = ReceiptVoucherService._apply_auto_paisa_adjustment_rows(
                 entity_id=instance.entity_id,
@@ -1499,17 +1530,21 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
                 total_support_amount=runtime_total_support,
             )
             adjustments = effective_adjustments
-            ReceiptVoucherService._validate_allocation_effective_match(
-                effective_amount=q2(
-                    ReceiptVoucherService._effective_settlement_amount(
-                    q2(validated_data.get("cash_received_amount", instance.cash_received_amount)),
-                    ReceiptVoucherService._compute_adjustment_total(
-                        adjustments
+            if requires_allocation_match:
+                ReceiptVoucherService._validate_allocation_effective_match(
+                    effective_amount=q2(
+                        ReceiptVoucherService._effective_settlement_amount(
+                            q2(validated_data.get("cash_received_amount", instance.cash_received_amount)),
+                            ReceiptVoucherService._compute_adjustment_total(
+                                adjustments
+                            ),
+                        )
+                        - ReceiptVoucherService._runtime_withholding_support_amount(workflow_payload)
+                        + ReceiptVoucherService._sum_advance_adjustments(live_advance_rows)
                     ),
-                ) + ReceiptVoucherService._sum_advance_adjustments(live_advance_rows)),
-                allocation_total=allocation_total,
-                level=amount_match_level,
-            )
+                    allocation_total=allocation_total,
+                    level=amount_match_level,
+                )
             existing = {x.id: x for x in instance.allocations.all()}
             existing_by_open_item = {
                 int(x.open_item_id): x

@@ -62,7 +62,7 @@ from withholding.serializers import (
     WithholdingSectionSerializer,
     build_preview_payload,
 )
-from withholding.services import compute_withholding_preview, q2, upsert_tcs_computation
+from withholding.services import WithholdingResult, compute_withholding_preview, q2, upsert_tcs_computation
 from financial.profile_access import account_pan
 from payments.models.payment_core import PaymentVoucherHeader
 from purchase.models import PurchaseInvoiceHeader, PurchaseInvoiceLine
@@ -203,6 +203,116 @@ def _tcs_search_match(*values, search: str) -> bool:
 def _request_data(request):
     data = getattr(request, "data", None)
     return data if hasattr(data, "get") else {}
+
+
+def _serialize_tcs_preview_result(preview: WithholdingResult, *, user=None) -> dict:
+    response = {
+        "enabled": preview.enabled,
+        "reason": preview.reason,
+        "reason_code": preview.reason_code,
+        "section_id": preview.section.id if preview.section else None,
+        "section_code": preview.section.section_code if preview.section else None,
+        "rate": q2(preview.rate),
+        "base_amount": q2(preview.base_amount),
+        "amount": q2(preview.amount),
+        "section_law_type": getattr(preview.section, "law_type", None),
+        "section_sub_type": getattr(preview.section, "sub_type", None),
+    }
+    if preview.reason_code == "DISABLED_206C_1H_BY_CONFIG":
+        response["policy_warning"] = "206C(1H) is disabled by withholding configuration."
+    if user:
+        response["computed_by"] = user.id
+    return response
+
+
+def _compute_saved_sales_document_tcs_preview(req: dict) -> WithholdingResult | None:
+    module_name = str(req.get("module_name") or "").strip().lower()
+    document_type = str(req.get("document_type") or "").strip().lower()
+    document_id = req.get("document_id")
+    tax_type = int(req.get("tax_type") or 0)
+    if module_name != "sales" or document_type not in {"invoice", "credit_note", "debit_note"} or not document_id or tax_type != 2:
+        return None
+
+    from sales.services.sales_invoice_service import SalesInvoiceService
+    from sales.services.sales_withholding_service import SalesWithholdingService
+
+    header = (
+        SalesInvoiceHeader.objects
+        .select_related("tcs_section", "original_invoice")
+        .filter(
+            id=int(document_id),
+            entity_id=int(req["entity_id"]),
+            entityfinid_id=int(req["entityfin_id"]),
+        )
+        .first()
+    )
+    if header is None:
+        return None
+
+    explicit_section_id = req.get("explicit_section_id")
+    if explicit_section_id:
+        section = WithholdingSection.objects.filter(
+            id=int(explicit_section_id),
+            tax_type=2,
+            is_active=True,
+        ).first()
+        if section is not None:
+            header.tcs_section = section
+            header.tcs_section_id = section.id
+
+    header.withholding_enabled = bool(req.get("explicit_section_id") or getattr(header, "withholding_enabled", False))
+    header.total_taxable_value = req.get("taxable_total", Decimal("0.00"))
+    header.grand_total = req.get("gross_total", Decimal("0.00"))
+    header.bill_date = req.get("doc_date") or getattr(header, "bill_date", None)
+
+    settings_obj = SalesInvoiceService.get_settings(
+        header.entity_id,
+        header.subentity_id,
+        entityfinid_id=getattr(header, "entityfinid_id", None),
+    )
+    is_credit_note = int(header.doc_type or 0) == int(SalesInvoiceHeader.DocType.CREDIT_NOTE)
+    credit_note_policy = (getattr(settings_obj, "tcs_credit_note_policy", "REVERSE") or "REVERSE").upper()
+
+    if not getattr(header, "withholding_enabled", False):
+        return WithholdingResult(
+            enabled=False,
+            section=None,
+            rate=Decimal("0.0000"),
+            base_amount=Decimal("0.00"),
+            amount=Decimal("0.00"),
+            reason="Withholding disabled",
+            reason_code="DISABLED",
+        )
+
+    if is_credit_note and credit_note_policy == "DISALLOW":
+        return WithholdingResult(
+            enabled=True,
+            section=None,
+            rate=Decimal("0.0000"),
+            base_amount=Decimal("0.00"),
+            amount=Decimal("0.00"),
+            reason="TCS on credit note disallowed by policy.",
+            reason_code="CREDIT_NOTE_POLICY_DISALLOW",
+        )
+
+    if not getattr(header, "tcs_section_id", None):
+        return WithholdingResult(
+            enabled=True,
+            section=None,
+            rate=Decimal("0.0000"),
+            base_amount=Decimal("0.00"),
+            amount=Decimal("0.00"),
+            reason="No TCS section",
+            reason_code="NO_SECTION",
+        )
+
+    return SalesWithholdingService.compute_tcs(
+        header=header,
+        customer_account_id=header.customer_id,
+        invoice_date=header.bill_date or timezone.localdate(),
+        taxable_total=q2(getattr(header, "total_taxable_value", None) or Decimal("0.00")),
+        gross_total=q2(getattr(header, "grand_total", Decimal("0.00")) or Decimal("0.00")),
+    )
 
 
 def _entity_id_from_request(request, *, required: bool = True) -> int | None:
@@ -1098,7 +1208,13 @@ class TcsComputePreviewAPIView(APIView):
             "doc_date": d["doc_date"],
             "taxable_total": d.get("taxable_total", Decimal("0.00")),
             "gross_total": d.get("gross_total", Decimal("0.00")),
+            "module_name": (d.get("module_name") or "sales").strip().lower(),
+            "document_type": (d.get("document_type") or "invoice").strip().lower(),
+            "document_id": d.get("document_id"),
         }
+        saved_sales_preview = _compute_saved_sales_document_tcs_preview(req)
+        if saved_sales_preview is not None:
+            return Response(_serialize_tcs_preview_result(saved_sales_preview, user=request.user))
         return Response(build_preview_payload(req=req, user=request.user))
 
 
@@ -1126,8 +1242,13 @@ class TcsComputeConfirmAPIView(APIView):
             "doc_date": d["doc_date"],
             "taxable_total": d.get("taxable_total", Decimal("0.00")),
             "gross_total": d.get("gross_total", Decimal("0.00")),
+            "module_name": (d.get("module_name") or "sales").strip().lower(),
+            "document_type": (d.get("document_type") or "invoice").strip().lower(),
+            "document_id": d.get("document_id"),
         }
-        preview = compute_withholding_preview(**req)
+        preview = _compute_saved_sales_document_tcs_preview(req)
+        if preview is None:
+            preview = compute_withholding_preview(**req)
 
         if d["tax_type"] != 2:
             return Response(
@@ -2358,8 +2479,8 @@ class TcsReportFilingPackAPIView(APIView):
             )
             quarter_boundary_violation = _quarter_boundary_violation(
                 doc_date=comp.doc_date,
-                fiscal_year=comp.fiscal_year or "",
-                quarter=comp.quarter or "",
+                fiscal_year=getattr(comp, "fiscal_year", "") or "",
+                quarter=getattr(comp, "quarter", "") or "",
             )
 
             comp_collections = list(comp.collections.all().order_by("collection_date", "id"))

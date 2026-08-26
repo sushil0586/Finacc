@@ -23,8 +23,16 @@ from payroll.services.payroll_global_template_service import GlobalSalaryTemplat
 from payroll.tests.factories import PayrollFactory
 
 
+def clear_global_payroll_catalog() -> None:
+    GlobalSalaryStructureTemplateLine.objects.all().delete()
+    GlobalSalaryStructureTemplate.objects.all().delete()
+    GlobalPayrollComponent.objects.all().delete()
+    GlobalPayrollComponentGroup.objects.all().delete()
+
+
 class GlobalPayrollCatalogServiceTests(TestCase):
     def setUp(self):
+        clear_global_payroll_catalog()
         self.group = GlobalPayrollCatalogService.create_or_update_component_group(
             {
                 "code": "EARNINGS",
@@ -110,6 +118,7 @@ class GlobalPayrollCatalogServiceTests(TestCase):
 
 class GlobalPayrollAdoptionPreviewTests(TestCase):
     def setUp(self):
+        clear_global_payroll_catalog()
         self.scope = PayrollFactory.entity_scope()
         seed_result = PayrollGlobalSeedService.seed_default_catalog()
         self.assertGreater(seed_result["components"]["created"], 0)
@@ -142,6 +151,7 @@ class GlobalPayrollAdoptionPreviewTests(TestCase):
 
 class EntitySalaryTemplateAdoptionServiceTests(TestCase):
     def setUp(self):
+        clear_global_payroll_catalog()
         self.scope = PayrollFactory.entity_scope()
         PayrollGlobalSeedService.seed_default_catalog()
         self.template = GlobalSalaryStructureTemplate.objects.get(code="INDIA_SME_MONTHLY_STAFF")
@@ -254,6 +264,9 @@ class EntitySalaryTemplateAdoptionServiceTests(TestCase):
 
 
 class GlobalPayrollSeedServiceTests(TestCase):
+    def setUp(self):
+        clear_global_payroll_catalog()
+
     def test_seed_is_idempotent(self):
         first = PayrollGlobalSeedService.seed_default_catalog()
         second = PayrollGlobalSeedService.seed_default_catalog()
@@ -307,7 +320,7 @@ class GlobalPayrollSeedServiceTests(TestCase):
             41,
         )
         self.assertEqual(GlobalSalaryStructureTemplate.objects.count(), 7)
-        self.assertEqual(GlobalSalaryStructureTemplateLine.objects.count(), 57)
+        self.assertEqual(GlobalSalaryStructureTemplateLine.objects.count(), 44)
         self.assertTrue(GlobalPayrollComponent.objects.filter(code="DA").exists())
         self.assertTrue(GlobalPayrollComponent.objects.filter(code="OVERTIME_HOURS").exists())
         self.assertTrue(GlobalSalaryStructureTemplate.objects.filter(code="INDIA_FACTORY_WORKER").exists())

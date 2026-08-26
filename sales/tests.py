@@ -1147,6 +1147,7 @@ class MasterGSTClientUnitTests(SimpleTestCase):
         self.assertTrue(res.enabled)
         self.assertEqual(res.base_amount, Decimal("1180.00"))
         self.assertEqual(res.amount, Decimal("11.80"))
+        self.assertEqual(res.reason_code, "APPLICABLE")
         self.assertEqual(mocked_apply_threshold.call_args.kwargs["base_amount"], Decimal("1180.00"))
 
     @patch("sales.services.sales_withholding_service._apply_section_threshold")
@@ -1197,6 +1198,7 @@ class MasterGSTClientUnitTests(SimpleTestCase):
         self.assertTrue(res.enabled)
         self.assertEqual(res.base_amount, Decimal("1000.00"))
         self.assertEqual(res.amount, Decimal("10.00"))
+        self.assertEqual(res.reason_code, "APPLICABLE")
         self.assertEqual(mocked_apply_threshold.call_args.kwargs["base_amount"], Decimal("1000.00"))
 
     @patch("sales.services.sales_withholding_service.WithholdingResolver.resolve_rate")
@@ -1818,6 +1820,8 @@ class SalesPostingAdapterUnitTests(SimpleTestCase):
         self.assertTrue(mocked_resolve_location.called)
 
 class SalesInvoiceAdditionalServiceUnitTests(SimpleTestCase):
+    databases = {"default"}
+
     @patch("sales.services.sales_invoice_service.resolve_posting_location_id", return_value=5)
     @patch("sales.services.sales_invoice_service.SalesInvoiceService._build_stock_balance_maps")
     @patch("sales.services.sales_invoice_service.SalesInvoiceService._stock_policy")
@@ -2098,6 +2102,65 @@ class SalesInvoiceAdditionalServiceUnitTests(SimpleTestCase):
             header_data=header_data,
             original_invoice=original,
             preserve_explicit_scope=True,
+        )
+
+        self.assertEqual(header_data["seller_gstin"], "03BNDPG2450J1Z3")
+        self.assertEqual(header_data["seller_state_code"], "03")
+        self.assertEqual(header_data["place_of_supply_state_code"], "29")
+
+    @patch("sales.services.sales_invoice_service.ShippingDetails.objects")
+    def test_align_note_tax_scope_from_original_invoice_preserves_ship_to_scope_when_requested(
+        self,
+        mocked_shipping_details_objects,
+    ):
+        header_data = {
+            "seller_gstin": "22AAAAA0000A1Z5",
+            "seller_state_code": "22",
+        }
+        original = SimpleNamespace(
+            seller_gstin="03BNDPG2450J1Z3",
+            seller_state_code="03",
+            place_of_supply_state_code="03",
+        )
+        mocked_shipping_state = SimpleNamespace(statecode="29")
+        mocked_shipping_detail = SimpleNamespace(state=mocked_shipping_state)
+        mocked_shipping_details_objects.select_related.return_value.filter.return_value.only.return_value.first.return_value = mocked_shipping_detail
+
+        SalesInvoiceService._align_note_tax_scope_from_original_invoice(
+            header_data=header_data,
+            original_invoice=original,
+            preserve_explicit_scope=True,
+            shipping_detail_id=77,
+        )
+
+        self.assertEqual(header_data["seller_gstin"], "03BNDPG2450J1Z3")
+        self.assertEqual(header_data["seller_state_code"], "03")
+        self.assertEqual(header_data["place_of_supply_state_code"], "29")
+
+    @patch("sales.services.sales_invoice_service.ShippingDetails.objects")
+    def test_align_note_tax_scope_from_original_invoice_prefers_ship_to_over_stale_explicit_pos_when_requested(
+        self,
+        mocked_shipping_details_objects,
+    ):
+        header_data = {
+            "seller_gstin": "22AAAAA0000A1Z5",
+            "seller_state_code": "22",
+            "place_of_supply_state_code": "03",
+        }
+        original = SimpleNamespace(
+            seller_gstin="03BNDPG2450J1Z3",
+            seller_state_code="03",
+            place_of_supply_state_code="03",
+        )
+        mocked_shipping_state = SimpleNamespace(statecode="29")
+        mocked_shipping_detail = SimpleNamespace(state=mocked_shipping_state)
+        mocked_shipping_details_objects.select_related.return_value.filter.return_value.only.return_value.first.return_value = mocked_shipping_detail
+
+        SalesInvoiceService._align_note_tax_scope_from_original_invoice(
+            header_data=header_data,
+            original_invoice=original,
+            preserve_explicit_scope=True,
+            shipping_detail_id=77,
         )
 
         self.assertEqual(header_data["seller_gstin"], "03BNDPG2450J1Z3")
@@ -2490,6 +2553,82 @@ class SalesInvoiceAdditionalServiceUnitTests(SimpleTestCase):
         mocked_sync.assert_called_once()
 
     @patch("sales.services.sales_invoice_service.SalesInvoiceService._run_auto_compliance")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._validate_stock_policy_on_post")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._allocate_batches_for_post")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._validate_b2b_gstin_requirements")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._recompute_invoice_state")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._prepare_header_for_persistence")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService.get_settings")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._load_invoice_rows")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._policy_controls")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService.freeze_ship_to_snapshot")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService.ensure_doc_number")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._validate_invoice_uniqueness_per_gstin")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceHeader.objects")
+    def test_confirm_persists_tcs_section_and_runtime_snapshot(
+        self,
+        mocked_header_objects,
+        mocked_validate_uniqueness,
+        mocked_ensure_doc_number,
+        mocked_freeze_ship_to_snapshot,
+        mocked_policy_controls,
+        mocked_load_rows,
+        mocked_get_settings,
+        mocked_prepare_header,
+        mocked_recompute_state,
+        mocked_validate_b2b,
+        mocked_allocate_batches,
+        mocked_validate_stock,
+        mocked_run_auto_compliance,
+    ):
+        header = SimpleNamespace(
+            pk=901,
+            status=SalesInvoiceHeader.Status.DRAFT,
+            entity_id=1,
+            subentity_id=1,
+            entityfinid_id=1,
+            doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+            customer_id=22,
+            bill_date=date(2026, 4, 1),
+            shipping_detail_id=11,
+            is_eway_applicable=False,
+            withholding_enabled=True,
+            tcs_section=SimpleNamespace(id=71, section_code="206C(1H)"),
+            tcs_section_id=71,
+            tcs_rate=Decimal("0.1000"),
+            tcs_base_amount=Decimal("500.00"),
+            tcs_amount=Decimal("0.50"),
+            tcs_reason="Threshold crossed.",
+            tcs_is_reversal=False,
+            legacy_behavior_flags={"tcs_runtime_result": {"reason_code": "THRESHOLD_CROSSED_CUMULATIVE"}},
+            settled_amount=Decimal("0.00"),
+            outstanding_amount=Decimal("500.50"),
+            settlement_status=0,
+            confirmed_at=None,
+            confirmed_by=None,
+            updated_by=None,
+        )
+        save_calls = []
+
+        def _save(*, update_fields=None, **kwargs):
+            save_calls.append(set(update_fields or []))
+
+        header.save = _save
+        mocked_header_objects.select_for_update.return_value.get.return_value = header
+        mocked_policy_controls.return_value = {}
+        mocked_load_rows.return_value = ([SimpleNamespace(id=1)], [])
+        mocked_get_settings.return_value = SimpleNamespace()
+        mocked_recompute_state.return_value = ([SimpleNamespace(id=1)], [])
+
+        result = SalesInvoiceService.confirm(header=header, user=SimpleNamespace(id=7))
+
+        self.assertIs(result, header)
+        self.assertTrue(save_calls)
+        final_save_fields = save_calls[-1]
+        self.assertIn("tcs_section", final_save_fields)
+        self.assertIn("legacy_behavior_flags", final_save_fields)
+
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._run_auto_compliance")
     @patch("sales.services.sales_invoice_service.SalesInvoiceService._validate_invoice_uniqueness_per_gstin")
     @patch("sales.services.sales_invoice_service.SalesInvoiceService.ensure_doc_number")
     @patch("sales.services.sales_invoice_service.SalesInvoiceService._apply_tcs")
@@ -2529,6 +2668,7 @@ class SalesInvoiceAdditionalServiceUnitTests(SimpleTestCase):
         mocked_recompute_invoice_state.return_value = ([SimpleNamespace(id=1)], [])
 
         header = SimpleNamespace(
+            pk=44,
             id=44,
             status=SalesInvoiceHeader.Status.DRAFT,
             entity_id=1,
@@ -2588,7 +2728,9 @@ class SalesInvoiceAdditionalServiceUnitTests(SimpleTestCase):
         mocked_apply_tcs.side_effect = apply_tcs_side_effect
 
         user = SimpleNamespace(id=99)
-        SalesInvoiceService.confirm.__func__.__wrapped__(SalesInvoiceService, header=header, user=user)
+        with patch("sales.services.sales_invoice_service.SalesInvoiceHeader.objects") as mocked_header_objects:
+            mocked_header_objects.select_for_update.return_value.get.return_value = header
+            SalesInvoiceService.confirm.__func__.__wrapped__(SalesInvoiceService, header=header, user=user)
 
         self.assertEqual(call_order, ["ensure_doc_number", "apply_tcs"])
         self.assertEqual(header.status, SalesInvoiceHeader.Status.CONFIRMED)

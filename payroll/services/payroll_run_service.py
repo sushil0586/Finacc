@@ -16,6 +16,7 @@ from numbering.models import DocumentType
 from numbering.services.document_number_service import DocumentNumberService
 from payroll.models import (
     ContractPayrollProfile,
+    EntityPayrollPolicy,
     FnFSettlement,
     PayrollComponent,
     PayrollPeriod,
@@ -49,6 +50,7 @@ from payroll.services.payroll_policy_rule_service import PayrollPolicyRuleServic
 from payroll.services.payroll_run_hardening_service import PayrollRunHardeningService
 from payroll.services.payroll_run_readiness_resolver_service import PayrollRunReadinessResolverService
 from payroll.services.payroll_traceability_service import PayrollTraceabilityService
+from payroll.services.payslip_service import PayslipService
 from Authentication.models import User
 
 ZERO2 = Decimal("0.00")
@@ -2251,6 +2253,43 @@ class PayrollRunService:
         return PayrollRunResult(run=run, message="Payroll run submitted.")
 
     @staticmethod
+    def _publish_payslips_for_policy(
+        run: PayrollRun,
+        *,
+        actor_id: int,
+        trigger_policy: str,
+    ) -> int:
+        first_row = run.employee_runs.select_related("contract_payroll_profile").order_by("id").first()
+        if not first_row:
+            return 0
+
+        pay_frequency = (
+            getattr(first_row.contract_payroll_profile, "pay_frequency", "")
+            or EntityPayrollPolicy.PayFrequency.MONTHLY
+        )
+        policy = EntityPayrollPolicyService.resolve_active_policy(
+            entity_id=run.entity_id,
+            payroll_date=run.payroll_period.period_end,
+            pay_frequency=pay_frequency,
+        )
+        if not policy or policy.payslip_publish_policy != trigger_policy:
+            return 0
+
+        published_count = 0
+        now = timezone.now()
+        for row in run.employee_runs.select_related(
+            "contract_payroll_profile__hrms_contract__employee",
+        ).prefetch_related("components__component").order_by("id"):
+            payslip = PayslipService.build_for_run_employee(row)
+            if payslip.published_at is None:
+                payslip.published_at = now
+                payslip.published_by_id = actor_id
+                payslip.save(update_fields=["published_at", "published_by", "updated_at"])
+                published_count += 1
+
+        return published_count
+
+    @staticmethod
     @transaction.atomic
     def approve_run(run: PayrollRun, *, approved_by_id: int, note: str = "") -> PayrollRunResult:
         if run.status != PayrollRun.Status.CALCULATED:
@@ -2290,6 +2329,11 @@ class PayrollRunService:
         run.approved_at = timezone.now()
         run.approval_note = note or ""
         run.save(update_fields=["status", "approved_by", "approved_at", "approval_note", "updated_at"])
+        PayrollRunService._publish_payslips_for_policy(
+            run,
+            actor_id=approved_by_id,
+            trigger_policy=EntityPayrollPolicy.PayslipPublishPolicy.ON_APPROVAL,
+        )
         PayrollRunHardeningService.freeze_run(run, user_id=approved_by_id)
         ApprovalWorkflowService.lock_after_approval(
             instance=run,
@@ -2327,6 +2371,11 @@ class PayrollRunService:
         run.posted_entry_id = entry.id
         run.post_reference = entry.voucher_no or ""
         run.save(update_fields=["status", "posted_by", "posted_at", "posted_entry_id", "post_reference"])
+        PayrollRunService._publish_payslips_for_policy(
+            run,
+            actor_id=posted_by_id,
+            trigger_policy=EntityPayrollPolicy.PayslipPublishPolicy.ON_POSTING,
+        )
         PayrollRunHardeningService.log_action(
             run,
             action=PayrollRunActionLog.Action.POSTED,

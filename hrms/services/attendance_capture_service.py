@@ -734,8 +734,43 @@ class AttendanceCaptureService:
         return monthly_close
 
     @classmethod
+    def _monthly_close_approval_counts(cls, *, monthly_close: AttendanceMonthlyClose) -> dict[str, int]:
+        counts = defaultdict(int)
+        approvals = AttendanceApproval.objects.filter(
+            entity_id=monthly_close.entity_id,
+            subentity_id=monthly_close.subentity_id,
+            payroll_period_code=monthly_close.payroll_period_code,
+            deleted_at__isnull=True,
+        )
+        for approval in approvals:
+            counts[approval.status] += 1
+        return dict(counts)
+
+    @classmethod
+    def _assert_monthly_close_approvals_ready(cls, *, monthly_close: AttendanceMonthlyClose) -> None:
+        counts = cls._monthly_close_approval_counts(monthly_close=monthly_close)
+        blocking = {
+            status: count
+            for status, count in counts.items()
+            if status != AttendanceApproval.Status.APPROVED and count
+        }
+        if blocking:
+            raise ValueError({
+                "detail": [
+                    "All attendance approval rows must be approved before the month close can move forward."
+                ],
+                "approval_counts": counts,
+            })
+
+    @classmethod
     @transaction.atomic
     def submit_monthly_close(cls, *, monthly_close: AttendanceMonthlyClose, actor) -> AttendanceMonthlyClose:
+        if monthly_close.status not in {
+            AttendanceMonthlyClose.Status.DRAFT,
+            AttendanceMonthlyClose.Status.REOPENED,
+        }:
+            raise ValueError({"detail": [f"Attendance monthly close cannot be submitted from {monthly_close.status}."]})
+        cls._assert_monthly_close_approvals_ready(monthly_close=monthly_close)
         monthly_close.status = AttendanceMonthlyClose.Status.SUBMITTED
         monthly_close.submitted_at = timezone.now()
         monthly_close.submitted_by = actor
@@ -760,6 +795,9 @@ class AttendanceCaptureService:
     @classmethod
     @transaction.atomic
     def approve_monthly_close(cls, *, monthly_close: AttendanceMonthlyClose, actor) -> AttendanceMonthlyClose:
+        if monthly_close.status != AttendanceMonthlyClose.Status.SUBMITTED:
+            raise ValueError({"detail": ["Attendance monthly close must be submitted before approval."]})
+        cls._assert_monthly_close_approvals_ready(monthly_close=monthly_close)
         monthly_close.status = AttendanceMonthlyClose.Status.APPROVED
         monthly_close.approved_at = timezone.now()
         monthly_close.approved_by = actor
@@ -784,6 +822,9 @@ class AttendanceCaptureService:
     @classmethod
     @transaction.atomic
     def close_monthly_close(cls, *, monthly_close: AttendanceMonthlyClose, actor, close_note: str = "") -> AttendanceMonthlyClose:
+        if monthly_close.status != AttendanceMonthlyClose.Status.APPROVED:
+            raise ValueError({"detail": ["Attendance monthly close must be approved before it can be closed."]})
+        cls._assert_monthly_close_approvals_ready(monthly_close=monthly_close)
         monthly_close.status = AttendanceMonthlyClose.Status.CLOSED
         monthly_close.closed_at = timezone.now()
         monthly_close.closed_by = actor
@@ -815,22 +856,12 @@ class AttendanceCaptureService:
 
     @classmethod
     def _build_monthly_close_summary(cls, *, monthly_close: AttendanceMonthlyClose) -> dict[str, Any]:
-        approvals = list(
-            AttendanceApproval.objects.filter(
-                entity_id=monthly_close.entity_id,
-                subentity_id=monthly_close.subentity_id,
-                payroll_period_code=monthly_close.payroll_period_code,
-                deleted_at__isnull=True,
-            )
-        )
-        counts = defaultdict(int)
-        for item in approvals:
-            counts[item.status] += 1
+        counts = cls._monthly_close_approval_counts(monthly_close=monthly_close)
         return {
             "payroll_period_code": monthly_close.payroll_period_code,
             "period_start": monthly_close.period_start.isoformat(),
             "period_end": monthly_close.period_end.isoformat(),
-            "approval_counts": dict(counts),
-            "total_contracts": len(approvals),
+            "approval_counts": counts,
+            "total_contracts": sum(counts.values()),
             "closed_at": monthly_close.closed_at.isoformat() if monthly_close.closed_at else None,
         }

@@ -665,6 +665,26 @@ class PurchaseApiEndToEndTests(APITestCase):
         self.assertEqual(len(body["lines"]), 1)
         self.assertIsNotNone(body["lines"][0]["id"])
 
+    def test_create_service_invoice_ignores_client_status_when_workflow_is_draft(self):
+        PurchaseSettingsService.upsert_settings(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            updates={"default_workflow_action": "draft"},
+        )
+
+        payload = self._invoice_payload(
+            lines=[self._service_line_payload(product_desc="Draft-safe consulting")],
+            supplier_invoice_number="INV-SVC-DRAFT-STATUS",
+            status=int(PurchaseInvoiceHeader.Status.CONFIRMED),
+        )
+
+        response = self.client.post("/api/purchase/purchase-service-invoices/", payload, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.json())
+        body = response.json()
+        self.assertEqual(body["status"], int(PurchaseInvoiceHeader.Status.DRAFT))
+        self.assertEqual(body["status_name"], PurchaseInvoiceHeader.Status.DRAFT.label)
+
     def test_supplier_invoice_number_and_date_are_mandatory(self):
         payload = self._invoice_payload(lines=[self._goods_line_payload()], supplier_invoice_number="INV-MISSING-DATE")
         payload["supplier_invoice_date"] = None
@@ -1807,6 +1827,173 @@ class PurchaseApiEndToEndTests(APITestCase):
         self.assertIsNotNone(body["supplier_invoice_date"])
         self.assertEqual(body["note_reason"], PurchaseInvoiceHeader.NoteReason.QUANTITY_RETURN)
         self.assertTrue(body["affects_inventory"])
+
+    @patch("purchase.services.purchase_invoice_actions.GstTdsService.sync_contract_ledger_for_header")
+    def test_service_credit_note_confirm_preserves_manual_gst_tds_in_response_and_detail(
+        self,
+        mocked_sync_contract_ledger,
+    ):
+        PurchaseSettingsService.upsert_settings(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            updates={"post_gst_tds_on_invoice": True},
+        )
+
+        source_payload = self._invoice_payload(
+            lines=[self._service_line_payload(product_desc="Service CN GST-TDS source")],
+            supplier_invoice_number="INV-SVC-CN-GSTTDS-SRC",
+        )
+        source_resp = self.client.post("/api/purchase/purchase-service-invoices/", source_payload, format="json")
+        self.assertEqual(source_resp.status_code, status.HTTP_201_CREATED, source_resp.json())
+        source_id = int(source_resp.json()["id"])
+
+        note_resp = self.client.post(
+            f"/api/purchase/purchase-service-invoices/{source_id}/create-credit-note/{self._scope_qs()}",
+            {
+                "note_reason": PurchaseInvoiceHeader.NoteReason.PRICE_DIFFERENCE,
+                "reason": "Service note GST-TDS confirm regression",
+            },
+            format="json",
+        )
+        self.assertEqual(note_resp.status_code, status.HTTP_201_CREATED, note_resp.json())
+        note_id = int(note_resp.json()["data"]["id"])
+
+        detail_resp = self.client.get(f"/api/purchase/purchase-service-invoices/{note_id}/{self._scope_qs()}")
+        self.assertEqual(detail_resp.status_code, status.HTTP_200_OK, detail_resp.json())
+        payload = detail_resp.json()
+        note_header = PurchaseInvoiceHeader.objects.get(pk=note_id)
+        payload["bill_date"] = note_header.bill_date.strftime("%Y-%m-%d") if note_header.bill_date else None
+        payload["due_date"] = note_header.due_date.strftime("%Y-%m-%d") if note_header.due_date else None
+        payload["posting_date"] = note_header.posting_date.strftime("%Y-%m-%d") if note_header.posting_date else None
+        payload["supplier_invoice_date"] = (
+            note_header.supplier_invoice_date.strftime("%Y-%m-%d")
+            if note_header.supplier_invoice_date
+            else None
+        )
+        payload["supplier_invoice_number"] = "INV-SVC-CN-GSTTDS-NOTE"
+        payload["gst_tds_enabled"] = True
+        payload["gst_tds_is_manual"] = True
+        payload["gst_tds_contract_ref"] = "CTR-SVC-CN-GSTTDS"
+        payload["gst_tds_rate"] = "2.0000"
+        payload["gst_tds_base_amount"] = "100.00"
+        payload["gst_tds_cgst_amount"] = "0.00"
+        payload["gst_tds_sgst_amount"] = "0.00"
+        payload["gst_tds_igst_amount"] = "2.00"
+        payload["gst_tds_amount"] = "2.00"
+
+        update_resp = self.client.put(
+            f"/api/purchase/purchase-service-invoices/{note_id}/{self._scope_qs()}",
+            payload,
+            format="json",
+        )
+        self.assertEqual(update_resp.status_code, status.HTTP_200_OK, update_resp.json())
+        self.assertEqual(Decimal(str(update_resp.json()["gst_tds_amount"])), Decimal("2.00"))
+
+        confirm_resp = self.client.post(
+            f"/api/purchase/purchase-service-invoices/{note_id}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(confirm_resp.status_code, status.HTTP_200_OK, confirm_resp.json())
+        self.assertEqual(Decimal(str(confirm_resp.json()["data"]["gst_tds_amount"])), Decimal("2.00"))
+
+        refreshed = PurchaseInvoiceHeader.objects.get(pk=note_id)
+        self.assertTrue(refreshed.gst_tds_enabled)
+        self.assertTrue(refreshed.gst_tds_is_manual)
+        self.assertEqual(refreshed.gst_tds_contract_ref, "CTR-SVC-CN-GSTTDS")
+        self.assertEqual(refreshed.gst_tds_amount, Decimal("2.00"))
+
+        detail_after_confirm = self.client.get(f"/api/purchase/purchase-service-invoices/{note_id}/{self._scope_qs()}")
+        self.assertEqual(detail_after_confirm.status_code, status.HTTP_200_OK, detail_after_confirm.json())
+        self.assertEqual(Decimal(str(detail_after_confirm.json()["gst_tds_amount"])), Decimal("2.00"))
+        mocked_sync_contract_ledger.assert_called()
+
+    @patch("purchase.services.purchase_invoice_actions.GstTdsService.sync_contract_ledger_for_header")
+    def test_service_debit_note_confirm_preserves_manual_income_tax_tds_in_response_and_detail(
+        self,
+        mocked_sync_contract_ledger,
+    ):
+        PurchaseSettingsService.upsert_settings(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            updates={"post_gst_tds_on_invoice": True},
+        )
+        section = WithholdingSection.objects.create(
+            tax_type=WithholdingTaxType.TDS,
+            section_code="194J",
+            description="Professional fees",
+            base_rule=WithholdingBaseRule.INVOICE_VALUE_EXCL_GST,
+            rate_default=Decimal("10.0000"),
+            threshold_default=Decimal("0.00"),
+            effective_from=date(2020, 4, 1),
+            is_active=True,
+        )
+
+        source_payload = self._invoice_payload(
+            lines=[self._service_line_payload(product_desc="Service DN IT-TDS source")],
+            supplier_invoice_number="INV-SVC-DN-ITTDS-SRC",
+        )
+        source_resp = self.client.post("/api/purchase/purchase-service-invoices/", source_payload, format="json")
+        self.assertEqual(source_resp.status_code, status.HTTP_201_CREATED, source_resp.json())
+        source_id = int(source_resp.json()["id"])
+
+        note_resp = self.client.post(
+            f"/api/purchase/purchase-service-invoices/{source_id}/create-debit-note/{self._scope_qs()}",
+            {
+                "note_reason": PurchaseInvoiceHeader.NoteReason.PRICE_DIFFERENCE,
+                "reason": "Service note IT-TDS confirm regression",
+            },
+            format="json",
+        )
+        self.assertEqual(note_resp.status_code, status.HTTP_201_CREATED, note_resp.json())
+        note_id = int(note_resp.json()["data"]["id"])
+
+        detail_resp = self.client.get(f"/api/purchase/purchase-service-invoices/{note_id}/{self._scope_qs()}")
+        self.assertEqual(detail_resp.status_code, status.HTTP_200_OK, detail_resp.json())
+        payload = detail_resp.json()
+        note_header = PurchaseInvoiceHeader.objects.get(pk=note_id)
+        payload["bill_date"] = note_header.bill_date.strftime("%Y-%m-%d") if note_header.bill_date else None
+        payload["due_date"] = note_header.due_date.strftime("%Y-%m-%d") if note_header.due_date else None
+        payload["posting_date"] = note_header.posting_date.strftime("%Y-%m-%d") if note_header.posting_date else None
+        payload["supplier_invoice_date"] = (
+            note_header.supplier_invoice_date.strftime("%Y-%m-%d")
+            if note_header.supplier_invoice_date
+            else None
+        )
+        payload["supplier_invoice_number"] = "INV-SVC-DN-ITTDS-NOTE"
+        payload["withholding_enabled"] = True
+        payload["tds_is_manual"] = True
+        payload["tds_section"] = section.id
+        payload["tds_rate"] = "10.0000"
+        payload["tds_base_amount"] = "100.00"
+        payload["tds_amount"] = "10.00"
+
+        update_resp = self.client.put(
+            f"/api/purchase/purchase-service-invoices/{note_id}/{self._scope_qs()}",
+            payload,
+            format="json",
+        )
+        self.assertEqual(update_resp.status_code, status.HTTP_200_OK, update_resp.json())
+        self.assertEqual(Decimal(str(update_resp.json()["tds_amount"])), Decimal("10.00"))
+
+        confirm_resp = self.client.post(
+            f"/api/purchase/purchase-service-invoices/{note_id}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(confirm_resp.status_code, status.HTTP_200_OK, confirm_resp.json())
+        self.assertEqual(Decimal(str(confirm_resp.json()["data"]["tds_amount"])), Decimal("10.00"))
+
+        refreshed = PurchaseInvoiceHeader.objects.get(pk=note_id)
+        self.assertTrue(refreshed.withholding_enabled)
+        self.assertTrue(refreshed.tds_is_manual)
+        self.assertEqual(refreshed.tds_section_id, section.id)
+        self.assertEqual(refreshed.tds_amount, Decimal("10.00"))
+
+        detail_after_confirm = self.client.get(f"/api/purchase/purchase-service-invoices/{note_id}/{self._scope_qs()}")
+        self.assertEqual(detail_after_confirm.status_code, status.HTTP_200_OK, detail_after_confirm.json())
+        self.assertEqual(Decimal(str(detail_after_confirm.json()["tds_amount"])), Decimal("10.00"))
+        mocked_sync_contract_ledger.assert_called()
 
     def test_purchase_note_update_persists_custom_fields(self):
         created = self._create_invoice(supplier_invoice_number="INV-CN-CUSTOM-FIELD")

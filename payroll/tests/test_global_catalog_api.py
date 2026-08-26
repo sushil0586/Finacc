@@ -6,13 +6,23 @@ from unittest.mock import patch
 from django.test import TestCase
 from rest_framework.test import APIClient
 
-from payroll.models import GlobalPayrollComponentGroup, GlobalSalaryStructureTemplate, SalaryStructure
+from payroll.models import (
+    GlobalPayrollComponent,
+    GlobalPayrollComponentGroup,
+    GlobalSalaryStructureTemplate,
+    GlobalSalaryStructureTemplateLine,
+    SalaryStructure,
+)
 from payroll.services.payroll_global_seed_service import PayrollGlobalSeedService
 from payroll.tests.factories import PayrollFactory
 
 
 class GlobalPayrollCatalogApiTests(TestCase):
     def setUp(self):
+        GlobalSalaryStructureTemplateLine.objects.all().delete()
+        GlobalSalaryStructureTemplate.objects.all().delete()
+        GlobalPayrollComponent.objects.all().delete()
+        GlobalPayrollComponentGroup.objects.all().delete()
         self.client = APIClient()
         self.user = PayrollFactory.user()
         self.client.force_authenticate(self.user)
@@ -39,7 +49,8 @@ class GlobalPayrollCatalogApiTests(TestCase):
         self.assertEqual(results[0]["code"], "EARNINGS")
 
     @patch("core.entitlements.SubscriptionService.assert_entity_access")
-    def test_adoption_preview_enforces_scope_and_returns_preview(self, _assert_entity_access):
+    @patch("payroll.views.payroll_global_catalog_views.PayrollPermissionService.assert_entity_permission_access")
+    def test_adoption_preview_enforces_scope_and_returns_preview(self, _assert_permission, _assert_entity_access):
         scope = PayrollFactory.entity_scope(user=self.user)
         PayrollGlobalSeedService.seed_default_catalog()
         template = GlobalSalaryStructureTemplate.objects.get(code="INDIA_SME_MONTHLY_STAFF")
@@ -54,7 +65,8 @@ class GlobalPayrollCatalogApiTests(TestCase):
         self.assertIn("components_to_create", response.json())
 
     @patch("core.entitlements.SubscriptionService.assert_entity_access")
-    def test_adopt_executes_and_returns_summary(self, _assert_entity_access):
+    @patch("payroll.views.payroll_global_catalog_views.PayrollPermissionService.assert_entity_permission_access")
+    def test_adopt_executes_and_returns_summary(self, _assert_permission, _assert_entity_access):
         scope = PayrollFactory.entity_scope(user=self.user)
         PayrollGlobalSeedService.seed_default_catalog()
         template = GlobalSalaryStructureTemplate.objects.get(code="INDIA_SME_MONTHLY_STAFF")
@@ -76,7 +88,8 @@ class GlobalPayrollCatalogApiTests(TestCase):
         self.assertTrue(SalaryStructure.objects.filter(entity=scope["entity"], code=template.code).exists())
 
     @patch("core.entitlements.SubscriptionService.assert_entity_access")
-    def test_adopt_returns_conflict_for_duplicate_structure_code(self, _assert_entity_access):
+    @patch("payroll.views.payroll_global_catalog_views.PayrollPermissionService.assert_entity_permission_access")
+    def test_adopt_returns_conflict_for_duplicate_structure_code(self, _assert_permission, _assert_entity_access):
         scope = PayrollFactory.entity_scope(user=self.user)
         PayrollGlobalSeedService.seed_default_catalog()
         template = GlobalSalaryStructureTemplate.objects.get(code="INDIA_SME_MONTHLY_STAFF")

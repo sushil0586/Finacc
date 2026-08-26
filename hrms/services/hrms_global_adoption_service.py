@@ -367,7 +367,21 @@ class HrmsGlobalAdoptionService:
 
     @staticmethod
     def _serialize_entity_leave_type(item):
-        return {"id": str(item.id), "code": item.code, "name": item.name, "category": item.category, "is_active": item.is_active, "source_code": getattr(item.source_global_leave_type, "code", None)}
+        return {
+            "id": str(item.id),
+            "code": item.code,
+            "name": item.name,
+            "category": item.category,
+            "description": item.description,
+            "color_hex": item.color_hex,
+            "is_paid": item.is_paid,
+            "requires_balance": item.requires_balance,
+            "allow_negative_balance": item.allow_negative_balance,
+            "counts_towards_attendance": item.counts_towards_attendance,
+            "payroll_impact_code": item.payroll_impact_code,
+            "is_active": item.is_active,
+            "source_code": getattr(item.source_global_leave_type, "code", None),
+        }
 
     @staticmethod
     def _serialize_entity_leave_policy(item):

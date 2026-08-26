@@ -1673,6 +1673,68 @@ class RegisterAndEntityOnboardingTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data["code"], "subscription_plan_unavailable")
 
+    def test_register_and_onboard_rejects_duplicate_active_entity_gstin_cleanly(self):
+        Entity.objects.create(
+            entityname="Existing GST Entity",
+            legalname="Existing GST Entity Pvt Ltd",
+            GstRegitrationType=self.gst_type,
+            createdby=self.seed_user,
+        )
+        existing_entity = Entity.objects.get(entityname="Existing GST Entity")
+        EntityGstRegistration.objects.create(
+            entity=existing_entity,
+            gstin="03APXPB5894F1Z3",
+            registration_type=self.gst_type,
+            gst_status=Entity.GstStatus.REGISTERED,
+            state=self.state,
+            is_primary=True,
+            isactive=True,
+            createdby=self.seed_user,
+        )
+
+        payload = {
+            "user": {
+                "email": "duplicategstfounder@example.com",
+                "username": "duplicategstfounder@example.com",
+                "first_name": "Duplicate",
+                "last_name": "GST",
+                "password": "secret123",
+            },
+            "onboarding": {
+                "entity": {
+                    "entityname": "Duplicate GST Entity",
+                    "legalname": "Duplicate GST Entity Pvt Ltd",
+                    "GstRegitrationType": self.gst_type.id,
+                    "gstno": "03APXPB5894F1Z3",
+                    "panno": "APXPB5894F",
+                    "phoneoffice": "9855966534",
+                    "phoneresidence": "9855966534",
+                    "email": "duplicategstfounder@example.com",
+                    "address": "4369 GT Road",
+                    "country": self.country.id,
+                    "state": self.state.id,
+                    "district": self.district.id,
+                    "city": self.city.id,
+                    "pincode": "140406",
+                    "const": self.constitution.id,
+                },
+                "financial_years": [
+                    {
+                        "finstartyear": "2026-04-01T00:00:00Z",
+                        "finendyear": "2027-03-31T00:00:00Z",
+                        "desc": "FY 2026-27",
+                        "isactive": True,
+                    }
+                ],
+            },
+        }
+
+        response = self.client.post("/api/entity/onboarding/register/", payload, format="json")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("gstno", response.data)
+        self.assertIn("already exists", response.data["gstno"][0])
+
     def test_register_and_onboard_rejects_existing_but_non_selectable_plan_code(self):
         starter = SubscriptionService.get_or_create_default_plan()
         invite_only = type(starter).objects.create(

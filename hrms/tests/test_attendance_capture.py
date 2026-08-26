@@ -184,6 +184,14 @@ class AttendanceCaptureServiceTests(TestCase):
             subentity_id=self.subentity.id,
             payroll_period=self.payroll_period,
         )
+        approval = AttendanceCaptureService.submit_approval(
+            contract=self.contract,
+            payroll_period=self.payroll_period,
+            actor=self.user,
+        )
+        AttendanceCaptureService.approve_approval(approval=approval, actor=self.user, review_note="Approved")
+        monthly_close = AttendanceCaptureService.submit_monthly_close(monthly_close=monthly_close, actor=self.user)
+        monthly_close = AttendanceCaptureService.approve_monthly_close(monthly_close=monthly_close, actor=self.user)
         AttendanceCaptureService.close_monthly_close(monthly_close=monthly_close, actor=self.user, close_note="Closed")
 
         with self.assertRaisesMessage(ValueError, "Attendance month is already closed"):
@@ -318,11 +326,15 @@ class AttendanceCaptureServiceTests(TestCase):
             subentity_id=self.subentity.id,
             payroll_period=self.payroll_period,
         )
+        with self.assertRaisesMessage(ValueError, "All attendance approval rows must be approved"):
+            AttendanceCaptureService.submit_monthly_close(monthly_close=monthly_close, actor=self.user)
+
+        approval = AttendanceCaptureService.approve_approval(approval=approval, actor=self.user, review_note="Approved")
         monthly_close = AttendanceCaptureService.submit_monthly_close(monthly_close=monthly_close, actor=self.user)
         self.assertEqual(monthly_close.status, AttendanceMonthlyClose.Status.SUBMITTED)
         self.assertEqual(
             monthly_close.summary_json["approval_counts"],
-            {AttendanceApproval.Status.SUBMITTED: 1},
+            {AttendanceApproval.Status.APPROVED: 1},
         )
         self.assertEqual(monthly_close.summary_json["total_contracts"], 1)
 
@@ -330,21 +342,46 @@ class AttendanceCaptureServiceTests(TestCase):
         self.assertEqual(monthly_close.status, AttendanceMonthlyClose.Status.APPROVED)
         self.assertEqual(
             monthly_close.summary_json["approval_counts"],
-            {AttendanceApproval.Status.SUBMITTED: 1},
+            {AttendanceApproval.Status.APPROVED: 1},
         )
 
         approval = AttendanceCaptureService.reject_approval(approval=approval, actor=self.user, review_note="Needs review")
+        with self.assertRaisesMessage(ValueError, "All attendance approval rows must be approved"):
+            AttendanceCaptureService.close_monthly_close(
+                monthly_close=monthly_close,
+                actor=self.user,
+                close_note="Attendance closed",
+            )
+
+        approval = AttendanceCaptureService.approve_approval(approval=approval, actor=self.user, review_note="Approved again")
         monthly_close = AttendanceCaptureService.close_monthly_close(
             monthly_close=monthly_close,
             actor=self.user,
             close_note="Attendance closed",
         )
 
-        self.assertEqual(approval.status, approval.Status.REJECTED)
+        self.assertEqual(approval.status, approval.Status.APPROVED)
         self.assertEqual(monthly_close.status, AttendanceMonthlyClose.Status.CLOSED)
         self.assertEqual(monthly_close.close_note, "Attendance closed")
         self.assertEqual(
             monthly_close.summary_json["approval_counts"],
-            {AttendanceApproval.Status.REJECTED: 1},
+            {AttendanceApproval.Status.APPROVED: 1},
         )
         self.assertEqual(monthly_close.summary_json["total_contracts"], 1)
+
+    def test_monthly_close_requires_ordered_workflow(self):
+        monthly_close = AttendanceCaptureService.get_or_create_monthly_close(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            payroll_period=self.payroll_period,
+        )
+
+        with self.assertRaisesMessage(ValueError, "must be submitted before approval"):
+            AttendanceCaptureService.approve_monthly_close(monthly_close=monthly_close, actor=self.user)
+
+        with self.assertRaisesMessage(ValueError, "must be approved before it can be closed"):
+            AttendanceCaptureService.close_monthly_close(
+                monthly_close=monthly_close,
+                actor=self.user,
+                close_note="Too early",
+            )

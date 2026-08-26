@@ -27,6 +27,12 @@ class TenantMembershipSerializer(serializers.ModelSerializer):
     entity_assignment_count = serializers.IntegerField(read_only=True)
     account_assignment_count = serializers.IntegerField(read_only=True)
     is_owner_membership = serializers.SerializerMethodField()
+    is_current_user = serializers.SerializerMethodField()
+    email_verified = serializers.BooleanField(source="user.email_verified", read_only=True)
+    is_expired = serializers.SerializerMethodField()
+    invitation_status = serializers.SerializerMethodField()
+    last_invite_sent_at = serializers.SerializerMethodField()
+    can_resend_invite = serializers.SerializerMethodField()
 
     class Meta:
         model = UserEntityAccess
@@ -46,6 +52,12 @@ class TenantMembershipSerializer(serializers.ModelSerializer):
             "entity_assignment_count",
             "account_assignment_count",
             "is_owner_membership",
+            "is_current_user",
+            "email_verified",
+            "is_expired",
+            "invitation_status",
+            "last_invite_sent_at",
+            "can_resend_invite",
         )
 
     def get_full_name(self, obj):
@@ -61,6 +73,37 @@ class TenantMembershipSerializer(serializers.ModelSerializer):
     def get_is_owner_membership(self, obj):
         customer_account = getattr(obj, "customer_account", None)
         return bool(customer_account and customer_account.owner_id == obj.user_id)
+
+    def get_is_current_user(self, obj):
+        actor = self.context.get("actor")
+        return bool(actor and obj.user_id == actor.id)
+
+    def get_is_expired(self, obj):
+        return obj.is_expired
+
+    def get_invitation_status(self, obj):
+        if self.get_is_owner_membership(obj):
+            return "owner"
+        if not obj.is_active:
+            return "inactive"
+        if obj.is_expired:
+            return "expired"
+        if not obj.user.email_verified:
+            return "pending_verification"
+        return "active"
+
+    def get_last_invite_sent_at(self, obj):
+        metadata = obj.metadata or {}
+        return metadata.get("invite_last_sent_at") or metadata.get("created_invite_at") or obj.granted_at.isoformat()
+
+    def get_can_resend_invite(self, obj):
+        return bool(
+            obj.is_active
+            and not obj.is_expired
+            and not obj.user.email_verified
+            and not self.get_is_owner_membership(obj)
+            and not self.get_is_current_user(obj)
+        )
 
 
 class TenantMembershipCreateSerializer(serializers.Serializer):
@@ -147,6 +190,11 @@ class TenantMembershipCreateSerializer(serializers.Serializer):
         if membership.expires_at != expires_at:
             membership.expires_at = expires_at
             membership.save(update_fields=["expires_at", "updated_at"])
+        metadata = dict(membership.metadata or {})
+        if not metadata.get("created_invite_at"):
+            metadata["created_invite_at"] = timezone.now().isoformat()
+            membership.metadata = metadata
+            membership.save(update_fields=["metadata", "updated_at"])
         return membership
 
 
@@ -162,8 +210,17 @@ class TenantMembershipUpdateSerializer(serializers.Serializer):
 
     def validate(self, attrs):
         membership = self.context["membership"]
+        actor = self.context["actor"]
         if membership.role == UserEntityAccess.Role.OWNER or membership.customer_account.owner_id == membership.user_id:
-            raise serializers.ValidationError("Owner membership cannot be changed here.")
+            raise serializers.ValidationError({
+                "detail": "Owner membership cannot be changed here.",
+                "code": "tenant_membership_owner_protected",
+            })
+        if membership.user_id == actor.id and any(field in attrs for field in ("role", "is_active", "expires_at")):
+            raise serializers.ValidationError({
+                "detail": "Use another tenant admin to change your own membership so you do not lock yourself out.",
+                "code": "tenant_membership_self_management_denied",
+            })
         expires_at = attrs.get("expires_at")
         if expires_at and expires_at <= timezone.now():
             raise serializers.ValidationError({"expires_at": "Expiry must be in the future."})
@@ -193,6 +250,93 @@ class TenantMembershipUpdateSerializer(serializers.Serializer):
             changed = True
         if changed:
             membership.save(update_fields=["role", "expires_at", "is_active", "updated_at"])
+        return membership
+
+
+class TenantMembershipPasswordResetSerializer(serializers.Serializer):
+    new_password = serializers.CharField(max_length=128, min_length=6, write_only=True)
+
+    def validate_new_password(self, value):
+        validate_password(value)
+        return value
+
+    def validate(self, attrs):
+        membership = self.context["membership"]
+        actor = self.context["actor"]
+        if membership.role == UserEntityAccess.Role.OWNER or membership.customer_account.owner_id == membership.user_id:
+            raise serializers.ValidationError({
+                "detail": "Owner password cannot be reset from tenant membership management.",
+                "code": "tenant_membership_owner_protected",
+            })
+        if membership.user_id == actor.id:
+            raise serializers.ValidationError({
+                "detail": "Use Change Password to update your own password.",
+                "code": "tenant_membership_self_password_reset_denied",
+            })
+        if not membership.is_active:
+            raise serializers.ValidationError({
+                "detail": "Reactivate the membership before resetting password.",
+                "code": "tenant_membership_inactive",
+            })
+        return attrs
+
+    @transaction.atomic
+    def save(self, **kwargs):
+        from Authentication.services import AuthPasswordService
+
+        membership = self.context["membership"]
+        AuthPasswordService.reset_password(
+            user=membership.user,
+            new_password=self.validated_data["new_password"],
+        )
+        return membership
+
+
+class TenantMembershipResendInviteSerializer(serializers.Serializer):
+    def validate(self, attrs):
+        membership = self.context["membership"]
+        actor = self.context["actor"]
+        if membership.role == UserEntityAccess.Role.OWNER or membership.customer_account.owner_id == membership.user_id:
+            raise serializers.ValidationError({
+                "detail": "Owner membership invite cannot be resent from tenant membership management.",
+                "code": "tenant_membership_owner_protected",
+            })
+        if membership.user_id == actor.id:
+            raise serializers.ValidationError({
+                "detail": "Use your email verification screen to resend your own verification OTP.",
+                "code": "tenant_membership_self_invite_resend_denied",
+            })
+        if not membership.is_active:
+            raise serializers.ValidationError({
+                "detail": "Reactivate the membership before resending invite verification.",
+                "code": "tenant_membership_inactive",
+            })
+        if membership.is_expired:
+            raise serializers.ValidationError({
+                "detail": "Extend the membership expiry before resending invite verification.",
+                "code": "tenant_membership_expired",
+            })
+        return attrs
+
+    @transaction.atomic
+    def save(self, **kwargs):
+        from Authentication.services import AuthOTPService
+
+        membership = self.context["membership"]
+        actor = self.context["actor"]
+        if not membership.user.email_verified:
+            AuthOTPService.create_otp(
+                user=membership.user,
+                email=membership.user.email,
+                purpose="email_verification",
+            )
+
+        metadata = dict(membership.metadata or {})
+        metadata["invite_last_sent_at"] = timezone.now().isoformat()
+        metadata["invite_last_sent_by_id"] = actor.id
+        metadata["invite_resend_count"] = int(metadata.get("invite_resend_count") or 0) + 1
+        membership.metadata = metadata
+        membership.save(update_fields=["metadata", "updated_at"])
         return membership
 
 

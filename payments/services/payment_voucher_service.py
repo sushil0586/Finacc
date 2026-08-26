@@ -249,6 +249,16 @@ class PaymentVoucherService(SettlementVoucherRuntimeMixin):
             "user_selected_add_tds": bool(enabled),
         }
 
+    @staticmethod
+    def _runtime_withholding_support_amount(payload: Optional[Dict[str, Any]]) -> Decimal:
+        data = payload if isinstance(payload, dict) else {}
+        runtime = data.get("withholding_runtime_result")
+        if not isinstance(runtime, dict):
+            return ZERO2
+        if str(runtime.get("reason_code") or "").strip().upper() != "MISSING_POSTING_MAP":
+            return ZERO2
+        return q2(runtime.get("amount") or ZERO2)
+
     @classmethod
     def _resolve_runtime_tds_target_accounts(
         cls,
@@ -492,10 +502,21 @@ class PaymentVoucherService(SettlementVoucherRuntimeMixin):
         )
         allow_static_fallback = bool(config.get("allow_static_fallback", False))
         if mapping_source == "STATIC_FALLBACK" and not allow_static_fallback:
-            raise ValueError(
-                "Runtime TDS mapping missing for selected section. "
-                "Please configure Entity Withholding Section Posting Map (entity/subentity + section)."
+            payload["withholding_runtime_result"] = cls._build_runtime_withholding_snapshot(
+                enabled=True,
+                mode=mode,
+                section_id=section_id,
+                section_code=getattr(section_obj, "section_code", None),
+                base_amount=base_amount,
+                rate=rate,
+                amount=amount,
+                reason=(
+                    "Runtime TDS mapping missing for selected section. "
+                    "Please configure Entity Withholding Section Posting Map (entity/subentity + section)."
+                ),
+                reason_code="MISSING_POSTING_MAP",
             )
+            return non_runtime_rows, payload
 
         runtime_row = runtime_rows[0] if runtime_rows else {}
         runtime_row.update(
@@ -828,6 +849,7 @@ class PaymentVoucherService(SettlementVoucherRuntimeMixin):
             q2(validated_data.get("cash_paid_amount", ZERO2)),
             adjustment_total,
         )
+        effective = q2(effective + PaymentVoucherService._runtime_withholding_support_amount(workflow_payload))
         validated_data["total_adjustment_amount"] = adjustment_total
         validated_data["settlement_effective_amount"] = effective
         validated_data["settlement_effective_amount_base_currency"] = q2(effective * exchange_rate)
@@ -1021,13 +1043,16 @@ class PaymentVoucherService(SettlementVoucherRuntimeMixin):
                     for x in instance.advance_adjustments.all()
                 ]
             PaymentVoucherService._validate_settlement_support_match(
-                effective_amount=PaymentVoucherService._effective_settlement_amount(
-                    q2(validated_data.get("cash_paid_amount", instance.cash_paid_amount)),
-                    PaymentVoucherService._compute_adjustment_total(
-                        adjustments
-                        if adjustments is not None
-                        else instance.adjustments.values("amount", "settlement_effect")
-                    ),
+                effective_amount=q2(
+                    PaymentVoucherService._effective_settlement_amount(
+                        q2(validated_data.get("cash_paid_amount", instance.cash_paid_amount)),
+                        PaymentVoucherService._compute_adjustment_total(
+                            adjustments
+                            if adjustments is not None
+                            else instance.adjustments.values("amount", "settlement_effect")
+                        ),
+                    )
+                    + PaymentVoucherService._runtime_withholding_support_amount(workflow_payload)
                 ),
                 advance_total=PaymentVoucherService._sum_advance_adjustments(live_advance_rows),
                 allocation_total=PaymentVoucherService._sum_allocations(allocations),
@@ -1154,6 +1179,10 @@ class PaymentVoucherService(SettlementVoucherRuntimeMixin):
         instance.settlement_effective_amount = PaymentVoucherService._effective_settlement_amount(
             q2(instance.cash_paid_amount),
             adjustment_total,
+        )
+        instance.settlement_effective_amount = q2(
+            instance.settlement_effective_amount
+            + PaymentVoucherService._runtime_withholding_support_amount(instance.workflow_payload)
         )
         ex_rate = Decimal(getattr(instance, "exchange_rate", Decimal("1.000000")) or Decimal("1.000000"))
         if ex_rate <= 0:

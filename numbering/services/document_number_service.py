@@ -85,23 +85,28 @@ class DocumentNumberService:
         doc_code: str,
         lock: bool,
     ) -> DocumentNumberSeries:
-        qs = DocumentNumberSeries.objects.filter(
-            entity_id=entity_id,
-            entityfinid_id=entityfinid_id,
-            subentity_id=subentity_id,
-            doc_type_id=doc_type_id,
-            doc_code=doc_code,
-            is_active=True,
-        )
-        if lock:
-            qs = qs.select_for_update()
-        series = qs.first()
-        if not series:
+        requested_doc_type = DocumentType.objects.filter(id=doc_type_id).first()
+
+        def find_series_for_scope(target_subentity_id: Optional[int]) -> DocumentNumberSeries | None:
+            qs = DocumentNumberSeries.objects.filter(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=target_subentity_id,
+                doc_type_id=doc_type_id,
+                doc_code=doc_code,
+                is_active=True,
+            )
+            if lock:
+                qs = qs.select_for_update()
+            series = qs.first()
+            if series:
+                return series
+
             requested_doc_type = DocumentType.objects.filter(id=doc_type_id).first()
             fallback_qs = DocumentNumberSeries.objects.filter(
                 entity_id=entity_id,
                 entityfinid_id=entityfinid_id,
-                subentity_id=subentity_id,
+                subentity_id=target_subentity_id,
                 doc_code=doc_code,
                 is_active=True,
             )
@@ -117,13 +122,19 @@ class DocumentNumberService:
                 conflicting_target = DocumentNumberSeries.objects.filter(
                     entity_id=entity_id,
                     entityfinid_id=entityfinid_id,
-                    subentity_id=subentity_id,
+                    subentity_id=target_subentity_id,
                     doc_type_id=doc_type_id,
                     doc_code=doc_code,
                 ).exclude(id=series.id).exists()
                 if not conflicting_target:
                     series.doc_type_id = doc_type_id
                     series.save(update_fields=["doc_type", "updated_at"])
+            return series
+
+        series = find_series_for_scope(subentity_id)
+        if not series and subentity_id is not None:
+            # Branches inherit entity-level numbering until a branch-specific series is configured.
+            series = find_series_for_scope(None)
         if not series:
             raise ValueError(
                 f"Series not found for entity={entity_id}, fin={entityfinid_id}, sub={subentity_id}, doc_type={doc_type_id}, doc_code={doc_code}"

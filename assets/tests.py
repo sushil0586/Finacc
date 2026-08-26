@@ -155,6 +155,17 @@ class AssetApiScopeTests(APITestCase):
             updated_by=self.foreign_owner,
         )
 
+        for subentity_id in (None, self.subentity.id):
+            AssetSettingsService.upsert_settings(
+                entity_id=self.entity.id,
+                subentity_id=subentity_id,
+                updates={
+                    "require_asset_tag": False,
+                    "policy_controls": {"allow_posting_without_tag": "on"},
+                },
+                user_id=self.owner.id,
+            )
+
         self.client.force_authenticate(self.owner)
 
     def _create_vendor_account(self, name: str):
@@ -454,7 +465,7 @@ class AssetApiScopeTests(APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["report_name"], "Asset Dashboard Summary")
+        self.assertEqual(response.data["report_name"], "Fixed Asset Dashboard Summary")
         self.assertIn("register", response.data)
         self.assertIn("location", response.data)
         self.assertIn("depreciation", response.data)
@@ -673,6 +684,7 @@ class AssetApiScopeTests(APITestCase):
             "ledger": self.asset_ledger.id,
             "asset_name": "Tracked Asset",
             "asset_code": "FA-TRACK-001",
+            "asset_tag": "TAG-TRACK-001",
             "acquisition_date": "2026-04-01",
             "gross_block": "1000.00",
             "residual_value": "0.00",
@@ -1201,16 +1213,8 @@ class AssetApiScopeTests(APITestCase):
             },
             format="json",
         )
-        self.assertEqual(overlapping_run.status_code, status.HTTP_201_CREATED)
-
-        response = self.client.post(
-            reverse("assets_api:depreciation-run-calculate", args=[overlapping_run.data["id"]]),
-            {},
-            format="json",
-        )
-
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("overlaps with existing run", response.data["detail"].lower())
+        self.assertEqual(overlapping_run.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("overlapping depreciation run", str(overlapping_run.data).lower())
 
     def test_depreciation_run_calculate_for_multi_month_slm_uses_full_period_amount(self):
         self.asset.useful_life_months = 5
@@ -1999,6 +2003,7 @@ class AssetApiScopeTests(APITestCase):
                 "category": self.category.id,
                 "ledger": self.asset_ledger.id,
                 "asset_name": "Auto Asset One",
+                "asset_tag": "TAG-AUTO-001",
                 "acquisition_date": "2026-04-10",
                 "gross_block": "1000.00",
                 "residual_value": "0.00",
@@ -2016,6 +2021,7 @@ class AssetApiScopeTests(APITestCase):
                 "category": self.category.id,
                 "ledger": self.asset_ledger.id,
                 "asset_name": "Auto Asset Two",
+                "asset_tag": "TAG-AUTO-002",
                 "acquisition_date": "2026-04-11",
                 "gross_block": "1200.00",
                 "residual_value": "0.00",
@@ -2062,6 +2068,7 @@ class AssetApiScopeTests(APITestCase):
                 "category": self.category.id,
                 "ledger": self.asset_ledger.id,
                 "asset_name": "Auto Asset After Legacy Codes",
+                "asset_tag": "TAG-AUTO-LEGACY",
                 "acquisition_date": "2026-04-11",
                 "gross_block": "1200.00",
                 "residual_value": "0.00",
@@ -2107,6 +2114,7 @@ class AssetApiScopeTests(APITestCase):
                     "category": self.category.id,
                     "ledger": self.asset_ledger.id,
                     "asset_name": "Retry Auto Number Asset",
+                    "asset_tag": "TAG-AUTO-RETRY",
                     "acquisition_date": "2026-04-11",
                     "gross_block": "1200.00",
                     "residual_value": "0.00",

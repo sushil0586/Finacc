@@ -245,15 +245,29 @@ class PayrollAttendanceEngine:
             contract_payroll_profile=contract_payroll_profile,
             payroll_period=payroll_period,
         )
+        payroll_requirement = AttendanceCaptureService.resolve_payroll_requirement(
+            contract=contract_payroll_profile.hrms_contract
+        )
+        requires_hrms_gate = payroll_requirement.level != AttendanceCaptureService.PAYROLL_REQUIREMENT_NONE
         if summary is not None and not AttendanceCaptureService.summary_is_payroll_eligible(
             contract=contract_payroll_profile.hrms_contract,
             payroll_period=payroll_period,
             summary=summary,
         ):
+            if requires_hrms_gate:
+                raise cls._error(
+                    f"Attendance summary is not payroll eligible; requires {payroll_requirement.level} attendance",
+                    **context_kwargs,
+                )
             summary = None
         calendar_days = _period_day_count(payroll_period.period_start, payroll_period.period_end)
         warnings: list[str] = []
         if summary is None:
+            if requires_hrms_gate:
+                raise cls._error(
+                    f"Missing payroll-eligible attendance summary; requires {payroll_requirement.level} attendance",
+                    **context_kwargs,
+                )
             if behavior == "BLOCK":
                 raise cls._error("Missing approved/submitted attendance summary for required payroll calculation", **context_kwargs)
             warnings.append("Attendance summary missing; defaulting payable and attendance values to full base days.")
