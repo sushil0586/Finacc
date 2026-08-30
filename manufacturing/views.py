@@ -1088,7 +1088,10 @@ class ManufacturingSummaryAPIView(_BaseManufacturingAPIView):
                     "account_id": mapping.account_id if mapping else None,
                     "account_name": getattr(mapping.account, "accountname", None) if mapping and mapping.account_id else None,
                     "ledger_id": mapping.ledger_id if mapping else None,
-                    "ledger_name": getattr(mapping.ledger, "ledgername", None) if mapping and mapping.ledger_id else None,
+                    "ledger_name": (
+                        getattr(mapping.ledger, "name", None)
+                        or getattr(mapping.ledger, "ledgername", None)
+                    ) if mapping and mapping.ledger_id else None,
                 }
             )
 
@@ -1263,6 +1266,7 @@ class ManufacturingOutputYieldAPIView(_BaseManufacturingAPIView):
                 "net_production_cost_snapshot",
                 "material_variance_value_snapshot",
                 "standard_material_cost_snapshot",
+                "actual_material_cost_snapshot",
                 "actual_recovery_value_snapshot",
             )
         )

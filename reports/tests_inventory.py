@@ -335,6 +335,10 @@ class InventoryReportAPITests(APITestCase):
             description='Office machines',
             is_service=False,
         )
+        ProductGstRate.objects.filter(product=self.product, valid_to__isnull=True).update(
+            valid_to=date(2025, 1, 31),
+            isdefault=False,
+        )
         ProductGstRate.objects.create(
             product=self.product,
             hsn=alternate_hsn,
@@ -351,7 +355,10 @@ class InventoryReportAPITests(APITestCase):
         self.assertTrue(any(choice['value'] == 'fifo' for choice in data['choices']['valuation_method']))
         self.assertEqual(len(data['financial_years']), 1)
         self.assertEqual(len(data['categories']), 1)
-        self.assertEqual(len(data['hsns']), 1)
+        self.assertEqual(
+            sorted(hsn['id'] for hsn in data['hsns']),
+            sorted([self.hsn.id, alternate_hsn.id]),
+        )
         self.assertEqual(len(data['locations']), 1)
         self.assertIn('filter_relations', data)
         self.assertIn('product_category_hsn', data['filter_relations'])

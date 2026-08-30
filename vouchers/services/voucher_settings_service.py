@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
-from numbering.models import DocumentType
+from numbering.models import DocumentNumberSeries, DocumentType
 from numbering.services.document_number_service import DocumentNumberService
 from numbering.seeding import NumberingSeedService
 from vouchers.models.voucher_config import VoucherSettings, DEFAULT_VOUCHER_POLICY_CONTROLS
@@ -176,6 +176,23 @@ class VoucherSettingsService:
         doc_type_row = DocumentType.objects.filter(module="vouchers", doc_key=doc_key, is_active=True).only("id").first()
         if not doc_type_row:
             return {"enabled": False, "reason": f"DocumentType not found: vouchers/{doc_key}", "doc_type_id": None, "current_number": None}
+        if subentity_id is not None:
+            branch_series_exists = DocumentNumberSeries.objects.filter(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                doc_type_id=doc_type_row.id,
+                doc_code=doc_code,
+                is_active=True,
+            ).exists()
+            if not branch_series_exists:
+                cls.ensure_numbering_scope_for_type(
+                    entity_id=entity_id,
+                    entityfinid_id=entityfinid_id,
+                    subentity_id=subentity_id,
+                    voucher_type=voucher_type,
+                    doc_code=doc_code,
+                )
         try:
             res = DocumentNumberService.peek_preview(
                 entity_id=entity_id,

@@ -152,17 +152,15 @@ class VoucherNumberingRecoveryTests(TestCase):
         )
 
         self.assertTrue(payload["enabled"])
-        self.assertEqual(payload["current_number"], 1)
         bank_doc_type = DocumentType.objects.get(module="vouchers", doc_key="BANK_VOUCHER")
-        self.assertTrue(
-            DocumentNumberSeries.objects.filter(
-                entity=self.entity,
-                entityfinid=self.entityfin,
-                subentity=self.subentity,
-                doc_type=bank_doc_type,
-                doc_code="BV",
-            ).exists()
+        branch_series = DocumentNumberSeries.objects.get(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            doc_type=bank_doc_type,
+            doc_code="BV",
         )
+        self.assertEqual(payload["current_number"], branch_series.current_number)
 
     def test_confirm_voucher_auto_seeds_missing_branch_series_before_allocating_number(self):
         NumberingSeedService.seed_document(

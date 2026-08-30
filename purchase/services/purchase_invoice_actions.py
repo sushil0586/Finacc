@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from django.db import transaction
+from django.db.models import Max
 from django.db.models.deletion import ProtectedError
 from django.utils import timezone
 from django.apps import apps
@@ -41,6 +42,59 @@ class ActionResult:
 
 
 class PurchaseInvoiceActions:
+    @staticmethod
+    def _doc_number_exists_in_scope(header: PurchaseInvoiceHeader, doc_no: int) -> bool:
+        qs = PurchaseInvoiceHeader.objects.filter(
+            entity_id=header.entity_id,
+            entityfinid_id=header.entityfinid_id,
+            doc_type=header.doc_type,
+            doc_code=header.doc_code,
+            doc_no=doc_no,
+        ).exclude(pk=header.pk)
+        if header.subentity_id is None:
+            qs = qs.filter(subentity__isnull=True)
+        else:
+            qs = qs.filter(subentity_id=header.subentity_id)
+        return qs.exists()
+
+    @staticmethod
+    def _max_doc_number_in_scope(header: PurchaseInvoiceHeader) -> int:
+        qs = PurchaseInvoiceHeader.objects.filter(
+            entity_id=header.entity_id,
+            entityfinid_id=header.entityfinid_id,
+            doc_type=header.doc_type,
+            doc_code=header.doc_code,
+            doc_no__isnull=False,
+        ).exclude(pk=header.pk)
+        if header.subentity_id is None:
+            qs = qs.filter(subentity__isnull=True)
+        else:
+            qs = qs.filter(subentity_id=header.subentity_id)
+        return int(qs.aggregate(max_doc_no=Max("doc_no")).get("max_doc_no") or 0)
+
+    @staticmethod
+    def _sync_number_series_floor(header: PurchaseInvoiceHeader, doc_type_id: int) -> None:
+        max_doc_no = PurchaseInvoiceActions._max_doc_number_in_scope(header)
+        if max_doc_no <= 0:
+            return
+        series = DocumentNumberService._get_series(
+            entity_id=header.entity_id,
+            entityfinid_id=header.entityfinid_id,
+            subentity_id=header.subentity_id,
+            doc_type_id=doc_type_id,
+            doc_code=header.doc_code,
+            lock=True,
+        )
+        next_number = max_doc_no + 1
+        on_date = header.bill_date or timezone.localdate()
+        if int(series.current_number or 0) < next_number:
+            series.current_number = next_number
+        if DocumentNumberService._needs_reset(series, on_date):
+            # Existing posted documents are the source of truth in recovered live
+            # ledgers; do not let a stale reset marker rewind into duplicates.
+            series.last_reset_date = on_date
+        series.save(update_fields=["current_number", "last_reset_date", "updated_at"])
+
     @staticmethod
     def _has_posted_payment_for_rcm_itc(header: PurchaseInvoiceHeader) -> bool:
         open_item = getattr(header, "ap_open_item", None)
@@ -229,15 +283,23 @@ class PurchaseInvoiceActions:
             raise ValueError("doc_code is required for number allocation.")
 
         dt_id = PurchaseInvoiceActions._get_document_type_id_for_purchase(h.doc_code)
+        PurchaseInvoiceActions._sync_number_series_floor(h, dt_id)
 
-        allocated = DocumentNumberService.allocate_final(
-            entity_id=h.entity_id,
-            entityfinid_id=h.entityfinid_id,
-            subentity_id=h.subentity_id,
-            doc_type_id=dt_id,
-            doc_code=h.doc_code,
-            on_date=h.bill_date,
-        )
+        allocated = None
+        for _ in range(25):
+            candidate = DocumentNumberService.allocate_final(
+                entity_id=h.entity_id,
+                entityfinid_id=h.entityfinid_id,
+                subentity_id=h.subentity_id,
+                doc_type_id=dt_id,
+                doc_code=h.doc_code,
+                on_date=h.bill_date,
+            )
+            if not PurchaseInvoiceActions._doc_number_exists_in_scope(h, candidate.doc_no):
+                allocated = candidate
+                break
+        if allocated is None:
+            raise ValueError("Unable to allocate a unique purchase document number for the current scope.")
 
         h.doc_no = allocated.doc_no
         h.purchase_number = allocated.display_no

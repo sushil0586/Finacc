@@ -393,12 +393,33 @@ def _sum_tcs_allocation_rows(allocations, *, deposited_only: bool = False) -> De
     return q2(total)
 
 
+def _prefetched_related_rows(obj, related_name: str, *, sort_keys: tuple[str, ...] = ()):
+    related = getattr(obj, related_name, None)
+    if related is None:
+        return []
+    try:
+        rows = list(related.all())
+    except Exception:
+        try:
+            rows = list(related)
+        except Exception:
+            rows = []
+    if sort_keys:
+        def sort_value(row):
+            return tuple(getattr(row, key, None) or "" for key in sort_keys)
+        rows.sort(key=sort_value)
+    return rows
+
+
 def _tcs_computation_total_deposited(comp, *, deposited_only: bool = True) -> Decimal:
     total = Decimal("0.00")
-    for collection in getattr(comp, "collections", []).all():
+    for collection in _prefetched_related_rows(comp, "collections"):
         if getattr(collection, "status", None) == TcsCollection.Status.CANCELLED:
             continue
-        total += _sum_tcs_allocation_rows(collection.deposit_allocations.all(), deposited_only=deposited_only)
+        total += _sum_tcs_allocation_rows(
+            _prefetched_related_rows(collection, "deposit_allocations"),
+            deposited_only=deposited_only,
+        )
     return q2(total)
 
 
@@ -486,7 +507,7 @@ def _filing_readiness_errors(snapshot: dict) -> list[str]:
     return errors
 
 
-def _exclude_cancelled_documents(qs):
+def _exclude_cancelled_documents(qs, *, entity_id=None):
     """
     Exclude computations whose backing business document is cancelled.
     This keeps ledger reports aligned with active statutory exposure.
@@ -497,16 +518,14 @@ def _exclude_cancelled_documents(qs):
         return qs
 
     sales_doc_types = {"invoice", "credit_note", "debit_note"}
-    cancelled_sales_ids = list(
-        SalesInvoiceHeader.objects.filter(status=SalesInvoiceHeader.Status.CANCELLED).values_list("id", flat=True)
+    cancelled_sales_ids = SalesInvoiceHeader.objects.filter(status=SalesInvoiceHeader.Status.CANCELLED)
+    if entity_id not in (None, ""):
+        cancelled_sales_ids = cancelled_sales_ids.filter(entity_id=entity_id)
+    return qs.exclude(
+        module_name="sales",
+        document_type__in=sales_doc_types,
+        document_id__in=cancelled_sales_ids.values("id"),
     )
-    if cancelled_sales_ids:
-        qs = qs.exclude(
-            module_name="sales",
-            document_type__in=sales_doc_types,
-            document_id__in=cancelled_sales_ids,
-        )
-    return qs
 
 
 def _resolve_period_bounds(*, fy: str, quarter: str, from_date_raw: str | None, to_date_raw: str | None) -> tuple[date | None, date | None]:
@@ -2483,15 +2502,20 @@ class TcsReportFilingPackAPIView(APIView):
                 quarter=getattr(comp, "quarter", "") or "",
             )
 
-            comp_collections = list(comp.collections.all().order_by("collection_date", "id"))
+            comp_collections = _prefetched_related_rows(comp, "collections", sort_keys=("collection_date", "id"))
             if not comp_collections:
                 comp_collections = [None]
 
             comp_alloc_total = Decimal("0.00")
             comp_collected_total = Decimal("0.00")
-            for c in comp.collections.all():
+            for c in comp_collections:
+                if c is None:
+                    continue
                 comp_collected_total += q2(c.tcs_collected_amount or Decimal("0.00"))
-                comp_alloc_total += _sum_tcs_allocation_rows(c.deposit_allocations.all(), deposited_only=True)
+                comp_alloc_total += _sum_tcs_allocation_rows(
+                    _prefetched_related_rows(c, "deposit_allocations"),
+                    deposited_only=True,
+                )
 
             total_base += q2(comp.tcs_base_amount or Decimal("0.00"))
             total_tcs += q2(comp.tcs_amount or Decimal("0.00"))
@@ -2504,7 +2528,7 @@ class TcsReportFilingPackAPIView(APIView):
             section_totals[section_code]["total_tcs"] = q2(section_totals[section_code]["total_tcs"] + q2(comp.tcs_amount or Decimal("0.00")))
 
             for col in comp_collections:
-                allocations = list(col.deposit_allocations.all().select_related("deposit").order_by("id")) if col else [None]
+                allocations = _prefetched_related_rows(col, "deposit_allocations", sort_keys=("id",)) if col else [None]
                 if not allocations:
                     allocations = [None]
 
@@ -2898,6 +2922,14 @@ class TcsComplianceCenterCaPackExportAPIView(APIView):
                 cell.font = header_font
                 cell.alignment = Alignment(horizontal="center", vertical="center")
                 cell.border = thin_border
+            if ws.max_row > 2000:
+                # Large CA-pack sheets can carry full-quarter evidence. Avoid
+                # per-cell styling/autosize scans so export time scales safely.
+                for col_idx in range(1, ws.max_column + 1):
+                    ws.column_dimensions[get_column_letter(col_idx)].width = 18
+                ws.freeze_panes = f"A{header_row + 1}"
+                ws.auto_filter.ref = f"A{header_row}:{get_column_letter(ws.max_column)}{ws.max_row}"
+                return
             for row_idx in range(header_row + 1, ws.max_row + 1):
                 for cell in ws[row_idx]:
                     cell.border = thin_border

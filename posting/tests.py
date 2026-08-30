@@ -5,9 +5,12 @@ Covers: q2/q4 rounding, PostingService.post(), balance assertions, re-posting,
 """
 from datetime import date, datetime
 from decimal import Decimal
+from io import StringIO
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -15,7 +18,7 @@ from rest_framework.test import APITestCase
 
 from entity.models import Entity, EntityBankAccountV2, EntityFinancialYear, EntityOwnershipV2, EntityTaxProfile, Godown, GstRegistrationType, SubEntity, UnitType
 from financial.models import Ledger, account, accountHead, accounttype
-from posting.models import Entry, EntryStatus, EntityStaticAccountMap, JournalLine, PostingBatch, StaticAccount, StaticAccountGroup
+from posting.models import Entry, EntryStatus, EntityStaticAccountMap, JournalLine, PostingBatch, StaticAccount, StaticAccountGroup, TxnType
 from posting.adapters.account_opening import AccountOpeningPostingAdapter
 from posting.adapters.year_opening import YearOpeningPostingAdapter
 from posting.common.static_accounts import StaticAccountCodes
@@ -30,6 +33,8 @@ from posting.services.posting_service import (
     q2,
     q4,
 )
+from posting.services.no_head_audit import audit_no_head_postings
+from posting.services.manufacturing_static_accounts import classify_manufacturing_static_account_heads
 from rbac.models import Permission, Role, RolePermission, UserRoleAssignment
 
 User = get_user_model()
@@ -356,6 +361,256 @@ class RePostingTests(PostingServiceBaseTest):
             ).order_by("revision").values_list("revision", flat=True)
         )
         self.assertEqual(revisions, [1, 2])
+
+
+class NoHeadPostingAuditTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user(
+            username="no-head-audit-user",
+            email="no-head-audit-user@example.com",
+            password="pass@12345",
+        )
+        cls.entity = Entity.objects.create(entityname="No Head Audit Co")
+        cls.fin_year = EntityFinancialYear.objects.create(
+            entity=cls.entity,
+            desc="FY 2026-27",
+            year_code="2026-27",
+            finstartyear=timezone.make_aware(datetime(2026, 4, 1, 0, 0, 0)),
+            finendyear=timezone.make_aware(datetime(2027, 3, 31, 23, 59, 59)),
+            isactive=True,
+            createdby=cls.user,
+        )
+        cls.subentity = SubEntity.objects.create(
+            entity=cls.entity,
+            subentityname="Head Office",
+        )
+        cls.sale_head = accountHead.objects.create(
+            entity=cls.entity,
+            name="Sale",
+            code=9901,
+            drcreffect="Credit",
+            createdby=cls.user,
+        )
+        cls.good_ledger = Ledger.objects.create(
+            entity=cls.entity,
+            ledger_code=9901,
+            name="Sales Default",
+            accounthead=cls.sale_head,
+            createdby=cls.user,
+        )
+        cls.good_account = account.objects.create(
+            entity=cls.entity,
+            accountname="Sales Default",
+            ledger=cls.good_ledger,
+            createdby=cls.user,
+        )
+        cls.bad_ledger = Ledger.objects.create(
+            entity=cls.entity,
+            ledger_code=9902,
+            name="Legacy Suspense",
+            createdby=cls.user,
+        )
+        cls.bad_account = account.objects.create(
+            entity=cls.entity,
+            accountname="Legacy Suspense",
+            ledger=cls.bad_ledger,
+            createdby=cls.user,
+        )
+
+        cls.posting_service = PostingService(
+            entity_id=cls.entity.id,
+            entityfin_id=cls.fin_year.id,
+            subentity_id=cls.subentity.id,
+            user_id=cls.user.id,
+        )
+
+    def test_audit_finds_account_backed_ledger_without_report_head(self):
+        self.posting_service.post(
+            txn_type=TxnType.SALES,
+            txn_id=7001,
+            voucher_no="SI-7001",
+            voucher_date=date(2026, 4, 5),
+            posting_date=date(2026, 4, 5),
+            jl_inputs=[
+                JLInput(account_id=self.bad_account.id, drcr=True, amount=Decimal("100.00"), description="Bad row"),
+                JLInput(account_id=self.good_account.id, drcr=False, amount=Decimal("100.00"), description="Good row"),
+            ],
+            use_advisory_lock=False,
+        )
+
+        issues = audit_no_head_postings(
+            entity_id=self.entity.id,
+            entityfin_id=self.fin_year.id,
+            subentity_id=self.subentity.id,
+        )
+
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0].module, "sales")
+        self.assertEqual(issues[0].txn_type, TxnType.SALES)
+        self.assertEqual(issues[0].ledger_id, self.bad_ledger.id)
+        self.assertEqual(issues[0].account_id, self.bad_account.id)
+        self.assertEqual(issues[0].row_count, 1)
+        self.assertEqual(issues[0].debit, Decimal("100.00"))
+        self.assertEqual(issues[0].credit, Decimal("0.00"))
+        self.assertEqual(issues[0].sample_txn_ids, [7001])
+
+    def test_audit_command_passes_when_all_account_ledgers_have_report_heads(self):
+        self.posting_service.post(
+            txn_type=TxnType.SALES,
+            txn_id=7002,
+            voucher_no="SI-7002",
+            voucher_date=date(2026, 4, 6),
+            posting_date=date(2026, 4, 6),
+            jl_inputs=[
+                JLInput(account_id=self.good_account.id, drcr=True, amount=Decimal("100.00"), description="Good debit"),
+                JLInput(account_id=self.good_account.id, drcr=False, amount=Decimal("100.00"), description="Good credit"),
+            ],
+            use_advisory_lock=False,
+        )
+
+        stdout = StringIO()
+        call_command(
+            "audit_no_head_postings",
+            entity_id=self.entity.id,
+            entityfin_id=self.fin_year.id,
+            subentity_id=self.subentity.id,
+            stdout=stdout,
+        )
+
+        self.assertIn("No no-head account-backed posting rows found", stdout.getvalue())
+
+    def test_audit_command_can_fail_release_check_when_issues_exist(self):
+        self.posting_service.post(
+            txn_type=TxnType.PAYROLL,
+            txn_id=7003,
+            voucher_no="PRL-7003",
+            voucher_date=date(2026, 4, 7),
+            posting_date=date(2026, 4, 7),
+            jl_inputs=[
+                JLInput(account_id=self.bad_account.id, drcr=True, amount=Decimal("250.00"), description="Bad payroll"),
+                JLInput(account_id=self.good_account.id, drcr=False, amount=Decimal("250.00"), description="Good row"),
+            ],
+            use_advisory_lock=False,
+        )
+
+        with self.assertRaisesMessage(CommandError, "No-head posting audit failed"):
+            call_command(
+                "audit_no_head_postings",
+                entity_id=self.entity.id,
+                entityfin_id=self.fin_year.id,
+                subentity_id=self.subentity.id,
+                fail_on_issues=True,
+                stdout=StringIO(),
+            )
+
+
+class ManufacturingStaticAccountClassificationTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user(
+            username="manufacturing-classification-user",
+            email="manufacturing-classification-user@example.com",
+            password="pass@12345",
+        )
+        cls.entity = Entity.objects.create(entityname="Manufacturing Classification Co", createdby=cls.user)
+        cls.static_accounts = {}
+        cls.accounts = {}
+        cls.ledgers = {}
+        for code in [
+            StaticAccountCodes.MANUFACTURING_WIP,
+            StaticAccountCodes.MANUFACTURING_CONSUMPTION,
+            StaticAccountCodes.MANUFACTURING_OVERHEAD_ABSORPTION,
+            StaticAccountCodes.MANUFACTURING_FINISHED_GOODS,
+            StaticAccountCodes.MANUFACTURING_MATERIAL_VARIANCE,
+            StaticAccountCodes.MANUFACTURING_YIELD_VARIANCE,
+            StaticAccountCodes.MANUFACTURING_ADDITIONAL_COST_EXPENSE,
+        ]:
+            static_account, _ = StaticAccount.objects.get_or_create(
+                code=code,
+                defaults={
+                    "name": code.replace("_", " ").title(),
+                    "group": StaticAccountGroup.MANUFACTURING,
+                    "is_active": True,
+                },
+            )
+            acc = account.objects.create(
+                entity=cls.entity,
+                accountname=static_account.name,
+                createdby=cls.user,
+            )
+            ledger = Ledger.objects.create(
+                entity=cls.entity,
+                ledger_code=9500 + len(cls.ledgers),
+                name=static_account.name,
+                createdby=cls.user,
+            )
+            acc.ledger = ledger
+            acc.save(update_fields=["ledger"])
+            EntityStaticAccountMap.objects.create(
+                entity=cls.entity,
+                static_account=static_account,
+                account=acc,
+                ledger=ledger,
+                is_active=True,
+                createdby=cls.user,
+            )
+            cls.static_accounts[code] = static_account
+            cls.accounts[code] = acc
+            cls.ledgers[code] = ledger
+
+    def test_classification_attaches_expected_report_heads_to_manufacturing_ledgers(self):
+        summary = classify_manufacturing_static_account_heads(entity_id=self.entity.id, apply_changes=True)
+
+        self.assertEqual(summary["ledgers_updated"], 7)
+        wip = Ledger.objects.get(pk=self.ledgers[StaticAccountCodes.MANUFACTURING_WIP].id)
+        finished_goods = Ledger.objects.get(pk=self.ledgers[StaticAccountCodes.MANUFACTURING_FINISHED_GOODS].id)
+        consumption = Ledger.objects.get(pk=self.ledgers[StaticAccountCodes.MANUFACTURING_CONSUMPTION].id)
+        overhead = Ledger.objects.get(pk=self.ledgers[StaticAccountCodes.MANUFACTURING_OVERHEAD_ABSORPTION].id)
+        material_variance = Ledger.objects.get(pk=self.ledgers[StaticAccountCodes.MANUFACTURING_MATERIAL_VARIANCE].id)
+        yield_variance = Ledger.objects.get(pk=self.ledgers[StaticAccountCodes.MANUFACTURING_YIELD_VARIANCE].id)
+        additional_cost = Ledger.objects.get(pk=self.ledgers[StaticAccountCodes.MANUFACTURING_ADDITIONAL_COST_EXPENSE].id)
+
+        self.assertEqual(wip.accounthead.name, "Manufacturing WIP Control")
+        self.assertEqual(wip.accounthead.detailsingroup, 3)
+        self.assertEqual(wip.accounttype.accounttypename, "Current Assets")
+        self.assertEqual(finished_goods.accounthead.detailsingroup, 3)
+        self.assertEqual(finished_goods.accounttype.accounttypename, "Current Assets")
+        self.assertEqual(consumption.accounthead.detailsingroup, 1)
+        self.assertEqual(consumption.accounttype.accounttypename, "Direct Expenses")
+        self.assertEqual(overhead.accounthead.detailsingroup, 1)
+        self.assertEqual(overhead.accounttype.accounttypename, "Direct Income")
+        self.assertEqual(material_variance.accounthead.detailsingroup, 1)
+        self.assertEqual(yield_variance.accounthead.detailsingroup, 1)
+        self.assertEqual(additional_cost.accounthead.detailsingroup, 1)
+
+    def test_classified_manufacturing_postings_pass_no_head_audit(self):
+        classify_manufacturing_static_account_heads(entity_id=self.entity.id, apply_changes=True)
+        service = PostingService(entity_id=self.entity.id, entityfin_id=None, subentity_id=None, user_id=self.user.id)
+        service.post(
+            txn_type=TxnType.MANUFACTURING_WORK_ORDER,
+            txn_id=8001,
+            voucher_no="MWO-8001",
+            voucher_date=date(2026, 4, 8),
+            posting_date=date(2026, 4, 8),
+            jl_inputs=[
+                JLInput(account_id=self.accounts[StaticAccountCodes.MANUFACTURING_WIP].id, drcr=True, amount=Decimal("100.00")),
+                JLInput(account_id=self.accounts[StaticAccountCodes.MANUFACTURING_CONSUMPTION].id, drcr=False, amount=Decimal("100.00")),
+            ],
+            use_advisory_lock=False,
+        )
+
+        issues = audit_no_head_postings(entity_id=self.entity.id)
+
+        self.assertEqual(issues, [])
+
+    def test_classification_command_reports_applied_summary(self):
+        stdout = StringIO()
+        call_command("classify_manufacturing_static_accounts", entity_id=self.entity.id, apply=True, stdout=stdout)
+
+        output = stdout.getvalue()
+        self.assertIn("APPLIED manufacturing static-account classification", output)
+        self.assertIn("ledgers_updated=7", output)
 
 
 class FinancialYearLockTests(PostingServiceBaseTest):

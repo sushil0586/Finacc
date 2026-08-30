@@ -58,6 +58,12 @@ class PayrollPostingFinalizationTests(TestCase):
 
         self.assertTrue(preview["validation"]["is_valid"])
         self.assertEqual(preview["totals"]["debit_total"], preview["totals"]["credit_total"])
+        payable_credit = sum(
+            Decimal(row["amount"])
+            for row in preview["journal_rows"]
+            if row["entry_side"] == "CREDIT" and row["category"] in {"salary_payable", "reimbursement_payable"}
+        )
+        self.assertEqual(payable_credit, run.net_pay_amount)
         categories = {row["category"] for row in preview["journal_rows"]}
         self.assertIn("expense", categories)
         self.assertIn("salary_payable", categories)

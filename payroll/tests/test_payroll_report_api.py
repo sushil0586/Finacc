@@ -90,6 +90,13 @@ class PayrollReportApiTests(TestCase):
             posting_behavior=PayrollComponent.PostingBehavior.EMPLOYEE_LIABILITY,
             semantic_code=PayrollComponent.SemanticCode.PT,
         )
+        self.tds_component = PayrollFactory.component(
+            entity=self.setup["entity"],
+            code="TDS",
+            component_type=PayrollComponent.ComponentType.DEDUCTION,
+            posting_behavior=PayrollComponent.PostingBehavior.EMPLOYEE_LIABILITY,
+            semantic_code=PayrollComponent.SemanticCode.TDS,
+        )
         self.lwf_employee_component = PayrollFactory.component(
             entity=self.setup["entity"],
             code="LWF_EMPLOYEE",
@@ -110,8 +117,9 @@ class PayrollReportApiTests(TestCase):
         PayrollFactory.payroll_run_component(payroll_run_employee=self.employee_row, component=self.pf_employee_component, amount="120.00", sequence=30)
         PayrollFactory.payroll_run_component(payroll_run_employee=self.employee_row, component=self.pf_employer_component, amount="120.00", sequence=40)
         PayrollFactory.payroll_run_component(payroll_run_employee=self.employee_row, component=self.pt_component, amount="40.00", sequence=50)
-        PayrollFactory.payroll_run_component(payroll_run_employee=self.employee_row, component=self.lwf_employee_component, amount="10.00", sequence=60)
-        PayrollFactory.payroll_run_component(payroll_run_employee=self.employee_row, component=self.lwf_employer_component, amount="10.00", sequence=70)
+        PayrollFactory.payroll_run_component(payroll_run_employee=self.employee_row, component=self.tds_component, amount="80.00", sequence=60)
+        PayrollFactory.payroll_run_component(payroll_run_employee=self.employee_row, component=self.lwf_employee_component, amount="10.00", sequence=70)
+        PayrollFactory.payroll_run_component(payroll_run_employee=self.employee_row, component=self.lwf_employer_component, amount="10.00", sequence=80)
 
         attendance_summary = self.setup["attendance_summary"]
         attendance_summary.attendance_days = Decimal("26.00")
@@ -201,6 +209,35 @@ class PayrollReportApiTests(TestCase):
         self.assertEqual(payload["rows"][0]["employee_amount"], "120.00")
         self.assertEqual(payload["rows"][0]["employer_amount"], "120.00")
         self.assertEqual(payload["totals"]["total_amount"], "240.00")
+
+    def test_tds_summary_payload_returns_income_tax_deductions(self):
+        response = self.client.get(
+            f"/api/payroll/reports/tds-summary/?entity={self.entity_id}&status=POSTED"
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        payload = response.json()
+        self.assertEqual(payload["report_type"], "tds_summary")
+        self.assertEqual(payload["title"], "TDS Summary")
+        self.assertEqual(payload["row_count"], 1)
+        self.assertEqual(payload["rows"][0]["employee_amount"], "80.00")
+        self.assertEqual(payload["rows"][0]["employer_amount"], "0.00")
+        self.assertEqual(payload["totals"]["employee_amount"], "80.00")
+        self.assertEqual(payload["totals"]["total_amount"], "80.00")
+        self.assertEqual(payload["traceability"]["source_of_truth"], "Backend payroll snapshots")
+
+    def test_tds_summary_csv_export_returns_report_columns(self):
+        report_response = self.client.get(
+            f"/api/payroll/reports/tds-summary/?entity={self.entity_id}&status=POSTED"
+        )
+        expected_headers = [column["label"] for column in report_response.json()["columns"]]
+        response = self.client.get(
+            f"/api/payroll/reports/tds-summary/export/?entity={self.entity_id}&status=POSTED&format=csv"
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response["Content-Type"], "text/csv; charset=utf-8")
+        self.assertIn("tds_summary", response["Content-Disposition"])
+        header_row = response.content.decode("utf-8").splitlines()[0]
+        self.assertEqual(header_row.split(","), expected_headers)
 
     def test_lwf_summary_honors_status_filter(self):
         response = self.client.get(

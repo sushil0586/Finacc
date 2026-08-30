@@ -66,6 +66,7 @@ class PayrollComplianceReportService:
     REPORT_PF_SUMMARY = "pf_summary"
     REPORT_ESI_SUMMARY = "esi_summary"
     REPORT_PT_SUMMARY = "pt_summary"
+    REPORT_TDS_SUMMARY = "tds_summary"
     REPORT_LWF_SUMMARY = "lwf_summary"
     REPORT_FNF_REGISTER = "fnf_settlement_register"
 
@@ -84,6 +85,11 @@ class PayrollComplianceReportService:
             "employee_codes": {"PT"},
             "employer_codes": set(),
             "label": "PT Summary",
+        },
+        REPORT_TDS_SUMMARY: {
+            "employee_codes": {"TDS"},
+            "employer_codes": set(),
+            "label": "TDS Summary",
         },
         REPORT_LWF_SUMMARY: {
             "employee_codes": {"LWF_EMPLOYEE"},

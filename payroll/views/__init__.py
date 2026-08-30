@@ -68,6 +68,8 @@ from payroll.views.payroll_report_views import (
     PTSummaryReportExportAPIView,
     SalarySheetReportAPIView,
     SalarySheetReportExportAPIView,
+    TDSSummaryReportAPIView,
+    TDSSummaryReportExportAPIView,
 )
 from payroll.views.payroll_run_views import (
     PayrollRunApproveAPIView,
@@ -205,6 +207,8 @@ __all__ = [
     "PTSummaryReportExportAPIView",
     "SalarySheetReportAPIView",
     "SalarySheetReportExportAPIView",
+    "TDSSummaryReportAPIView",
+    "TDSSummaryReportExportAPIView",
     "ESISummaryReportAPIView",
     "ESISummaryReportExportAPIView",
     "FnFSettlementRegisterReportAPIView",

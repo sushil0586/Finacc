@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from io import StringIO
 from uuid import uuid4
 
+from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.db.models import Sum
 from django.test import override_settings
 from django.urls import reverse
@@ -18,8 +21,15 @@ from inventory_ops.services import InventoryAdjustmentService
 from numbering.models import DocumentNumberSeries
 from posting.common.static_accounts import StaticAccountCodes
 from posting.models import EntityStaticAccountMap, InventoryMove, JournalLine, StaticAccount, TxnType
+from posting.services.static_accounts import StaticAccountService
 from rbac.models import Permission, Role, RolePermission, UserRoleAssignment
-from manufacturing.models import DEFAULT_MANUFACTURING_ADDITIONAL_COST_TYPES, ManufacturingOperationStatus, ManufacturingSettings
+from manufacturing.models import (
+    DEFAULT_MANUFACTURING_ADDITIONAL_COST_TYPES,
+    ManufacturingOperationStatus,
+    ManufacturingSettings,
+    ManufacturingWorkOrder,
+)
+from manufacturing.report_correctness_audit import audit_manufacturing_report_correctness
 
 
 @override_settings(ROOT_URLCONF="FA.urls", AUTH_PASSWORD_VALIDATORS=[])
@@ -243,6 +253,7 @@ class ManufacturingPhaseOneTests(APITestCase):
                 ledger=ledger,
                 createdby=self.user,
             )
+        StaticAccountService.invalidate(self.entity.id)
 
     def _bom_payload(self):
         return {
@@ -1532,11 +1543,275 @@ class ManufacturingPhaseOneTests(APITestCase):
         self.assertEqual(payload["overview"]["posted_count"], 1)
         self.assertTrue(payload["setup"]["is_ready"])
         self.assertEqual(payload["setup"]["mapped_count"], 4)
+        for row in payload["setup"]["rows"]:
+            self.assertTrue(row["account_name"])
+            self.assertTrue(row["ledger_name"])
         self.assertEqual(payload["accounting"]["output_valuation_basis"], "actual_cost")
         self.assertFalse(payload["accounting"]["uses_variance_ledgers"])
         self.assertEqual(len(payload["recent_work_orders"]), 1)
         self.assertGreaterEqual(len(payload["top_materials"]), 1)
         self.assertGreaterEqual(len(payload["top_outputs"]), 1)
+
+    def test_manufacturing_report_correctness_audit_reconciles_posted_work_order(self):
+        bom = self.client.post(reverse("manufacturing:manufacturing-boms"), self._bom_payload(), format="json").json()
+        payload = self._work_order_payload(bom["id"])
+        payload["additional_costs"] = [
+            {"cost_type": "LABOUR", "amount": "30.0000", "note": "Packing labour"},
+            {"cost_type": "ELECTRICITY", "amount": "20.0000", "note": "Machine power"},
+        ]
+        work_order_resp = self.client.post(reverse("manufacturing:manufacturing-work-orders"), payload, format="json")
+        self.assertEqual(work_order_resp.status_code, 201)
+        work_order_id = work_order_resp.json()["work_order"]["id"]
+
+        post_resp = self.client.post(reverse("manufacturing:manufacturing-work-order-post", kwargs={"pk": work_order_id}), {}, format="json")
+        self.assertEqual(post_resp.status_code, 200)
+        posted = post_resp.json()["work_order"]
+
+        issues = audit_manufacturing_report_correctness(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            from_date="2025-04-01",
+            to_date="2026-03-31",
+        )
+        self.assertEqual(issues, [])
+
+        report_scope = {"entity": self.entity.id, "entityfinid": self.entityfin.id, "subentity": self.subentity.id}
+        material_report = self.client.get(reverse("manufacturing:manufacturing-material-consumption"), report_scope).json()
+        output_report = self.client.get(reverse("manufacturing:manufacturing-output-yield"), report_scope).json()
+        posting_report = self.client.get(reverse("manufacturing:manufacturing-posting-audit"), report_scope).json()
+        wip_report = self.client.get(reverse("manufacturing:manufacturing-wip-cost-summary"), report_scope).json()
+
+        material_rows = [row for row in material_report["rows"] if row["work_order_id"] == work_order_id]
+        output_rows = [row for row in output_report["rows"] if row["id"] == work_order_id]
+        output_lines = [row for row in output_report["output_lines"] if row["work_order_id"] == work_order_id]
+        posting_rows = [row for row in posting_report["rows"] if row["id"] == work_order_id]
+        wip_rows = [row for row in wip_report["rows"] if row["id"] == work_order_id]
+
+        self.assertEqual(len(material_rows), len(posted["materials"]))
+        self.assertEqual(len(output_rows), 1)
+        self.assertEqual(len(output_lines), len(posted["outputs"]))
+        self.assertEqual(len(posting_rows), 1)
+        self.assertEqual(len(wip_rows), 1)
+        self.assertEqual(Decimal(str(sum(row["line_value"] for row in material_rows))).quantize(Decimal("0.01")), Decimal("470.00"))
+        self.assertEqual(Decimal(str(output_rows[0]["net_production_cost_snapshot"])).quantize(Decimal("0.01")), Decimal("520.00"))
+        self.assertEqual(Decimal(str(wip_rows[0]["net_production_cost_snapshot"])).quantize(Decimal("0.01")), Decimal("520.00"))
+        self.assertEqual(posting_rows[0]["posting_entry_id"], posted["posting_entry_id"])
+
+    def test_manufacturing_report_correctness_command_fails_on_snapshot_drift(self):
+        bom = self.client.post(reverse("manufacturing:manufacturing-boms"), self._bom_payload(), format="json").json()
+        work_order_resp = self.client.post(
+            reverse("manufacturing:manufacturing-work-orders"),
+            self._work_order_payload(bom["id"]),
+            format="json",
+        )
+        self.assertEqual(work_order_resp.status_code, 201)
+        work_order_id = work_order_resp.json()["work_order"]["id"]
+        post_resp = self.client.post(reverse("manufacturing:manufacturing-work-order-post", kwargs={"pk": work_order_id}), {}, format="json")
+        self.assertEqual(post_resp.status_code, 200)
+
+        work_order = ManufacturingWorkOrder.objects.get(id=work_order_id)
+        work_order.net_production_cost_snapshot = Decimal("999.0000")
+        work_order.save(update_fields=["net_production_cost_snapshot"])
+
+        stdout = StringIO()
+        with self.assertRaises(CommandError):
+            call_command(
+                "audit_manufacturing_report_correctness",
+                entity_id=self.entity.id,
+                entityfin_id=self.entityfin.id,
+                subentity_id=self.subentity.id,
+                fail_on_issues=True,
+                stdout=stdout,
+            )
+        self.assertIn("snapshot.net_production_cost_snapshot", stdout.getvalue())
+
+    def test_manufacturing_report_correctness_audit_reconciles_byproduct_recovery_reports(self):
+        bom = self.client.post(reverse("manufacturing:manufacturing-boms"), self._bom_payload(), format="json").json()
+        payload = self._work_order_payload(bom["id"])
+        payload["outputs"] = [
+            {
+                "finished_product": self.finished_pack.id,
+                "output_type": "MAIN",
+                "planned_qty": "10.0000",
+                "actual_qty": "10.0000",
+                "batch_number": "FG-APR-BYP-001",
+                "expiry_date": "2026-04-30",
+            },
+            {
+                "finished_product": self.sugar_dust.id,
+                "output_type": "SALEABLE_SCRAP",
+                "planned_qty": "2.0000",
+                "actual_qty": "2.0000",
+                "estimated_recovery_unit_value": "5.0000",
+                "note": "Collected saleable dust",
+            },
+        ]
+        work_order_resp = self.client.post(reverse("manufacturing:manufacturing-work-orders"), payload, format="json")
+        self.assertEqual(work_order_resp.status_code, 201)
+        work_order_id = work_order_resp.json()["work_order"]["id"]
+
+        post_resp = self.client.post(reverse("manufacturing:manufacturing-work-order-post", kwargs={"pk": work_order_id}), {}, format="json")
+        self.assertEqual(post_resp.status_code, 200)
+        posted = post_resp.json()["work_order"]
+
+        issues = audit_manufacturing_report_correctness(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            from_date="2025-04-01",
+            to_date="2026-03-31",
+        )
+        self.assertEqual(issues, [])
+
+        report_scope = {"entity": self.entity.id, "entityfinid": self.entityfin.id, "subentity": self.subentity.id}
+        material_report = self.client.get(reverse("manufacturing:manufacturing-material-consumption"), report_scope).json()
+        output_report = self.client.get(reverse("manufacturing:manufacturing-output-yield"), report_scope).json()
+        posting_report = self.client.get(reverse("manufacturing:manufacturing-posting-audit"), report_scope).json()
+        wip_report = self.client.get(reverse("manufacturing:manufacturing-wip-cost-summary"), report_scope).json()
+
+        material_rows = [row for row in material_report["rows"] if row["work_order_id"] == work_order_id]
+        output_row = next(row for row in output_report["rows"] if row["id"] == work_order_id)
+        output_lines = [row for row in output_report["output_lines"] if row["work_order_id"] == work_order_id]
+        posting_row = next(row for row in posting_report["rows"] if row["id"] == work_order_id)
+        wip_row = next(row for row in wip_report["rows"] if row["id"] == work_order_id)
+
+        material_total = Decimal(str(sum(row["line_value"] for row in material_rows))).quantize(Decimal("0.01"))
+        output_total = Decimal(str(sum(Decimal(str(row["actual_qty"])) * Decimal(str(row["unit_cost"])) for row in output_lines))).quantize(Decimal("0.01"))
+        main_output = next(row for row in posted["outputs"] if row["output_type"] == "MAIN")
+        byproduct_output = next(row for row in posted["outputs"] if row["output_type"] == "SALEABLE_SCRAP")
+
+        self.assertEqual(material_total, Decimal("470.00"))
+        self.assertEqual(output_total, Decimal("470.00"))
+        self.assertEqual(Decimal(str(output_row["actual_recovery_value_snapshot"])).quantize(Decimal("0.01")), Decimal("10.00"))
+        self.assertEqual(Decimal(str(output_row["actual_material_cost_snapshot"])).quantize(Decimal("0.01")), Decimal("470.00"))
+        self.assertEqual(Decimal(str(wip_row["actual_recovery_value_snapshot"])).quantize(Decimal("0.01")), Decimal("10.00"))
+        self.assertEqual(Decimal(str(output_row["net_production_cost_snapshot"])).quantize(Decimal("0.01")), Decimal("460.00"))
+        self.assertEqual(Decimal(str(wip_row["net_production_cost_snapshot"])).quantize(Decimal("0.01")), Decimal("460.00"))
+        self.assertEqual(Decimal(str(posting_row["net_production_cost_snapshot"])).quantize(Decimal("0.01")), Decimal("460.00"))
+        self.assertEqual(Decimal(str(main_output["unit_cost"])).quantize(Decimal("0.01")), Decimal("46.00"))
+        self.assertEqual(Decimal(str(byproduct_output["unit_cost"])).quantize(Decimal("0.01")), Decimal("5.00"))
+
+    def test_manufacturing_report_correctness_audit_reconciles_additional_cost_split_reports(self):
+        bom = self.client.post(reverse("manufacturing:manufacturing-boms"), self._bom_payload(), format="json").json()
+        settings_obj, _ = ManufacturingSettings.objects.get_or_create(entity=self.entity, subentity=self.subentity)
+        settings_obj.policy_controls = {
+            **(settings_obj.policy_controls or {}),
+            "capitalized_additional_cost_types": ["LABOUR"],
+        }
+        settings_obj.save(update_fields=["policy_controls"])
+
+        payload = self._work_order_payload(bom["id"])
+        payload["additional_costs"] = [
+            {"cost_type": "LABOUR", "amount": "30.0000", "note": "Packing labour"},
+            {"cost_type": "ELECTRICITY", "amount": "20.0000", "note": "Utility charge"},
+        ]
+        work_order_resp = self.client.post(reverse("manufacturing:manufacturing-work-orders"), payload, format="json")
+        self.assertEqual(work_order_resp.status_code, 201)
+        work_order_id = work_order_resp.json()["work_order"]["id"]
+
+        post_resp = self.client.post(reverse("manufacturing:manufacturing-work-order-post", kwargs={"pk": work_order_id}), {}, format="json")
+        self.assertEqual(post_resp.status_code, 200)
+        posted = post_resp.json()["work_order"]
+
+        issues = audit_manufacturing_report_correctness(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            from_date="2025-04-01",
+            to_date="2026-03-31",
+        )
+        self.assertEqual(issues, [])
+
+        report_scope = {"entity": self.entity.id, "entityfinid": self.entityfin.id, "subentity": self.subentity.id}
+        material_report = self.client.get(reverse("manufacturing:manufacturing-material-consumption"), report_scope).json()
+        output_report = self.client.get(reverse("manufacturing:manufacturing-output-yield"), report_scope).json()
+        posting_report = self.client.get(reverse("manufacturing:manufacturing-posting-audit"), report_scope).json()
+        wip_report = self.client.get(reverse("manufacturing:manufacturing-wip-cost-summary"), report_scope).json()
+
+        material_rows = [row for row in material_report["rows"] if row["work_order_id"] == work_order_id]
+        output_row = next(row for row in output_report["rows"] if row["id"] == work_order_id)
+        output_lines = [row for row in output_report["output_lines"] if row["work_order_id"] == work_order_id]
+        posting_row = next(row for row in posting_report["rows"] if row["id"] == work_order_id)
+        wip_row = next(row for row in wip_report["rows"] if row["id"] == work_order_id)
+
+        material_total = Decimal(str(sum(row["line_value"] for row in material_rows))).quantize(Decimal("0.01"))
+        output_total = Decimal(str(sum(Decimal(str(row["actual_qty"])) * Decimal(str(row["unit_cost"])) for row in output_lines))).quantize(Decimal("0.01"))
+        main_output = next(row for row in posted["outputs"] if row["output_type"] == "MAIN")
+
+        self.assertEqual(material_total, Decimal("470.00"))
+        self.assertEqual(output_total, Decimal("500.00"))
+        self.assertEqual(Decimal(str(output_row["net_production_cost_snapshot"])).quantize(Decimal("0.01")), Decimal("500.00"))
+        self.assertEqual(Decimal(str(output_row["actual_material_cost_snapshot"])).quantize(Decimal("0.01")), Decimal("470.00"))
+        self.assertEqual(Decimal(str(wip_row["net_production_cost_snapshot"])).quantize(Decimal("0.01")), Decimal("500.00"))
+        self.assertEqual(Decimal(str(posting_row["net_production_cost_snapshot"])).quantize(Decimal("0.01")), Decimal("500.00"))
+        self.assertEqual(Decimal(str(wip_row["total_additional_cost_snapshot"])).quantize(Decimal("0.01")), Decimal("50.00"))
+        self.assertEqual(Decimal(str(wip_row["capitalized_additional_cost_snapshot"])).quantize(Decimal("0.01")), Decimal("30.00"))
+        self.assertEqual(Decimal(str(wip_row["expensed_additional_cost_snapshot"])).quantize(Decimal("0.01")), Decimal("20.00"))
+        self.assertEqual(Decimal(str(posting_row["total_additional_cost_snapshot"])).quantize(Decimal("0.01")), Decimal("50.00"))
+        self.assertEqual(Decimal(str(main_output["unit_cost"])).quantize(Decimal("0.01")), Decimal("50.00"))
+
+        entry_id = ManufacturingWorkOrder.objects.get(id=work_order_id).posting_entry_id
+        expense_account_id = EntityStaticAccountMap.objects.get(
+            entity=self.entity,
+            static_account__code=StaticAccountCodes.MANUFACTURING_ADDITIONAL_COST_EXPENSE,
+        ).account_id
+        expense_debit = (
+            JournalLine.objects
+            .filter(entry_id=entry_id, drcr=True, account_id=expense_account_id)
+            .aggregate(total=Sum("amount"))
+            .get("total")
+        )
+        self.assertEqual(Decimal(str(expense_debit)).quantize(Decimal("0.01")), Decimal("20.00"))
+
+    def test_manufacturing_report_correctness_audit_respects_posted_standard_cost_journals_after_policy_change(self):
+        bom = self.client.post(reverse("manufacturing:manufacturing-boms"), self._bom_payload(), format="json").json()
+        settings_obj, _ = ManufacturingSettings.objects.get_or_create(entity=self.entity, subentity=self.subentity)
+        settings_obj.policy_controls = {
+            **(settings_obj.policy_controls or {}),
+            "output_valuation_basis": "standard_cost",
+        }
+        settings_obj.save(update_fields=["policy_controls"])
+
+        payload = self._work_order_payload(bom["id"])
+        payload["outputs"][0]["actual_qty"] = "9.8000"
+        work_order_resp = self.client.post(reverse("manufacturing:manufacturing-work-orders"), payload, format="json")
+        self.assertEqual(work_order_resp.status_code, 201)
+        work_order_id = work_order_resp.json()["work_order"]["id"]
+
+        post_resp = self.client.post(reverse("manufacturing:manufacturing-work-order-post", kwargs={"pk": work_order_id}), {}, format="json")
+        self.assertEqual(post_resp.status_code, 200)
+
+        settings_obj.policy_controls = {
+            **(settings_obj.policy_controls or {}),
+            "output_valuation_basis": "actual_cost",
+        }
+        settings_obj.save(update_fields=["policy_controls"])
+
+        entry_id = ManufacturingWorkOrder.objects.get(id=work_order_id).posting_entry_id
+        self.assertIsNotNone(entry_id)
+        finished_goods_account_id = EntityStaticAccountMap.objects.get(
+            entity=self.entity,
+            static_account__code=StaticAccountCodes.MANUFACTURING_FINISHED_GOODS,
+        ).account_id
+        self.assertTrue(JournalLine.objects.filter(entry_id=entry_id).exists())
+        finished_goods_debit = (
+            JournalLine.objects
+            .filter(entry_id=entry_id, drcr=True, account_id=finished_goods_account_id)
+            .aggregate(total=Sum("amount"))
+            .get("total")
+        )
+        self.assertIsNotNone(finished_goods_debit)
+        self.assertEqual(Decimal(str(finished_goods_debit)).quantize(Decimal("0.01")), Decimal("460.60"))
+
+        issues = audit_manufacturing_report_correctness(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            from_date="2025-04-01",
+            to_date="2025-04-30",
+        )
+        self.assertEqual(issues, [])
 
     def test_work_order_list_filters_by_entityfinid(self):
         route = self.client.post(reverse("manufacturing:manufacturing-routes"), self._route_payload(), format="json").json()

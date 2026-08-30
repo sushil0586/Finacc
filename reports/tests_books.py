@@ -2917,3 +2917,192 @@ class BookReportAPITests(APITestCase):
             self.assertIn("entity=", data["actions"]["export_urls"][key])
             self.assertIn(f"entityfinid={self.entityfin.id}", data["actions"]["export_urls"][key])
             self.assertIn("group_by=ledger", data["actions"]["export_urls"][key] or "")
+
+    def test_balance_sheet_uses_effective_opening_stock_for_profit_transfer(self):
+        from reports.services.financial.statements import build_balance_sheet
+        from reports.services.trading_account import build_trading_account_summary
+
+        current_asset_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Current Assets",
+            accounttypecode="1002",
+            balanceType=True,
+            createdby=self.user,
+        )
+        equity_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Capital and Equity",
+            accounttypecode="1012",
+            balanceType=False,
+            createdby=self.user,
+        )
+        opening_head = accountHead.objects.create(
+            entity=self.entity,
+            name="Opening Stock",
+            code=9010,
+            balanceType="Debit",
+            drcreffect="Debit",
+            accounttype=current_asset_type,
+            detailsingroup=1,
+            createdby=self.user,
+        )
+        capital_head = accountHead.objects.create(
+            entity=self.entity,
+            name="Owner Capital",
+            code=9011,
+            balanceType="Credit",
+            drcreffect="Credit",
+            accounttype=equity_type,
+            detailsingroup=3,
+            createdby=self.user,
+        )
+        opening_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=901001,
+            name="Opening Stock Test Ledger",
+            accounthead=opening_head,
+            createdby=self.user,
+        )
+        capital_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=901101,
+            name="Capital Test Ledger",
+            accounthead=capital_head,
+            createdby=self.user,
+        )
+        opening_account = account.objects.create(
+            entity=self.entity,
+            ledger=opening_ledger,
+            accountname="Opening Stock Test Ledger",
+            createdby=self.user,
+        )
+        capital_account = account.objects.create(
+            entity=self.entity,
+            ledger=capital_ledger,
+            accountname="Capital Test Ledger",
+            createdby=self.user,
+        )
+        self._create_entry(
+            txn_type=TxnType.OPENING_BALANCE,
+            txn_id=9101,
+            voucher_no="OPEN-STOCK-HO",
+            posting_date="2025-04-01",
+            voucher_date="2025-04-01",
+            status=EntryStatus.POSTED,
+            narration="Opening stock entered at entity level",
+            subentity=None,
+            lines=[
+                (opening_account, opening_ledger, True, "75.00", "Entity opening stock"),
+                (capital_account, capital_ledger, False, "75.00", "Opening capital"),
+            ],
+        )
+        self._create_entry(
+            txn_type=TxnType.OPENING_BALANCE,
+            txn_id=9102,
+            voucher_no="OPEN-STOCK-BRANCH",
+            posting_date="2025-04-01",
+            voucher_date="2025-04-01",
+            status=EntryStatus.POSTED,
+            narration="Opening stock entered at branch level",
+            subentity=self.subentity,
+            lines=[
+                (opening_account, opening_ledger, True, "25.00", "Branch opening stock"),
+                (capital_account, capital_ledger, False, "25.00", "Opening capital"),
+            ],
+        )
+
+        trading = build_trading_account_summary(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            startdate="2025-05-01",
+            enddate="2025-05-31",
+            posted_only=True,
+        )
+        self.assertEqual(Decimal(str(trading["opening_stock"])), Decimal("100.0"))
+        self.assertEqual(trading["params"]["opening_stock_source"], "effective_gl_opening")
+
+        balance_sheet = build_balance_sheet(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            from_date="2025-05-01",
+            to_date="2025-05-31",
+            group_by="ledger",
+            ledger_ids=[opening_ledger.id, capital_ledger.id],
+        )
+        self.assertEqual(balance_sheet["summary"]["net_profit_brought_to_equity"], "-100.00")
+        self.assertEqual(balance_sheet["summary"]["balance_difference"], "0.00")
+
+    def test_trading_account_includes_unmapped_sales_document_lines(self):
+        from reports.services.trading_account import build_trading_account_dynamic
+
+        current_asset_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Current Assets",
+            accounttypecode="1003",
+            balanceType=True,
+            createdby=self.user,
+        )
+        customer_head = accountHead.objects.create(
+            entity=self.entity,
+            name="Trade Receivables",
+            code=9020,
+            balanceType="Debit",
+            drcreffect="Debit",
+            accounttype=current_asset_type,
+            detailsingroup=3,
+            createdby=self.user,
+        )
+        customer_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=902001,
+            name="Customer Test Ledger",
+            accounthead=customer_head,
+            createdby=self.user,
+        )
+        unmapped_sales_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=902101,
+            name="Unmapped Sales Ledger",
+            createdby=self.user,
+        )
+        customer_account = account.objects.create(
+            entity=self.entity,
+            ledger=customer_ledger,
+            accountname="Customer Test Ledger",
+            createdby=self.user,
+        )
+        unmapped_sales_account = account.objects.create(
+            entity=self.entity,
+            ledger=unmapped_sales_ledger,
+            accountname="Unmapped Sales Ledger",
+            createdby=self.user,
+        )
+        self._create_entry(
+            txn_type=TxnType.SALES,
+            txn_id=9201,
+            voucher_no="SALE-UNMAPPED-1",
+            posting_date="2025-05-10",
+            voucher_date="2025-05-10",
+            status=EntryStatus.POSTED,
+            narration="Sales posting with unmapped sales ledger",
+            subentity=self.subentity,
+            lines=[
+                (customer_account, customer_ledger, True, "100.00", "Customer debit"),
+                (unmapped_sales_account, unmapped_sales_ledger, False, "100.00", "Unmapped sales credit"),
+            ],
+        )
+
+        report = build_trading_account_dynamic(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            startdate="2025-05-01",
+            enddate="2025-05-31",
+            level="account",
+            posted_only=True,
+        )
+        unmapped_group = next(row for row in report["credit_rows"] if row["label"] == "Unmapped Trading Lines")
+        self.assertEqual(Decimal(str(unmapped_group["amount"])), Decimal("100.0"))
+        self.assertEqual(unmapped_group["children"][0]["label"], "Unmapped Sales Ledger")

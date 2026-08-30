@@ -18,6 +18,7 @@ from posting.models import InventoryMove, TxnType
 from posting.common.static_accounts import StaticAccountCodes, StaticAccountResolver
 from posting.common.product_accounts import ProductAccountResolver
 from catalog.models import Product
+from financial.models import account as FinancialAccount
 from catalog.lot_tracking import resolve_tracked_lot_number
 from catalog.uom_helpers import resolve_product_uom
 
@@ -43,6 +44,16 @@ def q4(x) -> Decimal:
         return Decimal(x or 0).quantize(Q4, rounding=ROUND_HALF_UP)
     except Exception:
         return ZERO4
+
+
+def _sales_account_has_report_head(account_id: Optional[int], entity_id: int) -> bool:
+    if not account_id:
+        return False
+    return FinancialAccount.objects.filter(
+        id=int(account_id),
+        entity_id=entity_id,
+        ledger__accounthead_id__isnull=False,
+    ).exists()
 
 
 # =========================
@@ -201,6 +212,8 @@ class SalesInvoicePostingAdapter:
         if not default_sales_ac:
             raise ValueError("Sales default revenue static account not mapped (SALES_DEFAULT/SALES_REVENUE).")
         default_sales_ac = int(default_sales_ac)
+        if not _sales_account_has_report_head(default_sales_ac, entity_id):
+            raise ValueError("Sales default revenue static account must resolve to a ledger with an account head.")
 
         # ---- ensure lines list ----
         lines_list = list(lines or [])
@@ -247,10 +260,12 @@ class SalesInvoicePostingAdapter:
             # If you don't have it yet, implement similarly in product_accounts.py.
             sales_ac = None
             # For service invoices/CN/DN, prefer line-level sales_account.
-            if line_sales_ac:
+            if line_sales_ac and _sales_account_has_report_head(line_sales_ac, entity_id):
                 sales_ac = int(line_sales_ac)
             if hasattr(prod_resolver, "sales_account_id"):
-                sales_ac = sales_ac or prod_resolver.sales_account_id(pid)
+                product_sales_ac = prod_resolver.sales_account_id(pid)
+                if product_sales_ac and _sales_account_has_report_head(product_sales_ac, entity_id):
+                    sales_ac = sales_ac or int(product_sales_ac)
             sales_ac = sales_ac or default_sales_ac
             sales_ac = int(sales_ac)
 

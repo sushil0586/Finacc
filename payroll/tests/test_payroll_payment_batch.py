@@ -113,6 +113,23 @@ class PayrollPaymentBatchServiceTests(TestCase):
         self.assertEqual(self.run.payment_status, PayrollRun.PaymentStatus.HANDED_OFF)
         self.assertEqual(self.run.payment_batch_ref, batch.batch_number)
 
+    def test_export_metadata_reconciles_export_batch_and_source_snapshot_totals(self):
+        self.run.status = PayrollRun.Status.POSTED
+        self.run.save(update_fields=["status", "updated_at"])
+        batch = PayrollPaymentBatchService.create_from_payroll_run(run=self.run, user_id=self.setup["user"].id)
+        batch = PayrollPaymentBatchService.validate_batch(batch=batch, user_id=self.setup["user"].id)
+        batch = PayrollPaymentBatchService.approve_batch(batch=batch, user_id=self.setup["user"].id)
+
+        result = PayrollPaymentBatchService.export_batch(batch=batch, user_id=self.setup["user"].id)
+
+        metadata = result.export_record.export_metadata_json
+        self.assertEqual(metadata["row_count"], 1)
+        self.assertEqual(metadata["export_total_amount"], "1250.00")
+        self.assertEqual(metadata["batch_total_amount"], "1250.00")
+        self.assertEqual(metadata["source_snapshot_total_amount"], "1250.00")
+        self.assertEqual(metadata["reconciliation_difference"], "0.00")
+        self.assertTrue(metadata["is_reconciled"])
+
     def test_lifecycle_transitions_update_final_payment_status(self):
         self.run.status = PayrollRun.Status.POSTED
         self.run.save(update_fields=["status", "updated_at"])

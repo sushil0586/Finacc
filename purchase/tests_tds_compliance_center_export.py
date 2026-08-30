@@ -189,7 +189,7 @@ class PurchaseGstTdsComplianceCenterExportTests(SimpleTestCase):
         self.factory = APIRequestFactory()
         self.user = SimpleNamespace(is_authenticated=True, id=1)
 
-    @patch("purchase.views.tds_compliance_center.PurchaseTdsComplianceCenterAPIView.get")
+    @patch("purchase.views.gst_tds_compliance_center.PurchaseGstTdsComplianceCenterAPIView.get")
     def test_ca_pack_export_uses_gst_tds_naming(self, mock_workspace_get):
         gst_payload = dict(MOCK_TDS_EXPORT_PAYLOAD)
         gst_payload["pageTitle"] = "GST-TDS Compliance Center"

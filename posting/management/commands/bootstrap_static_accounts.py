@@ -11,6 +11,7 @@ from financial.models import account
 from financial.services import create_account_with_synced_ledger, sync_ledger_for_account
 from posting.common.static_accounts import StaticAccountCodes
 from posting.models import EntityStaticAccountMap, StaticAccount, StaticAccountGroup
+from posting.services.manufacturing_static_accounts import classify_manufacturing_static_account_heads
 from posting.services.static_accounts import StaticAccountService
 
 
@@ -249,6 +250,30 @@ STATIC_SEED_DEFS: tuple[StaticSeedDef, ...] = (
         is_required=False,
         default_account_name="Manufacturing Finished Goods",
     ),
+    StaticSeedDef(
+        code=StaticAccountCodes.MANUFACTURING_MATERIAL_VARIANCE,
+        name="Manufacturing Material Variance",
+        group=StaticAccountGroup.MANUFACTURING,
+        description="Variance ledger for material over/under-consumption against standard manufacturing cost.",
+        is_required=False,
+        default_account_name="Manufacturing Material Variance",
+    ),
+    StaticSeedDef(
+        code=StaticAccountCodes.MANUFACTURING_YIELD_VARIANCE,
+        name="Manufacturing Yield Variance",
+        group=StaticAccountGroup.MANUFACTURING,
+        description="Variance ledger for manufacturing output/yield differences against standard cost expectation.",
+        is_required=False,
+        default_account_name="Manufacturing Yield Variance",
+    ),
+    StaticSeedDef(
+        code=StaticAccountCodes.MANUFACTURING_ADDITIONAL_COST_EXPENSE,
+        name="Manufacturing Additional Cost Expense",
+        group=StaticAccountGroup.MANUFACTURING,
+        description="Expense ledger for manufacturing additional costs that should not be capitalized into finished goods.",
+        is_required=False,
+        default_account_name="Manufacturing Additional Cost Expense",
+    ),
 )
 
 
@@ -317,6 +342,29 @@ class Command(BaseCommand):
                 self.stdout.write(f"  - {code}")
         else:
             self.stdout.write("No new mappings were needed; entity already had the selected codes.")
+
+        manufacturing_codes = {
+            item.code
+            for item in defs
+            if item.group == StaticAccountGroup.MANUFACTURING
+        }
+        if manufacturing_codes:
+            classification_summary = classify_manufacturing_static_account_heads(
+                entity_id=entity.id,
+                codes=manufacturing_codes,
+                apply_changes=apply_changes,
+            )
+            self.stdout.write(
+                "Manufacturing classification: "
+                f"heads_created={classification_summary['heads_created']}, "
+                f"types_created={classification_summary['types_created']}, "
+                f"ledgers_updated={classification_summary['ledgers_updated']}"
+            )
+            if classification_summary["missing_mappings"]:
+                self.stdout.write(
+                    "Manufacturing mappings still missing: "
+                    + ", ".join(classification_summary["missing_mappings"])
+                )
 
     def _selected_defs(self, *, include_sales: bool) -> tuple[StaticSeedDef, ...]:
         if include_sales:

@@ -477,6 +477,30 @@ class PayrollPaymentBatchService:
         return rows
 
     @classmethod
+    def _export_reconciliation_metadata(cls, *, batch: PayrollPaymentBatch, rows: list[dict], export_format: str) -> dict:
+        export_total = sum((Decimal(str(row.get("amount") or "0")) for row in rows), ZERO2)
+        source_total = ZERO2
+        has_source_snapshot = False
+        for line in batch.lines.exclude(line_status=PayrollPaymentBatchLine.LineStatus.INVALID):
+            snapshot = line.source_snapshot_json or {}
+            snapshot_amount = snapshot.get("payable_amount", snapshot.get("net_payable_amount"))
+            if snapshot_amount is None:
+                continue
+            has_source_snapshot = True
+            source_total += Decimal(str(snapshot_amount or "0"))
+        reconciliation_difference = export_total - source_total if has_source_snapshot else None
+        return {
+            "exported_at": timezone.now().isoformat(),
+            "format": export_format,
+            "row_count": len(rows),
+            "export_total_amount": f"{export_total:.2f}",
+            "batch_total_amount": f"{batch.total_amount:.2f}",
+            "source_snapshot_total_amount": f"{source_total:.2f}" if has_source_snapshot else None,
+            "reconciliation_difference": f"{reconciliation_difference:.2f}" if reconciliation_difference is not None else None,
+            "is_reconciled": bool(has_source_snapshot and reconciliation_difference == ZERO2 and export_total == batch.total_amount),
+        }
+
+    @classmethod
     def _render_csv(cls, *, rows: list[dict]) -> str:
         buffer = io.StringIO()
         writer = csv.DictWriter(
@@ -555,10 +579,11 @@ class PayrollPaymentBatchService:
             content_type="text/csv",
             row_count=len(rows),
             file_content=file_content,
-            export_metadata_json={
-                "exported_at": timezone.now().isoformat(),
-                "format": export_format,
-            },
+            export_metadata_json=cls._export_reconciliation_metadata(
+                batch=batch,
+                rows=rows,
+                export_format=export_format,
+            ),
             exported_by_id=user_id,
             exported_at=timezone.now(),
         )

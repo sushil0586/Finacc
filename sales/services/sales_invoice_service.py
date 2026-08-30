@@ -3005,6 +3005,31 @@ class SalesInvoiceService:
             "settled_amount", "outstanding_amount", "settlement_status",
         ])
 
+        if (
+            bool(getattr(header, "withholding_enabled", False))
+            or getattr(header, "tcs_section", None) is not None
+            or q2(getattr(header, "tcs_base_amount", ZERO2) or ZERO2) > ZERO2
+            or q2(getattr(header, "tcs_amount", ZERO2) or ZERO2) > ZERO2
+        ):
+            runtime = (getattr(header, "legacy_behavior_flags", None) or {}).get("tcs_runtime_result") or {}
+            preview = WithholdingResult(
+                enabled=bool(getattr(header, "withholding_enabled", False)),
+                section=getattr(header, "tcs_section", None),
+                rate=Decimal(getattr(header, "tcs_rate", Decimal("0.0000")) or Decimal("0.0000")),
+                base_amount=q2(getattr(header, "tcs_base_amount", ZERO2) or ZERO2),
+                amount=q2(getattr(header, "tcs_amount", ZERO2) or ZERO2),
+                reason=getattr(header, "tcs_reason", None),
+                reason_code=runtime.get("reason_code"),
+                no_pan_applied=bool(runtime.get("no_pan_applied")),
+                lower_rate_applied=bool(runtime.get("lower_rate_applied")),
+            )
+            cls._sync_tcs_computation(
+                header=header,
+                preview=preview,
+                user=user,
+                status="REVERSED" if bool(getattr(header, "tcs_is_reversal", False)) else "CONFIRMED",
+            )
+
         cls._run_auto_compliance(header=header, user=user, stage="confirm")
         return header
 

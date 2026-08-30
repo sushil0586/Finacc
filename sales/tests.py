@@ -1428,6 +1428,12 @@ class MasterGSTClientUnitTests(SimpleTestCase):
 
 
 class SalesPostingAdapterUnitTests(SimpleTestCase):
+    def setUp(self):
+        super().setUp()
+        patcher = patch("posting.adapters.sales_invoice._sales_account_has_report_head", return_value=True)
+        self.addCleanup(patcher.stop)
+        self.mock_sales_account_has_report_head = patcher.start()
+
     def _base_header(self, **overrides):
         defaults = {
             "id": 201,
@@ -1469,6 +1475,48 @@ class SalesPostingAdapterUnitTests(SimpleTestCase):
         }
         defaults.update(overrides)
         return SimpleNamespace(**defaults)
+
+    @patch("posting.adapters.sales_invoice.PostingService")
+    @patch("posting.adapters.sales_invoice.Product.objects")
+    @patch("posting.adapters.sales_invoice.ProductAccountResolver")
+    @patch("posting.adapters.sales_invoice.StaticAccountResolver")
+    def test_falls_back_to_default_sales_account_when_line_account_has_no_report_head(
+        self,
+        mock_static_resolver_cls,
+        mock_product_resolver_cls,
+        mock_product_objects,
+        mock_posting_service_cls,
+    ):
+        code_map = {
+            StaticAccountCodes.ROUND_OFF_INCOME: 8101,
+            StaticAccountCodes.ROUND_OFF_EXPENSE: 8102,
+            StaticAccountCodes.OUTPUT_CGST: 8103,
+            StaticAccountCodes.OUTPUT_SGST: 8104,
+            StaticAccountCodes.OUTPUT_IGST: 8105,
+            StaticAccountCodes.OUTPUT_CESS: 8106,
+            StaticAccountCodes.SALES_DEFAULT: 8107,
+            StaticAccountCodes.SALES_REVENUE: 8108,
+        }
+        resolver = mock_static_resolver_cls.return_value
+        resolver.get_account_id.side_effect = lambda code, required=False: code_map.get(code)
+        resolver.get_ledger_id.side_effect = lambda code, required=False: code_map.get(code)
+        mock_product_resolver_cls.return_value.sales_account_id.return_value = None
+        mock_product_objects.filter.return_value.select_related.return_value.prefetch_related.return_value = []
+        mock_posting_service_cls.return_value.post.return_value = SimpleNamespace(id=999)
+        self.mock_sales_account_has_report_head.side_effect = lambda account_id, entity_id: int(account_id) != 5000
+
+        SalesInvoicePostingAdapter.post_sales_invoice.__wrapped__(
+            header=self._base_header(),
+            lines=[self._line(sales_account_id=5000)],
+            user_id=1,
+            config=SalesInvoicePostingConfig(post_inventory=False),
+        )
+
+        jl_inputs = mock_posting_service_cls.return_value.post.call_args.kwargs["jl_inputs"]
+        revenue_lines = [x for x in jl_inputs if "Item Industrial Flour" in x.description]
+        self.assertEqual(len(revenue_lines), 1)
+        self.assertEqual(revenue_lines[0].account_id, 8107)
+        self.assertNotEqual(revenue_lines[0].account_id, 5000)
 
     @patch("posting.adapters.sales_invoice.PostingService")
     @patch("posting.adapters.sales_invoice.Product.objects")
@@ -2730,12 +2778,18 @@ class SalesInvoiceAdditionalServiceUnitTests(SimpleTestCase):
         user = SimpleNamespace(id=99)
         with patch("sales.services.sales_invoice_service.SalesInvoiceHeader.objects") as mocked_header_objects:
             mocked_header_objects.select_for_update.return_value.get.return_value = header
-            SalesInvoiceService.confirm.__func__.__wrapped__(SalesInvoiceService, header=header, user=user)
+            with patch("sales.services.sales_invoice_service.SalesInvoiceService._sync_tcs_computation") as mocked_sync:
+                SalesInvoiceService.confirm.__func__.__wrapped__(SalesInvoiceService, header=header, user=user)
 
         self.assertEqual(call_order, ["ensure_doc_number", "apply_tcs"])
         self.assertEqual(header.status, SalesInvoiceHeader.Status.CONFIRMED)
         self.assertEqual(header.invoice_number, "SI-SINV-311")
         self.assertEqual(header.doc_no, 311)
+        mocked_sync.assert_called_once()
+        _, sync_kwargs = mocked_sync.call_args
+        self.assertIs(sync_kwargs["header"], header)
+        self.assertEqual(sync_kwargs["preview"].amount, Decimal("1.00"))
+        self.assertEqual(sync_kwargs["status"], "CONFIRMED")
         mocked_run_auto_compliance.assert_called_once_with(header=header, user=user, stage="confirm")
 
     @patch("sales.services.sales_invoice_service.SalesInvoiceHeader.objects")

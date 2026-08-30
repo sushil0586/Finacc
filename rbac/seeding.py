@@ -1,4 +1,5 @@
 from django.db import transaction
+from django.db.models import Q
 
 from rbac.backfill import LegacyRBACBackfillService
 from rbac.models import Menu, MenuPermission, Permission, Role, RolePermission, UserRoleAssignment
@@ -137,6 +138,42 @@ class RBACSeedService:
 class PayrollRBACSeedService:
     CATALOG_VERSION = "payroll_rbac_2026_03"
     SEED_TAG = "payroll_rbac_seed"
+    LEGACY_MENU_CODES = (
+        "admin.payroll",
+        "admin.payroll.salarycomponent",
+        "admin.payroll.employee",
+        "admin.payroll.employeesalary",
+        "admin.payroll.payrollstructure",
+        "admin.payroll.compensation",
+        "admin.payroll.emicalculator",
+        "admin.salarycomponent",
+        "admin.employee",
+        "admin.employeesalary",
+        "admin.payrollstructure",
+        "admin.compensation",
+        "admin.emicalculator",
+        "payroll.payroll",
+        "payroll.salarycomponent",
+        "payroll.employee",
+        "payroll.employeesalary",
+        "payroll.payrollstructure",
+        "payroll.compensation",
+        "payroll.emicalculator",
+    )
+    LEGACY_ROUTE_PATHS = (
+        "salarycomponent",
+        "employee",
+        "employeesalary",
+        "payrollstructure",
+        "compensation",
+        "emicalculator",
+        "/salarycomponent",
+        "/employee",
+        "/employeesalary",
+        "/payrollstructure",
+        "/compensation",
+        "/emicalculator",
+    )
 
     PERMISSION_SPECS = (
         ("payroll.run.view", "View Payroll Runs", "payroll", "run", "view"),
@@ -689,10 +726,24 @@ class PayrollRBACSeedService:
                 defaults={"isactive": True},
             )
 
+        cls.retire_legacy_payroll_menus()
+
         return {
             "permissions": permission_map,
             "menus": menu_map,
         }
+
+    @classmethod
+    def retire_legacy_payroll_menus(cls):
+        legacy_menus = Menu.objects.filter(code__in=cls.LEGACY_MENU_CODES) | Menu.objects.filter(
+            Q(code__startswith="admin.") | Q(code__startswith="payroll."),
+            route_path__in=cls.LEGACY_ROUTE_PATHS,
+        )
+        legacy_menu_ids = list(legacy_menus.values_list("id", flat=True))
+        if legacy_menu_ids:
+            MenuPermission.objects.filter(menu_id__in=legacy_menu_ids).update(isactive=False)
+            Menu.objects.filter(id__in=legacy_menu_ids).update(isactive=False)
+        return len(legacy_menu_ids)
 
     @classmethod
     @transaction.atomic

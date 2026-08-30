@@ -32,6 +32,13 @@ def _gst_state_code_mismatch_message(*, gstno, state, label="GSTIN"):
     return None
 
 
+class OptionalLocationPrimaryKeyRelatedField(serializers.PrimaryKeyRelatedField):
+    def to_internal_value(self, data):
+        if data in (0, "0", ""):
+            return None
+        return super().to_internal_value(data)
+
+
 class OnboardingEntityPayloadSerializer(serializers.Serializer):
     entityname = serializers.CharField(max_length=100)
     legalname = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True)
@@ -128,7 +135,7 @@ class OnboardingEntityPayloadSerializer(serializers.Serializer):
         if mutable.get("gstno") and not mutable.get("panno") and len(mutable["gstno"]) >= 12:
             mutable["panno"] = mutable["gstno"][2:12]
 
-        if mutable.get("gstno") and not mutable.get("gst_registration_status"):
+        if not mutable.get("gst_registration_status"):
             mutable["gst_registration_status"] = Entity.GstStatus.REGISTERED
 
         if mutable.get("phoneoffice") and not mutable.get("phoneresidence"):
@@ -181,6 +188,25 @@ class OnboardingFinancialYearSerializer(serializers.ModelSerializer):
             mutable["period_status"] = str(mutable["period_status"]).strip().lower()
         return super().to_internal_value(mutable)
 
+    def validate(self, attrs):
+        finendyear = attrs.get("finendyear")
+        fy_end_date = finendyear.date() if finendyear else None
+        is_open_year = (
+            attrs.get("period_status", EntityFinancialYear.PeriodStatus.OPEN)
+            == EntityFinancialYear.PeriodStatus.OPEN
+            and not attrs.get("is_year_closed")
+        )
+        if is_open_year and fy_end_date:
+            for field in (
+                "books_locked_until",
+                "gst_locked_until",
+                "inventory_locked_until",
+                "ap_ar_locked_until",
+            ):
+                if attrs.get(field) == fy_end_date:
+                    attrs[field] = None
+        return attrs
+
 
 class OnboardingBankAccountSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
@@ -210,10 +236,10 @@ class OnboardingSubEntitySerializer(serializers.Serializer):
     address2 = serializers.CharField(max_length=255, required=False, allow_blank=True, allow_null=True)
     addressfloorno = serializers.CharField(max_length=50, required=False, allow_blank=True, allow_null=True)
     addressstreet = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True)
-    country = serializers.PrimaryKeyRelatedField(queryset=Country.objects.all(), required=False, allow_null=True)
-    state = serializers.PrimaryKeyRelatedField(queryset=State.objects.all(), required=False, allow_null=True)
-    district = serializers.PrimaryKeyRelatedField(queryset=District.objects.all(), required=False, allow_null=True)
-    city = serializers.PrimaryKeyRelatedField(queryset=City.objects.all(), required=False, allow_null=True)
+    country = OptionalLocationPrimaryKeyRelatedField(queryset=Country.objects.all(), required=False, allow_null=True)
+    state = OptionalLocationPrimaryKeyRelatedField(queryset=State.objects.all(), required=False, allow_null=True)
+    district = OptionalLocationPrimaryKeyRelatedField(queryset=District.objects.all(), required=False, allow_null=True)
+    city = OptionalLocationPrimaryKeyRelatedField(queryset=City.objects.all(), required=False, allow_null=True)
     pincode = serializers.CharField(max_length=255, required=False, allow_blank=True, allow_null=True)
     phoneoffice = serializers.CharField(max_length=255, required=False, allow_blank=True, allow_null=True)
     phoneresidence = serializers.CharField(max_length=255, required=False, allow_blank=True, allow_null=True)
@@ -236,6 +262,12 @@ class OnboardingSubEntitySerializer(serializers.Serializer):
 
     def to_internal_value(self, data):
         mutable = dict(data)
+        if mutable.get("branch_type") in (None, ""):
+            mutable["branch_type"] = (
+                SubEntity.BranchType.HEAD_OFFICE
+                if mutable.get("is_head_office") or mutable.get("ismainentity")
+                else SubEntity.BranchType.BRANCH
+            )
         if mutable.get("gstno") not in (None, ""):
             mutable["gstno"] = str(mutable["gstno"]).strip().upper()
         if mutable.get("phoneoffice") and not mutable.get("phoneresidence"):

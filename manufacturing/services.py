@@ -1280,6 +1280,17 @@ class ManufacturingWorkOrderService:
         if total_main_output_qty <= Decimal("0.0000"):
             raise ValidationError({"outputs": "Main output quantity must be greater than zero."})
 
+        # Standard-cost posting must use the latest planned BOM/material basis,
+        # not a stale draft snapshot that may still be zero.
+        pre_post_snapshot = ManufacturingWorkOrderService._calculate_cost_snapshot(
+            materials=materials,
+            outputs=outputs,
+            settings_obj=settings_obj,
+            additional_costs=additional_costs,
+        )
+        for field_name, value in pre_post_snapshot.items():
+            setattr(work_order, field_name, value)
+
         output_valuation_basis = ManufacturingWorkOrderService._output_valuation_basis(settings_obj)
         if output_valuation_basis == ManufacturingWorkOrderService.OUTPUT_VALUATION_STANDARD_COST:
             standard_main_output_total = _q4(_q4(work_order.standard_unit_cost_snapshot) * _q4(total_main_output_qty))

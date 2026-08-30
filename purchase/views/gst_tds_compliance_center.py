@@ -21,6 +21,9 @@ from purchase.views.tds_compliance_center import (
     PurchaseTdsComplianceCenterAPIView,
     PurchaseTdsComplianceCenterExportAPIView,
     ZERO2,
+    _write_csv,
+    _write_excel,
+    _write_pdf,
 )
 
 
@@ -945,14 +948,71 @@ class PurchaseGstTdsComplianceCenterAPIView(PurchaseTdsComplianceCenterAPIView):
         return contract_ref or "GST-TDS"
 
 
-class PurchaseGstTdsComplianceCenterExportAPIView(PurchaseTdsComplianceCenterExportAPIView):
+class PurchaseGstTdsComplianceCenterExportAPIView(
+    PurchaseGstTdsComplianceCenterAPIView,
+    PurchaseTdsComplianceCenterExportAPIView,
+):
     def get(self, request):
         if not request.query_params.get("return_tab"):
             mutable = request.query_params.copy()
             mutable["return_tab"] = "gstr7"
             request._request.GET = mutable
             request._full_data = mutable
-        return super().get(request)
+        export_format = str(request.query_params.get("format") or "xlsx").strip().lower()
+        if export_format == "ca-pack":
+            response = PurchaseGstTdsComplianceCenterAPIView.get(self, request)
+            payload = response.data
+            content = self._write_ca_pack(payload, request)
+            return self._export_response(
+                filename=f"{self._resolve_ca_pack_filename(payload)}.xlsx",
+                content=content,
+                content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+
+        tab_id = str(request.query_params.get("tab") or "dashboard").strip()
+        return_tab = str(request.query_params.get("return_tab") or "gstr7").strip().lower()
+        selected_columns = [
+            value.strip()
+            for value in str(request.query_params.get("columns") or "").split(",")
+            if value.strip()
+        ]
+        sort_field = str(request.query_params.get("sort_field") or "").strip()
+        sort_direction = str(request.query_params.get("sort_direction") or "asc").strip().lower()
+
+        response = PurchaseGstTdsComplianceCenterAPIView.get(self, request)
+        payload = response.data
+
+        dataset = self._resolve_export_dataset(payload, tab_id, return_tab)
+        if dataset is None:
+            return Response({"detail": "Requested GST-TDS export tab is not available."}, status=404)
+
+        columns = self._resolve_export_columns(dataset, selected_columns)
+        rows = self._export_rows(payload=payload, dataset=dataset, request=request, sort_field=sort_field, sort_direction=sort_direction)
+        title = self._resolve_export_title(payload, tab_id, return_tab)
+        subtitle = self._resolve_export_subtitle(payload)
+        filename_root = self._resolve_export_filename(payload, tab_id, return_tab)
+
+        headers = [str(column.get("label") or column.get("key") or "") for column in columns]
+        body_rows = [self._format_export_row(row, columns) for row in rows]
+        numeric_columns = {
+            index + 1
+            for index, column in enumerate(columns)
+            if str(column.get("type") or "").lower() in {"currency", "number"}
+        }
+
+        if export_format == "csv":
+            content = _write_csv(headers, body_rows)
+            return self._export_response(filename=f"{filename_root}.csv", content=content, content_type="text/csv")
+        if export_format == "pdf":
+            content = _write_pdf(title, subtitle, headers, body_rows)
+            return self._export_response(filename=f"{filename_root}.pdf", content=content, content_type="application/pdf")
+
+        content = _write_excel(title, subtitle, headers, body_rows, numeric_columns=numeric_columns)
+        return self._export_response(
+            filename=f"{filename_root}.xlsx",
+            content=content,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
 
     def _resolve_export_title(self, payload: dict[str, object], tab_id: str, return_tab: str) -> str:
         if tab_id == "return-filing":

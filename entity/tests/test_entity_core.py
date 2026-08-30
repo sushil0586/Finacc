@@ -12,7 +12,7 @@ from rest_framework.test import APIClient
 from Authentication.models import User
 from assets.models import AssetCategory, DepreciationRun, DepreciationRunLine, FixedAsset
 from catalog.models import Product, ProductCategory, ProductPurchaseBehavior, UnitOfMeasure
-from entity.models import BankDetail, Constitution, Entity, EntityConstitutionV2, EntityFinancialYear, EntityOwnershipV2, GstRegistrationType, SubEntity, gstin_validator
+from entity.models import BankDetail, Constitution, Entity, EntityConstitutionV2, EntityFinancialYear, EntityGstRegistration, EntityOwnershipV2, GstRegistrationType, SubEntity, gstin_validator
 from entity.models import EntityBankAccountV2 as BankAccount
 from entity.onboarding_serializers import EntityOnboardingCreateSerializer, EntityOnboardingUpdateSerializer
 from entity.onboarding_services import EntityOnboardingService
@@ -27,7 +27,7 @@ from rbac.models import UserRoleAssignment
 from geography.models import City, Country, District, State
 from numbering.models import DocumentNumberSeries, DocumentType
 from sales.models.mastergst_models import MasterGSTEnvironment, MasterGSTServiceScope, SalesMasterGSTCredential
-from subscriptions.models import CustomerAccount, CustomerSubscription, PlanLimit, UserEntityAccess
+from subscriptions.models import CustomerAccount, CustomerSubscription, PlanLimit, SubscriptionPlan, UserEntityAccess
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
@@ -177,6 +177,140 @@ class EntityOnboardingTests(TestCase):
         self.assertTrue(response.data["workflow"]["auth_register_flow"]["supports_plan_code"])
         self.assertTrue(any(row["label"] == "Sandbox" for row in response.data["dropdowns"]["mastergst_environments"]))
         self.assertTrue(any(row["label"] == "E-Invoice" for row in response.data["dropdowns"]["mastergst_service_scopes"]))
+
+    def test_onboarding_update_serializer_treats_zero_subentity_location_as_empty(self):
+        serializer = EntityOnboardingUpdateSerializer(
+            data={
+                "subentities": [
+                    {
+                        "subentityname": "Operations Branch",
+                        "branch_type": "branch",
+                        "country": 0,
+                        "state": "0",
+                        "district": 0,
+                        "city": "0",
+                    }
+                ]
+            }
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        branch = serializer.validated_data["subentities"][0]
+        self.assertIsNone(branch["country"])
+        self.assertIsNone(branch["state"])
+        self.assertIsNone(branch["district"])
+        self.assertIsNone(branch["city"])
+
+    def test_onboarding_create_defaults_null_gst_status_and_blank_branch_type(self):
+        payload = {
+            "entity": {
+                "entityname": "Sparse Branch Entity",
+                "legalname": "Sparse Branch Entity Pvt Ltd",
+                "gst_registration_status": None,
+                "phoneoffice": "9855966534",
+                "address": "4369 GT Road",
+                "country": self.country.id,
+                "state": self.state.id,
+                "district": self.district.id,
+                "city": self.city.id,
+                "pincode": "140406",
+            },
+            "financial_years": [
+                {
+                    "finstartyear": "2026-04-01T00:00:00Z",
+                    "finendyear": "2027-03-31T00:00:00Z",
+                    "desc": "FY 2026-27",
+                    "isactive": True,
+                }
+            ],
+            "subentities": [
+                {
+                    "subentityname": "Sparse HQ",
+                    "branch_type": None,
+                    "ismainentity": True,
+                    "is_head_office": True,
+                    "address": "4369 GT Road",
+                    "phoneoffice": "9855966534",
+                },
+                {
+                    "subentityname": "Sparse Operations",
+                    "branch_type": None,
+                    "country": 0,
+                    "state": "0",
+                    "district": 0,
+                    "city": "0",
+                },
+            ],
+            "seed_options": {
+                "seed_financial": False,
+                "seed_rbac": False,
+                "seed_numbering": False,
+                "seed_catalog": False,
+                "seed_assets": False,
+                "seed_purchase_choices": False,
+                "seed_sales_choices": False,
+            },
+        }
+
+        response = self.client.post("/api/entity/onboarding/create/", payload, format="json")
+
+        self.assertEqual(response.status_code, 201, response.data)
+        entity = Entity.objects.get(id=response.data["entity_id"])
+        self.assertEqual(entity.gst_registration_status, Entity.GstStatus.REGISTERED)
+        head_office = SubEntity.objects.get(entity=entity, subentityname="Sparse HQ")
+        branch = SubEntity.objects.get(entity=entity, subentityname="Sparse Operations")
+        self.assertEqual(head_office.branch_type, SubEntity.BranchType.HEAD_OFFICE)
+        self.assertEqual(branch.branch_type, SubEntity.BranchType.BRANCH)
+        self.assertIsNone(branch.addresses.filter(isactive=True).first())
+
+    def test_onboarding_create_clears_accidental_full_year_locks_for_open_year(self):
+        payload = {
+            "entity": {
+                "entityname": "Open FY Entity",
+                "legalname": "Open FY Entity Pvt Ltd",
+                "phoneoffice": "9855966534",
+                "address": "4369 GT Road",
+                "country": self.country.id,
+                "state": self.state.id,
+                "district": self.district.id,
+                "city": self.city.id,
+                "pincode": "140406",
+            },
+            "financial_years": [
+                {
+                    "finstartyear": "2026-04-01T00:00:00Z",
+                    "finendyear": "2027-03-31T00:00:00Z",
+                    "desc": "FY 2026-27",
+                    "period_status": "open",
+                    "books_locked_until": "2027-03-31",
+                    "gst_locked_until": "2027-03-31",
+                    "inventory_locked_until": "2027-03-31",
+                    "ap_ar_locked_until": "2027-03-31",
+                    "is_year_closed": False,
+                    "isactive": True,
+                }
+            ],
+            "seed_options": {
+                "seed_financial": False,
+                "seed_rbac": False,
+                "seed_numbering": False,
+                "seed_catalog": False,
+                "seed_assets": False,
+                "seed_purchase_choices": False,
+                "seed_sales_choices": False,
+            },
+        }
+
+        response = self.client.post("/api/entity/onboarding/create/", payload, format="json")
+
+        self.assertEqual(response.status_code, 201, response.data)
+        fy = EntityFinancialYear.objects.get(id=response.data["financial_year_ids"][0])
+        self.assertEqual(fy.period_status, EntityFinancialYear.PeriodStatus.OPEN)
+        self.assertFalse(fy.is_year_closed)
+        self.assertIsNone(fy.books_locked_until)
+        self.assertIsNone(fy.gst_locked_until)
+        self.assertIsNone(fy.inventory_locked_until)
+        self.assertIsNone(fy.ap_ar_locked_until)
 
     def test_new_onboarding_creates_entity_financial_and_rbac_defaults(self):
         payload = {
@@ -661,11 +795,30 @@ class EntityOnboardingTests(TestCase):
 
     def test_authenticated_onboarding_create_rejects_when_entity_limit_is_exhausted(self):
         account = SubscriptionService.ensure_customer_account(user=self.user)
-        plan = SubscriptionService.get_or_create_default_plan()
+        starter = SubscriptionService.get_or_create_default_plan()
+        plan = SubscriptionPlan.objects.create(
+            code="entity-onboarding-cap-1",
+            name="Entity Onboarding Cap 1",
+            description="Dedicated plan for onboarding entity limit validation",
+            tier=starter.PlanTier.PRO,
+            billing_interval=starter.BillingInterval.MONTHLY,
+            price_amount="499.00",
+            currency="INR",
+            trial_days=0,
+            is_public=True,
+            is_default=False,
+            is_selectable_for_signup=True,
+        )
+        SubscriptionService.ensure_plan_limit_catalog(plan=plan)
         PlanLimit.objects.update_or_create(
             plan=plan,
             key=SubscriptionLimitCodes.MAX_ENTITIES,
             defaults={"limit_type": PlanLimit.LimitType.INTEGER, "int_value": 1},
+        )
+        SubscriptionService.change_plan(
+            customer_account=account,
+            new_plan=plan,
+            changed_by=self.user,
         )
         Entity.objects.create(
             entityname="Existing Entity",
@@ -1281,10 +1434,10 @@ class EntityOnboardingTests(TestCase):
                 },
                 {
                     "subentityname": "Operations Branch",
-                    "country": self.country.id,
-                    "state": self.state.id,
-                    "district": self.district.id,
-                    "city": self.city.id,
+                    "country": 0,
+                    "state": "0",
+                    "district": 0,
+                    "city": "0",
                     "pincode": "140406",
                     "phoneoffice": "9855966534",
                     "phoneresidence": "9855966534",

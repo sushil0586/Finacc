@@ -8,7 +8,7 @@ from django.utils import timezone
 
 from Authentication.models import User
 from entity.models import Entity, SubEntity
-from rbac.models import Menu, Permission, Role, RolePermission, UserRoleAssignment
+from rbac.models import Menu, MenuPermission, Permission, Role, RolePermission, UserRoleAssignment
 from rbac.seeding import PayrollRBACSeedService, RBACSeedService
 from rbac.services import EffectivePermissionService, RoleTemplateService
 
@@ -212,6 +212,91 @@ class RBACModelTests(TestCase):
             RolePermission.objects.filter(role=admin_role, permission__module__in=["payroll", "reports", "payments"], isactive=True).count(),
             expected_permission_count,
         )
+
+    def test_payroll_seed_retires_legacy_root_menu_aliases(self):
+        legacy_permission, _ = Permission.objects.update_or_create(
+            code="payroll.legacy_alias.view",
+            defaults={
+                "name": "View Legacy Payroll Alias",
+                "module": "payroll",
+                "resource": "legacy_alias",
+                "action": "view",
+                "isactive": True,
+            },
+        )
+        legacy_parent, _ = Menu.objects.update_or_create(
+            code="admin.payroll",
+            defaults={
+                "name": "Legacy Payroll",
+                "menu_type": Menu.TYPE_GROUP,
+                "route_path": "",
+                "isactive": True,
+            },
+        )
+        legacy_specs = [
+            {
+                "code": "admin.payroll.salarycomponent",
+                "defaults": {
+                    "name": "Legacy Salary Components",
+                    "parent": legacy_parent,
+                    "route_path": "salarycomponent",
+                    "isactive": True,
+                },
+            },
+            {
+                "code": "admin.employeesalary",
+                "defaults": {
+                    "name": "Legacy Employee Salary",
+                    "route_path": "employeesalary",
+                    "isactive": True,
+                },
+            },
+            {
+                "code": "payroll.compensation",
+                "defaults": {
+                    "name": "Legacy Compensation",
+                    "route_path": "/compensation",
+                    "isactive": True,
+                },
+            },
+            {
+                "code": "admin.payroll.emicalculator",
+                "defaults": {
+                    "name": "Legacy EMI Calculator",
+                    "parent": legacy_parent,
+                    "route_path": "emicalculator",
+                    "isactive": True,
+                },
+            },
+        ]
+        legacy_menus = [
+            Menu.objects.update_or_create(
+                code=spec["code"],
+                defaults={
+                    "menu_type": Menu.TYPE_SCREEN,
+                    **spec["defaults"],
+                },
+            )[0]
+            for spec in legacy_specs
+        ]
+        for menu in legacy_menus:
+            MenuPermission.objects.update_or_create(
+                menu=menu,
+                permission=legacy_permission,
+                relation_type=MenuPermission.RELATION_VISIBILITY,
+                defaults={"isactive": True},
+            )
+
+        PayrollRBACSeedService.seed_global_catalog()
+
+        self.assertFalse(Menu.objects.filter(code="admin.payroll", isactive=True).exists())
+        for menu in legacy_menus:
+            menu.refresh_from_db()
+            self.assertFalse(menu.isactive)
+            self.assertFalse(MenuPermission.objects.filter(menu=menu, isactive=True).exists())
+
+        self.assertTrue(Menu.objects.filter(code="payroll.components", route_path="/payroll/components", isactive=True).exists())
+        self.assertTrue(Menu.objects.filter(code="payroll.salary-structures", route_path="/payroll/salary-structures", isactive=True).exists())
 
     def test_entity_seed_grants_admin_self_service_permissions(self):
         required_codes = {

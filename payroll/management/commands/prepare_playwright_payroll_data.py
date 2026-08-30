@@ -7,12 +7,13 @@ from decimal import Decimal
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.core.management.base import BaseCommand, CommandError
+from django.db import models
 from django.utils import timezone
 
 from entity.models import Entity, EntityApprovalPolicy, EntityFinancialYear, SubEntity
 from financial.models import AccountBankDetails, Ledger, account, accountHead, accounttype
 from financial.services import apply_normalized_profile_payload, create_account_with_synced_ledger
-from hrms.models import HrEmployee, HrEmploymentContract
+from hrms.models import AttendanceApproval, AttendanceMonthlyClose, HrEmployee, HrEmploymentContract
 from payroll.models import (
     ContractAttendanceSummary,
     ContractPayrollProfile,
@@ -31,6 +32,7 @@ from payroll.services import PayrollPaymentBatchService, PayrollRunService
 from payroll.services.contract_payroll_profile_service import ContractPayrollProfileService
 from payroll.services.contract_salary_assignment_service import ContractSalaryAssignmentService
 from payroll.services.payslip_service import PayslipService
+from payroll.services.payroll_run_readiness_resolver_service import PayrollRunReadinessResolverService
 from rbac.seeding import PayrollRBACSeedService, RBACSeedService
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
@@ -66,6 +68,7 @@ class Command(BaseCommand):
 
         scope = self._resolve_scope(entity=entity)
         payroll_setup = self._ensure_payroll_setup(entity=entity, user=user, scope=scope)
+        self._ensure_run_attendance_prerequisites(entity=entity, user=user, scope=scope)
         staged = self._stage_runs_and_batches(entity=entity, user=user, scope=scope)
 
         payload = {
@@ -553,23 +556,13 @@ class Command(BaseCommand):
                 }
             )
 
-        ContractAttendanceSummary.objects.update_or_create(
+        self._upsert_contract_attendance_summary(
             entity=entity,
             contract_payroll_profile=contract_profile,
             payroll_period=period,
-            defaults={
-                "attendance_days": Decimal("30.00"),
-                "payable_days": Decimal("30.00"),
-                "lop_days": Decimal("0.00"),
-                "weekly_off_days": Decimal("0.00"),
-                "holiday_days": Decimal("0.00"),
-                "overtime_hours": Decimal("0.00"),
-                "late_count": 0,
-                "half_days": Decimal("0.00"),
-                "source": ContractAttendanceSummary.Source.MANUAL,
-                "approval_status": ContractAttendanceSummary.ApprovalStatus.APPROVED,
-                "is_active": True,
-            },
+            attendance_days=Decimal("30.00"),
+            payable_days=Decimal("30.00"),
+            metadata={"seed": self.marker_prefix, "source": "prepare_playwright_payroll_data"},
         )
 
         self._ensure_policy(
@@ -612,6 +605,124 @@ class Command(BaseCommand):
             "ledger_policy_code": "PW_PLAYWRIGHT_LEDGER",
             "component_code": component.code,
         }
+
+    def _ensure_run_attendance_prerequisites(self, *, entity: Entity, user: User, scope: dict[str, object]) -> None:
+        period: PayrollPeriod = scope["period"]
+        subentity: SubEntity = scope["subentity"]
+        now = timezone.now()
+
+        monthly_close, _ = AttendanceMonthlyClose.objects.update_or_create(
+            entity=entity,
+            subentity=subentity,
+            payroll_period_code=period.code,
+            deleted_at__isnull=True,
+            defaults={
+                "period_start": period.period_start,
+                "period_end": period.period_end,
+                "status": AttendanceMonthlyClose.Status.CLOSED,
+                "summary_json": {"seed": self.marker_prefix, "source": "prepare_playwright_payroll_data"},
+                "submitted_at": now,
+                "submitted_by": user,
+                "approved_at": now,
+                "approved_by": user,
+                "closed_at": now,
+                "closed_by": user,
+                "close_note": f"{self.marker_prefix} seed close for payroll browser runs",
+            },
+        )
+
+        profiles = (
+            ContractPayrollProfile.objects.select_related("hrms_contract")
+            .filter(
+                entity=entity,
+                is_active=True,
+                payroll_status=ContractPayrollProfile.PayrollStatus.ACTIVE,
+                payroll_start_date__lte=period.period_end,
+                hrms_contract__is_payroll_eligible=True,
+                hrms_contract__status__in=PayrollRunReadinessResolverService.CONTRACT_READY_STATUSES,
+                hrms_contract__payroll_effective_from__lte=period.period_end,
+                hrms_contract__subentity=subentity,
+            )
+            .filter(
+                models.Q(payroll_end_date__isnull=True) | models.Q(payroll_end_date__gte=period.period_start),
+                models.Q(hrms_contract__end_date__isnull=True) | models.Q(hrms_contract__end_date__gte=period.period_start),
+            )
+        )
+        calendar_days = Decimal(str((period.period_end - period.period_start).days + 1))
+        for profile in profiles:
+            self._upsert_contract_attendance_summary(
+                entity=entity,
+                contract_payroll_profile=profile,
+                payroll_period=period,
+                attendance_days=calendar_days,
+                payable_days=calendar_days,
+                metadata={"seed": self.marker_prefix, "source": "prepare_playwright_payroll_data"},
+            )
+            AttendanceApproval.objects.update_or_create(
+                entity=entity,
+                subentity=subentity,
+                contract=profile.hrms_contract,
+                payroll_period_code=period.code,
+                deleted_at__isnull=True,
+                defaults={
+                    "period_start": period.period_start,
+                    "period_end": period.period_end,
+                    "monthly_close": monthly_close,
+                    "status": AttendanceApproval.Status.APPROVED,
+                    "summary_json": {"seed": self.marker_prefix, "source": "prepare_playwright_payroll_data"},
+                    "submitted_at": now,
+                    "submitted_by": user,
+                    "approved_at": now,
+                    "approved_by": user,
+                    "review_note": f"{self.marker_prefix} seed approval for payroll browser runs",
+                },
+            )
+
+    def _upsert_contract_attendance_summary(
+        self,
+        *,
+        entity: Entity,
+        contract_payroll_profile: ContractPayrollProfile,
+        payroll_period: PayrollPeriod,
+        attendance_days: Decimal,
+        payable_days: Decimal,
+        metadata: dict[str, object],
+    ) -> ContractAttendanceSummary:
+        defaults = {
+            "attendance_days": attendance_days,
+            "payable_days": payable_days,
+            "lop_days": Decimal("0.00"),
+            "weekly_off_days": Decimal("0.00"),
+            "holiday_days": Decimal("0.00"),
+            "overtime_hours": Decimal("0.00"),
+            "late_count": 0,
+            "half_days": Decimal("0.00"),
+            "source": ContractAttendanceSummary.Source.MANUAL,
+            "approval_status": ContractAttendanceSummary.ApprovalStatus.APPROVED,
+            "metadata": metadata,
+            "is_active": True,
+        }
+        summary = (
+            ContractAttendanceSummary.objects.filter(
+                entity=entity,
+                contract_payroll_profile=contract_payroll_profile,
+                payroll_period=payroll_period,
+            )
+            .order_by("-is_active", "-updated_at", "-id")
+            .first()
+        )
+        if summary is None:
+            return ContractAttendanceSummary.objects.create(
+                entity=entity,
+                contract_payroll_profile=contract_payroll_profile,
+                payroll_period=payroll_period,
+                **defaults,
+            )
+
+        for field, value in defaults.items():
+            setattr(summary, field, value)
+        summary.save(update_fields=[*defaults.keys(), "updated_at"])
+        return summary
 
     def _ensure_gl_account(
         self,

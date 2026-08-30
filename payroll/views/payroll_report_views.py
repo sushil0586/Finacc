@@ -80,6 +80,11 @@ class PTSummaryReportAPIView(_PayrollReportBaseAPIView):
     file_stem = "pt_summary"
 
 
+class TDSSummaryReportAPIView(_PayrollReportBaseAPIView):
+    report_type = PayrollComplianceReportService.REPORT_TDS_SUMMARY
+    file_stem = "tds_summary"
+
+
 class LWFSummaryReportAPIView(_PayrollReportBaseAPIView):
     report_type = PayrollComplianceReportService.REPORT_LWF_SUMMARY
     file_stem = "lwf_summary"
@@ -149,6 +154,11 @@ class ESISummaryReportExportAPIView(_PayrollReportExportBaseAPIView):
 class PTSummaryReportExportAPIView(_PayrollReportExportBaseAPIView):
     report_type = PayrollComplianceReportService.REPORT_PT_SUMMARY
     file_stem = "pt_summary"
+
+
+class TDSSummaryReportExportAPIView(_PayrollReportExportBaseAPIView):
+    report_type = PayrollComplianceReportService.REPORT_TDS_SUMMARY
+    file_stem = "tds_summary"
 
 
 class LWFSummaryReportExportAPIView(_PayrollReportExportBaseAPIView):

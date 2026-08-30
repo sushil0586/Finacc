@@ -10,11 +10,24 @@ from django.db.models import (
 from django.db.models.functions import Coalesce
 
 from catalog.models import Product
-from posting.models import EntryStatus, InventoryMove, JournalLine
+from financial.models import Ledger
+from posting.models import EntryStatus, InventoryMove, JournalLine, TxnType
 from entity.models import EntityFinancialYear
+from reports.services.financial.opening_balance_source import effective_opening_map_for_ledger_ids
 
 
 # --------------------------- Common helpers ---------------------------
+
+TRADING_DOCUMENT_TXN_TYPES = {
+    TxnType.SALES,
+    TxnType.SALES_CREDIT_NOTE,
+    TxnType.SALES_DEBIT_NOTE,
+    TxnType.SALES_RETURN,
+    TxnType.PURCHASE,
+    TxnType.PURCHASE_CREDIT_NOTE,
+    TxnType.PURCHASE_DEBIT_NOTE,
+    TxnType.PURCHASE_RETURN,
+}
 
 def Q2(x) -> Decimal:
     """Quantize to 2 decimals with standard rounding (no -0.00)."""
@@ -131,6 +144,35 @@ def _apply_scope_filters(qs, *, entityfin_id=None, subentity_id=None):
     if subentity_id:
         qs = qs.filter(subentity_id=subentity_id)
     return qs
+
+
+def _effective_gl_opening_stock_value(
+    *,
+    entity_id: int,
+    entityfin_id: Optional[int] = None,
+    subentity_id: Optional[int] = None,
+    from_date=None,
+    posted_only: bool = True,
+) -> Decimal:
+    opening_stock_ledgers = list(
+        Ledger.objects.filter(
+            entity_id=entity_id,
+        )
+        .filter(Q(accounthead__name__icontains="opening stock") | Q(creditaccounthead__name__icontains="opening stock"))
+        .values_list("id", flat=True)
+    )
+    if not opening_stock_ledgers:
+        return Decimal("0.00")
+
+    opening_map = effective_opening_map_for_ledger_ids(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        ledger_ids=opening_stock_ledgers,
+        from_date=from_date,
+        posted_only=posted_only,
+    )
+    return Q2(sum(opening_map.values(), Decimal("0.00")))
 
 
 def inventory_breakdown_asof(
@@ -448,7 +490,12 @@ STRATEGIES = {
 
 def _build_label(level: str, row: dict) -> str:
     if level == 'head':
-        return row.get('resolved_head_name') or row.get('accounthead__name') or f"Head {row.get('resolved_head_id') or row.get('accounthead_id')}"
+        return (
+            row.get('trading_head_name')
+            or row.get('resolved_head_name')
+            or row.get('accounthead__name')
+            or f"Head {row.get('trading_head_id') or row.get('resolved_head_id') or row.get('accounthead_id')}"
+        )
     if level == 'account':
         nm = row.get('resolved_account_name') or row.get('account__accountname') or f"Account {row.get('resolved_account_id') or row.get('account_id')}"
         hd = row.get('resolved_head_name') or row.get('accounthead__name')
@@ -489,6 +536,7 @@ def _aggregate_journal(
         base_qs = base_qs.filter(entry__status=EntryStatus.POSTED)
     jl_base = _apply_scope_filters((
         base_qs
+        .exclude(txn_type=TxnType.OPENING_BALANCE)
         .annotate(
             resolved_head_id=Coalesce(
                 F('accounthead_id'),
@@ -509,18 +557,29 @@ def _aggregate_journal(
                 F('account_id'),
                 F('ledger_id'),
             ),
+            resolved_ledger_id=Coalesce(
+                F('ledger_id'),
+                F('account__ledger_id'),
+            ),
             resolved_account_name=Coalesce(
                 F('account__accountname'),
                 F('ledger__name'),
             ),
         )
+        .annotate(
+            trading_head_id=Coalesce(F('resolved_head_id'), F('resolved_account_id')),
+            trading_head_name=Coalesce(F('resolved_head_name'), F('resolved_account_name')),
+        )
     ), entityfin_id=entityfin_id, subentity_id=subentity_id)
 
     if detail_groups:
-        jl_base = jl_base.filter(resolved_head_detailsingroup__in=detail_groups)
+        jl_base = jl_base.filter(
+            Q(resolved_head_detailsingroup__in=detail_groups)
+            | Q(resolved_head_detailsingroup__isnull=True, txn_type__in=TRADING_DOCUMENT_TXN_TYPES)
+        )
 
     if ledger_ids:
-        jl_base = jl_base.filter(resolved_account_id__in=ledger_ids)
+        jl_base = jl_base.filter(resolved_ledger_id__in=ledger_ids)
 
     query = str(search or "").strip()
     if query:
@@ -532,6 +591,8 @@ def _aggregate_journal(
         )
 
     common_fields = [
+        'trading_head_id',
+        'trading_head_name',
         'resolved_head_id',
         'resolved_head_name',
         'resolved_head_detailsingroup',
@@ -541,7 +602,7 @@ def _aggregate_journal(
         values_fields = [*common_fields]
         qs = jl_base.values(*values_fields)
     elif level == 'account':
-        values_fields = [*common_fields, 'resolved_account_id', 'resolved_account_name']
+        values_fields = [*common_fields, 'resolved_account_id', 'resolved_ledger_id', 'resolved_account_name']
         qs = jl_base.values(*values_fields)
     elif level == 'voucher':
         values_fields = [*common_fields, 'txn_type', 'txn_id', 'voucher_no']
@@ -590,7 +651,7 @@ def _aggregate_journal(
         net = (row['debits'] or Decimal('0')) - (row['credits'] or Decimal('0'))
 
         if level == 'account':
-            head_name = row.get('resolved_head_name') or f"Head {row.get('resolved_head_id')}"
+            head_name = row.get('resolved_head_name') or "Unmapped Trading Lines"
             account_label = row.get('resolved_account_name') or f"Account {row.get('resolved_account_id')}"
             label = account_label
         else:
@@ -605,8 +666,8 @@ def _aggregate_journal(
                 item["can_drilldown"] = True
                 item["drilldown_target"] = "ledger_book"
                 item["drilldown_params"] = {
-                    "ledger": row.get("resolved_account_id"),
-                    "ledger_id": row.get("resolved_account_id"),
+                    "ledger": row.get("resolved_ledger_id") or row.get("resolved_account_id"),
+                    "ledger_id": row.get("resolved_ledger_id") or row.get("resolved_account_id"),
                     "entity": entity_id,
                     "entityfinid": entityfin_id,
                     "subentity": subentity_id,
@@ -621,8 +682,8 @@ def _aggregate_journal(
                 item["can_drilldown"] = True
                 item["drilldown_target"] = "ledger_book"
                 item["drilldown_params"] = {
-                    "ledger": row.get("resolved_account_id"),
-                    "ledger_id": row.get("resolved_account_id"),
+                    "ledger": row.get("resolved_ledger_id") or row.get("resolved_account_id"),
+                    "ledger_id": row.get("resolved_ledger_id") or row.get("resolved_account_id"),
                     "entity": entity_id,
                     "entityfinid": entityfin_id,
                     "subentity": subentity_id,
@@ -685,6 +746,17 @@ def build_trading_account_summary(
         entityfin_id,
         subentity_id,
     )
+    opening_stock_source = "inventory_valuation"
+    gl_opening_stock = _effective_gl_opening_stock_value(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        from_date=start,
+        posted_only=posted_only,
+    )
+    if opening_value == 0 and gl_opening_stock != 0:
+        opening_value = gl_opening_stock
+        opening_stock_source = "effective_gl_opening"
 
     total_debits = total_dr + opening_value
     total_credits = total_cr + closing_value
@@ -708,6 +780,7 @@ def build_trading_account_summary(
         "params": {
             "detailsingroup": list(detailsingroup_values),
             "valuation_method": method,
+            "opening_stock_source": opening_stock_source,
             "posted_only": bool(posted_only),
             "ledger_ids": list(ledger_ids) if ledger_ids else None,
             "search": search,
@@ -821,6 +894,17 @@ def build_trading_account_dynamic(
         cogs_issues = Q2(opening_value + inflow_value - closing_value)
     else:
         opening_value, cogs_issues, closing_value = STRATEGIES[method](entity_id, start, end, entityfin_id, subentity_id)
+    opening_stock_source = "inventory_valuation"
+    gl_opening_stock = _effective_gl_opening_stock_value(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        from_date=start,
+        posted_only=posted_only,
+    )
+    if opening_value == 0 and gl_opening_stock != 0:
+        opening_value = gl_opening_stock
+        opening_stock_source = "effective_gl_opening"
 
     # 3) Place Opening/Closing; balance with GP/GL (GP on DEBIT, GL on CREDIT)
     if not hide_zero_rows or opening_value != 0:
@@ -866,6 +950,7 @@ def build_trading_account_dynamic(
             "fold_returns": bool(fold_returns),
             "round": int(round_decimals),
             "valuation_method": method,
+            "opening_stock_source": opening_stock_source,
             "period_by": period_by,
             "posted_only": bool(posted_only),
             "hide_zero_rows": bool(hide_zero_rows),
