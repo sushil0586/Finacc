@@ -40,9 +40,9 @@ Assign names before execution starts.
 | --- | --- |
 | Playwright report | `/Users/ansh/Documents/finacc-ui-tests/playwright-report` |
 | Test artifacts | `/Users/ansh/Documents/finacc-ui-tests/test-results*` |
-| Manual signoff notes | `TBD` |
-| Export/output captures | `TBD` |
-| Rollback/support notes | `TBD` |
+| Manual signoff notes | `docs/qa/production-go-no-go-tracker-2026-08-21.md` |
+| Export/output captures | `/Users/ansh/Documents/finacc-ui-tests/test-results*` and linked manual captures in the tracker |
+| Rollback/support notes | This runbook plus `docs/qa/production-go-no-go-tracker-2026-08-21.md` |
 
 ## Phase 0: Pre-Start
 
@@ -244,15 +244,47 @@ Steps:
 
 | Step | Owner | Method | Output |
 | --- | --- | --- | --- |
-| Trigger and verify app error capture | `TBD` | Manual | Logs / screenshots |
-| Review audit logging for critical actions | `TBD` | Manual | Notes |
-| Review support diagnostics and incident workflow | `TBD` | Manual | Notes |
-| Review rollback plan | `TBD` | Manual | Notes |
-| Review hotfix path and escalation chain | `TBD` | Manual | Notes |
+| Verify Django deploy configuration | Infra / backend | `./venv/bin/python manage.py check --deploy` from `/Users/ansh/finacc-angular/finacc-django/Finacc` | Pass / warnings recorded |
+| Verify migration readiness | Infra / backend | `./venv/bin/python manage.py migrate --check --noinput` from `/Users/ansh/finacc-angular/finacc-django/Finacc` | No pending migrations |
+| Trigger and verify app error capture | Support / backend | Backend contract plus stage-only manual trigger observed by support | ErrorLog/admin or logging-sink evidence |
+| Review audit logging for critical actions | QA / support | Backend audit contracts plus manual review of RBAC and Bank Reco audit views | Notes / screenshots |
+| Review support diagnostics and incident workflow | Support owner | Review SOPs, evidence folders, and first-hour triage flow | Named owner and ticket/channel notes |
+| Review rollback plan | Release lead / infra | Walk rollback checklist below | Accepted rollback notes |
+| Review hotfix path and escalation chain | Release lead / support | Walk hotfix checklist below | Named escalation chain |
+
+Current automated evidence:
+
+| Area | Evidence |
+| --- | --- |
+| Deploy/system check | `manage.py check --deploy` completed with `0` errors and security warnings for HSTS, SSL redirect, secure session cookie, and secure CSRF cookie. These must be satisfied by production settings/reverse proxy before final go. |
+| Migration check | `manage.py migrate --check --noinput` completed cleanly with no output, indicating no pending migrations. |
+| Error capture and audit contracts | `./venv/bin/python manage.py test errorlogger.tests rbac.tests.test_api rbac.tests.test_user_access_admin bank_reco.matching_api_tests --verbosity=2 --keepdb` completed with `88 OK`. |
+
+Rollback checklist:
+
+| Check | Acceptance |
+| --- | --- |
+| Release artifact | Backend commit, frontend build, and deployment artifact versions are recorded before deploy. |
+| Database safety | Backup or snapshot is confirmed before migration/deploy. Data created after release is reviewed before any DB rollback; prefer forward fix when post-release transactions exist. |
+| Migration path | Pending migrations are reviewed before deploy; irreversible migrations require explicit release-lead acceptance. |
+| Static/frontend rollback | Previous frontend artifact and environment configuration are available for redeploy. |
+| Post-rollback smoke | Login, dashboard, entity switch, purchase invoice list, sales invoice list, voucher list, and financial report open are checked immediately after rollback. |
+| Communication | Customer/support incident note is prepared before rollback starts and updated after smoke completes. |
+
+Hotfix checklist:
+
+| Check | Acceptance |
+| --- | --- |
+| Severity owner | Release lead names one owner for triage and one owner for customer/support communication. |
+| Branch path | Hotfix branch is cut from the released commit or agreed production branch. |
+| Test minimum | Reproduce failing flow, add/regress focused test, run impacted backend/Angular/browser slice, and record command output. |
+| Deploy approval | Release lead, backend/frontend owner as applicable, and support owner approve deployment. |
+| Follow-up | Root-cause note and tracker update are recorded after the hotfix. |
 
 Go checkpoint:
 - support team can observe, diagnose, and respond
 - rollback is understood and accepted
+- production security settings and named owners are confirmed
 
 No-go examples:
 - no reliable error capture
@@ -292,5 +324,5 @@ If the team needs the shortest actionable sequence:
 6. Run `npm run test:reports-regression`.
 7. Run `npm run test:payroll-rbac`.
 8. Run `npm run test:payroll`.
-9. Do manual signoff for posting, reports, exports, bank reco, observability, and rollback.
+9. Run operational readiness checks: `manage.py check --deploy`, `manage.py migrate --check --noinput`, and the focused error/audit suite.
 10. Hold final go/no-go meeting.

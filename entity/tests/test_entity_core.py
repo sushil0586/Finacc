@@ -22,6 +22,7 @@ from financial.models import FinancialSettings, Ledger, account, accountHead
 from posting.models import EntityStaticAccountMap, StaticAccount
 from posting.services.static_accounts import StaticAccountService
 from purchase.models.purchase_core import PurchaseInvoiceHeader
+from purchase.services.purchase_invoice_service import PurchaseInvoiceService
 from rbac.models import Role as RbacRole
 from rbac.models import UserRoleAssignment
 from geography.models import City, Country, District, State
@@ -311,6 +312,13 @@ class EntityOnboardingTests(TestCase):
         self.assertIsNone(fy.gst_locked_until)
         self.assertIsNone(fy.inventory_locked_until)
         self.assertIsNone(fy.ap_ar_locked_until)
+        subentity = SubEntity.objects.get(entity=fy.entity, is_head_office=True)
+        PurchaseInvoiceService.assert_not_locked(
+            fy.entity_id,
+            subentity.id,
+            date(2026, 4, 15),
+            entityfinid_id=fy.id,
+        )
 
     def test_new_onboarding_creates_entity_financial_and_rbac_defaults(self):
         payload = {

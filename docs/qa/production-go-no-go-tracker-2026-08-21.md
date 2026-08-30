@@ -43,7 +43,7 @@ Production should only be marked `Go` when:
 | Inventory and manufacturing | `TBD` | `In Progress` | Real coverage exists, but live quantitative validation still pending |
 | Payroll and HRMS | `TBD` | `In Progress` | Payroll evidence is meaningful; HRMS remains lighter |
 | Platform and access | `TBD` | `In Progress` | Auth, onboarding, and RBAC evidence exists from code and test suites |
-| Observability and rollback | `TBD` | `Blocked` | Current repo evidence does not yet prove production support readiness |
+| Observability and rollback | Infra / Support / Release lead | `Passed With Conditions` | Automated error/audit/config evidence is green; final go still requires production security settings, named support owner, and rollback walkthrough signoff |
 
 ## Track 1: Platform And Access
 
@@ -119,11 +119,11 @@ Production should only be marked `Go` when:
 
 | Check | Owner | Command / Method | Evidence | Status | Blocking | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| Application error capture works | `TBD` | Manual trigger and support-team verification | Manual evidence required | `Blocked` | Yes | Biggest current non-functional release gap |
-| Audit logging is usable for critical actions | `TBD` | Manual review of critical flows | Audit module exists but proof is manual-only | `Not Started` | Yes |  |
-| Support diagnostics are sufficient | `TBD` | Manual support runbook review | Manual evidence required | `Blocked` | Yes | Support readiness not yet proven |
-| Rollback path is documented and understood | `TBD` | Manual release review | Manual evidence required | `Blocked` | Yes | Needs explicit release-governance signoff |
-| Hotfix path and escalation chain are clear | `TBD` | Manual release review | Manual evidence required | `Blocked` | Yes | Needs explicit release-governance signoff |
+| Application error capture works | Support / backend | `./venv/bin/python manage.py test errorlogger.tests --verbosity=2 --keepdb` plus stage-only support observation | Error logger contract included in the `88 OK` operational suite | `Passed With Conditions` | Yes | Production condition: support must observe one safe stage/prod-like error in the configured logging sink before final go |
+| Audit logging is usable for critical actions | QA / support | `./venv/bin/python manage.py test rbac.tests.test_user_access_admin bank_reco.matching_api_tests --verbosity=2 --keepdb` plus manual audit-view review | RBAC admin audit and Bank Reco audit trail contracts included in the `88 OK` operational suite | `Passed With Conditions` | Yes | Production condition: capture RBAC and Bank Reco audit screenshots/exports from release environment |
+| Support diagnostics are sufficient | Support owner | Runbook and SOP review | `docs/qa/release-execution-runbook-2026-08-21.md`, `docs/reports/compliance_ops_monitoring_sop.md`, `docs/reports/compliance_post_go_live_support_sop.md` | `Passed With Conditions` | Yes | Production condition: assign named incident owner and confirm ticket/channel coverage for first release window |
+| Rollback path is documented and understood | Release lead / infra | Walk rollback checklist in release runbook | Rollback checklist added to `docs/qa/release-execution-runbook-2026-08-21.md` | `Passed With Conditions` | Yes | Production condition: record backup/artifact versions and complete rollback walkthrough before deploy |
+| Hotfix path and escalation chain are clear | Release lead / support | Walk hotfix checklist in release runbook | Hotfix checklist added to `docs/qa/release-execution-runbook-2026-08-21.md` | `Passed With Conditions` | Yes | Production condition: name severity owner, communication owner, approval path, and minimum test slice |
 
 ## Track 8: Scope Decisions
 
@@ -157,17 +157,17 @@ Run from `/Users/ansh/Documents/finacc-ui-tests` unless stated otherwise.
 | --- | --- | --- |
 | Automated test output | `finacc-ui-tests/playwright-report` | Latest HTML report after rerun |
 | Test artifacts | `finacc-ui-tests/test-results*` | Existing artifact directories include `test-results-p0-full-run` and `test-results-p1` |
-| Manual signoff notes | `TBD` | Add agreed location |
-| Release screenshots / exports | `TBD` | Add agreed location |
-| Rollback and support notes | `TBD` | Add agreed location |
+| Manual signoff notes | `Finacc/docs/qa/production-go-no-go-tracker-2026-08-21.md` | Record release meeting decisions, accepted conditions, and manual pass/fail notes here |
+| Release screenshots / exports | `/Users/ansh/Documents/finacc-ui-tests/test-results*` plus linked manual captures | Store automated artifacts in Playwright output; link any manual business-format captures in this tracker |
+| Rollback and support notes | `Finacc/docs/qa/release-execution-runbook-2026-08-21.md` and this tracker | Runbook now contains rollback/hotfix checklists; tracker records final owner/signoff evidence |
 
 ## Final Go / No-Go Meeting Notes
 
 | Topic | Summary |
 | --- | --- |
-| Open blockers |  |
-| Accepted release conditions |  |
+| Open blockers | No Track 7 blocker remains after operational-readiness documentation and focused backend evidence; release-wide blockers still depend on final live reruns and manual signoff. |
+| Accepted release conditions | Track 7 is `Passed With Conditions`: production security settings, named support owner, support-observed error capture, audit-view screenshots/exports, backup/artifact version recording, and rollback/hotfix walkthrough must be completed before final go. |
 | Deferred scope |  |
-| Rollback readiness |  |
-| Support coverage |  |
+| Rollback readiness | Runbook checklist exists; final go requires release-lead/infra walkthrough and recorded backup/artifact versions. |
+| Support coverage | SOPs and diagnostics path exist; final go requires named first-window support owner and ticket/channel confirmation. |
 | Final decision |  |

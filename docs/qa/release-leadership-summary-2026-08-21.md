@@ -24,7 +24,7 @@ From repository, route, documentation, and UI automation evidence, the overall r
 - `Inventory and manufacturing`: Ready With Conditions after Phase 6 closeout
 - `Fixed assets`: Ready With Conditions after Phase 6 asset closeout
 - `Payroll`: Ready With Conditions
-- `Platform and access`: Ready With Conditions
+- `Platform and access`: Ready With Conditions after Phase 7 auth/RBAC final-gate rerun
 - `Support, observability, and rollback`: Not Yet Proven
 
 ## What Looks Strong
@@ -38,17 +38,19 @@ From repository, route, documentation, and UI automation evidence, the overall r
 - Reporting coverage is wide across financial, payables, receivables, GST, and compliance surfaces.
 - Payroll has serious implementation depth and unusually strong documentation.
 - Fixed assets now have granular browser, backend, report, export, permission, and accounting-handoff evidence.
+- Platform access now has fresh final-gate evidence across browser auth/admin/RBAC flows, Angular guards/session services, and backend tenant/subscription/auth contracts.
+- Representative print/export automation is now green across voucher, sales service invoice, purchase service invoice, purchase service notes, long purchase PDF pagination, financial report timing, Bank Reco timing, and compliance CA pack exports.
 
 ## Main Release Risks
 
 - Observability and support readiness are not yet proven from current evidence.
 - Rollback and hotfix readiness still need explicit operational signoff.
 - GST reconciliation should not be assumed full-production-ready without an explicit rollout decision.
-- Print/export outputs still require manual final validation.
+- Print/export automation is green for representative flows; final manual business-format/layout signoff is still recommended.
 - Numbering and any remaining withholding/GST-TDS final-release gates still need live verification.
 - The remaining Bank/Cash and Bank Reco risks are now isolated residuals: one hard maker-checker bank voucher browser refresh skip and conditional Bank Reco live-data/RBAC skips.
 - Observability, rollback, support readiness, final full-regression stability, and production-scale export/print validation are now larger launch risks than the Phase 6 functional modules.
-- Commerce, retail, subscriptions, and sales legacy import require explicit scope decisions.
+- Commerce, retail, and sales legacy import require explicit scope decisions; subscription core contracts are green, but commercial packaging/billing scope still needs an explicit release decision.
 
 ## Phase 6 Asset Closeout Addendum - 2026-08-30
 
@@ -87,7 +89,7 @@ Phase 7 has started with the new-entity onboarding and branch-add flow.
 
 - Fixed the branch/subentity geography placeholder issue where optional branch `country/state/district/city` values of `0` could reach the API and fail as invalid PKs.
 - Frontend onboarding normalizer now sends untouched optional branch geography as `null`; backend onboarding serializers defensively accept `0`, `"0"`, and blank string as empty for nested subentity locations.
-- Focused Angular onboarding normalizer guard completed with `16 SUCCESS`.
+- Focused Angular onboarding normalizer guard completed with `17 SUCCESS`.
 - Focused backend onboarding serializer/update guard completed with `2 OK`.
 - External add-entity browser suite completed with `5 passed`, `2 skipped`; the new branch payload regression verified outbound `null` geography before any live quota/block skip.
 - Broader Angular onboarding form/session guard completed with `70 SUCCESS`; backend onboarding/auth contract pack completed with `57 OK`.
@@ -98,17 +100,49 @@ Phase 7 has started with the new-entity onboarding and branch-add flow.
 - Recommendation closeout completed with `118 SUCCESS` across Angular app-shell/auth/entity-form guards, `2 passed` for browser auth tamper restoration, `2 passed` for internal editor normal-click visual coverage, and `23 passed`, `1 skipped` for the combined public registration/auth/dashboard P0 pack.
 - Onboarding create tests now support optional quota-free launch credentials through `ONBOARDING_TEST_USER_EMAIL`, `ONBOARDING_TEST_USER_PASSWORD`, and optional `ONBOARDING_TEST_ENTITY_NAME`.
 - Moved the active launch test account to a dedicated `launch-onboarding-proof` plan with `max_entities=50`, leaving shared `starter` at `20`; full add-entity browser suite reran with `7 passed`, `1 skipped`, and focused fresh activation reran with `2 passed`.
-- Backend sparse onboarding hardening completed with `23 OK`; null `gst_registration_status` now defaults to `registered`, and blank subentity `branch_type` now defaults to `branch` or `head_office` instead of throwing server 500s.
-- Stage FY lock remediation completed after a new-stage-entity purchase invoice surfaced full-year locks; open onboarding FY rows now clear accidental `books/gst/inventory/ap_ar_locked_until` values when they equal the FY end date. Angular normalizer passed with `17 SUCCESS`; backend onboarding class passed with `24 OK`.
-- Onboarding/entity setup confidence moves to `9.1/10`; remaining evidence is a separate capped-tenant quota-exhaustion rerun, not a blocker for activation proof.
+- Backend sparse onboarding hardening completed with `24 OK`; null `gst_registration_status` now defaults to `registered`, blank subentity `branch_type` now defaults to `branch` or `head_office`, and accidental FY-end lock dates are cleared for open onboarding years.
+- Stage FY lock remediation completed after a new-stage-entity purchase invoice surfaced full-year locks; the backend regression now calls `PurchaseInvoiceService.assert_not_locked` for a FY 2026-27 bill date, proving newly onboarded open years do not block purchase invoices. Angular normalizer passed with `17 SUCCESS`, backend onboarding class passed with `24 OK`, and the public registration/auth/dashboard P0 pack reran with `23 passed`, `1 skipped`.
+- Capped quota-exhaustion proof completed by temporarily setting the dedicated `launch-onboarding-proof` plan `max_entities` to current active usage (`33`), running `FIN-ONB-ENT-005` with `2 passed`, and restoring the plan to `50` entities; final post-suite snapshot is `36/50`, `14` remaining.
+- Onboarding/entity setup confidence moves to `9.2/10`; quota-open activation and capped quota-denial messaging are both now proven.
 
 Functional recommendations from the granular onboarding pass are now closed for activation:
 
 - Internal entity editor sticky-header/tab overlap is fixed by putting the summary card in normal grid flow; visual browser coverage now uses real clicks only.
 - Post-login route contract is `/dashboard`; workspace/home routes remain valid after entity activation where permissions allow them.
 - `localStorage.a-authenticated` is restored after valid cookie-backed protected-route server validation.
-- Active launch tenant quota is open through the dedicated proof plan and fresh entity activation is proven; keep one capped-tenant run only for explicit quota-exhaustion messaging.
+- Active launch tenant quota is open through the dedicated proof plan and fresh entity activation is proven; capped quota-exhaustion messaging is also proven through the controlled temporary-cap run.
 - Existing stage entities already saved with FY-end lock dates need one-time FY lock cleanup; new onboarding payloads are now protected at frontend and backend boundaries.
+
+## Phase 7 Auth/RBAC/Security Gate - 2026-08-30
+
+The final-gate access pass completed cleanly across browser, Angular, and backend layers.
+
+- External auth/admin/RBAC browser gate completed with `36 passed`, `1 skipped` in `1.9m`, covering login success/failure, verify/forgot recovery surfaces, expired-session recovery, logout route denial, cookie-backed auth restoration, dashboard/workspace access, RBAC bootstrap/tabs/access preview, role create/edit/deactivate, tenant member list/search, restricted-user direct-route denial, setup screens, password validation, settings persistence, and invoice custom-field API reflection.
+- Angular auth/admin/RBAC/security slice completed with `165 SUCCESS`, covering unauthorized context, subscription feature blocks, dynamic-route permission denial, workspace recovery, auth interceptor/session behavior, RBAC readiness/audit exports, user-management action guards, and admin self-service UX.
+- Backend RBAC/subscription/auth/dashboard contracts completed with `155 OK`, covering tenant isolation, deny-overrides-allow, future-assignment denial, role soft-delete/deactivation safety, last-admin/self-lockout protection, membership controls, subscription entity limits and feature locks, signup/default-plan contracts, password/session invalidation, JWT refresh/session touch behavior, and dashboard permission/feature denial.
+- The one browser skip is `FIN-AUTH-003`, gated by a real unverified-user fixture via `TEST_VERIFY_EMAIL_REQUIRED=true` and `TEST_UNVERIFIED_USER_EMAIL/PASSWORD`; backend and other browser OTP/verify recovery paths are green.
+- Auth/session confidence moves to `9.3/10`, subscription/feature gating to `9.2/10`, and admin/RBAC to `9.1/10`.
+
+## Phase 7 Performance And Export/Print Gate - 2026-08-30
+
+The final-gate performance and representative print/export pass is now green.
+
+- Financial, Bank Reco, and compliance export timing bundle completed with `4 passed` in `59.5s`.
+- Representative compliance exports stayed within the `60s` budget: purchase statutory full-FY CA Pack `22.074s`, TCS Q2 CA Pack `7.645s`, IT-TDS Q2 CA Pack `844ms`, and GST-TDS Q2 CA Pack `493ms`.
+- Representative voucher/sales/purchase print-download bundle completed with `12 passed` in `3.5m`, covering voucher preview/export/print, sales service print profiles/downloads/browser print, purchase service invoice PDF/Excel/browser print, service credit/debit note print, and long purchase PDF pagination.
+- Purchase-note print focused validation completed with `3 passed` in `54.1s`; setup now clears/restores both root and selected-branch lock periods and uses an open FY date before intentionally reapplying the lock for correction-note creation.
+- Sales thermal/transport print focused validation completed with `2 passed` in `39.5s`; the multi-download test now has an explicit `60s` budget.
+- Sales moves to `8.9/10`, Purchase moves to `9.0/10`, and Financial Reports move to `8.9/10` for controlled-launch confidence, with production-scale export depth and final manual print-layout review still recommended.
+
+## Phase 7 Operational Readiness Gate - 2026-08-30
+
+The support/observability/rollback gate has moved from blocker to `Passed With Conditions`.
+
+- Django deployment check completed with `0` errors; HSTS, HTTPS redirect, secure session cookie, and secure CSRF cookie remain production settings/reverse-proxy confirmation items before final go.
+- Migration readiness completed with `./venv/bin/python manage.py migrate --check --noinput`; no pending migrations were reported.
+- Backend operational contracts completed with `88 OK`, covering DRF error logging resilience, RBAC/admin access and recovery audit logs, Bank Reco audit trail creation/export scope, reconciliation controls, and voucher creation from bank rows.
+- Release runbook now includes concrete Phase 7 commands, evidence locations, rollback checklist, hotfix checklist, and production acceptance conditions.
+- Production go/no-go tracker Track 7 now shows `Passed With Conditions` instead of `Blocked`; remaining conditions are named support owner, support-observed error capture, audit-view screenshots/exports, backup/artifact recording, production security setting confirmation, and rollback/hotfix walkthrough signoff.
 
 ## Decision Points Required
 
@@ -142,7 +176,7 @@ The strongest functional areas are likely releasable, but final production appro
 - payroll run and posting readiness
 - fixed-asset P1/report/export rerun as a final regression gate
 - manufacturing and inventory focused P1 reruns as final regression gates
-- observability, rollback, and support readiness
+- production support-owner assignment, security setting confirmation, support-observed error capture, audit captures, rollback walkthrough, and hotfix readiness
 
 ## Minimum Evidence Needed Before Go
 
@@ -155,12 +189,12 @@ The following should be completed before final approval:
 5. `npm run test:reports-regression`
 6. `npm run test:payroll-rbac`
 7. `npm run test:payroll`
-8. Manual signoff for:
-   - posting and ledger impact
-   - financial/payables/receivables totals
-   - GST and statutory exports
-   - bank reconciliation live mutation flows
-   - observability and rollback readiness
+8. Manual signoff for posting and ledger impact
+9. Manual signoff for financial/payables/receivables totals
+10. Manual signoff for GST and statutory exports
+11. Manual signoff for representative invoice/voucher print layout
+12. Manual signoff for bank reconciliation live mutation flows
+13. Manual signoff for production security settings, support observation, audit captures, rollback readiness, and hotfix escalation
 
 ## Executive Recommendation
 
@@ -168,7 +202,7 @@ Best practical path:
 
 - approve the release team to execute the live validation run immediately
 - require explicit scope decisions before execution starts
-- hold final go/no-go only after support and rollback readiness are confirmed
+- hold final go/no-go only after support owner, rollback, hotfix, and production security conditions are confirmed
 
 ## Document Set
 
