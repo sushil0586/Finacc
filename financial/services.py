@@ -138,6 +138,16 @@ def ensure_normalized_profiles_for_account(acc):
     AccountCommercialProfile.objects.update_or_create(account=acc, defaults=commercial_defaults)
 
 
+def _truncate_model_char_field(model_cls, field_name, value, *, fallback=None):
+    raw = str(value or fallback or "").strip()
+    if not raw:
+        return None
+    max_length = model_cls._meta.get_field(field_name).max_length
+    if max_length and len(raw) > max_length:
+        return raw[:max_length]
+    return raw
+
+
 @transaction.atomic
 def ensure_account_profile_for_ledger(*, ledger, createdby=None):
     """
@@ -150,10 +160,22 @@ def ensure_account_profile_for_ledger(*, ledger, createdby=None):
     - future edits then route through the account workspace
     """
     existing_account = getattr(ledger, "account_profile", None)
+    account_name = _truncate_model_char_field(
+        account,
+        "accountname",
+        ledger.name or ledger.legal_name,
+        fallback=f"Ledger {ledger.pk}",
+    )
+    legal_name = _truncate_model_char_field(
+        account,
+        "legalname",
+        ledger.legal_name or ledger.name,
+        fallback=account_name,
+    )
     account_defaults = {
         "entity": ledger.entity,
-        "accountname": ledger.name,
-        "legalname": ledger.legal_name,
+        "accountname": account_name,
+        "legalname": legal_name,
         "canbedeleted": ledger.canbedeleted,
         "createdby": createdby or ledger.createdby,
         "isactive": ledger.isactive,
