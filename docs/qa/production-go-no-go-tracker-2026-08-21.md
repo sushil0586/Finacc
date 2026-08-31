@@ -37,7 +37,7 @@ Production should only be marked `Go` when:
 
 | Decision Area | Owner | Status | Notes |
 | --- | --- | --- | --- |
-| Overall release decision | `TBD` | `In Progress` | Repo evidence reviewed; live execution and final business signoff still pending |
+| Overall release decision | `TBD` | `Blocked` | Stage validation on 2026-08-30 found incomplete geography master data blocking onboarding, sales/customer/vendor seed flows, and no-skip release reruns |
 | Commercial core | `TBD` | `In Progress` | Strongest existing automation footprint and signoff script support |
 | Reporting and compliance | `TBD` | `In Progress` | Broad browser coverage exists; totals and export signoff still pending |
 | Inventory and manufacturing | `TBD` | `In Progress` | Real coverage exists, but live quantitative validation still pending |
@@ -50,7 +50,7 @@ Production should only be marked `Go` when:
 | Check | Owner | Command / Method | Evidence | Status | Blocking | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | Login, auth, route protection | `TBD` | `npm run test:launch-commercial-smoke` from `finacc-ui-tests` | Existing smoke script plus auth P0 suites | `In Progress` | Yes | Script exists and auth coverage is present; rerun needed in release env |
-| Registration and onboarding | `TBD` | Included in `test:launch-commercial-smoke` | Existing script plus onboarding P0 suites | `In Progress` | Yes | Repo evidence is strong; live rerun pending |
+| Registration and onboarding | `TBD` | Included in `test:launch-commercial-smoke`; stage onboarding P1 rerun | Stage onboarding P1 on 2026-08-30: `2 passed`, `6 failed` | `Blocked` | Yes | Stage District options are empty for selected states; fresh entity activation cannot be signed off until geography districts/cities are seeded |
 | Entity scope behavior | `TBD` | Manual plus smoke confirmation across at least purchase and sales | Existing auth/entity integration suite plus manual notes needed | `In Progress` | Yes | Cross-module live scope verification still needed |
 | RBAC for critical modules | `TBD` | Manual role-matrix pass plus `tests/p0/reports-rbac.p0.spec.ts` and `test:payroll-rbac` | Existing RBAC suites | `In Progress` | Yes | Need explicit role-matrix execution evidence |
 | Session expiry and unauthorized redirects | `TBD` | Manual in release environment | Manual evidence required | `Not Started` | Yes | No trustworthy repo-only proof |
@@ -62,7 +62,7 @@ Production should only be marked `Go` when:
 | Receipt voucher core flow | `TBD` | `tests/p0/receipt-voucher.p0.spec.ts` and `tests/p1/receipt-voucher.p1.spec.ts` | Existing P0/P1 suites and artifacts under `test-results-p0-full-run` / `test-results-p1` | `In Progress` | Yes | Strong evidence exists; rerun and report parity check still needed |
 | Payment and voucher stack | `TBD` | `npm run test:payment:signoff` | Existing signoff command definitions | `In Progress` | Yes | Command path is ready; release-env execution pending |
 | Purchase signoff | `TBD` | `npm run test:purchase:signoff` | Existing signoff command definitions and large P1 artifact set | `In Progress` | Yes | One of the strongest release-ready areas |
-| Sales signoff | `TBD` | `npm run test:sales:signoff` | Existing signoff command definitions and large P1 artifact set | `In Progress` | Yes | One of the strongest release-ready areas |
+| Sales signoff | `TBD` | `npm run test:sales:signoff` | Full P0 stage run on 2026-08-30: sales failures clustered on missing geography, insufficient GST customers, and expected product row `ABC` not observed | `Blocked` | Yes | Seed stage geography and deterministic sales customer/product fixtures, then rerun sales P0/P1 signoff |
 | Purchase and sales downstream reconciliation | `TBD` | Included in `test:launch-commercial-smoke` plus targeted P1 reconciliation rerun | Existing reconciliation suites named in smoke bundle | `In Progress` | Yes | Live rerun still required |
 | Journal, bank, and cash voucher ledger validation | `TBD` | Manual posting and report verification | Manual evidence required | `Not Started` | Yes | Shared voucher automation exists, but ledger proof must be manual/live |
 | Print and export sanity check | `TBD` | Manual output validation for purchase and sales print flows | Existing print suites plus manual output evidence needed | `In Progress` | Yes | Environment-sensitive final validation remains |
@@ -77,7 +77,7 @@ Production should only be marked `Go` when:
 | Payables report sanity check | `TBD` | Manual plus P1 report/browser suites | Existing AP aging, vendor outstanding, ledger, settlement suites | `In Progress` | Yes | Manual totals confirmation still needed |
 | Receivables report sanity check | `TBD` | Manual plus P1 report/browser suites | Existing receivables browser, filter, data-integrity, and cross-report suites | `In Progress` | Yes | Manual totals confirmation still needed |
 | GST report sanity check | `TBD` | Manual plus `tests/p1/gst-report-browser.p1.spec.ts` and related suites | Existing GST browser and exception suites | `In Progress` | Yes | Export and bucket-total signoff still needed |
-| Compliance browser and parity check | `TBD` | Manual plus compliance-related P1 suites | Existing compliance browser and performance suites | `In Progress` | Yes | Filing-readiness still needs manual signoff |
+| Compliance browser and parity check | `TBD` | Manual plus compliance-related P1 suites | Stage reports/regression chunk on 2026-08-30: `15 passed`, `2 skipped`, `6 failed` | `Blocked` | Yes | Financial/compliance timing basics passed, but TCS seeded compliance flows are blocked by missing geography |
 | GST and statutory export validation | `TBD` | Manual export check | Manual evidence required | `Not Started` | Yes | Final artifact validation cannot be inferred from repo only |
 | TCS browser and filing posture | `TBD` | Manual plus TCS P1 suites | Existing TCS browser, drilldown, statutory, export suites | `In Progress` | Yes | Filing posture requires business confirmation |
 | GST-TDS and withholding chain validation | `TBD` | Manual end-to-end config to report check | Partial repo evidence only | `Not Started` | Yes | One of the thinner release-proof areas |
@@ -109,7 +109,7 @@ Production should only be marked `Go` when:
 | Check | Owner | Command / Method | Evidence | Status | Blocking | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | Payroll RBAC | `TBD` | `npm run test:payroll-rbac` | Existing command and suite | `In Progress` | Yes | Release-env rerun pending |
-| Payroll suite | `TBD` | `npm run test:payroll` | Existing command and suite | `In Progress` | Yes | Release-env rerun pending |
+| Payroll suite | `TBD` | `npm run test:payroll` | Stage attempt on 2026-08-30: payroll P1 failed during local Django seeding because local DB does not contain stage entity `Mehak-T` | `Blocked` | Yes | Make payroll P1 seed setup stage-aware or run in matched backend/browser environment before final signoff |
 | Payroll run and posting preview | `TBD` | Manual live verification | Payroll docs and surfaces exist; manual proof needed | `Not Started` | Yes | Core live signoff item |
 | Payroll ESS validation | `TBD` | Manual role-based validation | Frontend breadth exists; manual proof needed | `Not Started` | Conditional |  |
 | Payroll approvals and policies | `TBD` | Manual approval workflow validation | Surfaces exist; proof is lighter | `Not Started` | Conditional |  |
@@ -165,7 +165,7 @@ Run from `/Users/ansh/Documents/finacc-ui-tests` unless stated otherwise.
 
 | Topic | Summary |
 | --- | --- |
-| Open blockers | No Track 7 blocker remains after operational-readiness documentation and focused backend evidence; release-wide blockers still depend on final live reruns and manual signoff. |
+| Open blockers | Stage geography master data is incomplete: selected states return no districts/cities, blocking onboarding, sales/customer/vendor seed flows, TCS seeded checks, payment against-bill depth, and final no-skip reruns. Some P1 seeders also shell into local Django and are not valid remote-stage proof. |
 | Accepted release conditions | Track 7 is `Passed With Conditions`: production security settings, named support owner, support-observed error capture, audit-view screenshots/exports, backup/artifact version recording, and rollback/hotfix walkthrough must be completed before final go. |
 | Deferred scope |  |
 | Rollback readiness | Runbook checklist exists; final go requires release-lead/infra walkthrough and recorded backup/artifact versions. |

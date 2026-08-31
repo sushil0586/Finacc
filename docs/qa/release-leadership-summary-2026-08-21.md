@@ -144,6 +144,34 @@ The support/observability/rollback gate has moved from blocker to `Passed With C
 - Release runbook now includes concrete Phase 7 commands, evidence locations, rollback checklist, hotfix checklist, and production acceptance conditions.
 - Production go/no-go tracker Track 7 now shows `Passed With Conditions` instead of `Blocked`; remaining conditions are named support owner, support-observed error capture, audit-view screenshots/exports, backup/artifact recording, production security setting confirmation, and rollback/hotfix walkthrough signoff.
 
+## Phase 7 Stage Validation Attempt - 2026-08-30
+
+Stage validation started against `http://accerio.in` using the supplied launch account, primary entity `Mehak-T`, and alternate entity `Ritikasharma`.
+
+- Auth/dashboard smoke passed after matching exact displayed entity casing: `27 passed`, `1 skipped`; `Mehak-T` workspace opens and session recovery paths are green.
+- Alternate entity smoke for `Ritikasharma` passed with `4 passed`, proving the third workspace opens when exact displayed casing is used.
+- Full P0 stage directory produced `146 passed`, `27 skipped`, `65 failed`, and `40 did not run` in `46.2m`.
+- Stage admin/RBAC/security gate passed with `10 passed` in `2.4m`.
+- Reports/regression chunk produced `15 passed`, `2 skipped`, and `6 failed`; financial report live integrity and performance checks passed, while Bank Reco seeded tests were invalid for remote stage because they shell into local Django, and TCS seeded checks hit missing geography.
+- Onboarding P1 produced `2 passed`, `6 failed`; all failures timed out selecting District after state choice.
+- Payroll P1 and payment depth are not clean remote-stage proof yet: payroll seeds through local Django and cannot find stage entity `Mehak-T`; payment depth hit the same missing district data while creating a vendor address.
+
+Primary stage blocker:
+
+- Geography master data is incomplete on stage. Direct API probes show countries and states are populated, but `/api/geography/district?state_id=1` and `/api/geography/district?state_id=29` return empty arrays; the global district list currently exposes only `FatehGarh Sahib` under Punjab state id `3`.
+- This blocks public onboarding, internal create-entity activation, sales/customer seed flows, Sales TCS, vendor/payment against-bill seed flows, and any final no-skip release rerun that needs address creation.
+
+Secondary stage blockers:
+
+- `Mehak-T` currently has insufficient deterministic Sales seed depth for the full P0 sales pack: only one GST-registered customer was available where two are required, and expected goods product row `ABC` was not observed after add/save in multiple sales flows.
+- Some P1 specs are not truly remote-stage capable because their data setup uses hardcoded local Django management commands while the browser targets stage.
+
+Launch seed remediation prepared on 2026-08-31:
+
+- Added backend command `seed_launch_validation_data` to seed all India GST states with at least one active district/city, run standard entity bootstrap repair, create a default stock location, create/select product `ABC` with an 18 percent GST row, and add two GST-registered launch customers with primary shipping details.
+- Focused proof: `venv/bin/python3 manage.py test entity.tests.test_launch_seed --keepdb` passed with `4` tests.
+- Stage preview command: `venv/bin/python3 manage.py seed_launch_validation_data --entity-name Mehak-T --entity-name manav-t --entity-name Ritikasharma --actor-email <stage-user-email> --dry-run --json`; after review, rerun without `--dry-run`, then rerun onboarding, sales, payment, and report packs against stage.
+
 ## Decision Points Required
 
 Leadership or release owners need to explicitly decide:
@@ -171,6 +199,9 @@ The strongest functional areas are likely releasable, but final production appro
 
 - platform smoke and RBAC
 - commercial signoff suites
+- stage geography districts/cities for release states
+- deterministic sales customers/products for stage signoff
+- stage-aware seeding for P1 packs that currently shell into local Django
 - report totals and statutory exports
 - bank reconciliation mutation and downstream parity
 - payroll run and posting readiness
@@ -195,11 +226,15 @@ The following should be completed before final approval:
 11. Manual signoff for representative invoice/voucher print layout
 12. Manual signoff for bank reconciliation live mutation flows
 13. Manual signoff for production security settings, support observation, audit captures, rollback readiness, and hotfix escalation
+14. Stage geography master-data seed verification for country/state/district/city dependent onboarding and tax flows
+15. Stage rerun after seed fixes with full P0 and impacted P1 packs free of geography/harness blockers
 
 ## Executive Recommendation
 
 Best practical path:
 
+- seed/fix stage geography and deterministic sales fixtures before the next full no-skip stage run
+- make local-shell P1 seeders stage-aware, or run those packs only in a matched backend/browser environment
 - approve the release team to execute the live validation run immediately
 - require explicit scope decisions before execution starts
 - hold final go/no-go only after support owner, rollback, hotfix, and production security conditions are confirmed
