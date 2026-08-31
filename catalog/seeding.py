@@ -148,12 +148,14 @@ class CatalogSeedService:
             summary[key] += 1
 
         for row in cls.UOM_ROWS:
+            existing = UnitOfMeasure.objects.filter(entity=entity, code=row["code"]).first()
+            desired_uqc = cls._safe_uqc_for_seed_row(entity=entity, existing=existing, desired_uqc=row["uqc"])
             _, created = UnitOfMeasure.objects.update_or_create(
                 entity=entity,
                 code=row["code"],
                 defaults={
                     "description": row["description"],
-                    "uqc": row["uqc"],
+                    "uqc": desired_uqc,
                     "isactive": True,
                 },
             )
@@ -212,3 +214,20 @@ class CatalogSeedService:
             summary[key] += 1
 
         return summary
+
+    @staticmethod
+    def _safe_uqc_for_seed_row(*, entity, existing, desired_uqc):
+        desired_uqc = (desired_uqc or "").strip().upper() or None
+        if not desired_uqc:
+            return None
+
+        conflict = UnitOfMeasure.objects.filter(entity=entity, uqc__iexact=desired_uqc)
+        if existing is not None:
+            conflict = conflict.exclude(pk=existing.pk)
+        if not conflict.exists():
+            return desired_uqc
+
+        # Legacy/stage tenants may already have a different UOM using this UQC.
+        # Preserve that row and seed the missing code without violating uq_uom_entity_uqc.
+        current_uqc = (getattr(existing, "uqc", None) or "").strip().upper() or None
+        return current_uqc if current_uqc and current_uqc != desired_uqc else None

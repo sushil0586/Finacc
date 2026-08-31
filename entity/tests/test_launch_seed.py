@@ -7,7 +7,7 @@ from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.test import TestCase
 
-from catalog.models import Product, ProductGstRate
+from catalog.models import Product, ProductGstRate, UnitOfMeasure
 from entity.launch_seed import INDIA_STATES_GST, LAUNCH_CUSTOMERS, LaunchSeedService
 from entity.models import Entity, Godown, GstRegistrationType, SubEntity
 from financial.models import ShippingDetails, account
@@ -87,6 +87,20 @@ class LaunchSeedServiceTests(TestCase):
                     state__statecode=spec["state_code"],
                 ).exists()
             )
+
+    def test_entity_seed_tolerates_legacy_uom_uqc_collision(self):
+        UnitOfMeasure.objects.create(
+            entity=self.entity,
+            code="NOS",
+            description="Legacy numbers UOM",
+            uqc="NOS",
+        )
+
+        LaunchSeedService.seed(entities=[self.entity], actor=self.user)
+
+        pcs = UnitOfMeasure.objects.get(entity=self.entity, code="PCS")
+        self.assertNotEqual(pcs.uqc, "NOS")
+        self.assertTrue(Product.objects.filter(entity=self.entity, productname="ABC", base_uom=pcs).exists())
 
 
 class LaunchSeedCommandTests(TestCase):
