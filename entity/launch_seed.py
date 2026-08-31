@@ -399,26 +399,7 @@ class LaunchSeedService:
         product.isactive = True
         product.save()
 
-        ProductGstRate.objects.filter(product=product, isdefault=True).exclude(
-            hsn=hsn,
-            valid_from=date(2026, 4, 1),
-        ).update(isdefault=False)
-        gst_rate, gst_created = ProductGstRate.objects.update_or_create(
-            product=product,
-            hsn=hsn,
-            valid_from=date(2026, 4, 1),
-            defaults={
-                "gst_type": GstType.REGULAR,
-                "sgst": Decimal("9.00"),
-                "cgst": Decimal("9.00"),
-                "igst": Decimal("18.00"),
-                "cess": Decimal("0.00"),
-                "cess_type": "none",
-                "cess_specific_amount": None,
-                "valid_to": None,
-                "isdefault": True,
-            },
-        )
+        gst_rate, gst_created = cls._ensure_default_product_gst_rate(product=product, hsn=hsn)
 
         default_price_list = PriceList.objects.filter(entity=entity, isdefault=True, isactive=True).order_by("id").first()
         price_id = None
@@ -446,6 +427,35 @@ class LaunchSeedService:
             "gst_rate_created": gst_created,
             "price_id": price_id,
         }
+
+    @classmethod
+    def _ensure_default_product_gst_rate(cls, *, product, hsn):
+        existing = ProductGstRate.objects.filter(product=product).order_by("-isdefault", "-valid_from", "-id").first()
+        values = {
+            "gst_type": GstType.REGULAR,
+            "sgst": Decimal("9.00"),
+            "cgst": Decimal("9.00"),
+            "igst": Decimal("18.00"),
+            "gst_rate": Decimal("18.00"),
+            "cess": Decimal("0.00"),
+            "cess_type": "none",
+            "cess_specific_amount": None,
+            "valid_to": None,
+            "isdefault": True,
+        }
+        if existing is not None:
+            ProductGstRate.objects.filter(product=product, isdefault=True).exclude(pk=existing.pk).update(isdefault=False)
+            ProductGstRate.objects.filter(pk=existing.pk).update(**values)
+            existing.refresh_from_db()
+            return existing, False
+
+        ProductGstRate.objects.filter(product=product, isdefault=True).update(isdefault=False)
+        return ProductGstRate.objects.create(
+            product=product,
+            hsn=hsn,
+            valid_from=None,
+            **values,
+        ), True
 
     @classmethod
     def _ensure_launch_customer(cls, *, entity, actor=None, spec):

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+from decimal import Decimal
 import json
 from io import StringIO
 
@@ -7,7 +9,8 @@ from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.test import TestCase
 
-from catalog.models import Product, ProductGstRate, UnitOfMeasure
+from catalog.models import HsnSac, Product, ProductCategory, ProductGstRate, UnitOfMeasure
+from catalog.seeding import CatalogSeedService
 from entity.launch_seed import INDIA_STATES_GST, LAUNCH_CUSTOMERS, LaunchSeedService
 from entity.models import Entity, Godown, GstRegistrationType, SubEntity
 from financial.models import ShippingDetails, account
@@ -101,6 +104,46 @@ class LaunchSeedServiceTests(TestCase):
         pcs = UnitOfMeasure.objects.get(entity=self.entity, code="PCS")
         self.assertNotEqual(pcs.uqc, "NOS")
         self.assertTrue(Product.objects.filter(entity=self.entity, productname="ABC", base_uom=pcs).exists())
+
+    def test_entity_seed_reuses_existing_product_gst_rate_to_avoid_overlap(self):
+        CatalogSeedService.seed_entity(entity=self.entity)
+        category = ProductCategory.objects.filter(entity=self.entity).order_by("id").first()
+        uom = UnitOfMeasure.objects.filter(entity=self.entity).order_by("id").first()
+        hsn = HsnSac.objects.filter(entity=self.entity, is_service=False).order_by("id").first()
+        product = Product.objects.create(
+            entity=self.entity,
+            productname="ABC",
+            sku="LEGACY-ABC",
+            productdesc="Legacy stage ABC",
+            productcategory=category,
+            base_uom=uom,
+            is_service=False,
+            is_expiry_tracked=False,
+            product_status="active",
+            isactive=True,
+        )
+        existing_rate = ProductGstRate.objects.create(
+            product=product,
+            hsn=hsn,
+            gst_type="regular",
+            sgst=Decimal("2.50"),
+            cgst=Decimal("2.50"),
+            igst=Decimal("5.00"),
+            gst_rate=Decimal("5.00"),
+            cess=Decimal("0.00"),
+            cess_type="none",
+            valid_from=date(2026, 1, 1),
+            valid_to=None,
+            isdefault=True,
+        )
+
+        summary = LaunchSeedService.seed(entities=[self.entity], actor=self.user)
+
+        existing_rate.refresh_from_db()
+        self.assertEqual(ProductGstRate.objects.filter(product=product).count(), 1)
+        self.assertEqual(summary["entities"][0]["product"]["gst_rate_id"], existing_rate.id)
+        self.assertTrue(existing_rate.isdefault)
+        self.assertEqual(existing_rate.gst_rate, Decimal("18.00"))
 
 
 class LaunchSeedCommandTests(TestCase):
