@@ -3,6 +3,7 @@ from django.test import TestCase
 
 from entity.models import Entity, GstRegistrationType
 from financial.models import Ledger, account
+from financial.seeding import FinancialSeedService
 from financial.services import ensure_account_profile_for_ledger
 
 
@@ -41,3 +42,19 @@ class EnsureAccountProfileForLedgerTests(TestCase):
         self.assertEqual(len(profile.accountname), account._meta.get_field("accountname").max_length)
         self.assertEqual(profile.accountname, long_name[:200])
         self.assertEqual(profile.legalname, legal_name)
+
+    def test_reconcile_entity_trims_long_ledger_name_when_syncing_profile(self):
+        long_name = "R" * 240
+        ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=9102,
+            name=long_name,
+            legal_name="Reconcilable Long Ledger",
+            is_party=True,
+            createdby=self.user,
+        )
+
+        FinancialSeedService.reconcile_entity(entity=self.entity, actor=self.user)
+
+        profile = account.objects.get(ledger=ledger)
+        self.assertEqual(profile.accountname, long_name[:200])

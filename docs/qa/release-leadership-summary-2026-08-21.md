@@ -169,7 +169,7 @@ Secondary stage blockers:
 Launch seed remediation prepared on 2026-08-31:
 
 - Added backend command `seed_launch_validation_data` to seed all India GST states with at least one active district/city, run standard entity bootstrap repair, create a default stock location, create/select product `ABC` with an 18 percent GST row, and add two GST-registered launch customers with primary shipping details.
-- Focused proof: `venv/bin/python3 manage.py test financial.tests_account_profile_for_ledger entity.tests.test_launch_seed --keepdb` passed with `7` tests after hardening catalog bootstrap for legacy duplicate UQC ownership (`uq_uom_entity_uqc`), launch product GST-rate reuse for existing overlapping `ABC` rate periods, and ledger-to-account profile repair for legacy ledger names longer than `account.accountname`.
+- Focused proof: `venv/bin/python3 manage.py test financial.tests_account_profile_for_ledger entity.tests.test_launch_seed --keepdb` passed with `8` tests after hardening catalog bootstrap for legacy duplicate UQC ownership (`uq_uom_entity_uqc`), launch product GST-rate reuse for existing overlapping `ABC` rate periods, and ledger-to-account profile repair/reconciliation for legacy ledger names longer than `account.accountname`.
 - Stage preview command: `venv/bin/python3 manage.py seed_launch_validation_data --entity-name Mehak-T --entity-name manav-t --entity-name Ritikasharma --actor-email <stage-user-email> --dry-run --json`; after review, rerun without `--dry-run`, then rerun onboarding, sales, payment, and report packs against stage.
 
 ## Decision Points Required

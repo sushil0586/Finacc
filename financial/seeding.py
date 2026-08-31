@@ -17,6 +17,7 @@ from financial.models import (
 from financial.party_accounting_defaults import resolve_party_accounting_from_maps
 from financial.seed_catalogs import FINANCIAL_TEMPLATES
 from financial.services import (
+    _truncate_model_char_field,
     allocate_next_ledger_code,
     apply_normalized_profile_payload,
     create_account_with_synced_ledger,
@@ -202,10 +203,22 @@ class FinancialSeedService:
                 change_reasons.append("account_profile")
 
             account_profile = getattr(ledger, "account_profile", None)
-            if account_profile and account_profile.accountname != ledger.name:
-                account_profile.accountname = ledger.name
+            account_profile_name = _truncate_model_char_field(
+                account,
+                "accountname",
+                ledger.name or ledger.legal_name,
+                fallback=f"Ledger {ledger.pk}",
+            )
+            account_profile_legal_name = _truncate_model_char_field(
+                account,
+                "legalname",
+                ledger.legal_name or ledger.name,
+                fallback=account_profile_name,
+            )
+            if account_profile and account_profile.accountname != account_profile_name:
+                account_profile.accountname = account_profile_name
                 if not account_profile.legalname:
-                    account_profile.legalname = ledger.legal_name or ledger.name
+                    account_profile.legalname = account_profile_legal_name
                 account_profile.save(update_fields=["accountname", "legalname"])
                 change_reasons.append("account_profile_name")
 
