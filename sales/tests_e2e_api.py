@@ -1249,6 +1249,69 @@ class SalesApiEndToEndTests(APITestCase):
         second_series.refresh_from_db()
         self.assertEqual(second_series.current_number, 1122)
 
+    def test_shared_gstin_stage_style_branch_series_syncs_above_existing_gstin_floor(self):
+        second_branch = SubEntity.objects.create(
+            entity=self.entity,
+            subentityname="Same GSTIN Stage Style Branch",
+        )
+        second_series = DocumentNumberSeries.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=second_branch,
+            doc_type=self.sales_doc_type,
+            doc_code="SINV",
+            prefix="SINV",
+            starting_number=1,
+            current_number=1,
+            number_padding=5,
+            include_year=True,
+            reset_frequency="yearly",
+            is_active=True,
+            created_by=self.user,
+        )
+        existing_headers = [
+            SalesInvoiceHeader(
+                entity=self.entity,
+                entityfinid=self.entityfin,
+                subentity=self.subentity,
+                doc_type=SalesInvoiceHeader.DocType.TAX_INVOICE,
+                status=SalesInvoiceHeader.Status.CONFIRMED,
+                bill_date="2026-04-10",
+                doc_code="SINV",
+                doc_no=number,
+                invoice_number=f"SI-SINV-{number}",
+                customer=self.customer,
+                customer_name="Customer-A",
+                customer_gstin="27ABCDE1234F1Z5",
+                customer_state_code="27",
+                seller_gstin="27AAAAA1234A1Z5",
+                seller_state_code="27",
+                place_of_supply_state_code="27",
+                supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B,
+                taxability=SalesInvoiceHeader.Taxability.TAXABLE,
+            )
+            for number in range(1, 195)
+        ]
+        SalesInvoiceHeader.objects.bulk_create(existing_headers)
+
+        second_scope = f"?entity_id={self.entity.id}&entityfinid={self.entityfin.id}&subentity_id={second_branch.id}"
+        second = self._create_invoice(
+            reference="SO-SHARED-GST-STAGE-FLOOR",
+            subentity=second_branch.id,
+            seller_gstin="27AAAAA1234A1Z5",
+        )
+        second_confirm = self.client.post(
+            f"/api/sales/invoices/{second['id']}/confirm/{second_scope}",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(second_confirm.status_code, status.HTTP_200_OK, second_confirm.json())
+        self.assertEqual(second_confirm.json()["doc_no"], 195)
+        self.assertEqual(second_confirm.json()["invoice_number"], "SI-SINV-195")
+        second_series.refresh_from_db()
+        self.assertEqual(second_series.current_number, 196)
+
     def test_different_gstin_branches_can_use_same_sales_invoice_number(self):
         second_branch = self._create_branch_with_primary_gstin(name="Different GSTIN Branch")
         DocumentNumberSeries.objects.create(
