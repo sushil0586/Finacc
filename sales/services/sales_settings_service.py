@@ -779,6 +779,7 @@ class SalesSettingsService:
         se = None
         se_addr = None
         se_contact = None
+        se_gst = None
         if subentity_id:
             se = (
                 SubEntity.objects.filter(id=subentity_id, entity_id=entity_id)
@@ -810,9 +811,19 @@ class SalesSettingsService:
                 .only("id", "subentity_id", "mobile", "email")
                 .first()
             )
+            se_gst = (
+                SubEntity.gst_registrations.rel.related_model.objects.filter(subentity_id=subentity_id, isactive=True, is_primary=True)
+                .select_related("state")
+                .only("id", "subentity_id", "gstin", "state_id", "state__id", "state__statecode", "state__statename")
+                .first()
+            )
 
-        # state preference: SubEntity primary state > Entity primary state
-        seller_state = (se_addr.state if se_addr and se_addr.state else (entity_addr.state if entity_addr else None))
+        # Branch GST registration is the statutory seller scope; address is only a fallback.
+        seller_gst = se_gst if se_gst else entity_gst
+        seller_state = (
+            se_gst.state if se_gst and getattr(se_gst, "state", None)
+            else (se_addr.state if se_addr and se_addr.state else (entity_addr.state if entity_addr else None))
+        )
         seller_state_id = seller_state.id if seller_state else None
         seller_statecode = seller_state.statecode if seller_state else None
         seller_statename = seller_state.statename if seller_state else None
@@ -823,8 +834,7 @@ class SalesSettingsService:
             "entity_id": entity.id,
             "subentity_id": se.id if se else None,
 
-            # GST always from Entity
-            "gstno": (entity_gst.gstin if entity_gst else None),
+            "gstno": (seller_gst.gstin if seller_gst else None),
 
             "state_id": seller_state_id,
             "statecode": seller_statecode,  # ✅ ADDED

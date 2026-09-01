@@ -15,7 +15,7 @@ from rest_framework.test import APIClient, APITestCase
 
 from Authentication.models import User
 from catalog.models import Product, ProductCategory, UnitOfMeasure
-from entity.models import Entity, EntityAddress, EntityFinancialYear, EntityGstRegistration, GstRegistrationType, SubEntity
+from entity.models import Entity, EntityAddress, EntityFinancialYear, EntityGstRegistration, GstRegistrationType, SubEntity, SubEntityAddress, SubEntityGstRegistration
 from financial.models import AccountAddress, AccountCommercialProfile, AccountComplianceProfile, Ledger, ShippingDetails, account, accountHead, accounttype
 from financial.services import create_account_with_synced_ledger
 from geography.models import City, Country, District, State
@@ -358,6 +358,33 @@ class SalesApiEndToEndTests(APITestCase):
         response = self.client.post(endpoint, payload, format="json")
         self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.json())
         return response.json()
+
+    def _create_branch_with_primary_gstin(self, *, name: str = "Karnataka Sales Branch") -> SubEntity:
+        branch = SubEntity.objects.create(
+            entity=self.entity,
+            subentityname=name,
+        )
+        other_district = District.objects.create(districtname=f"{name} District", districtcode=name[:6].upper(), state=self.state_other)
+        other_city = City.objects.create(cityname=f"{name} City", citycode=name[:6].upper(), pincode="560001", distt=other_district)
+        SubEntityAddress.objects.create(
+            subentity=branch,
+            address_type=SubEntityAddress.AddressType.OPERATIONS,
+            line1=f"{name} Address",
+            country=self.country,
+            state=self.state_other,
+            district=other_district,
+            city=other_city,
+            pincode="560001",
+            is_primary=True,
+        )
+        SubEntityGstRegistration.objects.create(
+            subentity=branch,
+            gstin="29AAAAA1234A1Z5",
+            registration_type=self.gst_type,
+            state=self.state_other,
+            is_primary=True,
+        )
+        return branch
 
     def _seed_posting_entry(
         self,
@@ -1163,10 +1190,7 @@ class SalesApiEndToEndTests(APITestCase):
         self.assertEqual(second_confirm.json()["invoice_number"], "SI-SINV-1002")
 
     def test_different_gstin_branches_can_use_same_sales_invoice_number(self):
-        second_branch = SubEntity.objects.create(
-            entity=self.entity,
-            subentityname="Different GSTIN Branch",
-        )
+        second_branch = self._create_branch_with_primary_gstin(name="Different GSTIN Branch")
         DocumentNumberSeries.objects.create(
             entity=self.entity,
             entityfinid=self.entityfin,
@@ -1193,8 +1217,8 @@ class SalesApiEndToEndTests(APITestCase):
         second = self._create_invoice(
             reference="SO-DIFF-GST-2",
             subentity=second_branch.id,
-            seller_gstin="29AAAAA1234A1Z5",
-            seller_state_code="29",
+            seller_gstin="27AAAAA1234A1Z5",
+            seller_state_code="27",
         )
         second_confirm = self.client.post(
             f"/api/sales/invoices/{second['id']}/confirm/{second_scope}",
@@ -1205,6 +1229,59 @@ class SalesApiEndToEndTests(APITestCase):
         self.assertEqual(second_confirm.status_code, status.HTTP_200_OK, second_confirm.json())
         self.assertEqual(second_confirm.json()["doc_no"], 1001)
         self.assertEqual(second_confirm.json()["invoice_number"], "SI-SINV-1001")
+
+    def test_sales_settings_seller_profile_prefers_branch_gstin(self):
+        branch = self._create_branch_with_primary_gstin(name="Settings GSTIN Branch")
+
+        seller = SalesSettingsService.get_seller_profile(entity_id=self.entity.id, subentity_id=branch.id)
+
+        self.assertEqual(seller["gstno"], "29AAAAA1234A1Z5")
+        self.assertEqual(seller["statecode"], "29")
+        self.assertEqual(seller["subentity_id"], branch.id)
+
+    def test_branch_gstin_overrides_stale_client_seller_snapshot_on_confirm(self):
+        second_branch = self._create_branch_with_primary_gstin(name="Confirm GSTIN Branch")
+        DocumentNumberSeries.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=second_branch,
+            doc_type=self.sales_doc_type,
+            doc_code="SINV",
+            prefix="SI",
+            starting_number=1001,
+            current_number=1001,
+            is_active=True,
+            created_by=self.user,
+        )
+
+        first = self._create_invoice(reference="SO-BRANCH-GST-SOURCE")
+        first_confirm = self.client.post(
+            f"/api/sales/invoices/{first['id']}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(first_confirm.status_code, status.HTTP_200_OK, first_confirm.json())
+        self.assertEqual(first_confirm.json()["invoice_number"], "SI-SINV-1001")
+
+        second_scope = f"?entity_id={self.entity.id}&entityfinid={self.entityfin.id}&subentity_id={second_branch.id}"
+        second = self._create_invoice(
+            reference="SO-BRANCH-GST-OVERRIDE",
+            subentity=second_branch.id,
+            seller_gstin="27AAAAA1234A1Z5",
+            seller_state_code="27",
+        )
+        second_confirm = self.client.post(
+            f"/api/sales/invoices/{second['id']}/confirm/{second_scope}",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(second_confirm.status_code, status.HTTP_200_OK, second_confirm.json())
+        self.assertEqual(second_confirm.json()["doc_no"], 1001)
+        self.assertEqual(second_confirm.json()["invoice_number"], "SI-SINV-1001")
+        branch_header = SalesInvoiceHeader.objects.get(pk=second["id"])
+        self.assertEqual(branch_header.seller_gstin, "29AAAAA1234A1Z5")
+        self.assertEqual(branch_header.seller_state_code, "29")
 
     def test_same_gstin_invoice_number_is_database_unique_across_branches(self):
         second_branch = SubEntity.objects.create(

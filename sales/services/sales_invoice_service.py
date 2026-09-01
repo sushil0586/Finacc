@@ -26,7 +26,7 @@ from catalog.lot_tracking import resolve_tracked_lot_number
 from catalog.taxability import resolve_product_default_taxability
 from catalog.uom_helpers import resolve_product_uom
 from sales.models.sales_core import SalesInvoiceShipToSnapshot
-from sales.services.profile_resolvers import entity_primary_gstin, entity_primary_state
+from sales.services.profile_resolvers import seller_gstin_for_scope, seller_state_for_scope
 from posting.adapters.sales_invoice import SalesInvoicePostingAdapter, SalesInvoicePostingConfig
 from posting.models import TxnType, Entry, EntryStatus, JournalLine, InventoryMove
 from posting.common.location_resolver import resolve_posting_location_id
@@ -991,10 +991,25 @@ class SalesInvoiceService:
                 header.customer_state_code = cls._state_code_from_state_obj(account_region_state(cust))
 
         if ent:
-            if not cls._is_valid_gstin(header.seller_gstin):
-                header.seller_gstin = cls._normalize_gstin(entity_primary_gstin(ent))
-            if not cls._has_meaningful_state_code(header.seller_state_code):
-                header.seller_state_code = cls._state_code_from_state_obj(entity_primary_state(ent))
+            authoritative_seller_gstin = cls._normalize_gstin(
+                seller_gstin_for_scope(
+                    ent,
+                    getattr(header, "subentity", None),
+                    subentity_id=getattr(header, "subentity_id", None),
+                )
+            )
+            if authoritative_seller_gstin and header.seller_gstin != authoritative_seller_gstin:
+                header.seller_gstin = authoritative_seller_gstin
+
+            authoritative_seller_state_code = cls._state_code_from_state_obj(
+                seller_state_for_scope(
+                    ent,
+                    getattr(header, "subentity", None),
+                    subentity_id=getattr(header, "subentity_id", None),
+                )
+            )
+            if cls._has_meaningful_state_code(authoritative_seller_state_code):
+                header.seller_state_code = authoritative_seller_state_code
 
         # Derive POS from bill-to/ship-to/customer when missing.
         if not cls._has_meaningful_state_code(header.place_of_supply_state_code):
