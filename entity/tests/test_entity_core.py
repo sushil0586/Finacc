@@ -12,7 +12,7 @@ from rest_framework.test import APIClient
 from Authentication.models import AuthAuditLog, AuthOTP, User
 from assets.models import AssetCategory, DepreciationRun, DepreciationRunLine, FixedAsset
 from catalog.models import Product, ProductCategory, ProductPurchaseBehavior, UnitOfMeasure
-from entity.models import BankDetail, Constitution, Entity, EntityConstitutionV2, EntityFinancialYear, EntityGstRegistration, EntityOwnershipV2, GstRegistrationType, SubEntity, gstin_validator
+from entity.models import BankDetail, Constitution, Entity, EntityConstitutionV2, EntityFinancialYear, EntityGstRegistration, EntityOwnershipV2, GstRegistrationType, SubEntity, SubEntityAddress, SubEntityCapability, SubEntityContact, SubEntityGstRegistration, gstin_validator
 from entity.models import EntityBankAccountV2 as BankAccount
 from entity.onboarding_serializers import EntityOnboardingCreateSerializer, EntityOnboardingUpdateSerializer
 from entity.onboarding_services import EntityOnboardingService
@@ -159,6 +159,84 @@ class EntityOnboardingTests(TestCase):
         )
         self.client.force_authenticate(user=self.user)
 
+    def _branch_onboarding_payload(self, *, entity_name="Branch Matrix Entity", subentities=None):
+        return {
+            "entity": {
+                "entityname": entity_name,
+                "legalname": f"{entity_name} Pvt Ltd",
+                "GstRegitrationType": self.gst_type.id,
+                "gstno": "03APXPB5894F1Z3",
+                "panno": "APXPB5894F",
+                "phoneoffice": "9855966534",
+                "phoneresidence": "9855966534",
+                "email": f"{entity_name.lower().replace(' ', '-')}@example.com",
+                "address": "4369 GT Road",
+                "country": self.country.id,
+                "state": self.state.id,
+                "district": self.district.id,
+                "city": self.city.id,
+                "pincode": "140406",
+                "const": self.constitution.id,
+            },
+            "financial_years": [
+                {
+                    "finstartyear": "2026-04-01T00:00:00Z",
+                    "finendyear": "2027-03-31T00:00:00Z",
+                    "desc": "FY 2026-27",
+                    "isactive": True,
+                }
+            ],
+            "subentities": subentities or [],
+            "seed_options": {
+                "seed_financial": False,
+                "seed_rbac": False,
+                "seed_numbering": False,
+                "seed_catalog": False,
+                "seed_assets": False,
+                "seed_purchase_choices": False,
+                "seed_sales_choices": False,
+            },
+        }
+
+    def _branch_row(
+        self,
+        name,
+        branch_type,
+        *,
+        code=None,
+        is_head_office=False,
+        gstno="03APXPB5894F1Z3",
+        can_sell=True,
+        can_purchase=True,
+        can_stock=True,
+        can_bank=True,
+        sort_order=100,
+    ):
+        return {
+            "subentityname": name,
+            "subentity_code": code,
+            "branch_type": branch_type,
+            "is_head_office": is_head_office,
+            "GstRegitrationType": self.gst_type.id,
+            "gstno": gstno,
+            "address": f"{name} Address",
+            "address2": "Launch Validation Area",
+            "country": self.country.id,
+            "state": self.state.id,
+            "district": self.district.id,
+            "city": self.city.id,
+            "pincode": "140406",
+            "phoneoffice": "9855966534",
+            "email": f"{str(code or name).lower().replace(' ', '-')}@example.com",
+            "contact_person_name": f"{name} Contact",
+            "contact_person_designation": "Branch Manager",
+            "can_sell": can_sell,
+            "can_purchase": can_purchase,
+            "can_stock": can_stock,
+            "can_bank": can_bank,
+            "sort_order": sort_order,
+        }
+
     def test_onboarding_meta_includes_compliance_credentials_contract(self):
         response = self.client.get("/api/entity/onboarding/meta/")
 
@@ -201,6 +279,361 @@ class EntityOnboardingTests(TestCase):
         self.assertIsNone(branch["state"])
         self.assertIsNone(branch["district"])
         self.assertIsNone(branch["city"])
+
+    def test_onboarding_create_accepts_all_branch_types_with_profiles_and_capabilities(self):
+        branch_rows = [
+            self._branch_row("Launch Head Office", "head_office", code="HO", is_head_office=True, sort_order=1),
+            self._branch_row("Retail Branch", "branch", code="BR", sort_order=2),
+            self._branch_row(
+                "Warehouse",
+                "warehouse",
+                code="WH",
+                can_sell=False,
+                can_purchase=True,
+                can_stock=True,
+                can_bank=False,
+                sort_order=3,
+            ),
+            self._branch_row(
+                "Factory",
+                "factory",
+                code="FAC",
+                can_sell=False,
+                can_purchase=True,
+                can_stock=True,
+                can_bank=False,
+                sort_order=4,
+            ),
+            self._branch_row("Depot", "depot", code="DEP", can_bank=False, sort_order=5),
+            self._branch_row("Showroom", "showroom", code="SHW", sort_order=6),
+            self._branch_row("Regional Office", "office", code="OFF", can_stock=False, sort_order=7),
+        ]
+        response = self.client.post(
+            "/api/entity/onboarding/create/",
+            self._branch_onboarding_payload(entity_name="All Branch Types Entity", subentities=branch_rows),
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        entity = Entity.objects.get(id=response.data["entity_id"])
+        created = {
+            row.subentity_code: row
+            for row in SubEntity.objects.filter(entity=entity).order_by("sort_order", "id")
+        }
+        self.assertEqual(set(created), {"HO", "BR", "WH", "FAC", "DEP", "SHW", "OFF"})
+        self.assertEqual(
+            SubEntity.objects.filter(entity=entity, isactive=True, is_head_office=True).count(),
+            1,
+        )
+
+        for expected in branch_rows:
+            subentity = created[expected["subentity_code"]]
+            self.assertEqual(subentity.branch_type, expected["branch_type"])
+            self.assertEqual(subentity.is_head_office, expected.get("is_head_office", False))
+            self.assertEqual(subentity.sort_order, expected["sort_order"])
+
+            self.assertTrue(SubEntityAddress.objects.filter(subentity=subentity, line1=expected["address"]).exists())
+            self.assertTrue(
+                SubEntityContact.objects.filter(
+                    subentity=subentity,
+                    name=expected["contact_person_name"],
+                    mobile=expected["phoneoffice"],
+                    email=expected["email"],
+                ).exists()
+            )
+            self.assertTrue(
+                SubEntityGstRegistration.objects.filter(
+                    subentity=subentity,
+                    gstin=expected["gstno"],
+                    state=self.state,
+                    is_primary=True,
+                    isactive=True,
+                ).exists()
+            )
+            capability = SubEntityCapability.objects.get(subentity=subentity)
+            self.assertEqual(capability.can_sell, expected["can_sell"])
+            self.assertEqual(capability.can_purchase, expected["can_purchase"])
+            self.assertEqual(capability.can_stock, expected["can_stock"])
+            self.assertEqual(capability.can_bank, expected["can_bank"])
+
+    def test_onboarding_create_promotes_first_branch_to_head_office_when_no_head_office_is_marked(self):
+        response = self.client.post(
+            "/api/entity/onboarding/create/",
+            self._branch_onboarding_payload(
+                entity_name="Auto Head Office Entity",
+                subentities=[
+                    self._branch_row("Operations Branch", "branch", code="OPS", sort_order=1),
+                    self._branch_row("Storage Warehouse", "warehouse", code="STO", sort_order=2),
+                ],
+            ),
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        entity = Entity.objects.get(id=response.data["entity_id"])
+        promoted = SubEntity.objects.get(entity=entity, subentity_code="OPS")
+        warehouse = SubEntity.objects.get(entity=entity, subentity_code="STO")
+        self.assertTrue(promoted.is_head_office)
+        self.assertEqual(promoted.branch_type, SubEntity.BranchType.HEAD_OFFICE)
+        self.assertFalse(warehouse.is_head_office)
+        self.assertEqual(warehouse.branch_type, SubEntity.BranchType.WAREHOUSE)
+
+    def test_onboarding_create_rejects_unknown_branch_type(self):
+        response = self.client.post(
+            "/api/entity/onboarding/create/",
+            self._branch_onboarding_payload(
+                entity_name="Invalid Branch Type Entity",
+                subentities=[
+                    self._branch_row("Head Office", "head_office", code="HO", is_head_office=True),
+                    self._branch_row("Regional Hub", "regional_hub", code="HUB"),
+                ],
+            ),
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("subentities", response.data)
+        self.assertIn("branch_type", response.data["subentities"][1])
+
+    def test_onboarding_create_rejects_multiple_head_office_branches(self):
+        serializer = EntityOnboardingCreateSerializer(
+            data=self._branch_onboarding_payload(
+                entity_name="Multiple Head Office Entity",
+                subentities=[
+                    self._branch_row("Head Office One", "head_office", code="HO1", is_head_office=True),
+                    self._branch_row("Head Office Two", "head_office", code="HO2", is_head_office=True),
+                ],
+            )
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
+        with self.assertRaises(ValidationError) as context:
+            EntityOnboardingService.create_entity(actor=self.user, payload=serializer.validated_data)
+
+        self.assertIn("Only one active head office is allowed per entity", str(context.exception))
+
+    def test_onboarding_create_rejects_duplicate_subentity_code_inside_entity(self):
+        serializer = EntityOnboardingCreateSerializer(
+            data=self._branch_onboarding_payload(
+                entity_name="Duplicate Branch Code Entity",
+                subentities=[
+                    self._branch_row("Head Office", "head_office", code="DUP", is_head_office=True),
+                    self._branch_row("Second Branch", "branch", code="DUP"),
+                ],
+            )
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
+        with self.assertRaises(ValidationError) as context:
+            EntityOnboardingService.create_entity(actor=self.user, payload=serializer.validated_data)
+
+        self.assertIn("uq_subentity_code_per_entity", str(context.exception))
+
+    def test_onboarding_create_rejects_invalid_subentity_geography_hierarchy(self):
+        haryana = State.objects.create(statename="Haryana", statecode="06", country=self.country)
+        serializer = EntityOnboardingCreateSerializer(
+            data=self._branch_onboarding_payload(
+                entity_name="Invalid Branch Geography Entity",
+                subentities=[
+                    self._branch_row("Head Office", "head_office", code="HO", is_head_office=True),
+                    {
+                        **self._branch_row("Bad Geography Branch", "branch", code="BAD"),
+                        "state": haryana.id,
+                        "district": self.district.id,
+                        "city": self.city.id,
+                        "gstno": "",
+                    },
+                ],
+            )
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
+        with self.assertRaises(ValidationError) as context:
+            EntityOnboardingService.create_entity(actor=self.user, payload=serializer.validated_data)
+
+        self.assertIn("Selected district does not belong to the selected state", str(context.exception))
+
+    @override_settings(MASTERGST_ENV="PRODUCTION", SALES_MASTERGST_ENV="PRODUCTION", ALLOW_RELAXED_GSTIN_FOR_SANDBOX=False)
+    def test_onboarding_create_rejects_branch_gstin_state_mismatch(self):
+        haryana = State.objects.create(statename="Haryana", statecode="06", country=self.country)
+        haryana_district = District.objects.create(districtname="Ambala", districtcode="AMB", state=haryana)
+        haryana_city = City.objects.create(cityname="Ambala", citycode="AMB", pincode="133001", distt=haryana_district)
+        response = self.client.post(
+            "/api/entity/onboarding/create/",
+            self._branch_onboarding_payload(
+                entity_name="Branch GST Mismatch Entity",
+                subentities=[
+                    self._branch_row("Head Office", "head_office", code="HO", is_head_office=True),
+                    {
+                        **self._branch_row("Mismatch Branch", "branch", code="MIS"),
+                        "state": haryana.id,
+                        "district": haryana_district.id,
+                        "city": haryana_city.id,
+                        "gstno": "03APXPB5894F1Z3",
+                    },
+                ],
+            ),
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("must match state code 06", str(response.data))
+
+    def test_onboarding_allows_same_gstin_for_multiple_branches_in_same_entity(self):
+        payload = {
+            "entity": {
+                "entityname": "Shared GST Branch Entity",
+                "legalname": "Shared GST Branch Entity Pvt Ltd",
+                "GstRegitrationType": self.gst_type.id,
+                "gstno": "03APXPB5894F1Z3",
+                "panno": "APXPB5894F",
+                "phoneoffice": "9855966534",
+                "phoneresidence": "9855966534",
+                "email": "shared-gst@example.com",
+                "address": "4369 GT Road",
+                "country": self.country.id,
+                "state": self.state.id,
+                "district": self.district.id,
+                "city": self.city.id,
+                "pincode": "140406",
+                "const": self.constitution.id,
+            },
+            "financial_years": [
+                {
+                    "finstartyear": "2026-04-01T00:00:00Z",
+                    "finendyear": "2027-03-31T00:00:00Z",
+                    "desc": "FY 2026-27",
+                    "isactive": True,
+                }
+            ],
+            "subentities": [
+                {
+                    "subentityname": "Shared GST Head Office",
+                    "branch_type": "head_office",
+                    "is_head_office": True,
+                    "GstRegitrationType": self.gst_type.id,
+                    "gstno": "03APXPB5894F1Z3",
+                    "address": "4369 GT Road",
+                    "country": self.country.id,
+                    "state": self.state.id,
+                    "district": self.district.id,
+                    "city": self.city.id,
+                    "pincode": "140406",
+                    "phoneoffice": "9855966534",
+                },
+                {
+                    "subentityname": "Shared GST Operations",
+                    "branch_type": "branch",
+                    "GstRegitrationType": self.gst_type.id,
+                    "gstno": "03APXPB5894F1Z3",
+                    "address": "4369 GT Road",
+                    "country": self.country.id,
+                    "state": self.state.id,
+                    "district": self.district.id,
+                    "city": self.city.id,
+                    "pincode": "140406",
+                    "phoneoffice": "9855966534",
+                },
+            ],
+            "seed_options": {
+                "seed_financial": False,
+                "seed_rbac": False,
+                "seed_numbering": False,
+                "seed_catalog": False,
+                "seed_assets": False,
+                "seed_purchase_choices": False,
+                "seed_sales_choices": False,
+            },
+        }
+
+        response = self.client.post("/api/entity/onboarding/create/", payload, format="json")
+
+        self.assertEqual(response.status_code, 201, response.data)
+        entity = Entity.objects.get(id=response.data["entity_id"])
+        self.assertEqual(
+            SubEntityGstRegistration.objects.filter(
+                subentity__entity=entity,
+                gstin="03APXPB5894F1Z3",
+                isactive=True,
+            ).count(),
+            2,
+        )
+
+    def test_subentity_gstin_duplicate_is_rejected_across_entities(self):
+        first_entity = Entity.objects.create(entityname="First Branch GST Entity", createdby=self.user)
+        second_entity = Entity.objects.create(entityname="Second Branch GST Entity", createdby=self.user)
+        first_branch = SubEntity.objects.create(entity=first_entity, subentityname="First Branch")
+        second_branch = SubEntity.objects.create(entity=second_entity, subentityname="Second Branch")
+        SubEntityGstRegistration.objects.create(
+            subentity=first_branch,
+            gstin="03APXPB5894F1Z3",
+            registration_type=self.gst_type,
+            state=self.state,
+            is_primary=True,
+            isactive=True,
+        )
+
+        with self.assertRaises(ValidationError) as context:
+            SubEntityGstRegistration.objects.create(
+                subentity=second_branch,
+                gstin="03APXPB5894F1Z3",
+                registration_type=self.gst_type,
+                state=self.state,
+                is_primary=True,
+                isactive=True,
+            )
+
+        self.assertIn("another entity", str(context.exception))
+
+    def test_subentity_gstin_duplicate_is_rejected_against_other_entity_registration(self):
+        first_entity = Entity.objects.create(entityname="Primary GST Entity", createdby=self.user)
+        second_entity = Entity.objects.create(entityname="Branch GST Entity", createdby=self.user)
+        second_branch = SubEntity.objects.create(entity=second_entity, subentityname="Second Branch")
+        EntityGstRegistration.objects.create(
+            entity=first_entity,
+            gstin="03APXPB5894F1Z3",
+            registration_type=self.gst_type,
+            state=self.state,
+            is_primary=True,
+            isactive=True,
+        )
+
+        with self.assertRaises(ValidationError) as context:
+            SubEntityGstRegistration.objects.create(
+                subentity=second_branch,
+                gstin="03APXPB5894F1Z3",
+                registration_type=self.gst_type,
+                state=self.state,
+                is_primary=True,
+                isactive=True,
+            )
+
+        self.assertIn("another entity", str(context.exception))
+
+    def test_entity_gstin_duplicate_is_rejected_against_other_entity_branch_registration(self):
+        first_entity = Entity.objects.create(entityname="Branch GST Entity", createdby=self.user)
+        second_entity = Entity.objects.create(entityname="Primary GST Entity", createdby=self.user)
+        first_branch = SubEntity.objects.create(entity=first_entity, subentityname="First Branch")
+        SubEntityGstRegistration.objects.create(
+            subentity=first_branch,
+            gstin="03APXPB5894F1Z3",
+            registration_type=self.gst_type,
+            state=self.state,
+            is_primary=True,
+            isactive=True,
+        )
+
+        with self.assertRaises(ValidationError) as context:
+            EntityGstRegistration.objects.create(
+                entity=second_entity,
+                gstin="03APXPB5894F1Z3",
+                registration_type=self.gst_type,
+                state=self.state,
+                is_primary=True,
+                isactive=True,
+            )
+
+        self.assertIn("another entity", str(context.exception))
 
     def test_onboarding_create_defaults_null_gst_status_and_blank_branch_type(self):
         payload = {

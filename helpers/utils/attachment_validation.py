@@ -13,14 +13,14 @@ _EXACT_ALLOWED_MIME_TYPES = {
     "application/pdf",
     "application/vnd.ms-excel",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    "text/plain",
 }
+
+_TEXT_MIME_TYPES = {"text/plain"}
 
 _ALLOWED_EXTENSIONS = {
     ".pdf",
     ".xls",
     ".xlsx",
-    ".txt",
     ".apng",
     ".avif",
     ".bmp",
@@ -38,11 +38,14 @@ _ALLOWED_EXTENSIONS = {
     ".webp",
 }
 
+_TEXT_EXTENSIONS = {".txt"}
+
 
 def validate_attachment_uploads(
     files: Iterable[object],
     *,
     max_size_bytes: int = ATTACHMENT_MAX_FILE_SIZE_BYTES,
+    allow_text: bool = False,
 ) -> None:
     for file_obj in files:
         if not file_obj:
@@ -53,11 +56,11 @@ def validate_attachment_uploads(
         if file_size > max_size_bytes:
             raise ValidationError({"detail": f"{file_name} exceeds {ATTACHMENT_MAX_FILE_SIZE_MB} MB."})
 
-        if not _is_supported_attachment_type(file_obj):
+        if not _is_supported_attachment_type(file_obj, allow_text=allow_text):
             raise ValidationError({"detail": f"{file_name} is not a supported format."})
 
 
-def _is_supported_attachment_type(file_obj: object) -> bool:
+def _is_supported_attachment_type(file_obj: object, *, allow_text: bool = False) -> bool:
     declared_type = str(getattr(file_obj, "content_type", "") or "").strip().lower()
     guessed_type, _ = mimetypes.guess_type(str(getattr(file_obj, "name", "") or ""))
     guessed_type = str(guessed_type or "").strip().lower()
@@ -69,6 +72,8 @@ def _is_supported_attachment_type(file_obj: object) -> bool:
             return True
         if mime_type in _EXACT_ALLOWED_MIME_TYPES:
             return True
+        if allow_text and mime_type in _TEXT_MIME_TYPES:
+            return True
 
     suffix = Path(str(getattr(file_obj, "name", "") or "")).suffix.lower()
-    return suffix in _ALLOWED_EXTENSIONS
+    return suffix in _ALLOWED_EXTENSIONS or (allow_text and suffix in _TEXT_EXTENSIONS)

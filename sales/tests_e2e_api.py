@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import IntegrityError, transaction
 from django.test import override_settings
 from django.utils import timezone
 from rest_framework import status
@@ -15,7 +16,7 @@ from rest_framework.test import APIClient, APITestCase
 from Authentication.models import User
 from catalog.models import Product, ProductCategory, UnitOfMeasure
 from entity.models import Entity, EntityAddress, EntityFinancialYear, EntityGstRegistration, GstRegistrationType, SubEntity
-from financial.models import AccountCommercialProfile, AccountComplianceProfile, Ledger, ShippingDetails, account, accountHead, accounttype
+from financial.models import AccountAddress, AccountCommercialProfile, AccountComplianceProfile, Ledger, ShippingDetails, account, accountHead, accounttype
 from financial.services import create_account_with_synced_ledger
 from geography.models import City, Country, District, State
 from numbering.models import DocumentNumberSeries, DocumentType
@@ -129,6 +130,19 @@ class SalesApiEndToEndTests(APITestCase):
         AccountComplianceProfile.objects.update_or_create(
             account=self.customer,
             defaults={"entity": self.entity, "gstno": "27ABCDE1234F1Z5", "createdby": self.user},
+        )
+        AccountAddress.objects.create(
+            account=self.customer,
+            entity=self.entity,
+            createdby=self.user,
+            address_type=AccountAddress.AddressType.BILLING,
+            line1="Customer-A Billing",
+            country=self.country,
+            state=self.state_home,
+            district=self.district,
+            city=self.city,
+            pincode="400001",
+            isprimary=True,
         )
         ShippingDetails.objects.create(
             account=self.customer,
@@ -958,14 +972,16 @@ class SalesApiEndToEndTests(APITestCase):
         self.assertEqual(note_create_resp.status_code, status.HTTP_201_CREATED, note_create_resp.json())
         note_id = note_create_resp.json()["id"]
 
-        customer = account.objects.get(pk=self.customer_id)
+        customer = account.objects.get(pk=self.customer.id)
         inter_ship = ShippingDetails.objects.create(
             account=customer,
-            consignee="Inter Ship",
-            address="Inter State Address",
-            state=self.state_29,
+            entity=self.entity,
+            createdby=self.user,
+            full_name="Inter Ship",
+            address1="Inter State Address",
+            country=self.country,
+            state=self.state_other,
             pincode="560001",
-            city=self.city,
         )
 
         patch_resp = self.client.patch(
@@ -1023,6 +1039,199 @@ class SalesApiEndToEndTests(APITestCase):
         self.assertEqual(confirmed["status"], int(SalesInvoiceHeader.Status.CONFIRMED))
         self.assertEqual(confirmed["doc_no"], 1001)
         self.assertEqual(confirmed["invoice_number"], "SI-SINV-1001")
+
+    def test_branch_without_sales_series_inherits_entity_level_shared_numbering(self):
+        DocumentNumberSeries.objects.filter(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            doc_type=self.sales_doc_type,
+            doc_code="SINV",
+        ).delete()
+        shared_series = DocumentNumberSeries.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=None,
+            doc_type=self.sales_doc_type,
+            doc_code="SINV",
+            prefix="SROOT",
+            starting_number=2001,
+            current_number=2001,
+            is_active=True,
+            created_by=self.user,
+        )
+
+        created = self._create_invoice(reference="SO-SHARED-ROOT-NUMBERING")
+        confirm_resp = self.client.post(
+            f"/api/sales/invoices/{created['id']}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(confirm_resp.status_code, status.HTTP_200_OK, confirm_resp.json())
+        self.assertEqual(confirm_resp.json()["doc_no"], 2001)
+        self.assertEqual(confirm_resp.json()["invoice_number"], "SI-SINV-2001")
+        shared_series.refresh_from_db()
+        self.assertEqual(shared_series.current_number, 2002)
+
+    def test_sales_branch_specific_series_are_separate_when_configured(self):
+        second_branch = SubEntity.objects.create(
+            entity=self.entity,
+            subentityname="Independent Sales Branch",
+        )
+        second_series = DocumentNumberSeries.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=second_branch,
+            doc_type=self.sales_doc_type,
+            doc_code="S2INV",
+            prefix="S2",
+            starting_number=1001,
+            current_number=1001,
+            is_active=True,
+            created_by=self.user,
+        )
+
+        first = self._create_invoice(reference="SO-SEPARATE-BRANCH-1")
+        first_confirm = self.client.post(
+            f"/api/sales/invoices/{first['id']}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(first_confirm.status_code, status.HTTP_200_OK, first_confirm.json())
+        self.assertEqual(first_confirm.json()["doc_no"], 1001)
+        self.assertEqual(first_confirm.json()["invoice_number"], "SI-SINV-1001")
+
+        second_scope = f"?entity_id={self.entity.id}&entityfinid={self.entityfin.id}&subentity_id={second_branch.id}"
+        second = self._create_invoice(
+            reference="SO-SEPARATE-BRANCH-2",
+            subentity=second_branch.id,
+            doc_code="S2INV",
+        )
+        second_confirm = self.client.post(
+            f"/api/sales/invoices/{second['id']}/confirm/{second_scope}",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(second_confirm.status_code, status.HTTP_200_OK, second_confirm.json())
+        self.assertEqual(second_confirm.json()["doc_no"], 1001)
+        self.assertEqual(second_confirm.json()["invoice_number"], "SI-S2INV-1001")
+        second_series.refresh_from_db()
+        self.assertEqual(second_series.current_number, 1002)
+
+    def test_shared_gstin_branch_confirm_skips_duplicate_invoice_number(self):
+        second_branch = SubEntity.objects.create(
+            entity=self.entity,
+            subentityname="Same GSTIN Branch",
+        )
+        DocumentNumberSeries.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=second_branch,
+            doc_type=self.sales_doc_type,
+            doc_code="SINV",
+            prefix="SI",
+            starting_number=1001,
+            current_number=1001,
+            is_active=True,
+            created_by=self.user,
+        )
+
+        first = self._create_invoice(reference="SO-SHARED-GST-1")
+        first_confirm = self.client.post(
+            f"/api/sales/invoices/{first['id']}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(first_confirm.status_code, status.HTTP_200_OK, first_confirm.json())
+        self.assertEqual(first_confirm.json()["invoice_number"], "SI-SINV-1001")
+
+        second_scope = f"?entity_id={self.entity.id}&entityfinid={self.entityfin.id}&subentity_id={second_branch.id}"
+        second = self._create_invoice(
+            reference="SO-SHARED-GST-2",
+            subentity=second_branch.id,
+            seller_gstin="27AAAAA1234A1Z5",
+        )
+        second_confirm = self.client.post(
+            f"/api/sales/invoices/{second['id']}/confirm/{second_scope}",
+            {},
+            format="json",
+        )
+        self.assertEqual(second_confirm.status_code, status.HTTP_200_OK, second_confirm.json())
+        self.assertEqual(second_confirm.json()["doc_no"], 1002)
+        self.assertEqual(second_confirm.json()["invoice_number"], "SI-SINV-1002")
+
+    def test_different_gstin_branches_can_use_same_sales_invoice_number(self):
+        second_branch = SubEntity.objects.create(
+            entity=self.entity,
+            subentityname="Different GSTIN Branch",
+        )
+        DocumentNumberSeries.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=second_branch,
+            doc_type=self.sales_doc_type,
+            doc_code="SINV",
+            prefix="SI",
+            starting_number=1001,
+            current_number=1001,
+            is_active=True,
+            created_by=self.user,
+        )
+
+        first = self._create_invoice(reference="SO-DIFF-GST-1")
+        first_confirm = self.client.post(
+            f"/api/sales/invoices/{first['id']}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(first_confirm.status_code, status.HTTP_200_OK, first_confirm.json())
+        self.assertEqual(first_confirm.json()["invoice_number"], "SI-SINV-1001")
+
+        second_scope = f"?entity_id={self.entity.id}&entityfinid={self.entityfin.id}&subentity_id={second_branch.id}"
+        second = self._create_invoice(
+            reference="SO-DIFF-GST-2",
+            subentity=second_branch.id,
+            seller_gstin="29AAAAA1234A1Z5",
+            seller_state_code="29",
+        )
+        second_confirm = self.client.post(
+            f"/api/sales/invoices/{second['id']}/confirm/{second_scope}",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(second_confirm.status_code, status.HTTP_200_OK, second_confirm.json())
+        self.assertEqual(second_confirm.json()["doc_no"], 1001)
+        self.assertEqual(second_confirm.json()["invoice_number"], "SI-SINV-1001")
+
+    def test_same_gstin_invoice_number_is_database_unique_across_branches(self):
+        second_branch = SubEntity.objects.create(
+            entity=self.entity,
+            subentityname="DB Guard Same GSTIN Branch",
+        )
+
+        first = self._create_invoice(reference="SO-DB-GSTIN-1")
+        first_header = SalesInvoiceHeader.objects.get(pk=first["id"])
+        first_header.status = SalesInvoiceHeader.Status.CONFIRMED
+        first_header.doc_no = 9001
+        first_header.invoice_number = "SI-SINV-9001"
+        first_header.save(update_fields=["status", "doc_no", "invoice_number"])
+
+        second = self._create_invoice(
+            reference="SO-DB-GSTIN-2",
+            subentity=second_branch.id,
+            seller_gstin=first_header.seller_gstin,
+        )
+        second_header = SalesInvoiceHeader.objects.get(pk=second["id"])
+        second_header.status = SalesInvoiceHeader.Status.CONFIRMED
+        second_header.doc_no = 9001
+        second_header.invoice_number = first_header.invoice_number
+
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                second_header.save(update_fields=["status", "doc_no", "invoice_number"])
 
     def test_attachment_upload_list_download_delete_and_summary(self):
         created = self._create_invoice(reference="SO-ATTACH")

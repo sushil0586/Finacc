@@ -47,7 +47,7 @@ class PurchaseInvoiceImportDraftAPIView(APIView):
         if not upload:
             raise ValidationError({"detail": "Invoice file is required."})
 
-        validate_attachment_uploads([upload])
+        validate_attachment_uploads([upload], allow_text=True)
         context = PurchaseInvoiceImportContext(
             entity_id=entity_id,
             entityfinid=entityfinid_id,

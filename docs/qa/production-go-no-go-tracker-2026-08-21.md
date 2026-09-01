@@ -37,33 +37,33 @@ Production should only be marked `Go` when:
 
 | Decision Area | Owner | Status | Notes |
 | --- | --- | --- | --- |
-| Overall release decision | `TBD` | `Blocked` | Stage validation on 2026-08-30 found incomplete geography master data blocking onboarding, sales/customer/vendor seed flows, and no-skip release reruns |
-| Commercial core | `TBD` | `In Progress` | Strongest existing automation footprint and signoff script support |
-| Reporting and compliance | `TBD` | `In Progress` | Broad browser coverage exists; totals and export signoff still pending |
+| Overall release decision | `TBD` | `Passed With Conditions` for non-payroll scope; `Blocked` if Payroll is in scope | Geography blocker is remediated and latest clean-start full P0 stage run ended `248 passed`, `30 skipped`, `0 failed` in `1.2h`; Bank Reco stage-valid browser subset is also green; final go still needs Payroll entitlement/seed decision, Bank Reco matched-environment mutation/integrity decision, and production-owner operational evidence |
+| Commercial core | `TBD` | `Passed With Conditions` | Full P0 commercial paths are stage-green after launch seed and route/fixture hardening; manual business-format print/export/reconciliation signoff remains |
+| Reporting and compliance | `TBD` | `Passed With Conditions` | Stage-valid financial/compliance subset and Bank Reco browser subset are green; manual totals/export confirmation and Bank Reco matched-environment mutation/integrity coverage remain |
 | Inventory and manufacturing | `TBD` | `In Progress` | Real coverage exists, but live quantitative validation still pending |
-| Payroll and HRMS | `TBD` | `In Progress` | Payroll evidence is meaningful; HRMS remains lighter |
-| Platform and access | `TBD` | `In Progress` | Auth, onboarding, and RBAC evidence exists from code and test suites |
+| Payroll and HRMS | `TBD` | `Blocked` | Payroll routes are currently blocked on `Mehak-T` by `feature_payroll` subscription entitlement; HRMS remains lighter |
+| Platform and access | `TBD` | `Passed With Conditions` | Auth, onboarding, subscription, dashboard, RBAC, and full P0 stage paths are green; final owner review still required |
 | Observability and rollback | Infra / Support / Release lead | `Passed With Conditions` | Automated error/audit/config evidence is green; final go still requires production security settings, named support owner, and rollback walkthrough signoff |
 
 ## Track 1: Platform And Access
 
 | Check | Owner | Command / Method | Evidence | Status | Blocking | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| Login, auth, route protection | `TBD` | `npm run test:launch-commercial-smoke` from `finacc-ui-tests` | Existing smoke script plus auth P0 suites | `In Progress` | Yes | Script exists and auth coverage is present; rerun needed in release env |
-| Registration and onboarding | `TBD` | Included in `test:launch-commercial-smoke`; stage onboarding P1 rerun | Stage onboarding P1 on 2026-08-30: `2 passed`, `6 failed` | `Blocked` | Yes | Stage District options are empty for selected states; fresh entity activation cannot be signed off until geography districts/cities are seeded |
-| Entity scope behavior | `TBD` | Manual plus smoke confirmation across at least purchase and sales | Existing auth/entity integration suite plus manual notes needed | `In Progress` | Yes | Cross-module live scope verification still needed |
-| RBAC for critical modules | `TBD` | Manual role-matrix pass plus `tests/p0/reports-rbac.p0.spec.ts` and `test:payroll-rbac` | Existing RBAC suites | `In Progress` | Yes | Need explicit role-matrix execution evidence |
-| Session expiry and unauthorized redirects | `TBD` | Manual in release environment | Manual evidence required | `Not Started` | Yes | No trustworthy repo-only proof |
+| Login, auth, route protection | `TBD` | `tests/p0/auth*.p0.spec.ts` plus full P0 stage run | Clean full P0 stage run: `248 passed`, `30 skipped`, `0 failed`; auth/entity focused proof: `6 passed` | `Passed` | No | Login, route protection, logout, session reload, and cookie-backed auth-hint recovery are green on stage |
+| Registration and onboarding | `TBD` | Included in P0 plus stage onboarding P1 rerun | Stage onboarding P1 after quota/geography remediation: `7 passed`, `1 skipped`; public registration P0 included in clean full P0 | `Passed With Conditions` | No | Fresh create-and-activate and added-branch paths are green; capped quota denial remains a controlled alternate-tenant branch |
+| Entity scope behavior | `TBD` | Full P0 plus smoke confirmation across purchase and sales | `Mehak-T` full P0 stage run green; `Ritikasharma` entity smoke `4 passed` | `Passed With Conditions` | No | Keep exact displayed entity casing in env; manual scope spot-check can be attached at final go |
+| RBAC for critical modules | `TBD` | `tests/p0/reports-rbac.p0.spec.ts`, payroll RBAC, admin/RBAC P1 | Full P0 includes restricted RBAC matrix; admin/RBAC stage gate `10 passed`; payroll RBAC included in P0 | `Passed With Conditions` | No | Automated matrix is green; manual role-owner acknowledgement still useful |
+| Session expiry and unauthorized redirects | `TBD` | Auth P0 and subscription unauthorized P0 | Included in clean full P0 stage run | `Passed` | No | Expired session, unauthorized feature context, and blocked-route recovery are covered |
 
 ## Track 2: Commercial Core
 
 | Check | Owner | Command / Method | Evidence | Status | Blocking | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| Receipt voucher core flow | `TBD` | `tests/p0/receipt-voucher.p0.spec.ts` and `tests/p1/receipt-voucher.p1.spec.ts` | Existing P0/P1 suites and artifacts under `test-results-p0-full-run` / `test-results-p1` | `In Progress` | Yes | Strong evidence exists; rerun and report parity check still needed |
-| Payment and voucher stack | `TBD` | `npm run test:payment:signoff` | Existing signoff command definitions | `In Progress` | Yes | Command path is ready; release-env execution pending |
-| Purchase signoff | `TBD` | `npm run test:purchase:signoff` | Existing signoff command definitions and large P1 artifact set | `In Progress` | Yes | One of the strongest release-ready areas |
-| Sales signoff | `TBD` | `npm run test:sales:signoff` | Full P0 stage run on 2026-08-30: sales failures clustered on missing geography, insufficient GST customers, and expected product row `ABC` not observed | `Blocked` | Yes | Seed stage geography and deterministic sales customer/product fixtures, then rerun sales P0/P1 signoff |
-| Purchase and sales downstream reconciliation | `TBD` | Included in `test:launch-commercial-smoke` plus targeted P1 reconciliation rerun | Existing reconciliation suites named in smoke bundle | `In Progress` | Yes | Live rerun still required |
+| Receipt voucher core flow | `TBD` | `tests/p0/receipt-voucher.p0.spec.ts` and `tests/p1/receipt-voucher.p1.spec.ts` | Receipt P0 included in clean full P0 stage run; focused receipt cleanup `3 passed` with sales policy canary | `Passed With Conditions` | No | Core receipt browser workflow is green; keep report parity in final business signoff |
+| Payment and voucher stack | `TBD` | `npm run test:payment:signoff` plus P0 voucher suite | Payment/voucher paths included in clean full P0; compact voucher/payables proof `41 passed`; payment tail rerun `12 passed` | `Passed With Conditions` | No | Payment open-item/advance and TDS paths are stage-green; manual settlement report signoff remains |
+| Purchase signoff | `TBD` | `npm run test:purchase:signoff` plus P0/P1 focused runs | Purchase P0 included in clean full P0; purchase note cluster `7 passed`; purchase P1 focused cleanup green | `Passed With Conditions` | No | Strong release-ready evidence; manual print/export sample still needed |
+| Sales signoff | `TBD` | `npm run test:sales:signoff` plus P0/TCS focused runs | Sales P0 included in clean full P0; compact sales smoke `9 passed`, `1 skipped`; Sales TCS full flow `9 passed` | `Passed With Conditions` | No | Geography/customer/product blocker is remediated; manual print/export sample still needed |
+| Purchase and sales downstream reconciliation | `TBD` | Included in `test:launch-commercial-smoke` plus targeted P1 reconciliation rerun | Sales/purchase source-to-report reconciliation focused evidence is green | `Passed With Conditions` | No | Keep manual business totals spot-check before final go |
 | Journal, bank, and cash voucher ledger validation | `TBD` | Manual posting and report verification | Manual evidence required | `Not Started` | Yes | Shared voucher automation exists, but ledger proof must be manual/live |
 | Print and export sanity check | `TBD` | Manual output validation for purchase and sales print flows | Existing print suites plus manual output evidence needed | `In Progress` | Yes | Environment-sensitive final validation remains |
 | Legacy import sanity check | `TBD` | Manual import of representative sample for enabled import flows | Purchase legacy import docs and suites exist | `In Progress` | Conditional | Sales legacy import still needs explicit scope call |
@@ -77,7 +77,7 @@ Production should only be marked `Go` when:
 | Payables report sanity check | `TBD` | Manual plus P1 report/browser suites | Existing AP aging, vendor outstanding, ledger, settlement suites | `In Progress` | Yes | Manual totals confirmation still needed |
 | Receivables report sanity check | `TBD` | Manual plus P1 report/browser suites | Existing receivables browser, filter, data-integrity, and cross-report suites | `In Progress` | Yes | Manual totals confirmation still needed |
 | GST report sanity check | `TBD` | Manual plus `tests/p1/gst-report-browser.p1.spec.ts` and related suites | Existing GST browser and exception suites | `In Progress` | Yes | Export and bucket-total signoff still needed |
-| Compliance browser and parity check | `TBD` | Manual plus compliance-related P1 suites | Stage reports/regression chunk on 2026-08-30: `15 passed`, `2 skipped`, `6 failed` | `Blocked` | Yes | Financial/compliance timing basics passed, but TCS seeded compliance flows are blocked by missing geography |
+| Compliance browser and parity check | `TBD` | Manual plus compliance-related P1 suites | Stage-valid financial/compliance subset: `13 passed`, `5 skipped`, `0 failed`; Sales TCS full flow `9 passed`; Bank Reco stage-valid browser subset `21 passed`, `0 failed` | `Passed With Conditions` | No | Geography blocker is closed; remaining skips are live-data availability branches and Bank Reco local-shell mutation/integrity exclusion |
 | GST and statutory export validation | `TBD` | Manual export check | Manual evidence required | `Not Started` | Yes | Final artifact validation cannot be inferred from repo only |
 | TCS browser and filing posture | `TBD` | Manual plus TCS P1 suites | Existing TCS browser, drilldown, statutory, export suites | `In Progress` | Yes | Filing posture requires business confirmation |
 | GST-TDS and withholding chain validation | `TBD` | Manual end-to-end config to report check | Partial repo evidence only | `Not Started` | Yes | One of the thinner release-proof areas |
@@ -86,8 +86,8 @@ Production should only be marked `Go` when:
 
 | Check | Owner | Command / Method | Evidence | Status | Blocking | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| Import, preview, validate, workspace handoff | `TBD` | Bank reco P1 suites plus manual live run | Existing workflow and browser suites | `In Progress` | Yes | Strong evidence exists, but release rerun pending |
-| Auto-match and manual match | `TBD` | Manual live mutation plus existing suites | Existing API/browser evidence plus manual notes needed | `In Progress` | Yes | Live mutation closure still critical |
+| Import, preview, validate, workspace handoff | `TBD` | Bank reco P1 browser subset plus manual live run | Stage-valid browser subset passed `21 passed`, `0 failed` in `3.9m` | `Passed With Conditions` | No | Dashboard, import setup, invalid mapping, duplicate-period guidance, archived import lock, workspace shell/context switching, timing, and visual compactness are green; manual mutation proof remains separate |
+| Auto-match and manual match | `TBD` | Manual live mutation plus existing suites | Existing API/browser evidence plus manual notes needed; local-shell mutation specs are not remote-stage-safe | `In Progress` | Yes | Live mutation closure still critical |
 | Group match, partial match, unmatch, exception flows | `TBD` | Manual live mutation pass | Existing gap plan identifies these as high-risk | `Not Started` | Yes | Still a focused release risk |
 | Voucher creation from bank row | `TBD` | Manual live run and downstream verification | Existing API evidence plus manual proof needed | `Not Started` | Yes | Needs explicit live proof |
 | Run actions and reload persistence | `TBD` | Manual live validation | Manual evidence required | `Not Started` | Yes | Known risk from prior gap analysis |
@@ -109,7 +109,7 @@ Production should only be marked `Go` when:
 | Check | Owner | Command / Method | Evidence | Status | Blocking | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | Payroll RBAC | `TBD` | `npm run test:payroll-rbac` | Existing command and suite | `In Progress` | Yes | Release-env rerun pending |
-| Payroll suite | `TBD` | `npm run test:payroll` | Stage attempt on 2026-08-30: payroll P1 failed during local Django seeding because local DB does not contain stage entity `Mehak-T` | `Blocked` | Yes | Make payroll P1 seed setup stage-aware or run in matched backend/browser environment before final signoff |
+| Payroll suite | `TBD` | `npm run test:payroll` | Latest stage smoke grep `PAYROLL-00[1-4]` produced `1 passed`, `4 skipped`, `0 failed` because `feature_payroll` is disabled for `Mehak-T`; deeper workflow tests still need remote-safe or matched-environment seed setup | `Blocked` | Yes | Enable Payroll for the launch tenant or use a payroll-enabled stage tenant, then make payroll P1 seed setup stage-aware or run in matched backend/browser environment before final signoff |
 | Payroll run and posting preview | `TBD` | Manual live verification | Payroll docs and surfaces exist; manual proof needed | `Not Started` | Yes | Core live signoff item |
 | Payroll ESS validation | `TBD` | Manual role-based validation | Frontend breadth exists; manual proof needed | `Not Started` | Conditional |  |
 | Payroll approvals and policies | `TBD` | Manual approval workflow validation | Surfaces exist; proof is lighter | `Not Started` | Conditional |  |
@@ -165,7 +165,7 @@ Run from `/Users/ansh/Documents/finacc-ui-tests` unless stated otherwise.
 
 | Topic | Summary |
 | --- | --- |
-| Open blockers | Stage geography master data is incomplete: selected states return no districts/cities, blocking onboarding, sales/customer/vendor seed flows, TCS seeded checks, payment against-bill depth, and final no-skip reruns. Some P1 seeders also shell into local Django and are not valid remote-stage proof. |
+| Open blockers | No active P0 stage failures after clean full P0 run. Remaining blockers/conditions are Payroll subscription entitlement plus local-shell seed setup, Bank Reco P1 local-shell mutation/integrity seeders that are not valid remote-stage proof, plus production-owner evidence for security settings, support observation, audit captures, rollback, and hotfix readiness. |
 | Accepted release conditions | Track 7 is `Passed With Conditions`: production security settings, named support owner, support-observed error capture, audit-view screenshots/exports, backup/artifact version recording, and rollback/hotfix walkthrough must be completed before final go. |
 | Deferred scope |  |
 | Rollback readiness | Runbook checklist exists; final go requires release-lead/infra walkthrough and recorded backup/artifact versions. |

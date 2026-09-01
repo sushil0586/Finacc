@@ -297,6 +297,15 @@ class SalesInvoiceHeader(EntityScopedModel):
                 name="uq_sales_hdr_root_invoiceno",
             ),
             models.UniqueConstraint(
+                fields=["entity", "entityfinid", "doc_type", "seller_gstin", "invoice_number"],
+                condition=(
+                    Q(is_active=True, seller_gstin__isnull=False, invoice_number__isnull=False)
+                    & ~Q(seller_gstin="")
+                    & ~Q(invoice_number="")
+                ),
+                name="uq_sales_hdr_gstin_doc_invno",
+            ),
+            models.UniqueConstraint(
                 fields=["entity", "legacy_source_system", "legacy_source_key"],
                 condition=~Q(legacy_source_system="") & ~Q(legacy_source_key=""),
                 name="uq_sales_legacy_source_scope",

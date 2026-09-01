@@ -374,6 +374,8 @@ class EntityGstRegistration(TrackingModel):
         indexes = [models.Index(fields=["entity", "is_primary", "isactive"])]
 
     def clean(self):
+        gstin = (self.gstin or "").strip().upper()
+
         if self.isactive and self.entity_id:
             exists_other_active = EntityGstRegistration.objects.filter(
                 entity_id=self.entity_id,
@@ -381,6 +383,16 @@ class EntityGstRegistration(TrackingModel):
             ).exclude(pk=self.pk).exists()
             if exists_other_active:
                 raise ValidationError({"entity": "Only one active GST registration is allowed per entity."})
+
+            duplicate_branch_gstin = (
+                SubEntityGstRegistration.objects.filter(gstin__iexact=gstin, isactive=True)
+                .exclude(subentity__entity_id=self.entity_id)
+                .exists()
+            )
+            if duplicate_branch_gstin:
+                raise ValidationError({
+                    "gstin": "An active branch GST registration already exists for this GSTIN in another entity."
+                })
 
     def save(self, *args, **kwargs):
         self.gstin = (self.gstin or "").strip().upper()
@@ -640,7 +652,6 @@ class SubEntityGstRegistration(TrackingModel):
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(fields=["gstin"], condition=Q(isactive=True), name="uq_subentity_gst_registration_active_gstin"),
             models.UniqueConstraint(fields=["subentity"], condition=Q(isactive=True, is_primary=True), name="uq_subentity_gst_registration_primary"),
             models.UniqueConstraint(
                 fields=["subentity", "state"],
@@ -652,6 +663,26 @@ class SubEntityGstRegistration(TrackingModel):
 
     def clean(self):
         gstin = (self.gstin or "").strip().upper()
+
+        if self.isactive and gstin and self.subentity_id:
+            entity_id = getattr(getattr(self, "subentity", None), "entity_id", None)
+            if entity_id is None:
+                entity_id = SubEntity.objects.filter(id=self.subentity_id).values_list("entity_id", flat=True).first()
+            duplicate_other_entity = (
+                SubEntityGstRegistration.objects.filter(gstin__iexact=gstin, isactive=True)
+                .exclude(pk=self.pk)
+                .exclude(subentity__entity_id=entity_id)
+                .exists()
+            )
+            duplicate_entity_gstin = (
+                EntityGstRegistration.objects.filter(gstin__iexact=gstin, isactive=True)
+                .exclude(entity_id=entity_id)
+                .exists()
+            )
+            if duplicate_other_entity or duplicate_entity_gstin:
+                raise ValidationError({
+                    "gstin": "An active GST registration already exists for this GSTIN in another entity."
+                })
 
         if self.isactive and self.subentity_id and self.state_id:
             exists_same_state = SubEntityGstRegistration.objects.filter(

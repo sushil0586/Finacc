@@ -972,8 +972,8 @@ class SalesInvoiceService:
 
     @staticmethod
     def _has_meaningful_state_code(value: Optional[str]) -> bool:
-        code = str(value or "").strip()
-        return bool(code and code != "0")
+        code = SalesInvoiceService.normalize_state_code(value)
+        return bool(code and code.isdigit() and code not in {"0", "00"})
 
     @classmethod
     def _refresh_party_snapshots(cls, *, header: SalesInvoiceHeader) -> None:
@@ -997,7 +997,7 @@ class SalesInvoiceService:
                 header.seller_state_code = cls._state_code_from_state_obj(entity_primary_state(ent))
 
         # Derive POS from bill-to/ship-to/customer when missing.
-        if not (header.place_of_supply_state_code or "").strip():
+        if not cls._has_meaningful_state_code(header.place_of_supply_state_code):
             header.place_of_supply_state_code = (
                 (header.bill_to_state_code or "").strip()
                 or (header.customer_state_code or "").strip()
@@ -1927,7 +1927,7 @@ class SalesInvoiceService:
                 header_data=header_data,
                 original_invoice=original_invoice,
                 preserve_explicit_scope=True,
-                shipping_detail_id=shipping_detail_id,
+                shipping_detail_id=shipping_detail_id if shipping_detail_changed else None,
             )
         cls._validate_doc_linkage(
             doc_type=doc_type,
@@ -2050,6 +2050,8 @@ class SalesInvoiceService:
         if not raw:
             return ""
         if raw.isdigit():
+            if not raw.strip("0"):
+                return ""
             return raw.zfill(2)[:2]
 
         state = (

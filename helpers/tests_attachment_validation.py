@@ -13,7 +13,7 @@ from helpers.utils.attachment_validation import (
 
 
 class AttachmentValidationTests(SimpleTestCase):
-    def test_accepts_pdf_excel_text_and_image_files(self):
+    def test_accepts_pdf_excel_and_image_files(self):
         files = [
             SimpleUploadedFile("invoice.pdf", b"pdf", content_type="application/pdf"),
             SimpleUploadedFile("report.xls", b"xls", content_type="application/vnd.ms-excel"),
@@ -22,11 +22,23 @@ class AttachmentValidationTests(SimpleTestCase):
                 b"xlsx",
                 content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             ),
-            SimpleUploadedFile("notes.txt", b"txt", content_type="text/plain"),
             SimpleUploadedFile("scan.webp", b"img", content_type="image/webp"),
         ]
 
         validate_attachment_uploads(files)
+
+    def test_accepts_text_files_when_explicitly_allowed(self):
+        file_obj = SimpleUploadedFile("notes.txt", b"txt", content_type="text/plain")
+
+        validate_attachment_uploads([file_obj], allow_text=True)
+
+    def test_rejects_text_files_by_default(self):
+        file_obj = SimpleUploadedFile("notes.txt", b"txt", content_type="text/plain")
+
+        with self.assertRaises(ValidationError) as exc:
+            validate_attachment_uploads([file_obj])
+
+        self.assertEqual(exc.exception.detail["detail"], "notes.txt is not a supported format.")
 
     def test_rejects_unsupported_file_types(self):
         file_obj = SimpleUploadedFile("script.exe", b"exe", content_type="application/octet-stream")

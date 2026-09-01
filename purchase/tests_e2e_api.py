@@ -1727,6 +1727,86 @@ class PurchaseApiEndToEndTests(APITestCase):
         delete_draft = self.client.delete(f"/api/purchase/purchase-invoices/{draft['id']}/{self._scope_qs()}")
         self.assertEqual(delete_draft.status_code, status.HTTP_204_NO_CONTENT)
 
+    def test_branch_without_purchase_series_inherits_entity_level_shared_numbering(self):
+        DocumentNumberSeries.objects.filter(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            doc_type=self.purchase_doc_type,
+            doc_code="PINV",
+        ).delete()
+        shared_series = DocumentNumberSeries.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=None,
+            doc_type=self.purchase_doc_type,
+            doc_code="PINV",
+            prefix="PROOT",
+            starting_number=2001,
+            current_number=2001,
+            is_active=True,
+            created_by=self.user,
+        )
+
+        created = self._create_invoice(supplier_invoice_number="INV-SHARED-ROOT-NUMBERING")
+        confirm_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{created['id']}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(confirm_resp.status_code, status.HTTP_200_OK, confirm_resp.json())
+        data = confirm_resp.json()["data"]
+        self.assertEqual(data["doc_no"], 2001)
+        self.assertEqual(data["purchase_number"], "PROOT-PINV-2001")
+        shared_series.refresh_from_db()
+        self.assertEqual(shared_series.current_number, 2002)
+
+    def test_purchase_branch_specific_series_are_separate_when_configured(self):
+        second_branch = SubEntity.objects.create(
+            entity=self.entity,
+            subentityname="Independent Purchase Branch",
+        )
+        second_series = DocumentNumberSeries.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=second_branch,
+            doc_type=self.purchase_doc_type,
+            doc_code="PINV",
+            prefix="P2",
+            starting_number=1001,
+            current_number=1001,
+            is_active=True,
+            created_by=self.user,
+        )
+
+        first = self._create_invoice(supplier_invoice_number="INV-SEPARATE-BRANCH-1")
+        first_confirm = self.client.post(
+            f"/api/purchase/purchase-invoices/{first['id']}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(first_confirm.status_code, status.HTTP_200_OK, first_confirm.json())
+        self.assertEqual(first_confirm.json()["data"]["doc_no"], 1001)
+        self.assertEqual(first_confirm.json()["data"]["purchase_number"], "PI-PINV-1001")
+
+        second_scope = f"?entity={self.entity.id}&entityfinid={self.entityfin.id}&subentity={second_branch.id}"
+        second = self._create_invoice(
+            supplier_invoice_number="INV-SEPARATE-BRANCH-2",
+            subentity=second_branch.id,
+        )
+        second_confirm = self.client.post(
+            f"/api/purchase/purchase-invoices/{second['id']}/confirm/{second_scope}",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(second_confirm.status_code, status.HTTP_200_OK, second_confirm.json())
+        self.assertEqual(second_confirm.json()["data"]["doc_no"], 1001)
+        self.assertEqual(second_confirm.json()["data"]["purchase_number"], "P2-PINV-1001")
+        second_series.refresh_from_db()
+        self.assertEqual(second_series.current_number, 1002)
+
     def test_repeated_confirm_call_is_idempotent_for_confirmed_purchase_invoice(self):
         created = self._create_invoice(supplier_invoice_number="INV-CONFIRM-IDEMPOTENT")
         invoice_id = created["id"]
