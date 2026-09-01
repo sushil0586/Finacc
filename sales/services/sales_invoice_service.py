@@ -14,7 +14,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
-from numbering.models import DocumentType
+from numbering.models import DocumentNumberSeries, DocumentType
 from numbering.services.document_number_service import DocumentNumberService
 from sales.services.sales_withholding_service import SalesWithholdingService
 from sales.services.compliance_audit_service import ComplianceAuditService
@@ -1236,6 +1236,96 @@ class SalesInvoiceService:
             prefix = "SI"
         return f"{prefix}-{doc_code}-{doc_no}"
 
+    @staticmethod
+    def _extract_doc_sequence(*, doc_no: Optional[int], invoice_number: Optional[str]) -> int:
+        try:
+            value = int(doc_no or 0)
+            if value > 0:
+                return value
+        except (TypeError, ValueError):
+            pass
+
+        match = re.search(r"(\d+)(?!.*\d)", str(invoice_number or ""))
+        if not match:
+            return 0
+        try:
+            return int(match.group(1))
+        except (TypeError, ValueError):
+            return 0
+
+    @classmethod
+    def _next_doc_floor_for_seller_gstin(cls, *, header: SalesInvoiceHeader) -> int:
+        seller_gstin = cls._normalize_gstin(getattr(header, "seller_gstin", ""))
+        if not seller_gstin:
+            return 1
+
+        rows = SalesInvoiceHeader.objects.filter(
+            entity_id=header.entity_id,
+            entityfinid_id=header.entityfinid_id,
+            doc_type=header.doc_type,
+            doc_code=header.doc_code,
+            seller_gstin__iexact=seller_gstin,
+            invoice_number__isnull=False,
+            is_active=True,
+        ).exclude(invoice_number="")
+        if header.id:
+            rows = rows.exclude(id=header.id)
+
+        max_sequence = 0
+        for doc_no, invoice_number in rows.values_list("doc_no", "invoice_number").iterator():
+            max_sequence = max(
+                max_sequence,
+                cls._extract_doc_sequence(doc_no=doc_no, invoice_number=invoice_number),
+            )
+        return max_sequence + 1 if max_sequence > 0 else 1
+
+    @classmethod
+    def _sync_series_floor_for_seller_gstin(
+        cls,
+        *,
+        header: SalesInvoiceHeader,
+        doc_type_id: int,
+        on_date: Optional[date],
+    ) -> None:
+        floor = cls._next_doc_floor_for_seller_gstin(header=header)
+        if floor <= 1:
+            return
+
+        series = (
+            DocumentNumberSeries.objects.select_for_update()
+            .filter(
+                entity_id=header.entity_id,
+                entityfinid_id=header.entityfinid_id,
+                subentity_id=header.subentity_id,
+                doc_type_id=doc_type_id,
+                doc_code=header.doc_code,
+                is_active=True,
+            )
+            .first()
+        )
+        if not series and header.subentity_id is not None:
+            series = (
+                DocumentNumberSeries.objects.select_for_update()
+                .filter(
+                    entity_id=header.entity_id,
+                    entityfinid_id=header.entityfinid_id,
+                    subentity_id=None,
+                    doc_type_id=doc_type_id,
+                    doc_code=header.doc_code,
+                    is_active=True,
+                )
+                .first()
+            )
+        if not series:
+            return
+
+        effective_date = on_date or timezone.localdate()
+        if DocumentNumberService._needs_reset(series, effective_date):
+            DocumentNumberService._apply_reset(series, effective_date)
+        if int(series.current_number or 0) < floor:
+            series.current_number = floor
+            series.save(update_fields=["current_number", "last_reset_date", "updated_at"])
+
     @classmethod
     def _document_number_candidate_is_available(
         cls,
@@ -1295,28 +1385,35 @@ class SalesInvoiceService:
         if not dt:
             raise ValueError(f"DocumentType not found: sales/{doc_key}")
 
-        # Consume numbers only at lifecycle transition. If a branch series is stale
-        # because older issued invoices already used its next value, skip forward.
-        max_attempts = 100
-        for _ in range(max_attempts):
-            res = DocumentNumberService.allocate_final(
-                entity_id=header.entity_id,
-                entityfinid_id=header.entityfinid_id,
-                subentity_id=header.subentity_id,
-                doc_type_id=dt.id,
-                doc_code=header.doc_code,
-                on_date=header.bill_date,  # keep numbering date aligned to bill date
-            )
-            doc_no = int(res.doc_no)
-            invoice_number = cls._build_invoice_number(int(header.doc_type), header.doc_code, doc_no)
-            if cls._document_number_candidate_is_available(
+        with transaction.atomic():
+            cls._sync_series_floor_for_seller_gstin(
                 header=header,
-                doc_no=doc_no,
-                invoice_number=invoice_number,
-            ):
-                header.doc_no = doc_no
-                header.invoice_number = invoice_number
-                return
+                doc_type_id=dt.id,
+                on_date=header.bill_date,
+            )
+
+            # Consume numbers only at lifecycle transition. If a branch series is stale
+            # because older issued invoices already used its next value, skip forward.
+            max_attempts = 100
+            for _ in range(max_attempts):
+                res = DocumentNumberService.allocate_final(
+                    entity_id=header.entity_id,
+                    entityfinid_id=header.entityfinid_id,
+                    subentity_id=header.subentity_id,
+                    doc_type_id=dt.id,
+                    doc_code=header.doc_code,
+                    on_date=header.bill_date,  # keep numbering date aligned to bill date
+                )
+                doc_no = int(res.doc_no)
+                invoice_number = cls._build_invoice_number(int(header.doc_type), header.doc_code, doc_no)
+                if cls._document_number_candidate_is_available(
+                    header=header,
+                    doc_no=doc_no,
+                    invoice_number=invoice_number,
+                ):
+                    header.doc_no = doc_no
+                    header.invoice_number = invoice_number
+                    return
 
         raise ValueError(
             f"Unable to allocate a unique invoice number for doc_code '{header.doc_code}' after {max_attempts} attempts."
