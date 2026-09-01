@@ -9,7 +9,7 @@ from django.core.exceptions import ValidationError
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.test import APIClient
 
-from Authentication.models import User
+from Authentication.models import AuthAuditLog, AuthOTP, User
 from assets.models import AssetCategory, DepreciationRun, DepreciationRunLine, FixedAsset
 from catalog.models import Product, ProductCategory, ProductPurchaseBehavior, UnitOfMeasure
 from entity.models import BankDetail, Constitution, Entity, EntityConstitutionV2, EntityFinancialYear, EntityGstRegistration, EntityOwnershipV2, GstRegistrationType, SubEntity, gstin_validator
@@ -1588,6 +1588,68 @@ class RegisterAndEntityOnboardingTests(TestCase):
                 user=user,
                 role=UserEntityAccess.Role.OWNER,
                 is_active=True,
+            ).exists()
+        )
+
+    def test_register_and_onboard_survives_otp_email_delivery_failure(self):
+        payload = {
+            "user": {
+                "email": "smtpblockedfounder@example.com",
+                "username": "smtpblockedfounder@example.com",
+                "first_name": "SMTP",
+                "last_name": "Blocked",
+                "password": "secret123",
+            },
+            "onboarding": {
+                "entity": {
+                    "entityname": "SMTP Blocked Entity",
+                    "legalname": "SMTP Blocked Entity Pvt Ltd",
+                    "GstRegitrationType": self.gst_type.id,
+                    "gstno": "03APXPB5894F1Z3",
+                    "panno": "APXPB5894F",
+                    "phoneoffice": "9855966534",
+                    "phoneresidence": "9855966534",
+                    "email": "smtpblockedfounder@example.com",
+                    "address": "4369 GT Road",
+                    "address2": "Sirhind",
+                    "country": self.country.id,
+                    "state": self.state.id,
+                    "district": self.district.id,
+                    "city": self.city.id,
+                    "pincode": "140406",
+                    "const": self.constitution.id,
+                },
+                "financial_years": [
+                    {
+                        "finstartyear": "2026-04-01T00:00:00Z",
+                        "finendyear": "2027-03-31T00:00:00Z",
+                        "desc": "FY 2026-27",
+                        "isactive": True,
+                    }
+                ],
+                "seed_options": {
+                    "template_code": "indian_accounting_final",
+                    "seed_financial": True,
+                    "seed_rbac": True,
+                    "seed_default_subentity": True,
+                    "seed_default_roles": True,
+                },
+            },
+        }
+
+        with mock.patch("Authentication.services.send_mail", side_effect=RuntimeError("smtp unavailable")):
+            response = self.client.post("/api/entity/onboarding/register/", payload, format="json")
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["verification"]["email"], "smtpblockedfounder@example.com")
+        self.assertTrue(response.data["verification"]["otp_generated"])
+        user = User.objects.get(email="smtpblockedfounder@example.com")
+        self.assertTrue(AuthOTP.objects.filter(user=user, email=user.email, purpose="email_verification").exists())
+        self.assertTrue(
+            AuthAuditLog.objects.filter(
+                user=user,
+                email=user.email,
+                event="otp_email_delivery_failed",
             ).exists()
         )
 

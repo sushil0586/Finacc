@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import secrets
 from datetime import timedelta
 
@@ -12,6 +13,8 @@ from django.utils import timezone
 from rest_framework import exceptions
 
 from Authentication.models import AuthAuditLog, AuthOTP, AuthSession
+
+logger = logging.getLogger(__name__)
 
 
 class AuthSettings:
@@ -36,6 +39,7 @@ class AuthSettings:
     OTP_SEND_RATE_LIMIT_WINDOW = getattr(settings, "AUTH_OTP_SEND_RATE_LIMIT_WINDOW_SECONDS", 600)
     OTP_VERIFY_RATE_LIMIT_ATTEMPTS = getattr(settings, "AUTH_OTP_VERIFY_RATE_LIMIT_ATTEMPTS", 20)
     OTP_VERIFY_RATE_LIMIT_WINDOW = getattr(settings, "AUTH_OTP_VERIFY_RATE_LIMIT_WINDOW_SECONDS", 600)
+    OTP_EMAIL_RAISE_DELIVERY_ERRORS = getattr(settings, "AUTH_OTP_EMAIL_RAISE_DELIVERY_ERRORS", False)
 
 
 class AuthAuditService:
@@ -338,7 +342,18 @@ class AuthOTPService:
             expires_at=timezone.now() + timedelta(minutes=AuthSettings.OTP_EXPIRY_MINUTES),
         )
 
-        cls.send_otp_email(email=otp.email, purpose=otp.purpose, code=raw_code)
+        try:
+            cls.send_otp_email(email=otp.email, purpose=otp.purpose, code=raw_code)
+        except Exception as exc:
+            AuthAuditService.log(
+                "otp_email_delivery_failed",
+                user=user,
+                email=otp.email,
+                details={"purpose": purpose, "error": str(exc)[:500]},
+            )
+            logger.warning("OTP email delivery failed for %s/%s: %s", otp.email, purpose, exc)
+            if AuthSettings.OTP_EMAIL_RAISE_DELIVERY_ERRORS:
+                raise
 
         AuthAuditService.log(
             "otp_sent",

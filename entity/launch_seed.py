@@ -25,6 +25,7 @@ from financial.party_accounting_defaults import resolve_party_accounting_ids
 from financial.services import apply_normalized_profile_payload, create_account_with_synced_ledger
 from financial.models import AccountAddress, ShippingDetails, account
 from geography.models import City, Country, District, State
+from sales.models.sales_addons import SalesChargeType
 
 
 INDIA_STATES_GST = [
@@ -128,6 +129,18 @@ LAUNCH_CUSTOMERS = [
     },
 ]
 
+LAUNCH_SALES_CHARGE_TYPES = [
+    {
+        "code": "LAUNCH_FREIGHT_18",
+        "name": "Launch Freight Charge 18%",
+        "base_category": SalesChargeType.BaseCategory.FREIGHT,
+        "is_service": True,
+        "hsn_sac_code_default": "996511",
+        "gst_rate_default": Decimal("18.00"),
+        "description": "Taxable launch validation freight charge",
+    },
+]
+
 
 class LaunchSeedService:
     """
@@ -227,6 +240,7 @@ class LaunchSeedService:
 
         summary["godown"] = cls._ensure_default_godown(entity=entity)
         summary["product"] = cls._ensure_launch_goods_product(entity=entity)
+        summary["sales_charge_types"] = [cls._ensure_sales_charge_type(entity=entity, spec=spec) for spec in LAUNCH_SALES_CHARGE_TYPES]
         summary["customers"] = [cls._ensure_launch_customer(entity=entity, actor=actor, spec=spec) for spec in LAUNCH_CUSTOMERS]
         return summary
 
@@ -456,6 +470,36 @@ class LaunchSeedService:
             valid_from=None,
             **values,
         ), True
+
+    @classmethod
+    def _ensure_sales_charge_type(cls, *, entity, spec):
+        revenue_account = (
+            account.objects.filter(entity=entity, ledger__ledger_code=7083, isactive=True).first()
+            or account.objects.filter(entity=entity, accountname__iexact="Sales Other Charges Income", isactive=True).first()
+            or account.objects.filter(entity=entity, accountname__icontains="Sales Revenue", isactive=True).order_by("id").first()
+            or account.objects.filter(entity=entity, accountname__icontains="Sales", isactive=True).order_by("id").first()
+        )
+        charge_type, created = SalesChargeType.objects.update_or_create(
+            entity=entity,
+            code=spec["code"],
+            defaults={
+                "name": spec["name"],
+                "base_category": spec["base_category"],
+                "is_active": True,
+                "is_service": spec["is_service"],
+                "hsn_sac_code_default": spec["hsn_sac_code_default"],
+                "gst_rate_default": spec["gst_rate_default"],
+                "description": spec["description"],
+                "revenue_account": revenue_account,
+            },
+        )
+        return {
+            "id": charge_type.id,
+            "created": created,
+            "code": charge_type.code,
+            "name": charge_type.name,
+            "revenue_account_id": charge_type.revenue_account_id,
+        }
 
     @classmethod
     def _ensure_launch_customer(cls, *, entity, actor=None, spec):

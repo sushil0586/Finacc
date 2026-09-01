@@ -15,6 +15,7 @@ from entity.launch_seed import INDIA_STATES_GST, LAUNCH_CUSTOMERS, LaunchSeedSer
 from entity.models import Entity, Godown, GstRegistrationType, SubEntity
 from financial.models import ShippingDetails, account
 from geography.models import City, Country, District, State
+from sales.models.sales_addons import SalesChargeType
 
 
 class LaunchSeedServiceTests(TestCase):
@@ -73,6 +74,10 @@ class LaunchSeedServiceTests(TestCase):
             sorted(row["id"] for row in first_entity["customers"]),
             sorted(row["id"] for row in second_entity["customers"]),
         )
+        self.assertEqual(
+            sorted(row["id"] for row in first_entity["sales_charge_types"]),
+            sorted(row["id"] for row in second_entity["sales_charge_types"]),
+        )
 
         product = Product.objects.get(entity=self.entity, productname="ABC")
         self.assertEqual(product.sku, "LAUNCH-ABC-GOODS")
@@ -80,6 +85,10 @@ class LaunchSeedServiceTests(TestCase):
         self.assertTrue(ProductGstRate.objects.filter(product=product, isdefault=True, gst_rate="18.00").exists())
 
         self.assertTrue(Godown.objects.filter(entity=self.entity, code="LAUNCH-STOCK", is_active=True).exists())
+        charge_type = SalesChargeType.objects.get(entity=self.entity, code="LAUNCH_FREIGHT_18")
+        self.assertTrue(charge_type.is_active)
+        self.assertEqual(charge_type.gst_rate_default, Decimal("18.00"))
+        self.assertEqual(charge_type.hsn_sac_code_default, "996511")
         for spec in LAUNCH_CUSTOMERS:
             customer = account.objects.get(entity=self.entity, compliance_profile__gstno=spec["gstin"])
             self.assertEqual(customer.commercial_profile.partytype, "Customer")

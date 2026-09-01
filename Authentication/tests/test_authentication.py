@@ -8,6 +8,7 @@ from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from datetime import timedelta
 import re
+from unittest import mock
 from rest_framework import exceptions
 from rest_framework.test import APIClient, APIRequestFactory
 
@@ -227,6 +228,22 @@ class AuthFlowTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.data["email_verified"], False)
         self.assertEqual(len(mail.outbox), 1)
+
+    def test_resend_email_verification_does_not_500_when_email_delivery_fails(self):
+        self.user.email_verified = False
+        self.user.save(update_fields=["email_verified", "updated_at"])
+
+        with mock.patch("Authentication.services.send_mail", side_effect=RuntimeError("smtp unavailable")):
+            resp = self.client.post(
+                "/api/auth/resend-email-verification",
+                {"email": self.user.email},
+                format="json",
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["email_verified"], False)
+        self.assertTrue(AuthOTP.objects.filter(email=self.user.email, purpose="email_verification").exists())
+        self.assertTrue(AuthAuditLog.objects.filter(email=self.user.email, event="otp_email_delivery_failed").exists())
 
     def test_resend_email_verification_reports_already_verified(self):
         self.user.email_verified = True

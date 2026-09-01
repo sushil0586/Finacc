@@ -21,6 +21,7 @@ from geography.models import City, Country, District, State
 from numbering.models import DocumentNumberSeries, DocumentType
 from posting.models import Entry, EntryStatus, JournalLine, PostingBatch, TxnType
 from sales.models import SalesInvoiceHeader, SalesInvoiceLine, SalesLockPeriod
+from sales.models.sales_addons import SalesChargeLine, SalesChargeType
 from sales.models.sales_ar import CustomerBillOpenItem, CustomerSettlement
 from sales.models.sales_compliance import SalesEInvoice, SalesEInvoiceStatus, SalesEWayBill, SalesEWayStatus
 from sales.services.sales_settings_service import SalesSettingsService
@@ -805,6 +806,53 @@ class SalesApiEndToEndTests(APITestCase):
         goods_rows = goods_resp.json()
         self.assertEqual(len(goods_rows), 1)
         self.assertEqual(goods_rows[0]["customer_name"], "Customer-A")
+
+    def test_service_invoice_charges_round_trip_through_create_and_detail(self):
+        charge_type = SalesChargeType.objects.create(
+            entity=self.entity,
+            code="LAUNCH_FREIGHT_18",
+            name="Launch Freight Charge 18%",
+            base_category=SalesChargeType.BaseCategory.FREIGHT,
+            is_active=True,
+            is_service=True,
+            hsn_sac_code_default="996511",
+            gst_rate_default=Decimal("18.00"),
+            revenue_account=self.service_sales_account,
+            created_by=self.user,
+            updated_by=self.user,
+        )
+        payload = self._invoice_payload(
+            lines=[{**self._service_line_payload(), "rate": "100.0000"}],
+            reference="SO-SERVICE-CHARGE",
+            charges=[
+                {
+                    "line_no": 1,
+                    "charge_type_id": charge_type.id,
+                    "description": "Taxable launch validation freight charge",
+                    "taxability": "TAXABLE",
+                    "is_service": True,
+                    "hsn_sac_code": "996511",
+                    "taxable_value": "100.00",
+                    "gst_rate": "18.00",
+                }
+            ],
+        )
+        response = self.client.post("/api/sales/service-invoices/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.json())
+
+        invoice_id = response.json()["id"]
+        self.assertEqual(SalesChargeLine.objects.filter(header_id=invoice_id).count(), 1)
+
+        detail_response = self.client.get(f"/api/sales/service-invoices/{invoice_id}/{self._scope_qs()}&line_mode=service")
+        self.assertEqual(detail_response.status_code, status.HTTP_200_OK, detail_response.json())
+        charges = detail_response.json()["charges"]
+        self.assertEqual(len(charges), 1)
+        self.assertEqual(Decimal(str(charges[0]["taxable_value"])), Decimal("100.00"))
+        self.assertEqual(Decimal(str(charges[0]["gst_rate"])), Decimal("18.00"))
+        self.assertEqual(Decimal(str(charges[0]["cgst_amount"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(charges[0]["sgst_amount"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(charges[0]["igst_amount"])), Decimal("18.00"))
+        self.assertEqual(Decimal(str(charges[0]["total_value"])), Decimal("118.00"))
 
     @patch("sales.services.sales_invoice_service.SalesInvoiceService._run_auto_compliance")
     @patch("sales.services.sales_invoice_service.SalesInvoicePostingAdapter.post_sales_invoice")
