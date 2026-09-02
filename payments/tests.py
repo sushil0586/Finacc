@@ -21,6 +21,7 @@ from helpers.utils.meta_cache import PAYMENT_META_NAMESPACES, bump_meta_namespac
 from numbering.models import DocumentNumberSeries, DocumentType
 from numbering.seeding import NumberingSeedService
 from payments.models import PaymentVoucherHeader
+from payments.models.payment_config import PaymentChoiceOverride
 from payments.serializers.payment_voucher import PaymentVoucherHeaderSerializer
 from payments.services.payment_voucher_service import PaymentVoucherService
 from payments.services.payment_settings_service import PaymentSettingsService
@@ -2697,6 +2698,32 @@ class PaymentVoucherFormMetaCacheTests(TestCase):
         view = PaymentVoucherFormMetaAPIView.as_view()
         first = view(self._request())
         bump_meta_namespaces(PAYMENT_META_NAMESPACES)
+        second = view(self._request())
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertNotEqual(first.data, second.data)
+        self.assertEqual(mocked_form_meta.call_count, 2)
+
+    @patch.object(PaymentVoucherFormMetaAPIView, "enforce_scope")
+    @patch.object(PaymentVoucherFormMetaAPIView, "_voucher_form_meta")
+    def test_choice_override_change_invalidates_cached_voucher_form_payload(self, mocked_form_meta, _mocked_enforce_scope):
+        entity = Entity.objects.create(id=10, entityname="Payment Form Meta Choice Entity", createdby=self.user)
+        branch = SubEntity.objects.create(id=12, entity=entity, subentityname="Choice Branch")
+        mocked_form_meta.side_effect = [
+            {"entity_id": 10, "choices": {"PaymentType": [{"key": "ON_ACCOUNT", "label": "On Account"}]}},
+            {"entity_id": 10, "choices": {"PaymentType": [{"key": "ON_ACCOUNT", "label": "Renamed"}]}},
+        ]
+
+        view = PaymentVoucherFormMetaAPIView.as_view()
+        first = view(self._request())
+        PaymentChoiceOverride.objects.create(
+            entity=entity,
+            subentity=branch,
+            choice_group="PaymentType",
+            choice_key="ON_ACCOUNT",
+            override_label="Renamed",
+        )
         second = view(self._request())
 
         self.assertEqual(first.status_code, 200)

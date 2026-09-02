@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from django.conf import settings
-from django.db.models import Prefetch, Q
+from django.db.models import Count, Max, Prefetch, Q
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 from rest_framework import serializers
@@ -15,6 +15,7 @@ from financial.models import AccountAddress, account
 from financial.profile_access import account_gstno, account_pan, account_partytype
 from helpers.utils.document_actions import build_document_action_flags
 from payments.models import PaymentMode, PaymentVoucherHeader
+from payments.models.payment_config import PaymentChoiceOverride, PaymentSettings
 from payments.serializers.payment_attachment import PaymentVoucherAttachmentSerializer
 from payments.serializers.payment_voucher import PaymentVoucherHeaderSerializer
 from payments.services.payment_choice_service import PaymentChoiceService
@@ -79,6 +80,27 @@ class PaymentMetaBaseAPIView(ScopedEntitlementMixin, APIView):
             loader,
             timeout=int(timeout or getattr(settings, "META_CACHE_TTL_SECONDS", 300)),
         )
+
+    @staticmethod
+    def _scope_settings_cache_extra(entity_id: int, subentity_id: int | None) -> dict:
+        settings_qs = PaymentSettings.objects.filter(entity_id=entity_id)
+        override_qs = PaymentChoiceOverride.objects.filter(entity_id=entity_id)
+        if subentity_id is None:
+            settings_qs = settings_qs.filter(subentity__isnull=True)
+            override_qs = override_qs.filter(subentity__isnull=True)
+        else:
+            scope_filter = Q(subentity_id=subentity_id) | Q(subentity__isnull=True)
+            settings_qs = settings_qs.filter(scope_filter)
+            override_qs = override_qs.filter(scope_filter)
+
+        settings_version = settings_qs.aggregate(count=Count("id"), updated_at=Max("updated_at"))
+        override_version = override_qs.aggregate(count=Count("id"), updated_at=Max("updated_at"))
+        return {
+            "settings_count": settings_version["count"],
+            "settings_updated_at": settings_version["updated_at"],
+            "choice_override_count": override_version["count"],
+            "choice_override_updated_at": override_version["updated_at"],
+        }
 
     def _parse_int(self, raw_value, field_name: str, required: bool = False):
         if raw_value in (None, "", "null", "None"):
@@ -295,7 +317,7 @@ class PaymentVoucherFormMetaAPIView(PaymentMetaBaseAPIView):
             entity_id=entity_id,
             entityfinid_id=entityfinid_id,
             subentity_id=subentity_id,
-            extra=None,
+            extra=self._scope_settings_cache_extra(entity_id, subentity_id),
             timeout=None,
             loader=lambda: self._voucher_form_meta(entity_id, entityfinid_id, subentity_id),
         )
