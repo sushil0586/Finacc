@@ -146,6 +146,28 @@ class PaymentSettingsAPIView(ScopedEntitlementMixin, APIView):
                 raise ValidationError({"default_workflow_action": f"Invalid value. Allowed: {', '.join(sorted(workflow_values))}."})
 
     @staticmethod
+    def _validate_workflow_policy_compatibility(settings_obj, settings_updates: dict) -> None:
+        if "default_workflow_action" not in settings_updates and "policy_controls" not in settings_updates:
+            return
+
+        action = settings_updates.get("default_workflow_action", settings_obj.default_workflow_action)
+        controls = PaymentSettingsService.effective_policy_controls(settings_obj)
+        if "policy_controls" in settings_updates:
+            try:
+                controls.update(PaymentSettingsService.normalize_policy_controls(settings_updates.get("policy_controls")))
+            except ValueError as exc:
+                raise ValidationError({"policy_controls": str(exc)})
+
+        maker_checker = str(controls.get("payment_maker_checker", "off")).lower().strip()
+        if action == PaymentSettings.DefaultWorkflowAction.POST and maker_checker == "hard":
+            raise ValidationError({
+                "default_workflow_action": (
+                    "Auto Post on Save cannot be used while Payment Maker Checker is Hard. "
+                    "Choose Auto Confirm on Save or relax maker-checker policy."
+                )
+            })
+
+    @staticmethod
     def _valid_override_keys(catalog: dict[str, list[dict]]) -> dict[str, set[str]]:
         return {group: {item.get("key") for item in items if item.get("key")} for group, items in catalog.items()}
 
@@ -348,6 +370,9 @@ class PaymentSettingsAPIView(ScopedEntitlementMixin, APIView):
         nested_settings = request.data.get("settings") if isinstance(request.data.get("settings"), dict) else None
         settings_updates = nested_settings if nested_settings is not None else request.data
         self._validate_settings_updates(settings_updates)
+        if "default_workflow_action" in settings_updates or "policy_controls" in settings_updates:
+            current_settings = PaymentSettingsService.get_settings(entity_id, subentity_id)
+            self._validate_workflow_policy_compatibility(current_settings, settings_updates)
 
         try:
             updated = PaymentSettingsService.upsert_settings(

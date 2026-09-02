@@ -2083,6 +2083,66 @@ class PaymentSettingsValidationTests(SimpleTestCase):
         mocked_payload.assert_not_called()
         mocked_error_log.assert_called_once()
 
+    @patch("errorlogger.drf_exception_handler.ErrorLog.objects.create")
+    @patch.object(PaymentSettingsAPIView, "_payload", return_value={"ok": True})
+    @patch.object(PaymentSettingsAPIView, "_scope", return_value=(1, None, 2))
+    @patch("payments.views.payment_settings.PaymentSettingsService.get_settings")
+    @patch("payments.views.payment_settings.PaymentSettingsService.upsert_settings")
+    def test_settings_patch_rejects_auto_post_when_maker_checker_is_hard(
+        self,
+        mocked_upsert,
+        mocked_get_settings,
+        _mocked_scope,
+        mocked_payload,
+        mocked_error_log,
+    ):
+        mocked_get_settings.return_value = SimpleNamespace(
+            default_workflow_action="draft",
+            policy_controls={"payment_maker_checker": "hard"},
+        )
+        request = self._request(
+            "/api/payments/settings/?entity=1&entityfinid=2",
+            {"settings": {"default_workflow_action": "post"}},
+        )
+
+        response = PaymentSettingsAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Auto Post on Save cannot be used", str(response.data["default_workflow_action"]))
+        mocked_upsert.assert_not_called()
+        mocked_payload.assert_not_called()
+        mocked_error_log.assert_called_once()
+
+    @patch("errorlogger.drf_exception_handler.ErrorLog.objects.create")
+    @patch.object(PaymentSettingsAPIView, "_payload", return_value={"ok": True})
+    @patch.object(PaymentSettingsAPIView, "_scope", return_value=(1, None, 2))
+    @patch("payments.views.payment_settings.PaymentSettingsService.get_settings")
+    @patch("payments.views.payment_settings.PaymentSettingsService.upsert_settings")
+    def test_settings_patch_rejects_hard_maker_checker_when_auto_post_is_active(
+        self,
+        mocked_upsert,
+        mocked_get_settings,
+        _mocked_scope,
+        mocked_payload,
+        mocked_error_log,
+    ):
+        mocked_get_settings.return_value = SimpleNamespace(
+            default_workflow_action="post",
+            policy_controls={"payment_maker_checker": "off"},
+        )
+        request = self._request(
+            "/api/payments/settings/?entity=1&entityfinid=2",
+            {"settings": {"policy_controls": {"payment_maker_checker": "hard"}}},
+        )
+
+        response = PaymentSettingsAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Auto Post on Save cannot be used", str(response.data["default_workflow_action"]))
+        mocked_upsert.assert_not_called()
+        mocked_payload.assert_not_called()
+        mocked_error_log.assert_called_once()
+
 
 class PaymentVoucherCashGuardTests(SimpleTestCase):
     def test_against_bill_allows_zero_cash_with_advance(self):
