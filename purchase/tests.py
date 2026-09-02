@@ -1081,10 +1081,12 @@ class PurchaseDetailMetaContractTests(TestCase):
             vendor_name="Vendor",
             status=PurchaseInvoiceHeader.Status.POSTED,
         )
+        vendor = account.objects.create(entity=self.entity, accountname="Detail Meta Vendor")
         note = PurchaseInvoiceHeader.objects.create(
             entity=self.entity,
             entityfinid=self.entityfin,
             subentity=self.subentity,
+            vendor=vendor,
             bill_date=date(2026, 6, 22),
             posting_date=date(2026, 6, 22),
             doc_type=PurchaseInvoiceHeader.DocType.CREDIT_NOTE,
@@ -1116,6 +1118,12 @@ class PurchaseDetailMetaContractTests(TestCase):
         self.assertEqual(response.data["invoice"]["ref_document"], original.id)
         self.assertEqual(mock_invoice_queryset.call_args.args[2], None)
         mock_invoice_form_meta.assert_called_once_with(self.entity.id, self.subentity.id, entityfinid_id=self.entityfin.id)
+        _mock_get_defaults_map.assert_called_once_with(
+            entity_id=self.entity.id,
+            module="purchase_invoice",
+            party_account_id=vendor.id,
+            subentity_id=self.subentity.id,
+        )
 
     @patch("purchase.services.purchase_invoice_service.WithholdingResolver.get_entity_config")
     def test_manual_mode_respects_tds_enabled_config(self, mock_get_cfg):

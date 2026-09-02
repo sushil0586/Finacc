@@ -524,7 +524,7 @@ class PurchaseInvoiceDetailFormMetaAPIView(PurchaseMetaBaseAPIView):
                     entity_id=entity_id,
                     module="purchase_invoice",
                     party_account_id=header.vendor_id,
-                    subentity_id=subentity_id,
+                    subentity_id=header_subentity_id,
                 ) if header.vendor_id else {},
             }
         )
