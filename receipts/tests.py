@@ -2056,6 +2056,8 @@ class ReceiptVoucherViewValidationTests(SimpleTestCase):
 
 
 class ReceiptSettingsValidationTests(SimpleTestCase):
+    databases = {"default"}
+
     def setUp(self):
         self.factory = APIRequestFactory()
         self.user = SimpleNamespace(is_authenticated=True, id=7)
@@ -2122,6 +2124,48 @@ class ReceiptSettingsValidationTests(SimpleTestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("choice_overrides", response.data)
+        mocked_error_log.assert_called_once()
+
+    @patch("errorlogger.drf_exception_handler.ErrorLog.objects.create")
+    @patch.object(ReceiptSettingsAPIView, "_payload", return_value={"ok": True})
+    @patch.object(ReceiptSettingsAPIView, "_scope", return_value=(1, None, 2))
+    @patch("receipts.views.receipt_settings.validate_unique_series_pattern")
+    @patch("receipts.views.receipt_settings.ensure_series")
+    @patch("receipts.views.receipt_settings.ReceiptSettingsService.upsert_settings")
+    def test_settings_patch_returns_400_for_numbering_pattern_conflict(
+        self,
+        mocked_upsert,
+        mocked_ensure_series,
+        mocked_validate_unique_series_pattern,
+        _mocked_scope,
+        mocked_payload,
+        mocked_error_log,
+    ):
+        mocked_upsert.return_value = SimpleNamespace(default_doc_code_receipt="RV", save=MagicMock())
+        mocked_ensure_series.return_value = (SimpleNamespace(created_by_id=None, save=MagicMock()), True)
+        mocked_validate_unique_series_pattern.side_effect = ValueError(
+            "Receipt Voucher numbering pattern is already active for Head Office."
+        )
+        request = self._request(
+            "/api/receipts/settings/?entity=1&entityfinid=2",
+            {
+                "numbering_series": [
+                    {
+                        "series_key": "receipt_voucher",
+                        "doc_code": "RV",
+                        "prefix": "RV",
+                        "starting_number": 1,
+                        "current_number": 1,
+                    }
+                ]
+            },
+        )
+
+        response = ReceiptSettingsAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("already active for Head Office", str(response.data["numbering_series"]))
+        mocked_payload.assert_not_called()
         mocked_error_log.assert_called_once()
 
 

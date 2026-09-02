@@ -283,7 +283,10 @@ class PaymentSettingsAPIView(ScopedEntitlementMixin, APIView):
         series.is_active = bool(row.get("is_active", True))
         if user_id and not series.created_by_id:
             series.created_by_id = user_id
-        validate_unique_series_pattern(series=series, doc_label=cfg["name"])
+        try:
+            validate_unique_series_pattern(series=series, doc_label=cfg["name"])
+        except ValueError as exc:
+            raise ValidationError({"numbering_series": str(exc)})
         series.save()
         settings_obj.save()
 

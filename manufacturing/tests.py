@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 from io import StringIO
+from unittest.mock import patch
 from uuid import uuid4
 
 from django.core.management import call_command
@@ -669,6 +670,35 @@ class ManufacturingPhaseOneTests(APITestCase):
         self.assertTrue(series.include_year)
         self.assertTrue(series.include_month)
         self.assertEqual(series.custom_format, "{prefix}/{year}/{month}/{number}")
+
+    @patch("manufacturing.views.validate_unique_series_pattern")
+    def test_settings_patch_returns_400_for_numbering_pattern_conflict(self, mocked_validate_unique_series_pattern):
+        self._grant_permission("manufacturing.settings.update")
+        mocked_validate_unique_series_pattern.side_effect = ValueError(
+            "Manufacturing Work Order numbering pattern is already active for Head Office."
+        )
+
+        patch_resp = self.client.patch(
+            reverse("manufacturing:manufacturing-settings"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "numbering_series": [
+                    {
+                        "series_key": "manufacturing_work_order",
+                        "doc_code": "MWO",
+                        "prefix": "MWO",
+                        "starting_number": 1,
+                        "current_number": 1,
+                    }
+                ],
+            },
+            format="json",
+        )
+
+        self.assertEqual(patch_resp.status_code, 400)
+        self.assertIn("already active for Head Office", str(patch_resp.json()["numbering_series"]))
 
     def test_work_order_create_post_unpost_cancel_flow(self):
         def scoped_balance(product_id: int, location_id: int) -> Decimal:

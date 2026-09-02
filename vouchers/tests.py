@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
@@ -20,7 +20,7 @@ from vouchers.models import VoucherHeader, VoucherLine
 from vouchers.serializers.voucher import VoucherWriteSerializer
 from vouchers.services.voucher_settings_service import VoucherSettingsService
 from vouchers.services.voucher_service import VoucherResult, VoucherService
-from vouchers.views.voucher_settings import VoucherCompiledChoicesAPIView
+from vouchers.views.voucher_settings import VoucherCompiledChoicesAPIView, VoucherSettingsAPIView
 from vouchers.views.voucher import (
     VoucherListCreateAPIView,
     VoucherApprovalAPIView,
@@ -312,6 +312,61 @@ class VoucherChoicesEntitlementTests(TestCase):
                 doc_code="JV",
             ).exists()
         )
+
+
+class VoucherSettingsValidationTests(SimpleTestCase):
+    databases = {"default"}
+
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.user = SimpleNamespace(is_authenticated=True, id=7)
+
+    def _request(self, path: str, data=None):
+        request = self.factory.patch(path, data or {}, format="json")
+        force_authenticate(request, user=self.user)
+        return request
+
+    @patch("errorlogger.drf_exception_handler.ErrorLog.objects.create")
+    @patch.object(VoucherSettingsAPIView, "_payload", return_value={"ok": True})
+    @patch.object(VoucherSettingsAPIView, "_scope", return_value=(1, None, 2))
+    @patch("vouchers.views.voucher_settings.validate_unique_series_pattern")
+    @patch("vouchers.views.voucher_settings.ensure_series")
+    @patch("vouchers.views.voucher_settings.VoucherSettingsService.upsert_settings")
+    def test_settings_patch_returns_400_for_numbering_pattern_conflict(
+        self,
+        mocked_upsert,
+        mocked_ensure_series,
+        mocked_validate_unique_series_pattern,
+        _mocked_scope,
+        mocked_payload,
+        mocked_error_log,
+    ):
+        mocked_upsert.return_value = SimpleNamespace(save=MagicMock())
+        mocked_ensure_series.return_value = (SimpleNamespace(created_by_id=None, save=MagicMock()), True)
+        mocked_validate_unique_series_pattern.side_effect = ValueError(
+            "Cash Voucher numbering pattern is already active for Head Office."
+        )
+        request = self._request(
+            "/api/vouchers/settings/?entity=1&entityfinid=2",
+            {
+                "numbering_series": [
+                    {
+                        "series_key": "cash_voucher",
+                        "doc_code": "CV",
+                        "prefix": "CV",
+                        "starting_number": 1,
+                        "current_number": 1,
+                    }
+                ]
+            },
+        )
+
+        response = VoucherSettingsAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("already active for Head Office", str(response.data["numbering_series"]))
+        mocked_payload.assert_not_called()
+        mocked_error_log.assert_called_once()
 
 
 class VoucherWorkflowPolicyTests(TestCase):

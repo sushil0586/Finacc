@@ -3735,6 +3735,60 @@ class PurchaseApiSmokeTests(APITestCase):
         mock_upsert_settings.assert_called_once()
         mock_payload.assert_not_called()
 
+    @patch("purchase.views.purchase_settings.PurchaseSettingsAPIView._payload", return_value={"ok": True})
+    @patch("purchase.views.purchase_settings.validate_unique_series_pattern")
+    @patch("purchase.views.purchase_settings.ensure_series")
+    @patch("purchase.views.purchase_settings.PurchaseSettingsService.upsert_settings")
+    def test_settings_patch_returns_400_for_numbering_pattern_conflict(
+        self,
+        mock_upsert_settings,
+        mock_ensure_series,
+        mock_validate_unique_series_pattern,
+        mock_payload,
+    ):
+        mock_upsert_settings.return_value = SimpleNamespace(
+            default_doc_code_invoice="PINV",
+            default_doc_code_cn="PCN",
+            default_doc_code_dn="PDN",
+            save=MagicMock(),
+        )
+        mock_ensure_series.return_value = (
+            SimpleNamespace(created_by_id=None, save=MagicMock()),
+            True,
+        )
+        mock_validate_unique_series_pattern.side_effect = ValueError(
+            "Purchase Credit Note numbering pattern is already active for Head Office."
+        )
+
+        resp = self.client.patch(
+            f"/api/purchase/settings/?entity={self.entity.id}&entityfinid={self.entityfin.id}",
+            {
+                "settings": {"enable_round_off": True},
+                "numbering_series": [
+                    {
+                        "series_key": "credit_note",
+                        "doc_code": "PCN",
+                        "prefix": "PCN",
+                        "suffix": "",
+                        "starting_number": 1,
+                        "current_number": 1,
+                        "number_padding": 5,
+                        "separator": "-",
+                        "reset_frequency": "yearly",
+                        "include_year": True,
+                        "include_month": False,
+                        "custom_format": "",
+                        "is_active": True,
+                    }
+                ],
+            },
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("already active for Head Office", str(resp.data["numbering_series"]))
+        mock_payload.assert_not_called()
+
     def test_charge_type_detail_missing_id_returns_404(self):
         resp = self.client.get("/api/purchase/charge-types/999999/?entity=1")
         self.assertEqual(resp.status_code, 404)

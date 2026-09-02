@@ -370,7 +370,10 @@ class ManufacturingSettingsAPIView(_BaseManufacturingAPIView):
         series.is_active = bool(row.get("is_active", True))
         if user_id and not series.created_by_id:
             series.created_by_id = user_id
-        validate_unique_series_pattern(series=series, doc_label=self.DOC_LABEL)
+        try:
+            validate_unique_series_pattern(series=series, doc_label=self.DOC_LABEL)
+        except ValueError as exc:
+            raise ValidationError({"numbering_series": str(exc)})
         series.save()
         settings_obj.save()
 

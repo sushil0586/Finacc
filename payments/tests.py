@@ -2041,6 +2041,48 @@ class PaymentSettingsValidationTests(SimpleTestCase):
         self.assertIn("choice_overrides", response.data)
         mocked_error_log.assert_called_once()
 
+    @patch("errorlogger.drf_exception_handler.ErrorLog.objects.create")
+    @patch.object(PaymentSettingsAPIView, "_payload", return_value={"ok": True})
+    @patch.object(PaymentSettingsAPIView, "_scope", return_value=(1, None, 2))
+    @patch("payments.views.payment_settings.validate_unique_series_pattern")
+    @patch("payments.views.payment_settings.ensure_series")
+    @patch("payments.views.payment_settings.PaymentSettingsService.upsert_settings")
+    def test_settings_patch_returns_400_for_numbering_pattern_conflict(
+        self,
+        mocked_upsert,
+        mocked_ensure_series,
+        mocked_validate_unique_series_pattern,
+        _mocked_scope,
+        mocked_payload,
+        mocked_error_log,
+    ):
+        mocked_upsert.return_value = SimpleNamespace(default_doc_code_payment="PV", save=MagicMock())
+        mocked_ensure_series.return_value = (SimpleNamespace(created_by_id=None, save=MagicMock()), True)
+        mocked_validate_unique_series_pattern.side_effect = ValueError(
+            "Payment Voucher numbering pattern is already active for Head Office."
+        )
+        request = self._request(
+            "/api/payments/settings/?entity=1&entityfinid=2",
+            {
+                "numbering_series": [
+                    {
+                        "series_key": "payment_voucher",
+                        "doc_code": "PV",
+                        "prefix": "PV",
+                        "starting_number": 1,
+                        "current_number": 1,
+                    }
+                ]
+            },
+        )
+
+        response = PaymentSettingsAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("already active for Head Office", str(response.data["numbering_series"]))
+        mocked_payload.assert_not_called()
+        mocked_error_log.assert_called_once()
+
 
 class PaymentVoucherCashGuardTests(SimpleTestCase):
     def test_against_bill_allows_zero_cash_with_advance(self):
