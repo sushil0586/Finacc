@@ -49,6 +49,24 @@ def _append_decimal_digits_error(errors: list[dict[str, Any]], *, row: int, fiel
         )
 
 
+def _append_non_negative_decimal_error(errors: list[dict[str, Any]], *, row: int, field: str, value: Any):
+    if value in (None, "", "-", "--"):
+        return
+    try:
+        parsed = _to_decimal(value)
+    except Exception:
+        return
+    if parsed < Decimal("0"):
+        errors.append(
+            {
+                "sheet": SHEET,
+                "row": row,
+                "field": field,
+                "message": f"{field} cannot be negative.",
+            }
+        )
+
+
 def _to_bool(value: Any, default: bool = False) -> bool:
     if value is None or value == "":
         return default
@@ -219,6 +237,7 @@ def validate_payload(payload: dict[str, list[dict[str, Any]]], entity: Entity) -
         seen_codes.add(code.lower())
         for field_name in ("default_sgst", "default_cgst", "default_igst", "default_cess"):
             _append_decimal_digits_error(errors, row=idx, field=field_name, value=row.get(field_name), max_digits=5)
+            _append_non_negative_decimal_error(errors, row=idx, field=field_name, value=row.get(field_name))
             try:
                 _to_decimal(row.get(field_name))
             except Exception as exc:

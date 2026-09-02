@@ -1,6 +1,7 @@
 from django.db import models
 from helpers.models import TrackingModel
 from django.utils.translation import gettext as _
+from geography.gst_state_codes import normalize_state_code_for_country
 
 
 class Country(TrackingModel):
@@ -50,7 +51,11 @@ class State(TrackingModel):
 
     def save(self, *args, **kwargs):
         self.statename = (self.statename or '').strip()
-        self.statecode = str(self.statecode or '').strip().zfill(2)[:2]
+        self.statecode = normalize_state_code_for_country(
+            self.statecode,
+            country=self.country,
+            statename=self.statename,
+        )
         super().save(*args, **kwargs)
 
 

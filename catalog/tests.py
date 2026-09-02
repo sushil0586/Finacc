@@ -3,6 +3,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.urls import reverse
@@ -24,6 +25,7 @@ from catalog.serializers import (
     PriceListSerializer,
     ProductAttributeSerializer,
     ProductBarcodeManageSerializer,
+    ProductGstRateSerializer,
     ProductPlanningSerializer,
     ProductSerializer,
     UnitOfMeasureSerializer,
@@ -163,6 +165,113 @@ class CatalogPhase1Tests(TestCase):
         self.assertTrue(product.is_expiry_tracked)
         self.assertEqual(product.shelf_life_days, 180)
         self.assertEqual(product.expiry_warning_days, 30)
+
+    def test_product_gst_rate_model_rejects_negative_master_rates(self):
+        product = self._create_product(sku="NEG-MODEL-001")
+
+        with self.assertRaises(DjangoValidationError) as raised:
+            ProductGstRate.objects.create(
+                product=product,
+                hsn=self.hsn,
+                gst_type=GstType.REGULAR,
+                cgst=Decimal("-1.00"),
+                sgst=Decimal("9.00"),
+                igst=Decimal("8.00"),
+                cess=Decimal("0.00"),
+                cess_type="none",
+                valid_from=timezone.now().date(),
+                isdefault=True,
+            )
+
+        self.assertIn("cgst", raised.exception.message_dict)
+
+    def test_product_gst_rate_serializer_rejects_negative_tax_components(self):
+        product = self._create_product(sku="NEG-SER-001")
+        serializer = ProductGstRateSerializer(
+            data={
+                "product": product.id,
+                "hsn": self.hsn.id,
+                "gst_type": GstType.REGULAR,
+                "cgst": "-1.00",
+                "sgst": "9.00",
+                "igst": "8.00",
+                "cess": "0.00",
+                "cess_type": "none",
+                "valid_from": timezone.now().date().isoformat(),
+                "isdefault": True,
+            },
+            context={"entity": self.entity, "product": product},
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("cgst", serializer.errors)
+
+    def test_product_serializer_rejects_nested_negative_gst_rate(self):
+        serializer = ProductSerializer(
+            data=self._valid_payload(
+                sku="NEG-NEST-001",
+                gst_rates=[
+                    {
+                        "hsn": self.hsn.id,
+                        "gst_type": GstType.REGULAR,
+                        "cgst": "-1.00",
+                        "sgst": "9.00",
+                        "igst": "8.00",
+                        "cess": "0.00",
+                        "cess_type": "none",
+                        "valid_from": timezone.now().date().isoformat(),
+                        "isdefault": True,
+                    }
+                ],
+            ),
+            context={"entity": self.entity},
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("gst_rates", serializer.errors)
+
+    def test_product_gst_rate_api_rejects_negative_master_rates(self):
+        product = self._create_product(sku="NEG-API-001")
+
+        response = self.client.post(
+            f"/api/catalog/products/{product.id}/gst-rates/?entity={self.entity.id}",
+            {
+                "hsn": self.hsn.id,
+                "gst_type": GstType.REGULAR,
+                "cgst": "-1.00",
+                "sgst": "9.00",
+                "igst": "8.00",
+                "cess": "0.00",
+                "cess_type": "none",
+                "valid_from": timezone.now().date().isoformat(),
+                "isdefault": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("cgst", response.data)
+
+    def test_hsn_sac_serializer_rejects_negative_default_tax_rates(self):
+        serializer = HsnSacSerializer(
+            data={
+                "entity": self.entity.id,
+                "code": "998311",
+                "description": "Negative default",
+                "is_service": True,
+                "default_sgst": "9.00",
+                "default_cgst": "-1.00",
+                "default_igst": "8.00",
+                "default_cess": "0.00",
+                "is_exempt": False,
+                "is_nil_rated": False,
+                "is_non_gst": False,
+                "isactive": True,
+            }
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("default_cgst", serializer.errors)
 
     def test_catalog_product_list_is_blocked_when_inventory_feature_disabled(self):
         account = SubscriptionService.register_entity_creation(entity=self.entity, owner=self.user)
@@ -2176,6 +2285,66 @@ class CatalogBulkProductsCoverageTests(TestCase):
         self.assertIn("pack_size", error_fields)
         self.assertIn("factor", error_fields)
 
+    def test_validate_payload_rejects_negative_product_gst_rates(self):
+        payload = {
+            "categories_master": [],
+            "uoms_master": [],
+            "products_basic": [
+                {
+                    "sku": "NEG-BULK-001",
+                    "productname": "Negative Bulk Product",
+                    "productdesc": "",
+                    "category": self.category.pcategoryname,
+                    "brand": "",
+                    "base_uom_code": self.uom.code,
+                    "sales_account_code": "",
+                    "purchase_account_code": "",
+                    "is_service": False,
+                    "item_classification": ProductClassification.TRADING,
+                    "purchase_behavior": ProductPurchaseBehavior.INVENTORY,
+                    "default_taxability": "taxable",
+                    "default_asset_category_code": "",
+                    "is_batch_managed": False,
+                    "is_serialized": False,
+                    "is_expiry_tracked": False,
+                    "shelf_life_days": "",
+                    "expiry_warning_days": 30,
+                    "is_ecomm_9_5_service": False,
+                    "default_is_rcm": False,
+                    "is_itc_eligible": True,
+                    "product_status": "active",
+                    "launch_date": "2026-04-01",
+                    "discontinue_date": "",
+                    "isactive": True,
+                }
+            ],
+            "gst_rates": [
+                {
+                    "sku": "NEG-BULK-001",
+                    "hsn_code": "",
+                    "gst_type": "regular",
+                    "sgst": "9.00",
+                    "cgst": "-1.00",
+                    "igst": "8.00",
+                    "cess": "0.00",
+                    "cess_type": "none",
+                    "cess_specific_amount": "0.00",
+                    "valid_from": "2026-04-01",
+                    "valid_to": "",
+                    "isdefault": True,
+                }
+            ],
+            "prices": [],
+            "barcodes": [],
+            "opening_stocks": [],
+            "uom_conversions": [],
+        }
+
+        result = validate_product_bulk_payload(payload, self.entity)
+
+        self.assertGreater(result.summary["error_count"], 0)
+        self.assertIn("cgst", {error["field"] for error in result.errors})
+
 
 class CatalogBulkHsnCoverageTests(TestCase):
     def setUp(self):
@@ -2233,3 +2402,27 @@ class CatalogBulkHsnCoverageTests(TestCase):
         self.assertIn("code", error_fields)
         self.assertIn("description", error_fields)
         self.assertIn("default_sgst", error_fields)
+
+    def test_validate_payload_rejects_negative_hsn_tax_defaults(self):
+        payload = {
+            "hsn_sac": [
+                {
+                    "code": "998399",
+                    "description": "Negative HSN defaults",
+                    "is_service": True,
+                    "default_sgst": "9.00",
+                    "default_cgst": "-1.00",
+                    "default_igst": "8.00",
+                    "default_cess": "0.00",
+                    "is_exempt": False,
+                    "is_nil_rated": False,
+                    "is_non_gst": False,
+                    "isactive": True,
+                }
+            ]
+        }
+
+        result = validate_hsn_bulk_payload(payload, self.entity)
+
+        self.assertGreater(result.summary["error_count"], 0)
+        self.assertIn("default_cgst", {error["field"] for error in result.errors})

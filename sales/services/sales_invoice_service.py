@@ -31,6 +31,7 @@ from posting.adapters.sales_invoice import SalesInvoicePostingAdapter, SalesInvo
 from posting.models import TxnType, Entry, EntryStatus, JournalLine, InventoryMove
 from posting.common.location_resolver import resolve_posting_location_id
 from posting.services.posting_service import PostingService, JLInput, IMInput
+from geography.gst_state_codes import normalize_india_state_code, normalize_state_code_for_country
 from geography.models import State
 
 
@@ -967,8 +968,11 @@ class SalesInvoiceService:
             or getattr(state_obj, "code", None)
             or ""
         )
-        s = str(code).strip()
-        return s.zfill(2) if s.isdigit() and s else s
+        return normalize_state_code_for_country(
+            code,
+            country=getattr(state_obj, "country", None),
+            statename=getattr(state_obj, "statename", None),
+        )
 
     @staticmethod
     def _has_meaningful_state_code(value: Optional[str]) -> bool:
@@ -2166,13 +2170,21 @@ class SalesInvoiceService:
                 return ""
             return raw.zfill(2)[:2]
 
+        normalized = normalize_india_state_code(raw)
+        if normalized:
+            return normalized
+
         state = (
             State.objects.filter(Q(statecode__iexact=raw) | Q(statename__iexact=raw), isactive=True)
             .order_by("id")
             .first()
         )
         if state is not None:
-            return str(state.statecode or "").strip().zfill(2)[:2]
+            return normalize_state_code_for_country(
+                state.statecode,
+                country=getattr(state, "country", None),
+                statename=getattr(state, "statename", None),
+            )
 
         return raw.upper()[:2]
 

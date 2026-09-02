@@ -32,6 +32,7 @@ from sales.serializers.sales_compliance_serializers import (
     GenerateIRNAndEWayActionSerializer,
 )
 from sales.serializers.sales_invoice_serializers import SalesInvoiceHeaderSerializer, SalesInvoiceLookupSerializer
+from sales.serializers.sales_transport_serializers import SalesInvoiceTransportSnapshotSerializer
 from sales.serializers.eway_serializers import GenerateEWayRequestSerializer
 from withholding.services import WithholdingResult
 from withholding.models import WithholdingBaseRule
@@ -3325,15 +3326,33 @@ class SalesInvoiceViewUnitTests(SimpleTestCase):
         self.assertEqual(mocked_require_permission.call_count, 3)
         self.assertEqual(
             mocked_require_permission.call_args_list[0].kwargs,
-            {"user": self.user, "entity_id": 1, "doc_type": int(SalesInvoiceHeader.DocType.TAX_INVOICE), "action": "cancel"},
+            {
+                "user": self.user,
+                "entity_id": 1,
+                "doc_type": int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+                "action": "cancel",
+                "feature_code": "feature_sales",
+            },
         )
         self.assertEqual(
             mocked_require_permission.call_args_list[1].kwargs,
-            {"user": self.user, "entity_id": 1, "doc_type": SalesInvoiceHeader.DocType.CREDIT_NOTE, "action": "create"},
+            {
+                "user": self.user,
+                "entity_id": 1,
+                "doc_type": SalesInvoiceHeader.DocType.CREDIT_NOTE,
+                "action": "create",
+                "feature_code": "feature_sales",
+            },
         )
         self.assertEqual(
             mocked_require_permission.call_args_list[2].kwargs,
-            {"user": self.user, "entity_id": 1, "doc_type": SalesInvoiceHeader.DocType.CREDIT_NOTE, "action": "post"},
+            {
+                "user": self.user,
+                "entity_id": 1,
+                "doc_type": SalesInvoiceHeader.DocType.CREDIT_NOTE,
+                "action": "post",
+                "feature_code": "feature_sales",
+            },
         )
         mocked_cancel.assert_called_once_with(
             header=self.header,
@@ -5889,6 +5908,59 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
             invoice=header,
             created_by=self.user,
             updated_by=self.user,
+        )
+
+    def test_transport_serializer_rejects_empty_manual_snapshot(self):
+        serializer = SalesInvoiceTransportSnapshotSerializer(
+            data={
+                "transporter_id": " ",
+                "transporter_name": "",
+                "transport_mode": None,
+                "vehicle_no": "",
+                "vehicle_type": "",
+                "lr_gr_no": "",
+                "lr_gr_date": None,
+                "distance_km": None,
+                "dispatch_through": "",
+                "driver_name": "",
+                "driver_mobile": "",
+                "remarks": "",
+                "source": "manual",
+            }
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("Enter at least one transport detail", str(serializer.errors))
+
+    @patch("sales.views.sales_invoice_views.require_sales_request_permission")
+    @patch.object(SalesInvoiceTransportAPIView, "_get_scoped_header")
+    def test_transport_put_rejects_empty_payload(
+        self,
+        mocked_get_header,
+        mocked_require_permission,
+    ):
+        header = SimpleNamespace(
+            id=10,
+            entity_id=1,
+            doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+            transport_snapshot=None,
+        )
+        mocked_get_header.return_value = header
+
+        request = self._build_put_request(
+            "/api/sales/invoices/10/transport/?entity=1",
+            {"transport": {"transporter_name": " ", "vehicle_no": "", "source": "manual"}},
+        )
+
+        response = SalesInvoiceTransportAPIView.as_view()(request, pk=10)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Enter at least one transport detail", str(response.data))
+        mocked_require_permission.assert_called_once_with(
+            user=self.user,
+            entity_id=1,
+            doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+            action="update",
         )
 
     @patch("sales.views.sales_invoice_views.require_sales_request_permission")

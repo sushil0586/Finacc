@@ -10,6 +10,8 @@
 # - ProductBarcodeManageSerializer: unchanged fields, but kept primary enforcement
 # Note: Your model constraints will enforce correctness even if serializer misses.
 
+from decimal import Decimal
+
 from rest_framework import serializers
 from django.db import transaction
 from entity.models import Godown, SubEntity
@@ -197,10 +199,10 @@ class UnitOfMeasureSerializer(serializers.ModelSerializer):
 class HsnSacSerializer(serializers.ModelSerializer):
     code = serializers.CharField(max_length=20)
     description = serializers.CharField(max_length=255, required=False, allow_blank=True)
-    default_sgst = serializers.DecimalField(max_digits=5, decimal_places=2, required=False)
-    default_cgst = serializers.DecimalField(max_digits=5, decimal_places=2, required=False)
-    default_igst = serializers.DecimalField(max_digits=5, decimal_places=2, required=False)
-    default_cess = serializers.DecimalField(max_digits=5, decimal_places=2, required=False)
+    default_sgst = serializers.DecimalField(max_digits=5, decimal_places=2, required=False, min_value=Decimal("0.00"))
+    default_cgst = serializers.DecimalField(max_digits=5, decimal_places=2, required=False, min_value=Decimal("0.00"))
+    default_igst = serializers.DecimalField(max_digits=5, decimal_places=2, required=False, min_value=Decimal("0.00"))
+    default_cess = serializers.DecimalField(max_digits=5, decimal_places=2, required=False, min_value=Decimal("0.00"))
     def validate(self, attrs):
         entity = attrs.get("entity") or getattr(self.instance, "entity", None)
         code = (attrs.get("code") or getattr(self.instance, "code", "") or "").strip()
@@ -324,6 +326,17 @@ class ProductGstRateSerializer(EntityScopedValidationMixin, serializers.ModelSer
     id = serializers.IntegerField(required=False)
     valid_from = FlexibleDateField(required=True)
     valid_to = FlexibleDateField(required=False, allow_null=True)
+    sgst = serializers.DecimalField(max_digits=5, decimal_places=2, required=False, min_value=Decimal("0.00"))
+    cgst = serializers.DecimalField(max_digits=5, decimal_places=2, required=False, min_value=Decimal("0.00"))
+    igst = serializers.DecimalField(max_digits=5, decimal_places=2, required=False, min_value=Decimal("0.00"))
+    cess = serializers.DecimalField(max_digits=5, decimal_places=2, required=False, min_value=Decimal("0.00"))
+    cess_specific_amount = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        required=False,
+        allow_null=True,
+        min_value=Decimal("0.00"),
+    )
 
     class Meta:
         model = ProductGstRate

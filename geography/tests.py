@@ -19,6 +19,22 @@ class GeographyIntegrityTests(TestCase):
         self.assertEqual(state.statename, "Punjab")
         self.assertEqual(state.statecode, "03")
 
+    def test_india_alpha_state_codes_are_normalized_to_gst_codes(self):
+        country = Country.objects.create(countryname="India", countrycode="IN")
+        haryana = State.objects.create(statename="Haryana", statecode="HR", country=country)
+        delhi = State.objects.create(statename="Delhi", statecode="DL", country=country)
+        maharashtra = State.objects.create(statename="Maharashtra", statecode="MH", country=country)
+
+        self.assertEqual(haryana.statecode, "06")
+        self.assertEqual(delhi.statecode, "07")
+        self.assertEqual(maharashtra.statecode, "27")
+
+    def test_india_state_name_can_repair_alpha_state_code(self):
+        country = Country.objects.create(countryname="India", countrycode="IN")
+        state = State.objects.create(statename="Karnataka", statecode="KT", country=country)
+
+        self.assertEqual(state.statecode, "29")
+
     def test_state_code_is_unique_per_country_for_active_rows(self):
         country = Country.objects.create(countryname="India", countrycode="IN")
         State.objects.create(statename="Punjab", statecode="03", country=country)

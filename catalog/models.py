@@ -377,6 +377,16 @@ class HsnSac(EntityScopedModel):
     def __str__(self):
         return self.code
 
+    def clean(self):
+        super().clean()
+        errors = {}
+        for field_name in ("default_sgst", "default_cgst", "default_igst", "default_cess"):
+            value = getattr(self, field_name, None)
+            if value is not None and Decimal(value) < Decimal("0.00"):
+                errors[field_name] = "Tax rate cannot be negative."
+        if errors:
+            raise ValidationError(errors)
+
 
 class GstType(models.TextChoices):
     REGULAR = 'regular', _('Regular')
@@ -495,11 +505,22 @@ class ProductGstRate(TimeStampedModel):
     def _q2(v: Decimal) -> Decimal:
         return (v or Decimal("0")).quantize(Decimal("0.01"))
 
+    def _non_negative_rate_errors(self):
+        errors = {}
+        for field_name in ("sgst", "cgst", "igst", "gst_rate", "cess"):
+            value = getattr(self, field_name, None)
+            if value is not None and self._d(value) < Decimal("0.00"):
+                errors[field_name] = "Tax rate cannot be negative."
+
+        if self.cess_specific_amount is not None and self._d(self.cess_specific_amount) < Decimal("0.00"):
+            errors["cess_specific_amount"] = "Specific CESS amount cannot be negative."
+        return errors
+
     # --------------------
     # Validation
     # --------------------
     def clean(self):
-        errors = {}
+        errors = self._non_negative_rate_errors()
 
         # date sanity
         if self.valid_from and self.valid_to and self.valid_to < self.valid_from:
@@ -580,6 +601,10 @@ class ProductGstRate(TimeStampedModel):
     # Save normalization
     # --------------------
     def save(self, *args, **kwargs):
+        pre_normalization_errors = self._non_negative_rate_errors()
+        if pre_normalization_errors:
+            raise ValidationError(pre_normalization_errors)
+
         # ✅ normalize first (so clean() validates correct values)
         if self.gst_type in (GstType.EXEMPT, GstType.NIL, GstType.NON_GST):
             self.sgst = Decimal("0.00")

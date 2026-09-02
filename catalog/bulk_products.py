@@ -75,6 +75,24 @@ def _append_decimal_digits_error(errors: list[dict[str, Any]], *, sheet: str, ro
         )
 
 
+def _append_non_negative_decimal_error(errors: list[dict[str, Any]], *, sheet: str, row: int, field: str, value: Any):
+    if value in (None, "", "-", "--"):
+        return
+    try:
+        parsed = _to_decimal(value)
+    except Exception:
+        return
+    if parsed < Decimal("0"):
+        errors.append(
+            {
+                "sheet": sheet,
+                "row": row,
+                "field": field,
+                "message": f"{field} cannot be negative.",
+            }
+        )
+
+
 def _append_int_max_error(errors: list[dict[str, Any]], *, sheet: str, row: int, field: str, value: Any, max_value: int = _INT32_MAX):
     if value in (None, "", "-", "--"):
         return
@@ -680,6 +698,21 @@ def validate_payload(payload: dict[str, list[dict[str, Any]]], entity: Entity) -
                 continue
             if sku not in skus_in_file:
                 errors.append({"sheet": sheet, "row": idx, "field": "sku", "message": f"SKU '{sku}' not found."})
+            if sheet == "gst_rates":
+                for field_name in ("sgst", "cgst", "igst", "cess", "cess_specific_amount"):
+                    _append_decimal_digits_error(errors, sheet="gst_rates", row=idx, field=field_name, value=row.get(field_name), max_digits=12 if field_name == "cess_specific_amount" else 5)
+                    _append_non_negative_decimal_error(errors, sheet="gst_rates", row=idx, field=field_name, value=row.get(field_name))
+                    try:
+                        _to_decimal(row.get(field_name))
+                    except Exception as exc:
+                        errors.append({"sheet": "gst_rates", "row": idx, "field": field_name, "message": str(exc)})
+                try:
+                    valid_from = _parse_date(row.get("valid_from"))
+                    valid_to = _parse_date(row.get("valid_to"))
+                    if valid_from and valid_to and valid_to < valid_from:
+                        errors.append({"sheet": "gst_rates", "row": idx, "field": "valid_to", "message": "valid_to cannot be before valid_from."})
+                except Exception as exc:
+                    errors.append({"sheet": "gst_rates", "row": idx, "field": "valid_from", "message": str(exc)})
             if sheet == "prices":
                 _append_decimal_digits_error(errors, sheet="prices", row=idx, field="purchase_rate", value=row.get("purchase_rate"), max_digits=18)
                 _append_decimal_digits_error(errors, sheet="prices", row=idx, field="purchase_rate_less_percent", value=row.get("purchase_rate_less_percent"), max_digits=5)

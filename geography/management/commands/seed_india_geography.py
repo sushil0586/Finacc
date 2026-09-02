@@ -5,61 +5,8 @@ import re
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
+from geography.gst_state_codes import INDIA_STATES_GST, STATE_NAME_ALIASES
 from geography.models import Country, State
-
-
-INDIA_STATES_GST = [
-    ("01", "Jammu and Kashmir"),
-    ("02", "Himachal Pradesh"),
-    ("03", "Punjab"),
-    ("04", "Chandigarh"),
-    ("05", "Uttarakhand"),
-    ("06", "Haryana"),
-    ("07", "Delhi"),
-    ("08", "Rajasthan"),
-    ("09", "Uttar Pradesh"),
-    ("10", "Bihar"),
-    ("11", "Sikkim"),
-    ("12", "Arunachal Pradesh"),
-    ("13", "Nagaland"),
-    ("14", "Manipur"),
-    ("15", "Mizoram"),
-    ("16", "Tripura"),
-    ("17", "Meghalaya"),
-    ("18", "Assam"),
-    ("19", "West Bengal"),
-    ("20", "Jharkhand"),
-    ("21", "Odisha"),
-    ("22", "Chhattisgarh"),
-    ("23", "Madhya Pradesh"),
-    ("24", "Gujarat"),
-    ("26", "Dadra and Nagar Haveli and Daman and Diu"),
-    ("27", "Maharashtra"),
-    ("28", "Andhra Pradesh"),
-    ("29", "Karnataka"),
-    ("30", "Goa"),
-    ("31", "Lakshadweep"),
-    ("32", "Kerala"),
-    ("33", "Tamil Nadu"),
-    ("34", "Puducherry"),
-    ("35", "Andaman and Nicobar Islands"),
-    ("36", "Telangana"),
-    ("37", "Andhra Pradesh (New)"),
-    ("38", "Ladakh"),
-    ("97", "Other Territory"),
-]
-
-# Name aliases from old data to canonical state names above.
-STATE_NAME_ALIASES = {
-    "orissa": "odisha",
-    "pondicherry": "puducherry",
-    "nct of delhi": "delhi",
-    "delhi ncr": "delhi",
-    "andaman & nicobar islands": "andaman and nicobar islands",
-    "dadra and nagar haveli": "dadra and nagar haveli and daman and diu",
-    "daman and diu": "dadra and nagar haveli and daman and diu",
-    "jammu & kashmir": "jammu and kashmir",
-}
 
 
 def _norm(value: str) -> str:
