@@ -44,9 +44,9 @@ class PurchaseInvoiceComplianceStatusAPIView(PurchaseMetaBaseAPIView):
         pk: int,
     ) -> PurchaseInvoiceHeader:
         try:
-            return self._invoice_queryset(entity_id, entityfinid_id, subentity_id, line_mode=line_mode).get(pk=pk)
+            return self._invoice_queryset(entity_id, entityfinid_id, None, line_mode=line_mode).get(pk=pk)
         except ObjectDoesNotExist:
-            fallback = self._invoice_queryset(entity_id, entityfinid_id, subentity_id, line_mode=None).filter(pk=pk).first()
+            fallback = self._invoice_queryset(entity_id, entityfinid_id, None, line_mode=None).filter(pk=pk).first()
             if fallback is not None and line_mode in ("service", "goods"):
                 actual_mode = "service" if fallback.lines.filter(is_service=True).exists() else "goods"
                 if actual_mode != line_mode:

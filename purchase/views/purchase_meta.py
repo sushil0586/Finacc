@@ -479,14 +479,14 @@ class PurchaseInvoiceDetailFormMetaAPIView(PurchaseMetaBaseAPIView):
     """
 
     def get(self, request):
-        entity_id, entityfinid_id, subentity_id = self._parse_scope(request, require_entityfinid=True)
+        entity_id, entityfinid_id, _subentity_id = self._parse_scope(request, require_entityfinid=True)
         invoice_id = self._parse_int(request.query_params.get("invoice"), "invoice", required=True)
         line_mode = self._parse_line_mode(request)
 
         try:
-            header = self._invoice_queryset(entity_id, entityfinid_id, subentity_id, line_mode=line_mode).get(pk=invoice_id)
+            header = self._invoice_queryset(entity_id, entityfinid_id, None, line_mode=line_mode).get(pk=invoice_id)
         except ObjectDoesNotExist:
-            fallback = self._invoice_queryset(entity_id, entityfinid_id, subentity_id, line_mode=None).filter(pk=invoice_id).first()
+            fallback = self._invoice_queryset(entity_id, entityfinid_id, None, line_mode=None).filter(pk=invoice_id).first()
             if fallback is not None and line_mode in ("service", "goods"):
                 actual_mode = "service" if fallback.lines.filter(is_service=True).exists() else "goods"
                 if actual_mode != line_mode:
@@ -498,12 +498,13 @@ class PurchaseInvoiceDetailFormMetaAPIView(PurchaseMetaBaseAPIView):
                         }
                     )
             raise NotFound("Purchase invoice not found for current scope/mode.")
+        header_subentity_id = header.subentity_id
         invoice_data = PurchaseInvoiceHeaderSerializer(
             header,
             context={"request": request, "line_mode": line_mode},
         ).data
 
-        payload = self._invoice_form_meta(entity_id, subentity_id, entityfinid_id=entityfinid_id)
+        payload = self._invoice_form_meta(entity_id, header_subentity_id, entityfinid_id=entityfinid_id)
         payload.update(
             {
                 "entityfinid_id": entityfinid_id,
@@ -515,7 +516,7 @@ class PurchaseInvoiceDetailFormMetaAPIView(PurchaseMetaBaseAPIView):
                 "gst_tds_contract_summary": self._gst_tds_contract_summary(
                     entity_id=entity_id,
                     entityfinid_id=entityfinid_id,
-                    subentity_id=subentity_id,
+                    subentity_id=header_subentity_id,
                     vendor_id=header.vendor_id,
                     contract_ref=header.gst_tds_contract_ref,
                 ),
@@ -657,12 +658,12 @@ class PurchaseInvoiceSummaryAPIView(PurchaseMetaBaseAPIView):
     """
 
     def get(self, request, pk: int):
-        entity_id, entityfinid_id, subentity_id = self._parse_scope(request, require_entityfinid=True)
+        entity_id, entityfinid_id, _subentity_id = self._parse_scope(request, require_entityfinid=True)
         line_mode = self._parse_line_mode(request)
         try:
-            header = self._invoice_queryset(entity_id, entityfinid_id, subentity_id, line_mode=line_mode).get(pk=pk)
+            header = self._invoice_queryset(entity_id, entityfinid_id, None, line_mode=line_mode).get(pk=pk)
         except ObjectDoesNotExist:
-            fallback = self._invoice_queryset(entity_id, entityfinid_id, subentity_id, line_mode=None).filter(pk=pk).first()
+            fallback = self._invoice_queryset(entity_id, entityfinid_id, None, line_mode=None).filter(pk=pk).first()
             if fallback is not None and line_mode in ("service", "goods"):
                 actual_mode = "service" if fallback.lines.filter(is_service=True).exists() else "goods"
                 if actual_mode != line_mode:
@@ -708,7 +709,7 @@ class PurchaseInvoiceSummaryAPIView(PurchaseMetaBaseAPIView):
                 "gst_tds_contract_summary": self._gst_tds_contract_summary(
                     entity_id=entity_id,
                     entityfinid_id=entityfinid_id,
-                    subentity_id=subentity_id,
+                    subentity_id=header.subentity_id,
                     vendor_id=header.vendor_id,
                     contract_ref=header.gst_tds_contract_ref,
                 ),

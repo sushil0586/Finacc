@@ -294,12 +294,12 @@ class ReceiptVoucherFormMetaAPIView(ReceiptMetaBaseAPIView):
 
 class ReceiptVoucherDetailFormMetaAPIView(ReceiptMetaBaseAPIView):
     def get(self, request):
-        entity_id, entityfinid_id, subentity_id = self._parse_scope(request, require_entityfinid=True)
+        entity_id, entityfinid_id, _subentity_id = self._parse_scope(request, require_entityfinid=True)
         voucher_id = self._parse_int(request.query_params.get("voucher"), "voucher", required=True)
-        header = self._voucher_queryset(entity_id, entityfinid_id, subentity_id).filter(pk=voucher_id).first()
+        header = self._voucher_queryset(entity_id, entityfinid_id, None).filter(pk=voucher_id).first()
         if not header:
             raise serializers.ValidationError({"voucher": "Receipt voucher not found in selected scope."})
-        payload = self._voucher_form_meta(entity_id, entityfinid_id, subentity_id)
+        payload = self._voucher_form_meta(entity_id, entityfinid_id, header.subentity_id)
         voucher_data = ReceiptVoucherHeaderSerializer(
             header,
             context={"request": request, "skip_preview_numbers": True},

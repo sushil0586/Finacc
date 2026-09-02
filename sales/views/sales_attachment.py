@@ -36,10 +36,8 @@ class SalesAttachmentBaseAPIView(APIView):
         return entity_id, entityfinid_id, subentity_id
 
     def _scoped_header(self, request, pk: int) -> SalesInvoiceHeader:
-        entity_id, entityfinid_id, subentity_id = self._scope_ids(request)
+        entity_id, entityfinid_id, _subentity_id = self._scope_ids(request)
         qs = SalesInvoiceHeader.objects.filter(entity_id=entity_id, entityfinid_id=entityfinid_id)
-        if subentity_id is not None:
-            qs = qs.filter(subentity_id=subentity_id)
         return get_object_or_404(qs, pk=pk)
 
 

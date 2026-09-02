@@ -15,8 +15,11 @@ from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from openpyxl import load_workbook
 from rest_framework import status
+from rest_framework.exceptions import ValidationError
+from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.test import APITestCase, APIClient, APIRequestFactory, force_authenticate
+from rest_framework.views import APIView
 
 from assets.models import AssetCategory, FixedAsset
 from assets.services.settings import AssetSettingsService
@@ -43,6 +46,7 @@ from purchase.views.purchase_invoice import (
     PurchaseInvoiceLookupAPIView,
     PurchaseInvoiceCrossModeNavigationAPIView,
 )
+from purchase.views.purchase_invoice_actions import _assert_invoice_scope
 from purchase.views.purchase_ap import VendorSettlementListCreateAPIView
 from purchase.views.purchase_invoice_compliance import PurchaseInvoiceComplianceStatusAPIView
 from purchase.views.purchase_meta import PurchaseInvoiceDetailFormMetaAPIView
@@ -59,6 +63,33 @@ from purchase.models.purchase_statutory import PurchaseStatutoryChallan, Purchas
 from purchase.models.purchase_statutory import PurchaseStatutoryReturnLine
 from purchase.models import PurchaseLockPeriod
 from withholding.models import WithholdingSection, WithholdingTaxType, WithholdingBaseRule
+
+
+class PurchaseInvoiceObjectScopeTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.user = SimpleNamespace(is_authenticated=True, id=7)
+
+    @patch("purchase.views.purchase_invoice.get_object_or_404")
+    @patch("purchase.views.purchase_invoice.PurchaseInvoiceHeader.objects")
+    def test_cross_mode_navigation_lookup_ignores_stale_query_subentity(
+        self,
+        mocked_header_objects,
+        mocked_get_object_or_404,
+    ):
+        view = PurchaseInvoiceCrossModeNavigationAPIView()
+        request = self.factory.get("/api/purchase/purchase-invoices/9/navigation/?entity=1&entityfinid=2&subentity=31")
+        force_authenticate(request, user=self.user)
+        view.request = Request(request)
+        scoped_qs = MagicMock(name="purchase-object-queryset")
+        mocked_header_objects.filter.return_value.only.return_value = scoped_qs
+        mocked_get_object_or_404.return_value = SimpleNamespace(id=9)
+
+        result = view._get_scoped_header(9)
+
+        self.assertEqual(result.id, 9)
+        mocked_header_objects.filter.assert_called_once_with(entity_id=1, entityfinid_id=2)
+        mocked_get_object_or_404.assert_called_once_with(scoped_qs, pk=9)
 
 
 class PurchaseTdsApplyTests(SimpleTestCase):
@@ -1064,7 +1095,7 @@ class PurchaseDetailMetaContractTests(TestCase):
             status=PurchaseInvoiceHeader.Status.DRAFT,
         )
 
-        mock_parse_scope.return_value = (self.entity.id, self.entityfin.id, self.subentity.id)
+        mock_parse_scope.return_value = (self.entity.id, self.entityfin.id, 999)
         mock_invoice_queryset.return_value = PurchaseInvoiceHeader.objects.filter(pk=note.id)
         mock_invoice_form_meta.return_value = {
             "entity_id": self.entity.id,
@@ -1083,6 +1114,8 @@ class PurchaseDetailMetaContractTests(TestCase):
         self.assertEqual(response.data["invoice_id"], note.id)
         self.assertEqual(response.data["invoice"]["id"], note.id)
         self.assertEqual(response.data["invoice"]["ref_document"], original.id)
+        self.assertEqual(mock_invoice_queryset.call_args.args[2], None)
+        mock_invoice_form_meta.assert_called_once_with(self.entity.id, self.subentity.id, entityfinid_id=self.entityfin.id)
 
     @patch("purchase.services.purchase_invoice_service.WithholdingResolver.get_entity_config")
     def test_manual_mode_respects_tds_enabled_config(self, mock_get_cfg):
@@ -1261,11 +1294,12 @@ class PurchaseComplianceStatusContractTests(TestCase):
             igst_amount=Decimal("18.00"),
             line_total=Decimal("118.00"),
         )
-        mock_parse_scope.return_value = (self.entity.id, self.entityfin.id, self.subentity.id)
+        stale_subentity = SubEntity.objects.create(entity=self.entity, subentityname="Stale UI Branch")
+        mock_parse_scope.return_value = (self.entity.id, self.entityfin.id, stale_subentity.id)
 
         request = self.factory.get(
             f"/api/purchase/purchase-service-invoices/{header.id}/compliance/status/"
-            f"?entity={self.entity.id}&entityfinid={self.entityfin.id}&subentity={self.subentity.id}&line_mode=service"
+            f"?entity={self.entity.id}&entityfinid={self.entityfin.id}&subentity={stale_subentity.id}&line_mode=service"
         )
         force_authenticate(request, user=self.user)
 
@@ -1774,6 +1808,36 @@ class PurchaseInvoiceViewUnitTests(SimpleTestCase):
         }
         defaults.update(overrides)
         return SimpleNamespace(**defaults)
+
+    @patch("purchase.views.purchase_invoice_actions.PurchaseInvoiceHeader.objects")
+    def test_action_scope_allows_stale_subentity_when_entity_and_fy_match(self, mocked_objects):
+        header = self._make_header(id=600, entity_id=3, entityfinid_id=3, subentity_id=30, doc_type=1)
+        mocked_objects.only.return_value.filter.return_value.first.return_value = header
+        request = self.factory.post(
+            "/api/purchase/purchase-invoices/600/confirm/?entity=3&entityfinid=3&subentity=31",
+            {},
+            format="json",
+        )
+        request = APIView().initialize_request(request)
+
+        resolved = _assert_invoice_scope(600, request)
+
+        self.assertIs(resolved, header)
+        mocked_objects.only.return_value.filter.assert_called_once_with(pk=600)
+
+    @patch("purchase.views.purchase_invoice_actions.PurchaseInvoiceHeader.objects")
+    def test_action_scope_still_rejects_wrong_entity_or_fy(self, mocked_objects):
+        header = self._make_header(id=600, entity_id=3, entityfinid_id=3, subentity_id=30, doc_type=1)
+        mocked_objects.only.return_value.filter.return_value.first.return_value = header
+        request = self.factory.post(
+            "/api/purchase/purchase-invoices/600/confirm/?entity=4&entityfinid=3&subentity=30",
+            {},
+            format="json",
+        )
+        request = APIView().initialize_request(request)
+
+        with self.assertRaisesMessage(ValidationError, "Invoice scope mismatch"):
+            _assert_invoice_scope(600, request)
 
     @patch("purchase.views.purchase_invoice.require_purchase_request_permission")
     def test_list_queryset_uses_exists_for_line_mode_filter(self, mocked_require_permission):
@@ -7232,7 +7296,7 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
     ):
         mock_perm_codes.return_value = {"purchase.statutory.manage"}
         header = MagicMock()
-        header.subentity_id = None
+        header.subentity_id = 99
         header.refresh_from_db = MagicMock()
         header.save = MagicMock()
         queryset = MagicMock()
@@ -7254,7 +7318,7 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
         }
 
         resp = self.client.post(
-            "/api/purchase/statutory/itc-status-register/10/review/?entity=1&entityfinid=1",
+            "/api/purchase/statutory/itc-status-register/10/review/?entity=1&entityfinid=1&subentity=5",
             {"target_status": 2, "claim_period": "2026-04", "review_comment": "Reviewed"},
             format="json",
         )
@@ -7263,6 +7327,7 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
         self.assertEqual(resp.data["message"], "ITC marked as Claimed.")
         self.assertEqual(resp.data["row"]["itc_claim_status_name"], "Claimed")
         mock_mark_claimed.assert_called_once_with(10, "2026-04", acted_by_id=self.user.id)
+        self.assertEqual(mock_register.call_args.kwargs["subentity_id"], 99)
 
     @patch("purchase.views.purchase_statutory.PurchaseStatutoryService.itc_status_register")
     @patch("purchase.views.purchase_statutory.PurchaseInvoiceActions.mark_itc_blocked")
@@ -7528,7 +7593,7 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
             id=15,
             entity_id=1,
             entityfinid_id=1,
-            subentity_id=None,
+            subentity_id=99,
         )
         mock_match.return_value = SimpleNamespace(
             batch=SimpleNamespace(id=15),
@@ -7538,7 +7603,7 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
             multiple=1,
             not_matched=0,
         )
-        resp = self.client.post("/api/purchase/gstr2b/import-batches/15/match/?entity=1&entityfinid=1")
+        resp = self.client.post("/api/purchase/gstr2b/import-batches/15/match/?entity=1&entityfinid=1&subentity=5")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.data["summary"]["matched"], 7)
 
@@ -9177,7 +9242,7 @@ class PurchaseApiPermissionTests(APITestCase):
 
     @patch("purchase.views.purchase_gstr2b.Gstr2bImportBatch.objects")
     @patch("purchase.views.purchase_gstr2b.EffectivePermissionService.permission_codes_for_user")
-    def test_gstr2b_batch_rows_rejects_subentity_mismatch(self, mock_codes, mock_batch_objects):
+    def test_gstr2b_batch_rows_allows_stale_subentity_when_entity_and_fy_match(self, mock_codes, mock_batch_objects):
         mock_codes.return_value = {"purchase.statutory.view"}
         mock_batch_objects.filter.return_value.first.return_value = SimpleNamespace(
             id=15,
@@ -9188,26 +9253,44 @@ class PurchaseApiPermissionTests(APITestCase):
 
         response = self.client.get("/api/purchase/gstr2b/import-batches/15/rows/?entity=1&entityfinid=1&subentity=5")
 
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("subentity mismatch", str(response.data).lower())
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["batch_id"], 15)
 
+    @patch("purchase.views.purchase_gstr2b.Gstr2bImportRowSerializer")
+    @patch("purchase.views.purchase_gstr2b.PurchaseGstr2bService.review_row")
     @patch("purchase.views.purchase_gstr2b.Gstr2bImportRow.objects")
     @patch("purchase.views.purchase_gstr2b.EffectivePermissionService.permission_codes_for_user")
-    def test_gstr2b_row_review_rejects_subentity_mismatch(self, mock_codes, mock_row_objects):
+    def test_gstr2b_row_review_allows_stale_subentity_when_entity_and_fy_match(
+        self,
+        mock_codes,
+        mock_row_objects,
+        mock_review_row,
+        mock_serializer,
+    ):
         mock_codes.return_value = {"purchase.statutory.manage"}
-        mock_row_objects.select_related.return_value.filter.return_value.first.return_value = SimpleNamespace(
+        row = SimpleNamespace(
             id=33,
             batch=SimpleNamespace(subentity_id=99),
         )
+        mock_row_objects.select_related.return_value.filter.return_value.first.return_value = row
+        mock_review_row.return_value = row
+        mock_serializer.return_value.data = {"id": 33, "match_status": "NOT_MATCHED"}
 
         response = self.client.post(
             "/api/purchase/gstr2b/import-rows/33/review/?entity=1&entityfinid=1&subentity=5",
-            {"match_status": "MATCHED"},
+            {"match_status": "NOT_MATCHED"},
             format="json",
         )
 
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("subentity mismatch", str(response.data).lower())
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["data"]["id"], 33)
+        mock_review_row.assert_called_once_with(
+            row_id=33,
+            match_status="NOT_MATCHED",
+            comment=None,
+            matched_purchase_id=None,
+            reviewed_by_id=self.user.id,
+        )
 
     @patch("purchase.views.purchase_gstr2b.Gstr2bImportRow.objects")
     @patch("purchase.views.purchase_gstr2b.EffectivePermissionService.permission_codes_for_user")

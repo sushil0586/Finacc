@@ -544,7 +544,7 @@ class PurchaseStatutoryItcStatusRegisterReviewAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
-        entity_id, entityfinid_id, subentity_id = _parse_scope(request)
+        entity_id, entityfinid_id, _subentity_id = _parse_scope(request)
         _require_statutory_manage(request, entity_id)
 
         header = PurchaseInvoiceHeader.objects.filter(
@@ -554,12 +554,7 @@ class PurchaseStatutoryItcStatusRegisterReviewAPIView(APIView):
         ).first()
         if not header:
             raise ValidationError({"detail": "Purchase invoice not found for scope."})
-        if subentity_id is None:
-            if header.subentity_id is not None:
-                raise ValidationError({"detail": "Purchase invoice not found for scope."})
-        elif int(header.subentity_id or 0) != int(subentity_id):
-            raise ValidationError({"detail": "Purchase invoice not found for scope."})
-
+        header_subentity_id = header.subentity_id
         try:
             target_status = int(request.data.get("target_status"))
         except (TypeError, ValueError):
@@ -607,7 +602,7 @@ class PurchaseStatutoryItcStatusRegisterReviewAPIView(APIView):
             payload = PurchaseStatutoryService.itc_status_register(
                 entity_id=entity_id,
                 entityfinid_id=entityfinid_id,
-                subentity_id=subentity_id,
+                subentity_id=header_subentity_id,
                 date_from=None,
                 date_to=None,
                 itc_claim_status=None,

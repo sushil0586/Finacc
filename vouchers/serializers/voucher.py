@@ -7,6 +7,7 @@ from rest_framework import serializers
 
 from entity.financial_year_validation import assert_document_date_within_financial_year
 from financial.profile_access import account_partytype
+from helpers.utils.document_scope import assert_document_subentity_unchanged
 from vouchers.models import VoucherHeader, VoucherLine
 from vouchers.serializers.voucher_attachment import VoucherAttachmentSerializer
 from vouchers.services.voucher_settings_service import VoucherSettingsService
@@ -319,6 +320,8 @@ class VoucherWriteSerializer(serializers.ModelSerializer):
         )
 
     def validate(self, attrs: Any):
+        assert_document_subentity_unchanged(self.instance, attrs)
+
         entity = attrs.get("entity") or getattr(self.instance, "entity", None)
         entityfinid = attrs.get("entityfinid") or getattr(self.instance, "entityfinid", None)
         voucher_date = attrs.get("voucher_date") or getattr(self.instance, "voucher_date", None)

@@ -294,23 +294,36 @@ class VoucherService(SettlementVoucherRuntimeMixin):
             raise ValueError("Cancelled vouchers cannot be confirmed.")
         if int(header.status) == int(VoucherHeader.Status.POSTED):
             return VoucherResult(header=header, message="Already posted.")
+        if int(header.status) == int(VoucherHeader.Status.CONFIRMED):
+            return VoucherResult(header=header, message="Already confirmed.")
         header.doc_code = header.doc_code or _default_doc_code(header.voucher_type, header.entity_id, header.subentity_id)
         if not header.doc_no:
-            VoucherSettingsService.ensure_numbering_scope_for_type(
-                entity_id=header.entity_id,
-                entityfinid_id=header.entityfinid_id,
-                subentity_id=header.subentity_id,
-                voucher_type=header.voucher_type,
-                doc_code=header.doc_code,
-            )
             doc_type_id = cls._doc_type_id(header.voucher_type, header.doc_code)
-            res = DocumentNumberService.allocate_final(
-                entity_id=header.entity_id,
-                entityfinid_id=header.entityfinid_id,
-                subentity_id=header.subentity_id,
-                doc_type_id=doc_type_id,
-                doc_code=header.doc_code,
-            )
+            try:
+                res = DocumentNumberService.allocate_final(
+                    entity_id=header.entity_id,
+                    entityfinid_id=header.entityfinid_id,
+                    subentity_id=header.subentity_id,
+                    doc_type_id=doc_type_id,
+                    doc_code=header.doc_code,
+                )
+            except ValueError as exc:
+                if "Series not found" not in str(exc):
+                    raise
+                VoucherSettingsService.ensure_numbering_scope_for_type(
+                    entity_id=header.entity_id,
+                    entityfinid_id=header.entityfinid_id,
+                    subentity_id=header.subentity_id,
+                    voucher_type=header.voucher_type,
+                    doc_code=header.doc_code,
+                )
+                res = DocumentNumberService.allocate_final(
+                    entity_id=header.entity_id,
+                    entityfinid_id=header.entityfinid_id,
+                    subentity_id=header.subentity_id,
+                    doc_type_id=doc_type_id,
+                    doc_code=header.doc_code,
+                )
             header.doc_no = int(res.doc_no)
             header.voucher_code = res.display_no
         if int(header.status) == int(VoucherHeader.Status.CONFIRMED):

@@ -703,7 +703,10 @@ class PurchaseApServiceUnitTests(SimpleTestCase):
             save=settlement_save,
         )
         mocked_objects.select_for_update.return_value.get.return_value = settlement
-        mock_get_policy.return_value = SimpleNamespace(controls={"over_settlement_rule": "warn"})
+        mock_get_policy.return_value = SimpleNamespace(controls={
+            "settlement_mode": "on",
+            "over_settlement_rule": "warn",
+        })
         mock_allocatable_map.return_value = {501: Decimal("80.00")}
 
         result = PurchaseApService.post_settlement(settlement_id=91, posted_by_id=7)
@@ -764,7 +767,7 @@ class PurchaseApServiceUnitTests(SimpleTestCase):
             advance_adjustments=SimpleNamespace(all=lambda: [advance_row]),
             save=MagicMock(),
         )
-        mock_header_objects.select_related.return_value.prefetch_related.return_value.get.return_value = header
+        mock_header_objects.prefetch_related.return_value.select_for_update.return_value.get.return_value = header
         mock_get_policy.return_value = SimpleNamespace(controls={
             "require_allocation_on_post": "hard",
             "sync_ap_settlement_on_post": "off",
@@ -833,7 +836,7 @@ class PurchaseApServiceUnitTests(SimpleTestCase):
             advance_adjustments=SimpleNamespace(all=lambda: [advance_row]),
             save=MagicMock(),
         )
-        mock_header_objects.select_related.return_value.prefetch_related.return_value.get.return_value = header
+        mock_header_objects.prefetch_related.return_value.select_for_update.return_value.get.return_value = header
         mock_get_policy.return_value = SimpleNamespace(controls={
             "require_allocation_on_post": "hard",
             "sync_ap_settlement_on_post": "on",
@@ -924,7 +927,7 @@ class PurchaseApServiceUnitTests(SimpleTestCase):
             advance_adjustments=SimpleNamespace(all=lambda: [advance_row]),
             save=MagicMock(),
         )
-        mock_header_objects.select_related.return_value.prefetch_related.return_value.get.return_value = header
+        mock_header_objects.prefetch_related.return_value.select_for_update.return_value.get.return_value = header
         mock_fresh_allocs.return_value = [alloc_row]
         mock_get_policy.return_value = SimpleNamespace(controls={
             "require_allocation_on_post": "hard",
@@ -994,7 +997,7 @@ class PurchaseApServiceUnitTests(SimpleTestCase):
             advance_adjustments=SimpleNamespace(all=lambda: []),
             save=MagicMock(),
         )
-        mock_header_objects.select_related.return_value.prefetch_related.return_value.get.return_value = header
+        mock_header_objects.prefetch_related.return_value.select_for_update.return_value.get.return_value = header
         mock_get_policy.return_value = SimpleNamespace(controls={
             "require_allocation_on_post": "hard",
             "sync_ap_settlement_on_post": "on",
@@ -1060,7 +1063,7 @@ class PurchaseApServiceUnitTests(SimpleTestCase):
             advance_adjustments=SimpleNamespace(all=lambda: []),
             save=MagicMock(),
         )
-        mock_header_objects.select_related.return_value.prefetch_related.return_value.get.return_value = header
+        mock_header_objects.prefetch_related.return_value.select_for_update.return_value.get.return_value = header
         mock_get_policy.return_value = SimpleNamespace(controls={
             "require_allocation_on_post": "hard",
             "sync_ap_settlement_on_post": "on",
@@ -1074,7 +1077,7 @@ class PurchaseApServiceUnitTests(SimpleTestCase):
         mock_auto_fifo_allocations.return_value = [
             {"open_item": 55, "settled_amount": Decimal("590.00"), "is_full_settlement": True, "is_advance_adjustment": False}
         ]
-        mock_fresh_allocations.side_effect = [[], [created_allocation], [created_allocation]]
+        mock_fresh_allocations.side_effect = [[], [], [created_allocation], [created_allocation]]
         mock_create_settlement.return_value = SimpleNamespace(settlement=SimpleNamespace(id=301))
         mock_post_settlement.return_value = SimpleNamespace(settlement=SimpleNamespace(id=401))
 
@@ -1132,7 +1135,7 @@ class PurchaseApServiceUnitTests(SimpleTestCase):
             advance_adjustments=SimpleNamespace(all=lambda: []),
             save=MagicMock(),
         )
-        mock_header_objects.select_related.return_value.prefetch_related.return_value.get.return_value = header
+        mock_header_objects.prefetch_related.return_value.select_for_update.return_value.get.return_value = header
         mock_get_policy.return_value = SimpleNamespace(controls={
             "require_allocation_on_post": "hard",
             "sync_ap_settlement_on_post": "on",
@@ -1197,7 +1200,7 @@ class PurchaseApServiceUnitTests(SimpleTestCase):
             advance_adjustments=SimpleNamespace(all=lambda: []),
             save=MagicMock(),
         )
-        mock_header_objects.select_related.return_value.prefetch_related.return_value.get.return_value = header
+        mock_header_objects.prefetch_related.return_value.select_for_update.return_value.get.return_value = header
         mock_get_policy.return_value = SimpleNamespace(controls={
             "require_allocation_on_post": "hard",
             "require_confirm_before_post": "on",
@@ -1239,6 +1242,7 @@ class PurchaseApServiceUnitTests(SimpleTestCase):
             entityfinid_id=1,
             subentity_id=None,
             status=PaymentVoucherHeader.Status.POSTED,
+            voucher_date=date(2026, 5, 28),
             ap_settlement_id=201,
             created_by_id=5,
             voucher_code="PPV-41",
@@ -1250,7 +1254,7 @@ class PurchaseApServiceUnitTests(SimpleTestCase):
             vendor_advance_balance=advance_balance,
             save=MagicMock(),
         )
-        mock_header_objects.select_related.return_value.prefetch_related.return_value.get.return_value = header
+        mock_header_objects.prefetch_related.return_value.select_for_update.return_value.get.return_value = header
         mock_get_policy.return_value = SimpleNamespace(controls={"unpost_target_status": "draft"})
 
         res = PaymentVoucherService.unpost_voucher.__wrapped__(voucher_id=41, unposted_by_id=9)
@@ -1268,6 +1272,8 @@ class PurchaseApServiceUnitTests(SimpleTestCase):
 
 
 class PaymentVoucherAdvanceEdgeCaseTests(SimpleTestCase):
+    databases = {"default"}
+
     @patch("payments.services.payment_voucher_service.VendorBillOpenItem.objects")
     @patch("payments.services.payment_voucher_service.PurchaseApService.list_open_advances")
     def test_partial_advance_consumption_with_remaining_balance(self, mock_list_open_advances, mock_open_item_objects):
@@ -1379,13 +1385,14 @@ class PaymentVoucherAdvanceEdgeCaseTests(SimpleTestCase):
             subentity_id=None,
             status=PaymentVoucherHeader.Status.DRAFT,
             payment_type=PaymentVoucherHeader.PaymentType.AGAINST_BILL,
+            voucher_date=None,
             workflow_payload={"_approval_state": {"status": "APPROVED"}},
             adjustments=SimpleNamespace(values=lambda *args, **kwargs: []),
             advance_adjustments=SimpleNamespace(all=lambda: []),
             allocations=SimpleNamespace(all=lambda: []),
             save=MagicMock(),
         )
-        mock_header_objects.select_related.return_value.prefetch_related.return_value.get.return_value = header
+        mock_header_objects.prefetch_related.return_value.select_for_update.return_value.get.return_value = header
         mock_get_policy.return_value = SimpleNamespace(controls={
             "require_confirm_before_post": "on",
             "payment_maker_checker": "hard",
@@ -1406,6 +1413,7 @@ class PaymentVoucherAdvanceEdgeCaseTests(SimpleTestCase):
             subentity_id=None,
             status=PaymentVoucherHeader.Status.CONFIRMED,
             payment_type=PaymentVoucherHeader.PaymentType.AGAINST_BILL,
+            voucher_date=None,
             workflow_payload={"_approval_state": {"status": "SUBMITTED"}},
             cash_paid_amount=Decimal("0.00"),
             total_adjustment_amount=Decimal("0.00"),
@@ -1420,7 +1428,7 @@ class PaymentVoucherAdvanceEdgeCaseTests(SimpleTestCase):
             advance_adjustments=SimpleNamespace(all=lambda: []),
             save=MagicMock(),
         )
-        mock_header_objects.select_related.return_value.prefetch_related.return_value.get.return_value = header
+        mock_header_objects.prefetch_related.return_value.select_for_update.return_value.get.return_value = header
         mock_get_policy.return_value = SimpleNamespace(controls={
             "require_confirm_before_post": "on",
             "payment_maker_checker": "hard",
@@ -1769,9 +1777,9 @@ class PaymentVoucherViewValidationTests(SimpleTestCase):
     @patch("errorlogger.drf_exception_handler.ErrorLog.objects.create")
     @patch("payments.views.payment_voucher.PaymentVoucherHeader.objects")
     def test_approval_view_reports_invalid_action_on_action_field(self, mocked_header_objects, mocked_error_log):
-        mocked_header_objects.only.return_value.get.return_value = SimpleNamespace(id=9, entity_id=1)
+        mocked_header_objects.filter.return_value.only.return_value = MagicMock()
         request = self._request(
-            "/api/payments/payment-vouchers/9/approval/",
+            "/api/payments/payment-vouchers/9/approval/?entity=1&entityfinid=2&subentity=31",
             {"action": "ship"},
         )
 
@@ -1784,9 +1792,9 @@ class PaymentVoucherViewValidationTests(SimpleTestCase):
     @patch("errorlogger.drf_exception_handler.ErrorLog.objects.create")
     @patch("payments.views.payment_voucher.PaymentVoucherHeader.objects")
     def test_approval_view_rejects_oversized_remarks(self, mocked_header_objects, mocked_error_log):
-        mocked_header_objects.only.return_value.get.return_value = SimpleNamespace(id=9, entity_id=1)
+        mocked_header_objects.filter.return_value.only.return_value = MagicMock()
         request = self._request(
-            "/api/payments/payment-vouchers/9/approval/",
+            "/api/payments/payment-vouchers/9/approval/?entity=1&entityfinid=2&subentity=31",
             {"action": "submit", "remarks": "R" * 256},
         )
 
@@ -1807,7 +1815,7 @@ class PaymentVoucherViewValidationTests(SimpleTestCase):
         mocked_submit_voucher,
         _mocked_require_permission,
     ):
-        mocked_header_objects.only.return_value.get.return_value = SimpleNamespace(id=9, entity_id=1)
+        mocked_header_objects.filter.return_value.only.return_value = MagicMock()
         mocked_serializer.return_value.data = {
             "id": 9,
             "approval_status": "SUBMITTED",
@@ -1817,7 +1825,7 @@ class PaymentVoucherViewValidationTests(SimpleTestCase):
             message="Already submitted.",
             header=SimpleNamespace(id=9),
         )
-        request = self._request("/api/payments/payment-vouchers/9/approval/", {"action": "submit"})
+        request = self._request("/api/payments/payment-vouchers/9/approval/?entity=1&entityfinid=2&subentity=31", {"action": "submit"})
 
         response = PaymentVoucherApprovalAPIView.as_view()(request, pk=9)
 
@@ -1837,7 +1845,7 @@ class PaymentVoucherViewValidationTests(SimpleTestCase):
         mocked_approve_voucher,
         _mocked_require_permission,
     ):
-        mocked_header_objects.only.return_value.get.return_value = SimpleNamespace(id=9, entity_id=1)
+        mocked_header_objects.filter.return_value.only.return_value = MagicMock()
         mocked_serializer.return_value.data = {
             "id": 9,
             "approval_status": "APPROVED",
@@ -1847,7 +1855,7 @@ class PaymentVoucherViewValidationTests(SimpleTestCase):
             message="Already approved.",
             header=SimpleNamespace(id=9),
         )
-        request = self._request("/api/payments/payment-vouchers/9/approval/", {"action": "approve"})
+        request = self._request("/api/payments/payment-vouchers/9/approval/?entity=1&entityfinid=2&subentity=31", {"action": "approve"})
 
         response = PaymentVoucherApprovalAPIView.as_view()(request, pk=9)
 
@@ -1867,7 +1875,7 @@ class PaymentVoucherViewValidationTests(SimpleTestCase):
         mocked_reject_voucher,
         _mocked_require_permission,
     ):
-        mocked_header_objects.only.return_value.get.return_value = SimpleNamespace(id=9, entity_id=1)
+        mocked_header_objects.filter.return_value.only.return_value = MagicMock()
         mocked_serializer.return_value.data = {
             "id": 9,
             "approval_status": "REJECTED",
@@ -1877,7 +1885,7 @@ class PaymentVoucherViewValidationTests(SimpleTestCase):
             message="Already rejected.",
             header=SimpleNamespace(id=9),
         )
-        request = self._request("/api/payments/payment-vouchers/9/approval/", {"action": "reject"})
+        request = self._request("/api/payments/payment-vouchers/9/approval/?entity=1&entityfinid=2&subentity=31", {"action": "reject"})
 
         response = PaymentVoucherApprovalAPIView.as_view()(request, pk=9)
 
@@ -1895,9 +1903,9 @@ class PaymentVoucherViewValidationTests(SimpleTestCase):
         _mocked_require_permission,
         mocked_error_log,
     ):
-        mocked_header_objects.only.return_value.get.return_value = SimpleNamespace(id=9, entity_id=1)
+        mocked_header_objects.filter.return_value.only.return_value = MagicMock()
         request = self._request(
-            "/api/payments/payment-vouchers/9/cancel/",
+            "/api/payments/payment-vouchers/9/cancel/?entity=1&entityfinid=2&subentity=31",
             {"reason": "C" * 256},
         )
 
@@ -2172,6 +2180,8 @@ class PaymentVoucherCashGuardTests(SimpleTestCase):
 
 
 class PaymentRuntimeWithholdingTests(SimpleTestCase):
+    databases = {"default"}
+
     @patch("payments.services.payment_voucher_service.PaymentVoucherService._resolve_entity_runtime_tds_mapping")
     @patch("payments.services.payment_voucher_service.StaticAccountService.get_ledger_id")
     @patch("payments.services.payment_voucher_service.StaticAccountService.get_account_id")
@@ -2654,7 +2664,47 @@ class PaymentVoucherDetailFormMetaAttachmentTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["attachments"], [{"id": 701, "file_name": "payment-proof.pdf"}])
+        mocked_queryset.assert_called_once_with(10, 11, None)
         mocked_attachment_serializer.assert_called_once_with(["attachment-row"], many=True)
+
+    @patch("payments.views.payment_meta.PaymentVoucherAttachmentSerializer")
+    @patch("payments.views.payment_meta.PaymentVoucherHeaderSerializer")
+    @patch.object(PaymentVoucherDetailFormMetaAPIView, "enforce_scope")
+    @patch.object(PaymentVoucherDetailFormMetaAPIView, "_action_flags")
+    @patch.object(PaymentVoucherDetailFormMetaAPIView, "_account_block")
+    @patch.object(PaymentVoucherDetailFormMetaAPIView, "_voucher_form_meta")
+    @patch.object(PaymentVoucherDetailFormMetaAPIView, "_voucher_queryset")
+    def test_detail_meta_uses_saved_subentity_when_query_branch_is_stale(
+        self,
+        mocked_queryset,
+        mocked_form_meta,
+        mocked_account_block,
+        mocked_action_flags,
+        _mocked_enforce_scope,
+        mocked_header_serializer,
+        mocked_attachment_serializer,
+    ):
+        header_qs = MagicMock()
+        header = MagicMock()
+        header.subentity_id = 30
+        header.attachments.order_by.return_value = []
+        header_qs.get.return_value = header
+        mocked_queryset.return_value = header_qs
+        mocked_form_meta.return_value = {"entity_id": 10, "entityfinid_id": 11, "subentity_id": 30}
+        mocked_account_block.side_effect = [None, None]
+        mocked_action_flags.return_value = {"can_edit": True}
+        mocked_header_serializer.return_value.data = {"id": 99, "navigation": None, "number_navigation": None}
+        mocked_attachment_serializer.return_value.data = []
+
+        request = self.factory.get("/api/payments/meta/voucher-detail-form/?entity=10&entityfinid=11&subentity=31&voucher=99")
+        force_authenticate(request, user=self.user)
+
+        response = PaymentVoucherDetailFormMetaAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        mocked_queryset.assert_called_once_with(10, 11, None)
+        mocked_form_meta.assert_called_once_with(10, 11, 30)
+        self.assertEqual(response.data["subentity_id"], 30)
 
 
 @override_settings(META_CACHE_ENABLED=True, META_CACHE_TTL_SECONDS=600, META_CACHE_VERSION="test")
@@ -2841,7 +2891,7 @@ class PaymentNumberingRecoveryTests(TestCase):
         self.root_scope = SubEntity.objects.create(entity=self.entity, subentityname="Head Office", is_head_office=True)
         self.branch_scope = SubEntity.objects.create(entity=self.entity, subentityname="Branch A", branch_type=SubEntity.BranchType.BRANCH)
 
-    def test_current_doc_no_auto_seeds_missing_branch_scope(self):
+    def test_current_doc_no_uses_root_series_when_branch_series_is_missing(self):
         NumberingSeedService.seed_document(
             entity_id=self.entity.id,
             entityfinid_id=self.entityfin.id,
@@ -2864,8 +2914,8 @@ class PaymentNumberingRecoveryTests(TestCase):
         )
 
         self.assertTrue(payload["enabled"])
-        self.assertEqual(payload["current_number"], 1)
-        self.assertTrue(
+        self.assertEqual(payload["current_number"], 5)
+        self.assertFalse(
             DocumentNumberSeries.objects.filter(
                 entity=self.entity,
                 entityfinid=self.entityfin,

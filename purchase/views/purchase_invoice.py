@@ -273,7 +273,7 @@ class PurchaseInvoiceRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroy
         return queryset.annotate(_line_mode_match=Exists(matching_lines)).filter(_line_mode_match=True)
 
     def get_queryset(self):
-        entity_id, entityfinid_id, subentity_id = self._scope_ids()
+        entity_id, entityfinid_id, _subentity_id = self._scope_ids()
         qs = (
             PurchaseInvoiceHeader.objects.all()
             .filter(entity_id=entity_id, entityfinid_id=entityfinid_id)
@@ -284,8 +284,6 @@ class PurchaseInvoiceRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroy
                 "ref_document",
             )
         )
-        if subentity_id is not None:
-            qs = qs.filter(subentity_id=subentity_id)
 
         if self.request.method.upper() == "GET":
             qs = qs.prefetch_related(
@@ -818,7 +816,7 @@ class PurchaseInvoiceCrossModeNavigationAPIView(APIView):
         return queryset.annotate(_line_mode_match=Exists(matching_lines)).filter(_line_mode_match=True)
 
     def _get_scoped_header(self, pk: int) -> PurchaseInvoiceHeader:
-        entity_id, entityfinid_id, subentity_id = self._scope_ids()
+        entity_id, entityfinid_id, _subentity_id = self._scope_ids()
         qs = self._apply_line_mode_filter(
             PurchaseInvoiceHeader.objects.filter(entity_id=entity_id, entityfinid_id=entityfinid_id).only(
                 "id",
@@ -832,8 +830,6 @@ class PurchaseInvoiceCrossModeNavigationAPIView(APIView):
                 "bill_date",
             )
         )
-        if subentity_id is not None:
-            qs = qs.filter(subentity_id=subentity_id)
         return get_object_or_404(qs, pk=pk)
 
     def get(self, request, pk: int, *args, **kwargs):

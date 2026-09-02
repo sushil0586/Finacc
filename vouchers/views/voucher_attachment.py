@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import mimetypes
 
-from django.db.models import Q
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import permissions, status
@@ -35,12 +34,8 @@ class VoucherAttachmentBaseAPIView(APIView):
         return entity_id, entityfinid_id, subentity_id
 
     def _scoped_header(self, request, pk: int) -> VoucherHeader:
-        entity_id, entityfinid_id, subentity_id = self._scope_ids(request)
+        entity_id, entityfinid_id, _subentity_id = self._scope_ids(request)
         qs = VoucherHeader.objects.filter(entity_id=entity_id, entityfinid_id=entityfinid_id)
-        if subentity_id is None:
-            qs = qs.filter(subentity__isnull=True)
-        else:
-            qs = qs.filter(Q(subentity_id=subentity_id) | Q(subentity__isnull=True))
         return get_object_or_404(qs, pk=pk)
 
 

@@ -18,6 +18,7 @@ from sales.services.sales_settings_service import SalesSettingsService
 from sales.services.sales_compliance_service import SalesComplianceService
 from sales.services.sales_settings_service import SalesSettingsService
 from helpers.utils.document_actions import build_document_action_flags
+from helpers.utils.document_scope import assert_document_subentity_unchanged
 from financial.invoice_custom_fields_service import InvoiceCustomFieldService
 from sales.serializers.sales_charge_serializers import SalesChargeLineSerializer
 from sales.serializers.sales_attachment import SalesAttachmentSerializer
@@ -309,6 +310,7 @@ class SalesInvoiceLookupSerializer(serializers.ModelSerializer):
     accountname = serializers.CharField(source="customer.accountname", read_only=True)
     invoice_date = serializers.DateField(source="bill_date", read_only=True)
     total_value = serializers.SerializerMethodField()
+    lookup_identity = serializers.SerializerMethodField()
     subentity_name = serializers.CharField(source="subentity.subentityname", read_only=True)
     branch_name = serializers.CharField(source="subentity.subentityname", read_only=True)
 
@@ -328,6 +330,7 @@ class SalesInvoiceLookupSerializer(serializers.ModelSerializer):
             "accountname",
             "bill_date",
             "invoice_date",
+            "lookup_identity",
             "grand_total",
             "total_value",
             "outstanding_amount",
@@ -337,6 +340,12 @@ class SalesInvoiceLookupSerializer(serializers.ModelSerializer):
 
     def get_total_value(self, obj) -> Decimal:
         return getattr(obj, "grand_total", None) or Decimal("0.00")
+
+    def get_lookup_identity(self, obj) -> str:
+        invoice_number = str(getattr(obj, "invoice_number", "") or "").strip()
+        if invoice_number:
+            return invoice_number
+        return f"DRAFT-{getattr(obj, 'id', '')}"
 
 
 class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
@@ -666,6 +675,8 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
         ]
 
     def validate(self, attrs):
+        assert_document_subentity_unchanged(self.instance, attrs)
+
         # Normalize nullable char inputs sent by frontend as null so model-level
         # CharField(blank=True, default="") can persist safely.
         for field in ("place_of_supply_state_code", "place_of_supply_pincode"):

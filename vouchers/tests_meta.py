@@ -58,6 +58,41 @@ class VoucherDetailFormMetaAPIViewTests(TestCase):
         self.assertEqual(response.data["subentity_id"], 9)
         self.assertEqual(response.data["voucher"], {"id": 16})
 
+    @patch("vouchers.views.voucher_meta.VoucherDetailSerializer")
+    @patch("vouchers.views.voucher_meta.get_object_or_404")
+    @patch.object(VoucherDetailFormMetaAPIView, "enforce_scope")
+    @patch.object(VoucherDetailFormMetaAPIView, "_voucher_form_meta")
+    @patch.object(VoucherDetailFormMetaAPIView, "_voucher_queryset")
+    def test_detail_meta_uses_saved_subentity_when_query_branch_is_stale(
+        self,
+        mocked_queryset,
+        mocked_form_meta,
+        _mocked_enforce_scope,
+        mocked_get_object,
+        mocked_serializer,
+    ):
+        header = SimpleNamespace(
+            subentity_id=30,
+            status=VoucherHeader.Status.DRAFT,
+            get_status_display=lambda: "Draft",
+            cash_bank_account=None,
+            attachments=Mock(order_by=Mock(return_value=[])),
+        )
+        mocked_queryset.return_value = Mock(name="voucher_queryset")
+        mocked_get_object.return_value = header
+        mocked_form_meta.return_value = {"entity_id": 32, "entityfinid_id": 32, "subentity_id": 30}
+        mocked_serializer.return_value.data = {"id": 16}
+
+        request = self.factory.get("/api/vouchers/meta/voucher-detail-form/?entity=32&entityfinid=32&subentity=31&voucher=16")
+        force_authenticate(request, user=self.user)
+
+        response = VoucherDetailFormMetaAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        mocked_queryset.assert_called_once_with(32, 32, None, allow_any_subentity=True)
+        mocked_form_meta.assert_called_once_with(32, 32, 30)
+        self.assertEqual(response.data["subentity_id"], 30)
+
     @patch("vouchers.views.voucher_meta.VoucherAttachmentSerializer")
     @patch("vouchers.views.voucher_meta.VoucherDetailSerializer")
     @patch("vouchers.views.voucher_meta.get_object_or_404")

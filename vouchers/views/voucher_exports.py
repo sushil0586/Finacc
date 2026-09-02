@@ -33,11 +33,10 @@ class VoucherPDFAPIView(APIView):
         return entity_id, entityfinid_id, subentity_id
 
     def get(self, request, pk: int):
-        entity_id, entityfinid_id, subentity_id = self._scope_ids(request)
+        entity_id, entityfinid_id, _subentity_id = self._scope_ids(request)
         qs = VoucherHeader.objects.filter(entity_id=entity_id, entityfinid_id=entityfinid_id).select_related(
             "cash_bank_account", "entity", "entityfinid", "subentity"
         ).prefetch_related("lines__account")
-        qs = qs.filter(subentity__isnull=True) if subentity_id is None else qs.filter(subentity_id=subentity_id)
         voucher = qs.get(pk=pk)
 
         disposition = (request.query_params.get("disposition") or "inline").strip().lower()

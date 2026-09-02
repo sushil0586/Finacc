@@ -31,6 +31,7 @@ from purchase.services.purchase_settings_service import PurchaseSettingsService
 from financial.invoice_custom_fields_service import InvoiceCustomFieldService
 from gst_tds.models import GstTdsContractLedger
 from gst_tds.services.gst_tds_service import normalize_contract_ref
+from helpers.utils.document_scope import assert_document_subentity_unchanged
 
 
 DEC2 = Decimal("0.01")
@@ -724,6 +725,7 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         inst = getattr(self, "instance", None)
+        assert_document_subentity_unchanged(inst, attrs)
 
         entity = attrs.get("entity") or getattr(inst, "entity_id", None)
         entityfinid = attrs.get("entityfinid") or getattr(inst, "entityfinid", None)

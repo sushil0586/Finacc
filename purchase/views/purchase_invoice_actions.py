@@ -47,7 +47,7 @@ def _parse_scope(request, *, required: bool = True):
 
 
 def _assert_invoice_scope(pk: int, request):
-    entity_id, entityfinid_id, subentity_id = _parse_scope(request, required=True)
+    entity_id, entityfinid_id, _subentity_id = _parse_scope(request, required=True)
     header = (
         PurchaseInvoiceHeader.objects
         .only("id", "entity_id", "entityfinid_id", "subentity_id", "doc_type")
@@ -58,8 +58,6 @@ def _assert_invoice_scope(pk: int, request):
         raise Http404("Purchase invoice not found.")
     if int(header.entity_id or 0) != int(entity_id or 0) or int(header.entityfinid_id or 0) != int(entityfinid_id or 0):
         raise ValidationError({"detail": "Invoice scope mismatch with entity/entityfinid."})
-    if subentity_id is not None and int(header.subentity_id or 0) != int(subentity_id or 0):
-        raise ValidationError({"detail": "Invoice subentity mismatch for requested scope."})
     return header
 
 

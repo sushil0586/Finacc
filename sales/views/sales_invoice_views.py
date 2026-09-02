@@ -134,8 +134,14 @@ class _SalesScopeMixin:
         qs = SalesInvoiceHeader.objects.filter(**self._scope_filters(self.request))
         return self._apply_line_mode_filter(qs)
 
+    def _object_queryset(self):
+        filters = self._scope_filters(self.request)
+        filters.pop("subentity_id", None)
+        qs = SalesInvoiceHeader.objects.filter(**filters)
+        return self._apply_line_mode_filter(qs)
+
     def _get_scoped_header(self, pk: int) -> SalesInvoiceHeader:
-        return get_object_or_404(self._scoped_queryset(), pk=pk)
+        return get_object_or_404(self._object_queryset(), pk=pk)
 
     def _get_line_mode(self) -> str | None:
         if self.line_mode in ("service", "goods"):
@@ -544,7 +550,7 @@ class SalesInvoiceRetrieveUpdateAPIView(_SalesScopeMixin, generics.RetrieveUpdat
         lines_qs = SalesInvoiceLine.objects.select_related("product", "uom", "sales_account").order_by("line_no")
 
         return (
-            self._scoped_queryset()
+            self._object_queryset()
             .select_related(
                 "customer",
                 "customer__ledger",

@@ -130,7 +130,7 @@ class VoucherNumberingRecoveryTests(TestCase):
         )
         self.subentity = SubEntity.objects.create(entity=self.entity, subentityname="Branch A", is_head_office=True)
 
-    def test_current_doc_no_auto_seeds_missing_branch_series_from_voucher_scope(self):
+    def test_current_doc_no_uses_root_series_when_branch_series_is_missing(self):
         NumberingSeedService.seed_document(
             entity_id=self.entity.id,
             entityfinid_id=self.entityfin.id,
@@ -152,17 +152,43 @@ class VoucherNumberingRecoveryTests(TestCase):
         )
 
         self.assertTrue(payload["enabled"])
+        self.assertEqual(payload["current_number"], 4)
         bank_doc_type = DocumentType.objects.get(module="vouchers", doc_key="BANK_VOUCHER")
-        branch_series = DocumentNumberSeries.objects.get(
-            entity=self.entity,
-            entityfinid=self.entityfin,
-            subentity=self.subentity,
-            doc_type=bank_doc_type,
-            doc_code="BV",
+        self.assertFalse(
+            DocumentNumberSeries.objects.filter(
+                entity=self.entity,
+                entityfinid=self.entityfin,
+                subentity=self.subentity,
+                doc_type=bank_doc_type,
+                doc_code="BV",
+            ).exists()
         )
-        self.assertEqual(payload["current_number"], branch_series.current_number)
 
-    def test_confirm_voucher_auto_seeds_missing_branch_series_before_allocating_number(self):
+    def test_current_doc_no_uses_branch_series_when_configured(self):
+        NumberingSeedService.seed_document(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            module="vouchers",
+            doc_key="BANK_VOUCHER",
+            name="Bank Voucher",
+            default_code="BV",
+            prefix="BV",
+            start=11,
+            padding=4,
+        )
+
+        payload = VoucherSettingsService.current_doc_no_for_type(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            voucher_type=VoucherHeader.VoucherType.BANK,
+        )
+
+        self.assertTrue(payload["enabled"])
+        self.assertEqual(payload["current_number"], 11)
+
+    def test_confirm_voucher_uses_root_series_when_branch_series_is_missing(self):
         NumberingSeedService.seed_document(
             entity_id=self.entity.id,
             entityfinid_id=self.entityfin.id,
@@ -191,10 +217,10 @@ class VoucherNumberingRecoveryTests(TestCase):
         result = VoucherService.confirm_voucher(header.id, confirmed_by_id=self.user.id)
 
         self.assertEqual(result.header.status, VoucherHeader.Status.CONFIRMED)
-        self.assertEqual(result.header.doc_no, 1)
+        self.assertEqual(result.header.doc_no, 8)
         self.assertTrue(str(result.header.voucher_code).startswith("JV-"))
         journal_doc_type = DocumentType.objects.get(module="vouchers", doc_key="JOURNAL_VOUCHER")
-        self.assertTrue(
+        self.assertFalse(
             DocumentNumberSeries.objects.filter(
                 entity=self.entity,
                 entityfinid=self.entityfin,

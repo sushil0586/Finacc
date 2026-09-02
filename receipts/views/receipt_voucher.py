@@ -121,20 +121,16 @@ class _ReceiptVoucherScopedActionMixin:
         try:
             entity_id = int(entity)
             entityfinid_id = int(entityfinid)
-            subentity_id = int(subentity) if subentity not in (None, "", "null") else None
-            if subentity_id == 0:
-                subentity_id = None
+            _subentity_id = int(subentity) if subentity not in (None, "", "null") else None
+            if _subentity_id == 0:
+                _subentity_id = None
         except (TypeError, ValueError):
             raise_scope_type_error()
-        return entity_id, entityfinid_id, subentity_id
+        return entity_id, entityfinid_id, _subentity_id
 
     def _get_header(self, pk: int):
-        entity_id, entityfinid_id, subentity_id = self._scope_ids()
+        entity_id, entityfinid_id, _subentity_id = self._scope_ids()
         qs = ReceiptVoucherHeader.objects.filter(entity_id=entity_id, entityfinid_id=entityfinid_id).only("id", "entity_id")
-        if subentity_id is None:
-            qs = qs.filter(subentity__isnull=True)
-        else:
-            qs = qs.filter(subentity_id=subentity_id)
         return get_object_or_404(qs, pk=pk)
 
 
@@ -317,7 +313,7 @@ class ReceiptVoucherRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyA
         return entity_id, entityfinid_id, subentity_id
 
     def get_queryset(self):
-        entity_id, entityfinid_id, subentity_id = self._scope_ids()
+        entity_id, entityfinid_id, _subentity_id = self._scope_ids()
         qs = ReceiptVoucherHeader.objects.filter(entity_id=entity_id, entityfinid_id=entityfinid_id).select_related(
             "entity",
             "entityfinid",
@@ -333,9 +329,7 @@ class ReceiptVoucherRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyA
             "advance_adjustments__advance_balance__receipt_voucher",
             "adjustments",
         )
-        if subentity_id is None:
-            return qs
-        return qs.filter(subentity_id=subentity_id)
+        return qs
 
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -527,8 +521,6 @@ class ReceiptVoucherSettlementSummaryAPIView(APIView):
         _require_receipt_permission(request.user, entity_id=entity_id, action="view")
 
         qs = ReceiptVoucherHeader.objects.filter(entity_id=entity_id, entityfinid_id=entityfinid_id)
-        if subentity_id is not None:
-            qs = qs.filter(subentity_id=subentity_id)
         voucher = qs.select_related(
             "received_in",
             "received_in__ledger",

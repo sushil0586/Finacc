@@ -204,19 +204,18 @@ class VoucherFormMetaAPIView(VoucherMetaBaseAPIView):
 
 class VoucherDetailFormMetaAPIView(VoucherMetaBaseAPIView):
     def get(self, request):
-        entity_id, entityfinid_id, subentity_id = self._parse_scope(request, require_entityfinid=True)
+        entity_id, entityfinid_id, _subentity_id = self._parse_scope(request, require_entityfinid=True)
         voucher_id = self._parse_int(request.query_params.get("voucher"), "voucher", required=True)
         header = get_object_or_404(
             self._voucher_queryset(
                 entity_id,
                 entityfinid_id,
-                subentity_id,
-                allow_any_subentity=subentity_id is None,
+                None,
+                allow_any_subentity=True,
             ),
             pk=voucher_id,
         )
-        effective_subentity_id = header.subentity_id if subentity_id is None else subentity_id
-        payload = self._voucher_form_meta(entity_id, entityfinid_id, effective_subentity_id)
+        payload = self._voucher_form_meta(entity_id, entityfinid_id, header.subentity_id)
         payload.update(
             {
                 "voucher_id": voucher_id,

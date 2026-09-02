@@ -107,7 +107,7 @@ class PurchaseGstr2bImportBatchRowsAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, pk: int):
-        entity_id, entityfinid_id, subentity_id = _parse_scope(request)
+        entity_id, entityfinid_id, _subentity_id = _parse_scope(request)
         _require_statutory_view(request, entity_id)
         batch = Gstr2bImportBatch.objects.filter(
             pk=pk,
@@ -116,11 +116,6 @@ class PurchaseGstr2bImportBatchRowsAPIView(APIView):
         ).first()
         if not batch:
             raise ValidationError({"detail": "Batch not found for scope."})
-        if subentity_id is None:
-            if batch.subentity_id is not None:
-                raise ValidationError({"detail": "Batch subentity mismatch."})
-        elif batch.subentity_id != subentity_id:
-            raise ValidationError({"detail": "Batch subentity mismatch."})
         rows = Gstr2bImportRow.objects.filter(batch_id=batch.id).order_by("id")
         data = Gstr2bImportRowSerializer(rows, many=True).data
         return Response({"batch_id": batch.id, "count": len(data), "results": data})
@@ -130,7 +125,7 @@ class PurchaseGstr2bImportBatchMatchAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
-        entity_id, entityfinid_id, subentity_id = _parse_scope(request)
+        entity_id, entityfinid_id, _subentity_id = _parse_scope(request)
         _require_statutory_manage(request, entity_id)
         batch = Gstr2bImportBatch.objects.filter(
             pk=pk,
@@ -139,11 +134,6 @@ class PurchaseGstr2bImportBatchMatchAPIView(APIView):
         ).first()
         if not batch:
             raise ValidationError({"detail": "Batch not found for scope."})
-        if subentity_id is None:
-            if batch.subentity_id is not None:
-                raise ValidationError({"detail": "Batch subentity mismatch."})
-        elif batch.subentity_id != subentity_id:
-            raise ValidationError({"detail": "Batch subentity mismatch."})
         result = PurchaseGstr2bService.auto_match_batch(batch_id=pk)
         return Response(
             {
@@ -164,7 +154,7 @@ class PurchaseGstr2bImportRowReviewAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk: int):
-        entity_id, entityfinid_id, subentity_id = _parse_scope(request)
+        entity_id, entityfinid_id, _subentity_id = _parse_scope(request)
         _require_statutory_manage(request, entity_id)
         row = Gstr2bImportRow.objects.select_related("batch").filter(
             pk=pk,
@@ -173,12 +163,6 @@ class PurchaseGstr2bImportRowReviewAPIView(APIView):
         ).first()
         if not row:
             raise ValidationError({"detail": "Row not found for scope."})
-        if subentity_id is None:
-            if row.batch.subentity_id is not None:
-                raise ValidationError({"detail": "Row subentity mismatch."})
-        elif row.batch.subentity_id != subentity_id:
-            raise ValidationError({"detail": "Row subentity mismatch."})
-
         ser = Gstr2bImportRowReviewSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         try:

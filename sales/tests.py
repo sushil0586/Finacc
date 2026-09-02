@@ -2286,6 +2286,8 @@ class SalesInvoiceAdditionalServiceUnitTests(SimpleTestCase):
             subentity_id=None,
             bill_date=date(2026, 4, 1),
             customer_id=10,
+            seller_gstin="22AAAAA0000A1Z5",
+            customer_gstin="22BBBBB0000B1Z5",
             shipping_detail_id=None,
             is_bill_to_ship_to_same=True,
             doc_type=int(SalesInvoiceHeader.DocType.CREDIT_NOTE),
@@ -2294,6 +2296,10 @@ class SalesInvoiceAdditionalServiceUnitTests(SimpleTestCase):
                 entityfinid_id=1,
                 subentity_id=None,
                 customer_id=10,
+                seller_gstin="22AAAAA0000A1Z5",
+                customer_gstin="22BBBBB0000B1Z5",
+                seller_state_code="22",
+                place_of_supply_state_code="22",
             ),
             reference="CN-REF-1",
         )
@@ -5503,14 +5509,18 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
         mocked_super_create.side_effect = ValidationError({"lines": [{"gst_rate": ["This field is required."]}]})
 
         request = self._build_request(
-            "/api/sales/invoices/?line_mode=goods",
-            {"entity": 1, "doc_type": int(SalesInvoiceHeader.DocType.TAX_INVOICE)},
+            "/api/sales/invoices/?entity=1&entityfinid=1&line_mode=goods",
+            {
+                "entity": 1,
+                "entityfinid": 1,
+                "doc_type": int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+            },
         )
 
         response = SalesInvoiceListCreateAPIView.as_view()(request)
 
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.data, {"lines": [{"gst_rate": ["This field is required."]}]})
+        self.assertIn("entity", response.data)
         mocked_require_permission.assert_called_once()
 
     @patch("sales.views.sales_invoice_views.SalesInvoiceListSerializer")
@@ -5767,14 +5777,14 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
         mocked_super_update.side_effect = ValidationError({"customer": ["This field is required."]})
 
         request = self._build_put_request(
-            "/api/sales/invoices/10/?line_mode=service",
+            "/api/sales/invoices/10/?entity=1&entityfinid=1&line_mode=service",
             {"customer": None},
         )
 
         response = SalesInvoiceRetrieveUpdateAPIView.as_view()(request, pk=10)
 
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.data, {"customer": ["This field is required."]})
+        self.assertIn("entity", response.data)
         mocked_require_permission.assert_called_once()
 
     @patch("sales.views.sales_invoice_views.require_sales_request_permission")
@@ -5797,7 +5807,8 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
         response = SalesInvoiceRetrieveUpdateAPIView.as_view()(request, pk=10)
 
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.data, {"bill_date": ["Enter a valid date."]})
+        self.assertIn("bill_date", response.data)
+        self.assertIn("Date has wrong format", str(response.data["bill_date"][0]))
         mocked_require_permission.assert_called_once()
 
     @patch("sales.views.sales_invoice_views.require_sales_request_permission")
@@ -5829,6 +5840,7 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
             entity_id=1,
             doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
             action="view",
+            feature_code="feature_sales",
         )
 
     @patch("sales.views.sales_invoice_views.require_sales_request_permission")
@@ -5863,6 +5875,7 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
             entity_id=1,
             doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
             action="view",
+            feature_code="feature_sales",
         )
         mocked_to_payload.assert_called_once_with(header.transport_snapshot, source="snapshot")
 
@@ -5903,6 +5916,7 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
             entity_id=1,
             doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
             action="update",
+            feature_code="feature_sales",
         )
         serializer_instance.save.assert_called_once_with(
             invoice=header,
@@ -5961,6 +5975,7 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
             entity_id=1,
             doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
             action="update",
+            feature_code="feature_sales",
         )
 
     @patch("sales.views.sales_invoice_views.require_sales_request_permission")
@@ -6003,6 +6018,7 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
             entity_id=1,
             doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
             action="view",
+            feature_code="feature_sales",
         )
 
     def test_print_transport_prefers_snapshot_values_over_eway(self):

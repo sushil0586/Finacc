@@ -326,10 +326,10 @@ class PaymentVoucherFormMetaAPIView(PaymentMetaBaseAPIView):
 
 class PaymentVoucherDetailFormMetaAPIView(PaymentMetaBaseAPIView):
     def get(self, request):
-        entity_id, entityfinid_id, subentity_id = self._parse_scope(request, require_entityfinid=True)
+        entity_id, entityfinid_id, _subentity_id = self._parse_scope(request, require_entityfinid=True)
         voucher_id = self._parse_int(request.query_params.get("voucher"), "voucher", required=True)
-        header = self._voucher_queryset(entity_id, entityfinid_id, subentity_id).get(pk=voucher_id)
-        payload = self._voucher_form_meta(entity_id, entityfinid_id, subentity_id)
+        header = self._voucher_queryset(entity_id, entityfinid_id, None).get(pk=voucher_id)
+        payload = self._voucher_form_meta(entity_id, entityfinid_id, header.subentity_id)
         voucher_data = PaymentVoucherHeaderSerializer(
             header,
             context={"request": request, "skip_preview_numbers": True},

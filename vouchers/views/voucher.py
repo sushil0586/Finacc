@@ -100,6 +100,12 @@ class _VoucherScopeMixin:
         ).prefetch_related(Prefetch("lines", queryset=VoucherLine.objects.select_related("account", "account__ledger", "generated_from_line").order_by("line_no", "id")))
         return qs.filter(subentity__isnull=True) if subentity_id is None else qs.filter(subentity_id=subentity_id)
 
+    def _object_queryset(self):
+        entity_id, entityfinid_id, _subentity_id = self._scope_ids(required=True)
+        return VoucherHeader.objects.filter(entity_id=entity_id, entityfinid_id=entityfinid_id).select_related(
+            "entity", "entityfinid", "subentity", "cash_bank_account", "cash_bank_account__ledger", "created_by", "approved_by", "cancelled_by"
+        ).prefetch_related(Prefetch("lines", queryset=VoucherLine.objects.select_related("account", "account__ledger", "generated_from_line").order_by("line_no", "id")))
+
 
 class _VoucherScopedActionMixin(_VoucherScopeMixin):
     """
@@ -108,7 +114,7 @@ class _VoucherScopedActionMixin(_VoucherScopeMixin):
     """
 
     def _get_header(self, pk: int) -> VoucherHeader:
-        return get_object_or_404(self._scoped_queryset(), pk=pk)
+        return get_object_or_404(self._object_queryset(), pk=pk)
 
     def _require(self, header: VoucherHeader, action: str):
         _assert_permission(self.request.user, entity_id=header.entity_id, voucher_type=header.voucher_type, action=action)
@@ -157,7 +163,7 @@ class VoucherRetrieveUpdateDestroyAPIView(_VoucherScopeMixin, generics.RetrieveU
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        return self._scoped_queryset()
+        return self._object_queryset()
 
     def get_serializer_class(self):
         return VoucherDetailSerializer if self.request.method.upper() == "GET" else VoucherWriteSerializer
@@ -312,7 +318,7 @@ class VoucherSummaryAPIView(_VoucherScopeMixin, APIView):
         }
 
     def get(self, request, pk: int):
-        voucher = self._scoped_queryset().get(pk=pk)
+        voucher = self._object_queryset().get(pk=pk)
         line_count = voucher.lines.filter(is_system_generated=False).count()
         system_line_count = voucher.lines.filter(is_system_generated=True).count()
         return Response(
