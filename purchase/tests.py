@@ -62,6 +62,7 @@ from purchase.services.purchase_withholding_service import PurchaseWithholdingSe
 from purchase.models.purchase_statutory import PurchaseStatutoryChallan, PurchaseStatutoryReturn
 from purchase.models.purchase_statutory import PurchaseStatutoryReturnLine
 from purchase.models import PurchaseLockPeriod
+from numbering.models import DocumentNumberSeries, DocumentType
 from withholding.models import WithholdingSection, WithholdingTaxType, WithholdingBaseRule
 
 
@@ -3852,6 +3853,97 @@ class PurchaseApiSmokeTests(APITestCase):
         )
 
         self.assertEqual(resp.status_code, 200)
+        mock_ensure_series.assert_not_called()
+        mock_validate_unique_series_pattern.assert_not_called()
+        settings_obj.save.assert_called_once()
+        mock_payload.assert_called_once()
+
+    @patch("purchase.views.purchase_settings.PurchaseSettingsAPIView._payload", return_value={"ok": True})
+    @patch("purchase.views.purchase_settings.validate_unique_series_pattern")
+    @patch("purchase.views.purchase_settings.ensure_series")
+    @patch("purchase.views.purchase_settings.PurchaseSettingsService.upsert_settings")
+    def test_settings_patch_drops_unissued_existing_generated_branch_duplicate(
+        self,
+        mock_upsert_settings,
+        mock_ensure_series,
+        mock_validate_unique_series_pattern,
+        mock_payload,
+    ):
+        settings_obj = SimpleNamespace(
+            default_doc_code_invoice="PINV",
+            default_doc_code_cn="PCN",
+            default_doc_code_dn="PDN",
+            save=MagicMock(),
+        )
+        mock_upsert_settings.return_value = settings_obj
+        doc_type = DocumentType.objects.create(
+            module="purchase",
+            doc_key="PURCHASE_TAX_INVOICE",
+            name="Purchase Invoice",
+            default_code="PINV",
+            is_active=True,
+        )
+        DocumentNumberSeries.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=None,
+            doc_type=doc_type,
+            doc_code="PINV",
+            prefix="PINV",
+            starting_number=1,
+            current_number=1,
+            number_padding=5,
+            separator="-",
+            reset_frequency="yearly",
+            include_year=True,
+            include_month=False,
+            is_active=True,
+        )
+        branch_series = DocumentNumberSeries.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            doc_type=doc_type,
+            doc_code="PINV",
+            prefix="PINV",
+            starting_number=1,
+            current_number=1,
+            number_padding=5,
+            separator="-",
+            reset_frequency="yearly",
+            include_year=True,
+            include_month=False,
+            is_active=True,
+        )
+
+        resp = self.client.patch(
+            f"/api/purchase/settings/?entity={self.entity.id}&entityfinid={self.entityfin.id}&subentity={self.subentity.id}",
+            {
+                "numbering_series": [
+                    {
+                        "series_key": "invoice",
+                        "doc_code": "PINV",
+                        "prefix": "PINV",
+                        "suffix": "",
+                        "starting_number": 1,
+                        "current_number": 1,
+                        "number_padding": 5,
+                        "separator": "-",
+                        "reset_frequency": "yearly",
+                        "include_year": True,
+                        "include_month": False,
+                        "custom_format": "",
+                        "is_active": True,
+                        "series_exists": True,
+                    }
+                ],
+            },
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(DocumentNumberSeries.objects.filter(pk=branch_series.pk).exists())
+        self.assertEqual(DocumentNumberSeries.objects.filter(entity=self.entity, subentity__isnull=True).count(), 1)
         mock_ensure_series.assert_not_called()
         mock_validate_unique_series_pattern.assert_not_called()
         settings_obj.save.assert_called_once()

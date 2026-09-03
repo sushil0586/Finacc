@@ -272,18 +272,14 @@ class PurchaseSettingsAPIView(APIView):
                 raise ValidationError({"numbering_series": f"doc_code is required for {series_key}."})
             setattr(settings_obj, config["default_code_field"], doc_code)
             doc_type = self._get_doc_type(config["doc_key"], config["name"], doc_code)
-            if (
-                subentity_id
-                and row.get("series_exists") is False
-                and self._is_generated_default_series_row(row, doc_code=doc_code)
+            if self._drop_unissued_generated_branch_series_if_conflicting(
+                row,
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                doc_type_id=doc_type.id,
+                doc_code=doc_code,
             ):
-                DocumentNumberSeries.objects.filter(
-                    entity_id=entity_id,
-                    entityfinid_id=entityfinid_id,
-                    subentity_id=subentity_id,
-                    doc_type_id=doc_type.id,
-                    doc_code=doc_code,
-                ).delete()
                 continue
             series, _ = ensure_series(
                 entity_id=entity_id,
@@ -317,6 +313,54 @@ class PurchaseSettingsAPIView(APIView):
                 raise ValidationError({"numbering_series": str(exc)})
             series.save()
         settings_obj.save()
+
+    def _drop_unissued_generated_branch_series_if_conflicting(
+        self,
+        row: dict,
+        *,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: Optional[int],
+        doc_type_id: int,
+        doc_code: str,
+    ) -> bool:
+        if not subentity_id or not self._is_generated_default_series_row(row, doc_code=doc_code):
+            return False
+
+        branch_qs = DocumentNumberSeries.objects.filter(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            doc_type_id=doc_type_id,
+            doc_code=doc_code,
+        )
+        existing_branch_series = branch_qs.first()
+        if existing_branch_series and existing_branch_series.current_number > existing_branch_series.starting_number:
+            return False
+
+        conflict_qs = (
+            DocumentNumberSeries.objects.filter(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                doc_type_id=doc_type_id,
+                doc_code=doc_code,
+                prefix=doc_code,
+                suffix="",
+                separator="-",
+                include_year=True,
+                include_month=False,
+                custom_format="",
+                is_active=True,
+            )
+            .exclude(subentity_id=subentity_id)
+        )
+        if existing_branch_series:
+            conflict_qs = conflict_qs.exclude(pk=existing_branch_series.pk)
+        if not conflict_qs.exists():
+            return False
+
+        branch_qs.delete()
+        return True
 
     @staticmethod
     def _is_generated_default_series_row(row: dict, *, doc_code: str) -> bool:
