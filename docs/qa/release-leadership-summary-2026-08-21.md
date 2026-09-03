@@ -9,7 +9,7 @@ Finacc appears broadly strong in its finance-first core and is closest to produc
 - purchase
 - sales
 - vouchers, posting flows, and Bank/Cash after the 2026-08-30 Phase 6 closeout
-- bank reconciliation after the 2026-08-30 Phase 6 closeout
+- bank reconciliation after the 2026-09-03 matched-environment stage closeout
 - fixed assets after the 2026-08-30 Phase 6 asset closeout
 - manufacturing after the 2026-08-30 Phase 6 closeout
 - inventory after the 2026-08-30 Phase 6 residual gate
@@ -25,14 +25,14 @@ From repository, route, documentation, and UI automation evidence, the overall r
 - `Fixed assets`: Ready With Conditions after Phase 6 asset closeout
 - `Payroll`: Ready With Conditions
 - `Platform and access`: Ready With Conditions after Phase 7 auth/RBAC final-gate rerun
-- `Support, observability, and rollback`: Not Yet Proven
+- `Support, observability, and rollback`: Ready With Conditions after Phase 7F stage operational proof
 
 ## What Looks Strong
 
 - The commercial stack has the deepest automation and the clearest signoff path.
 - Purchase and sales have dedicated signoff suites and broad P0/P1 coverage.
 - Vouchers, posting-linked flows, Bank/Cash report handoffs, and downstream reconciliation have meaningful regression depth.
-- Bank reconciliation now has focused browser, backend, Angular, live mutation, and performance-baseline evidence.
+- Bank reconciliation now has focused browser, backend, Angular, live mutation, performance-baseline, and remote-stage matched-environment evidence.
 - Manufacturing now has focused browser, backend, Angular, static-account, report-to-journal, and live audit evidence.
 - Inventory remained green after manufacturing interaction proof, with focused browser, backend, Angular, report, CRUD, and financial-statement interaction coverage.
 - Reporting coverage is wide across financial, payables, receivables, GST, and compliance surfaces.
@@ -43,13 +43,14 @@ From repository, route, documentation, and UI automation evidence, the overall r
 
 ## Main Release Risks
 
-- Observability and support readiness are not yet proven from current evidence.
-- Rollback and hotfix readiness still need explicit operational signoff.
+- Stage observability and rollback mechanics now have concrete evidence, but production-owner signoff is still required.
+- Production security settings are the clearest remaining operational blocker: the stage `check --deploy` probe still warns on HSTS, HTTPS redirect, secure cookies, `DEBUG=True`, and an insecure-looking `SECRET_KEY`.
+- Rollback and hotfix readiness still need explicit release-lead/infra/support walkthrough signoff.
 - GST reconciliation should not be assumed full-production-ready without an explicit rollout decision.
 - Print/export automation is green for representative flows; final manual business-format/layout signoff is still recommended.
-- Numbering and any remaining withholding/GST-TDS final-release gates still need live verification.
-- The remaining Bank/Cash and Bank Reco risks are now isolated residuals: one hard maker-checker bank voucher browser refresh skip and conditional Bank Reco live-data/RBAC skips.
-- Observability, rollback, support readiness, final full-regression stability, and production-scale export/print validation are now larger launch risks than the Phase 6 functional modules.
+- Numbering conflicts are currently clean after the stage audit, but any manual production data cleanup must keep issued numbering floors intact.
+- The remaining Bank/Cash and Bank Reco risks are now isolated residuals: one hard maker-checker bank voucher browser refresh skip, conditional Bank Reco live-data/action-availability skips, and production-scale rerun depth.
+- Production security settings, support-owner readiness, SMTP/invite inbox proof, final full-regression stability, and production-scale export/print validation are now larger launch risks than the Phase 6 functional modules.
 - Commerce, retail, and sales legacy import require explicit scope decisions; subscription core contracts are green, but commercial packaging/billing scope still needs an explicit release decision.
 
 ## Phase 6 Asset Closeout Addendum - 2026-08-30
@@ -144,6 +145,19 @@ The support/observability/rollback gate has moved from blocker to `Passed With C
 - Release runbook now includes concrete Phase 7 commands, evidence locations, rollback checklist, hotfix checklist, and production acceptance conditions.
 - Production go/no-go tracker Track 7 now shows `Passed With Conditions` instead of `Blocked`; remaining conditions are named support owner, support-observed error capture, audit-view screenshots/exports, backup/artifact recording, production security setting confirmation, and rollback/hotfix walkthrough signoff.
 
+## Phase 7F Production-Owner Operational Readiness Addendum - 2026-09-03
+
+Phase 7F moved operational readiness from document-only planning into stage-observed evidence.
+
+- Stage deploy health is green on backend commit `936dce13fc8d36230bafa3aa626fff2a93ed91f2`: `manage.py check` clean, `migrate --check --noinput` clean, `nginx -t` successful, and both `finacc-gunicorn` and `nginx` active.
+- Stage backup proof completed with custom-format dump `/home/ubuntu/Finacc/backups/stage_pre_release_20260903T101337Z.dump`, size `11241436` bytes, and `pg_restore -l` successfully listed archive TOC entries.
+- Stage audit/error visibility is present: `errorlogger.ErrorLog` has recent entries, `Authentication.AuthAuditLog` and `bank_reco.BankReconciliationAuditLog` have recent 24-hour activity, and the last 30-minute gunicorn exception scan returned no matching runtime exceptions.
+- Recent `ErrorLog` samples include expected validation rows and historical captured defects from the earlier duplicate-numbering, stale-subentity, purchase meta `NameError`, and GST-TDS export-sort investigations; use the timestamped sample during final review so old captured errors are not mistaken for fresh post-fix failures.
+- Local operational contract guard reran clean with `88 OK` across errorlogger, RBAC/admin audit, and Bank Reco audit/control tests.
+- Added `audit_release_environment` as a strict release gate for `DEBUG`, `SECRET_KEY`, restricted hosts, HTTPS redirect, secure cookies, HSTS, CORS wildcard, and SMTP/invite configuration; focused command coverage passed with `5 OK`, the combined operational guard passed with `93 OK`, and a simulated hardened environment audit returned `ready=true`, `10` pass, `0` fail, `0` warn.
+- Stage `check --deploy` still reports production-hardening warnings for HSTS, HTTPS redirect, secure cookies, `DEBUG=True`, and `SECRET_KEY`; after deployment, `audit_release_environment --strict --require-email` should be the single owner-facing pass/fail command for this gate.
+- Remote Django test-db execution on stage is still limited by DB role `CREATE DATABASE` permission; use local backend guards plus stage browser/API probes unless infra grants test-db creation.
+
 ## Phase 7 Stage Validation Attempt - 2026-08-30
 
 Stage validation started against `http://accerio.in` using the supplied launch account, primary entity `Mehak-T`, and alternate entity `Ritikasharma`.
@@ -159,7 +173,7 @@ Stage validation started against `http://accerio.in` using the supplied launch a
 Primary stage blocker:
 
 - Former stage geography blocker has been remediated through the launch seed command and applied on `Mehak-T`, `manav-t`, and `Ritikasharma`. Focused onboarding, purchase, sales/TCS, and voucher/payables flows now have deterministic geography-backed stage proof.
-- Remaining remote-stage risk is now concentrated in Payroll entitlement/seed setup, Bank Reco local-shell mutation/integrity seeders, and production-owner operational evidence; the broad P0 stage gate is now clean. The latest clean-start full P0 stage run ended `248 passed`, `30 skipped`, `0 failed` in `1.2h` after launch seed, sales hash-route navigation, receipt/payment route matching, payment shell-render retry, sales note identity, sales other-charge, lookup modal-mask, and payment open-item/advance fixture hardening. Bank Reco stage-valid browser subset also passed with `21 passed`, `0 failed` in `3.9m` after accepting current `Sept` month rendering in date assertions. Earlier broad P0 runs improved from `146 passed`, `27 skipped`, `65 failed`, `40 did not run`, to `193 passed`, `30 skipped`, `15 failed`, `40 did not run`, to `241 passed`, `30 skipped`, `2 failed`, `5 did not run`, then to focused-recovered route/fixture runs before the final zero-failure sweep. Sales save-toast/status-policy expectations, sales taxable other-charge persistence, sales note source-id vs note-id save identity, hash-route navigation with query-before-hash URLs, receipt/payment route shell hydration, receipt runtime TCS copy drift, purchase note route/reference/session drift, payment open-advance/open-item fixture depth, and public signup payload/OTP flow were confirmed as harness/current-UI drift or fixed behavior after focused reruns, including `FIN-SAL-054` plus `FIN-RCV-014` with `3 passed` in `45.9s`, purchase `FIN-PUR-010B/020/021/023/024/026` with `7 passed` in `2.7m`, `FIN-VCH-030` with `2 passed` in `57.9s`, `FIN-REG-008` with `2 passed` in `29.5s`, `FIN-SAL-022` with `2 passed` in `28.3s`, combined recent-fixes canary with `6 passed` in `2.0m`, latest sales-note cluster with `7 passed` in `2.9m`, voucher route recovery `FIN-RCV-003/FIN-VCH-023` with `3 passed` in `43.2s`, broad-run red recovery `FIN-SAL-006/FIN-SAL-041/FIN-VCH-009` with `4 passed` in `1.9m`, voucher tail `FIN-VCH-007/008/009/010/011/012/013/035/036/036A/036B` with `12 passed` in `7.8m`, and latest voucher advance pair with `3 passed` in `2.7m`. `FIN-SAL-022` now verifies the browser request includes `charges`, persisted detail returns `chargeCount=1`, GST totals remain `36`, and grand total remains `236`; the prior red was traced to the Playwright page object opening a summary dialog and causing a second stale save after a direct save. UX recommendation remains: unsaved purchase notes should ideally prioritize missing-reference guidance before generic status/action blockers.
+- Remaining remote-stage risk is now concentrated in Payroll entitlement/seed setup, production security settings, SMTP/invite inbox proof, support-owner assignment, and final owner walkthroughs; the broad P0 stage gate and Bank Reco matched-environment gate are now clean. The latest clean-start full P0 stage run ended `248 passed`, `30 skipped`, `0 failed` in `1.2h` after launch seed, sales hash-route navigation, receipt/payment route matching, payment shell-render retry, sales note identity, sales other-charge, lookup modal-mask, and payment open-item/advance fixture hardening. Bank Reco matched-environment stage evidence later closed import, mutation, workflow, and report-integrity paths with no focused failures. Earlier broad P0 runs improved from `146 passed`, `27 skipped`, `65 failed`, `40 did not run`, to `193 passed`, `30 skipped`, `15 failed`, `40 did not run`, to `241 passed`, `30 skipped`, `2 failed`, `5 did not run`, then to focused-recovered route/fixture runs before the final zero-failure sweep. Sales save-toast/status-policy expectations, sales taxable other-charge persistence, sales note source-id vs note-id save identity, hash-route navigation with query-before-hash URLs, receipt/payment route shell hydration, receipt runtime TCS copy drift, purchase note route/reference/session drift, payment open-advance/open-item fixture depth, and public signup payload/OTP flow were confirmed as harness/current-UI drift or fixed behavior after focused reruns, including `FIN-SAL-054` plus `FIN-RCV-014` with `3 passed` in `45.9s`, purchase `FIN-PUR-010B/020/021/023/024/026` with `7 passed` in `2.7m`, `FIN-VCH-030` with `2 passed` in `57.9s`, `FIN-REG-008` with `2 passed` in `29.5s`, `FIN-SAL-022` with `2 passed` in `28.3s`, combined recent-fixes canary with `6 passed` in `2.0m`, latest sales-note cluster with `7 passed` in `2.9m`, voucher route recovery `FIN-RCV-003/FIN-VCH-023` with `3 passed` in `43.2s`, broad-run red recovery `FIN-SAL-006/FIN-SAL-041/FIN-VCH-009` with `4 passed` in `1.9m`, voucher tail `FIN-VCH-007/008/009/010/011/012/013/035/036/036A/036B` with `12 passed` in `7.8m`, and latest voucher advance pair with `3 passed` in `2.7m`. `FIN-SAL-022` now verifies the browser request includes `charges`, persisted detail returns `chargeCount=1`, GST totals remain `36`, and grand total remains `236`; the prior red was traced to the Playwright page object opening a summary dialog and causing a second stale save after a direct save. UX recommendation remains: unsaved purchase notes should ideally prioritize missing-reference guidance before generic status/action blockers.
 
 Secondary stage blockers:
 
@@ -203,11 +217,11 @@ The strongest functional areas are likely releasable, but final production appro
 - deterministic sales customers/products for stage signoff
 - stage-aware seeding for P1 packs that currently shell into local Django
 - report totals and statutory exports
-- bank reconciliation mutation and downstream parity
+- production-scale bank reconciliation rerun depth
 - payroll run and posting readiness
 - fixed-asset P1/report/export rerun as a final regression gate
 - manufacturing and inventory focused P1 reruns as final regression gates
-- production support-owner assignment, security setting confirmation, support-observed error capture, audit captures, rollback walkthrough, and hotfix readiness
+- production support-owner assignment, production security setting remediation/acceptance, SMTP/invite inbox proof, support-observed error capture, audit captures, rollback walkthrough, and hotfix readiness
 
 ## Minimum Evidence Needed Before Go
 
@@ -224,8 +238,8 @@ The following should be completed before final approval:
 9. Manual signoff for financial/payables/receivables totals
 10. Manual signoff for GST and statutory exports
 11. Manual signoff for representative invoice/voucher print layout
-12. Manual signoff for bank reconciliation live mutation flows
-13. Manual signoff for production security settings, support observation, audit captures, rollback readiness, and hotfix escalation
+12. Manual signoff for production-scale bank reconciliation review, if required by release owners
+13. Manual signoff for production security settings, SMTP/invite inbox proof, support observation, audit captures, rollback readiness, and hotfix escalation
 14. Stage geography master-data seed verification for country/state/district/city dependent onboarding and tax flows
 15. Stage rerun after seed fixes with full P0 and impacted P1 packs free of geography/harness blockers
 
@@ -234,10 +248,10 @@ The following should be completed before final approval:
 Best practical path:
 
 - keep the clean full P0 stage release gate in final evidence and rerun only if new stage code is deployed
-- make local-shell P1 seeders stage-aware, or run those packs only in a matched backend/browser environment
+- keep remote-stage-safe shell seeding patterns for any remaining P1 packs that need live stage data
 - approve the release team to execute the live validation run immediately
 - require explicit scope decisions before execution starts
-- hold final go/no-go only after support owner, rollback, hotfix, and production security conditions are confirmed
+- hold final go/no-go only after support owner, SMTP/invite delivery, rollback, hotfix, and production security conditions are confirmed
 
 ## Document Set
 

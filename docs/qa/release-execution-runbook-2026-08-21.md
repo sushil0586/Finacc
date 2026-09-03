@@ -245,6 +245,7 @@ Steps:
 | Step | Owner | Method | Output |
 | --- | --- | --- | --- |
 | Verify Django deploy configuration | Infra / backend | `./venv/bin/python manage.py check --deploy` from `/Users/ansh/finacc-angular/finacc-django/Finacc` | Pass / warnings recorded |
+| Verify production security environment | Infra / backend | `./venv/bin/python manage.py audit_release_environment --strict --require-email` from `/Users/ansh/finacc-angular/finacc-django/Finacc`; add `--edge-https-redirect --edge-hsts` only when nginx/load balancer owns those controls | No release-critical settings failures |
 | Verify migration readiness | Infra / backend | `./venv/bin/python manage.py migrate --check --noinput` from `/Users/ansh/finacc-angular/finacc-django/Finacc` | No pending migrations |
 | Trigger and verify app error capture | Support / backend | Backend contract plus stage-only manual trigger observed by support | ErrorLog/admin or logging-sink evidence |
 | Review audit logging for critical actions | QA / support | Backend audit contracts plus manual review of RBAC and Bank Reco audit views | Notes / screenshots |
@@ -257,6 +258,7 @@ Current automated evidence:
 | Area | Evidence |
 | --- | --- |
 | Deploy/system check | `manage.py check --deploy` completed with `0` errors and security warnings for HSTS, SSL redirect, secure session cookie, and secure CSRF cookie. These must be satisfied by production settings/reverse proxy before final go. |
+| Production security audit | `audit_release_environment --strict --require-email` is now the standing go/no-go command for `DEBUG`, `SECRET_KEY`, restricted hosts, HTTPS redirect, secure cookies, HSTS, CORS wildcard, and SMTP/invite configuration. Use `--edge-https-redirect --edge-hsts` only when those controls are explicitly proven at nginx/load balancer. |
 | Migration check | `manage.py migrate --check --noinput` completed cleanly with no output, indicating no pending migrations. |
 | Error capture and audit contracts | `./venv/bin/python manage.py test errorlogger.tests rbac.tests.test_api rbac.tests.test_user_access_admin bank_reco.matching_api_tests --verbosity=2 --keepdb` completed with `88 OK`. |
 
@@ -324,5 +326,5 @@ If the team needs the shortest actionable sequence:
 6. Run `npm run test:reports-regression`.
 7. Run `npm run test:payroll-rbac`.
 8. Run `npm run test:payroll`.
-9. Run operational readiness checks: `manage.py check --deploy`, `manage.py migrate --check --noinput`, and the focused error/audit suite.
+9. Run operational readiness checks: `manage.py check --deploy`, `manage.py audit_release_environment --strict --require-email`, `manage.py migrate --check --noinput`, and the focused error/audit suite.
 10. Hold final go/no-go meeting.
