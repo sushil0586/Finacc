@@ -2234,16 +2234,16 @@ class PurchaseTdsComplianceCenterExportAPIView(PurchaseTdsComplianceCenterAPIVie
 
     def _sortable_export_value(self, value: object):
         if isinstance(value, dict):
-            return str(value.get("label") or "").lower()
+            return (3, str(value.get("label") or "").lower())
         if value in (None, ""):
-            return ""
+            return (0, "")
         decimal_value = self._parse_export_decimal(value)
         if decimal_value is not None:
-            return float(decimal_value)
+            return (1, decimal_value)
         parsed_date = self._parse_optional_date(str(value))
         if parsed_date is not None:
-            return parsed_date.toordinal()
-        return str(value).lower()
+            return (2, parsed_date.toordinal())
+        return (3, str(value).lower())
 
     def _parse_export_decimal(self, value: object) -> Optional[Decimal]:
         if value in (None, "", "null", "None"):

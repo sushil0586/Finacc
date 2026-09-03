@@ -47,23 +47,23 @@ class Command(BaseCommand):
     def _collect_conflicts(self, options) -> list[dict]:
         qs = DocumentNumberSeries.objects.select_related("entity", "entityfinid", "subentity", "doc_type").filter(is_active=True)
 
-        entity_ids = [int(value) for value in self._option_values(options.get("entity"))]
+        entity_ids = [int(value) for value in options.get("entity") or []]
         if entity_ids:
             qs = qs.filter(entity_id__in=entity_ids)
 
-        entity_names = [str(value).strip() for value in self._option_values(options.get("entity_name")) if str(value).strip()]
+        entity_names = [str(value).strip() for value in options.get("entity_name") or [] if str(value).strip()]
         if entity_names:
             qs = qs.filter(entity__entityname__in=entity_names)
 
-        entityfin_ids = [int(value) for value in self._option_values(options.get("entityfinid"))]
+        entityfin_ids = [int(value) for value in options.get("entityfinid") or []]
         if entityfin_ids:
             qs = qs.filter(entityfinid_id__in=entityfin_ids)
 
-        modules = [str(value).strip().lower() for value in self._option_values(options.get("module")) if str(value).strip()]
+        modules = [str(value).strip().lower() for value in options.get("module") or [] if str(value).strip()]
         if modules:
             qs = qs.filter(doc_type__module__in=modules)
 
-        doc_codes = [str(value).strip().upper() for value in self._option_values(options.get("doc_code")) if str(value).strip()]
+        doc_codes = [str(value).strip().upper() for value in options.get("doc_code") or [] if str(value).strip()]
         if doc_codes:
             qs = qs.filter(doc_code__in=doc_codes)
 
@@ -76,7 +76,6 @@ class Command(BaseCommand):
                 series.doc_code,
                 series.prefix,
                 series.suffix,
-                series.number_padding,
                 series.separator,
                 series.include_year,
                 series.include_month,
@@ -93,14 +92,6 @@ class Command(BaseCommand):
                 continue
             conflicts.append(conflict)
         return conflicts
-
-    @staticmethod
-    def _option_values(value) -> list:
-        if value in (None, ""):
-            return []
-        if isinstance(value, (list, tuple, set)):
-            return list(value)
-        return [value]
 
     @staticmethod
     def _build_conflict_payload(series_group: list[DocumentNumberSeries]) -> dict:
@@ -134,7 +125,6 @@ class Command(BaseCommand):
             "pattern": {
                 "prefix": first.prefix,
                 "suffix": first.suffix,
-                "number_padding": first.number_padding,
                 "separator": first.separator,
                 "include_year": first.include_year,
                 "include_month": first.include_month,

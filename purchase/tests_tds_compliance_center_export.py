@@ -183,6 +183,23 @@ class PurchaseTdsComplianceCenterExportTests(SimpleTestCase):
         self.assertEqual(workbook["00_Cover"]["A1"].value, "TDS Compliance Center CA Pack")
         self.assertEqual(workbook["04_Deduction_Register"]["A1"].value, "TDS Compliance Center - Deduction Register")
 
+    def test_export_sort_handles_mixed_numeric_date_text_and_empty_values(self):
+        view = PurchaseTdsComplianceCenterExportAPIView()
+        rows = [
+            {"section": "text-row", "closingBalance": "Not applicable"},
+            {"section": "decimal-string-row", "closingBalance": "10.00"},
+            {"section": "decimal-number-row", "closingBalance": 5.5},
+            {"section": "date-row", "closingBalance": "2026-09-03"},
+            {"section": "empty-row", "closingBalance": ""},
+        ]
+
+        sorted_rows = view._apply_export_sort(rows=rows, sort_field="closingBalance", sort_direction="asc")
+
+        self.assertEqual(
+            [row["section"] for row in sorted_rows],
+            ["empty-row", "decimal-number-row", "decimal-string-row", "date-row", "text-row"],
+        )
+
 
 class PurchaseGstTdsComplianceCenterExportTests(SimpleTestCase):
     def setUp(self):
