@@ -3,11 +3,15 @@ from decimal import Decimal
 from unittest.mock import MagicMock, patch
 from datetime import date
 
+from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, override_settings
+from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIRequestFactory, force_authenticate
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
+from entity.models import Entity, EntityFinancialYear, SubEntity
+from numbering.models import DocumentNumberSeries, DocumentType
 from sales.models import SalesInvoiceHeader, SalesSettings, SalesEWaySource
 from sales.models.sales_compliance import SalesEInvoiceStatus, SalesEWayStatus
 from sales.services.sales_invoice_service import SalesInvoiceService
@@ -56,6 +60,7 @@ from sales.views.sales_invoice_compliance_api import SalesInvoiceSyncGSTINFromCP
 from sales.views.sales_invoice_compliance_api import SalesInvoiceGetB2CQRCodeAPIView
 from sales.views.sales_invoice_compliance_api import SalesInvoiceGetIRNDetailsAPIView
 from sales.views.sales_invoice_compliance_api import SalesInvoiceGetEWayByIRNAPIView
+from sales.views.sales_settings_views import SalesSettingsAPIView
 from sales.views.eway_views import SalesInvoiceGetEWayDetailsAPIView
 from sales.views.eway_views import (
     SalesInvoiceGetEWayTransporterDetailsAPIView,
@@ -6446,6 +6451,114 @@ class SalesSettingsPolicyControlUnitTests(SimpleTestCase):
     def test_normalize_policy_controls_rejects_invalid_einvoice_min_hsn_digits(self):
         with self.assertRaisesMessage(ValueError, "policy_controls.einvoice_min_hsn_digits must be between 4 and 8."):
             SalesSettingsService.normalize_policy_controls({"einvoice_min_hsn_digits": 3})
+
+
+class SalesSettingsNumberingBranchCleanupTests(TestCase):
+    def setUp(self):
+        user_model = get_user_model()
+        self.user = user_model.objects.create_user(username="sales_settings_tester", password="x")
+        self.entity = Entity.objects.create(entityname="Sales Settings Entity", createdby=self.user)
+        self.entityfin = EntityFinancialYear.objects.create(
+            entity=self.entity,
+            desc="FY 2026-27",
+            year_code="FY2026",
+            finstartyear=timezone.now(),
+            finendyear=timezone.now(),
+            createdby=self.user,
+        )
+        self.subentity = SubEntity.objects.create(entity=self.entity, subentityname="Branch")
+        self.doc_type = DocumentType.objects.create(
+            module="sales",
+            doc_key="sales_invoice",
+            name="Sales Invoice",
+            default_code="SINV",
+            is_active=True,
+        )
+
+    def _default_row(self, **overrides):
+        row = {
+            "series_key": "invoice",
+            "doc_code": "SINV",
+            "prefix": "SINV",
+            "suffix": "",
+            "starting_number": 1,
+            "current_number": 1,
+            "number_padding": 5,
+            "separator": "-",
+            "reset_frequency": "yearly",
+            "include_year": True,
+            "include_month": False,
+            "custom_format": "",
+            "is_active": True,
+            "series_exists": True,
+        }
+        row.update(overrides)
+        return row
+
+    def _create_series(self, *, subentity, current_number=1):
+        return DocumentNumberSeries.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=subentity,
+            doc_type=self.doc_type,
+            doc_code="SINV",
+            prefix="SINV",
+            starting_number=1,
+            current_number=current_number,
+            number_padding=5,
+            separator="-",
+            reset_frequency="yearly",
+            include_year=True,
+            include_month=False,
+            is_active=True,
+        )
+
+    def test_drops_unissued_existing_generated_branch_duplicate(self):
+        self._create_series(subentity=None)
+        branch_series = self._create_series(subentity=self.subentity)
+
+        dropped = SalesSettingsAPIView()._drop_unissued_generated_branch_series_if_conflicting(
+            self._default_row(),
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            doc_type_id=self.doc_type.id,
+            doc_code="SINV",
+        )
+
+        self.assertTrue(dropped)
+        self.assertFalse(DocumentNumberSeries.objects.filter(pk=branch_series.pk).exists())
+        self.assertEqual(DocumentNumberSeries.objects.filter(entity=self.entity, subentity__isnull=True).count(), 1)
+
+    def test_keeps_issued_existing_generated_branch_duplicate(self):
+        self._create_series(subentity=None)
+        branch_series = self._create_series(subentity=self.subentity, current_number=2)
+
+        dropped = SalesSettingsAPIView()._drop_unissued_generated_branch_series_if_conflicting(
+            self._default_row(current_number=2),
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            doc_type_id=self.doc_type.id,
+            doc_code="SINV",
+        )
+
+        self.assertFalse(dropped)
+        self.assertTrue(DocumentNumberSeries.objects.filter(pk=branch_series.pk).exists())
+
+    def test_changed_generated_branch_row_is_not_common_numbering_cleanup(self):
+        self._create_series(subentity=None)
+
+        dropped = SalesSettingsAPIView()._drop_unissued_generated_branch_series_if_conflicting(
+            self._default_row(prefix="SINVBR", series_exists=False),
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            doc_type_id=self.doc_type.id,
+            doc_code="SINV",
+        )
+
+        self.assertFalse(dropped)
 
 
 class EWayPayloadBuilderUnitTests(SimpleTestCase):

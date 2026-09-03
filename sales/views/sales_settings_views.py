@@ -490,14 +490,14 @@ class SalesSettingsAPIView(APIView):
 
             setattr(settings_obj, config["default_code_field"], doc_code)
             doc_type = self._get_doc_type(config["doc_key"], config["name"], doc_code)
-            if subentity_id and row.get("series_exists") is False:
-                DocumentNumberSeries.objects.filter(
-                    entity_id=entity_id,
-                    entityfinid_id=entityfinid_id,
-                    subentity_id=subentity_id,
-                    doc_type_id=doc_type.id,
-                    doc_code=doc_code,
-                ).delete()
+            if self._drop_unissued_generated_branch_series_if_conflicting(
+                row,
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                doc_type_id=doc_type.id,
+                doc_code=doc_code,
+            ):
                 continue
             series, _ = ensure_series(
                 entity_id=entity_id,
@@ -532,6 +532,70 @@ class SalesSettingsAPIView(APIView):
             series.save()
 
         settings_obj.save()
+
+    def _drop_unissued_generated_branch_series_if_conflicting(
+        self,
+        row: dict,
+        *,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: Optional[int],
+        doc_type_id: int,
+        doc_code: str,
+    ) -> bool:
+        if not subentity_id or not self._is_generated_default_series_row(row, doc_code=doc_code):
+            return False
+
+        branch_qs = DocumentNumberSeries.objects.filter(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            subentity_id=subentity_id,
+            doc_type_id=doc_type_id,
+            doc_code=doc_code,
+        )
+        existing_branch_series = branch_qs.first()
+        if existing_branch_series and existing_branch_series.current_number > existing_branch_series.starting_number:
+            return False
+
+        conflict_qs = (
+            DocumentNumberSeries.objects.filter(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                doc_type_id=doc_type_id,
+                doc_code=doc_code,
+                prefix=doc_code,
+                suffix="",
+                separator="-",
+                include_year=True,
+                include_month=False,
+                custom_format="",
+                is_active=True,
+            )
+            .exclude(subentity_id=subentity_id)
+        )
+        if existing_branch_series:
+            conflict_qs = conflict_qs.exclude(pk=existing_branch_series.pk)
+        if not conflict_qs.exists():
+            return False
+
+        branch_qs.delete()
+        return True
+
+    @staticmethod
+    def _is_generated_default_series_row(row: dict, *, doc_code: str) -> bool:
+        return (
+            (row.get("prefix") or "") == doc_code
+            and (row.get("suffix") or "") == ""
+            and int(row.get("starting_number") or 1) == 1
+            and int(row.get("current_number") or 1) == 1
+            and int(row.get("number_padding") or 5) == 5
+            and (row.get("separator") or "-") == "-"
+            and (row.get("reset_frequency") or "yearly") == "yearly"
+            and bool(row.get("include_year", True)) is True
+            and bool(row.get("include_month", False)) is False
+            and (row.get("custom_format") or "") == ""
+            and bool(row.get("is_active", True)) is True
+        )
 
     def _current_doc_numbers(self, *, entity_id: int, entityfinid_id: Optional[int], subentity_id: Optional[int], settings_obj) -> Optional[dict]:
         if not entityfinid_id:
