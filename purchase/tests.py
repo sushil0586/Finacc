@@ -3811,6 +3811,109 @@ class PurchaseApiSmokeTests(APITestCase):
     @patch("purchase.views.purchase_settings.validate_unique_series_pattern")
     @patch("purchase.views.purchase_settings.ensure_series")
     @patch("purchase.views.purchase_settings.PurchaseSettingsService.upsert_settings")
+    def test_settings_patch_skips_untouched_generated_branch_numbering_row(
+        self,
+        mock_upsert_settings,
+        mock_ensure_series,
+        mock_validate_unique_series_pattern,
+        mock_payload,
+    ):
+        settings_obj = SimpleNamespace(
+            default_doc_code_invoice="PINV",
+            default_doc_code_cn="PCN",
+            default_doc_code_dn="PDN",
+            save=MagicMock(),
+        )
+        mock_upsert_settings.return_value = settings_obj
+
+        resp = self.client.patch(
+            f"/api/purchase/settings/?entity={self.entity.id}&entityfinid={self.entityfin.id}&subentity={self.subentity.id}",
+            {
+                "numbering_series": [
+                    {
+                        "series_key": "invoice",
+                        "doc_code": "PINV",
+                        "prefix": "PINV",
+                        "suffix": "",
+                        "starting_number": 1,
+                        "current_number": 1,
+                        "number_padding": 5,
+                        "separator": "-",
+                        "reset_frequency": "yearly",
+                        "include_year": True,
+                        "include_month": False,
+                        "custom_format": "",
+                        "is_active": True,
+                        "series_exists": False,
+                    }
+                ],
+            },
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        mock_ensure_series.assert_not_called()
+        mock_validate_unique_series_pattern.assert_not_called()
+        settings_obj.save.assert_called_once()
+        mock_payload.assert_called_once()
+
+    @patch("purchase.views.purchase_settings.PurchaseSettingsAPIView._payload", return_value={"ok": True})
+    @patch("purchase.views.purchase_settings.validate_unique_series_pattern")
+    @patch("purchase.views.purchase_settings.ensure_series")
+    @patch("purchase.views.purchase_settings.PurchaseSettingsService.upsert_settings")
+    def test_settings_patch_creates_changed_generated_branch_numbering_row(
+        self,
+        mock_upsert_settings,
+        mock_ensure_series,
+        mock_validate_unique_series_pattern,
+        mock_payload,
+    ):
+        settings_obj = SimpleNamespace(
+            default_doc_code_invoice="PINV",
+            default_doc_code_cn="PCN",
+            default_doc_code_dn="PDN",
+            save=MagicMock(),
+        )
+        series = SimpleNamespace(created_by_id=None, save=MagicMock())
+        mock_upsert_settings.return_value = settings_obj
+        mock_ensure_series.return_value = (series, True)
+
+        resp = self.client.patch(
+            f"/api/purchase/settings/?entity={self.entity.id}&entityfinid={self.entityfin.id}&subentity={self.subentity.id}",
+            {
+                "numbering_series": [
+                    {
+                        "series_key": "invoice",
+                        "doc_code": "PINV",
+                        "prefix": "PINVBR",
+                        "suffix": "",
+                        "starting_number": 1,
+                        "current_number": 1,
+                        "number_padding": 5,
+                        "separator": "-",
+                        "reset_frequency": "yearly",
+                        "include_year": True,
+                        "include_month": False,
+                        "custom_format": "",
+                        "is_active": True,
+                        "series_exists": False,
+                    }
+                ],
+            },
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        mock_ensure_series.assert_called_once()
+        mock_validate_unique_series_pattern.assert_called_once_with(series=series, doc_label="Purchase Invoice")
+        series.save.assert_called_once()
+        settings_obj.save.assert_called_once()
+        mock_payload.assert_called_once()
+
+    @patch("purchase.views.purchase_settings.PurchaseSettingsAPIView._payload", return_value={"ok": True})
+    @patch("purchase.views.purchase_settings.validate_unique_series_pattern")
+    @patch("purchase.views.purchase_settings.ensure_series")
+    @patch("purchase.views.purchase_settings.PurchaseSettingsService.upsert_settings")
     def test_settings_patch_returns_400_for_numbering_pattern_conflict(
         self,
         mock_upsert_settings,

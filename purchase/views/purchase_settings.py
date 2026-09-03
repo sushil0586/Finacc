@@ -272,6 +272,19 @@ class PurchaseSettingsAPIView(APIView):
                 raise ValidationError({"numbering_series": f"doc_code is required for {series_key}."})
             setattr(settings_obj, config["default_code_field"], doc_code)
             doc_type = self._get_doc_type(config["doc_key"], config["name"], doc_code)
+            if (
+                subentity_id
+                and row.get("series_exists") is False
+                and self._is_generated_default_series_row(row, doc_code=doc_code)
+            ):
+                DocumentNumberSeries.objects.filter(
+                    entity_id=entity_id,
+                    entityfinid_id=entityfinid_id,
+                    subentity_id=subentity_id,
+                    doc_type_id=doc_type.id,
+                    doc_code=doc_code,
+                ).delete()
+                continue
             series, _ = ensure_series(
                 entity_id=entity_id,
                 entityfinid_id=entityfinid_id,
@@ -304,6 +317,22 @@ class PurchaseSettingsAPIView(APIView):
                 raise ValidationError({"numbering_series": str(exc)})
             series.save()
         settings_obj.save()
+
+    @staticmethod
+    def _is_generated_default_series_row(row: dict, *, doc_code: str) -> bool:
+        return (
+            (row.get("prefix") or "") == doc_code
+            and (row.get("suffix") or "") == ""
+            and int(row.get("starting_number") or 1) == 1
+            and int(row.get("current_number") or 1) == 1
+            and int(row.get("number_padding") or 5) == 5
+            and (row.get("separator") or "-") == "-"
+            and (row.get("reset_frequency") or "yearly") == "yearly"
+            and bool(row.get("include_year", True)) is True
+            and bool(row.get("include_month", False)) is False
+            and (row.get("custom_format") or "") == ""
+            and bool(row.get("is_active", True)) is True
+        )
 
     def _current_doc_numbers(self, *, entity_id: int, entityfinid_id: Optional[int], subentity_id: Optional[int], settings_obj) -> Optional[dict]:
         if not entityfinid_id:
