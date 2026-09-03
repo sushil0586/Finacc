@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import io
+import json
 from datetime import datetime, date
 
 from django.contrib.auth import get_user_model
@@ -386,3 +388,59 @@ class NumberingTests(TestCase):
 
         self.assertIsNone(find_series_pattern_conflict(series=branch_b_series))
         validate_unique_series_pattern(series=branch_b_series, doc_label="Test Voucher")
+
+    def test_audit_numbering_conflicts_reports_unissued_duplicate_pattern(self):
+        ensure_series(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            doc_type_id=self.doc_type.id,
+            doc_code="TV",
+            prefix="TV",
+            start=1,
+            padding=4,
+            reset="yearly",
+        )
+
+        out = io.StringIO()
+        call_command(
+            "audit_numbering_conflicts",
+            entity=self.entity.id,
+            entityfinid=self.entityfin.id,
+            json=True,
+            stdout=out,
+        )
+
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["conflict_count"], 1)
+        self.assertFalse(payload["conflicts"][0]["has_issued"])
+        self.assertEqual(payload["conflicts"][0]["status"], "safe_to_cleanup_unissued_rows")
+
+    def test_audit_numbering_conflicts_flags_issued_duplicate_pattern_for_decision(self):
+        branch_series, _ = ensure_series(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            doc_type_id=self.doc_type.id,
+            doc_code="TV",
+            prefix="TV",
+            start=1,
+            padding=4,
+            reset="yearly",
+        )
+        branch_series.current_number = 5
+        branch_series.save(update_fields=["current_number", "updated_at"])
+
+        out = io.StringIO()
+        call_command(
+            "audit_numbering_conflicts",
+            entity=self.entity.id,
+            entityfinid=self.entityfin.id,
+            json=True,
+            stdout=out,
+        )
+
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["conflict_count"], 1)
+        self.assertTrue(payload["conflicts"][0]["has_issued"])
+        self.assertEqual(payload["conflicts"][0]["status"], "requires_business_decision")
