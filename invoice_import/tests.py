@@ -12,7 +12,7 @@ from django.utils import timezone
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from Authentication.models import User
-from catalog.models import Product, ProductCategory, UnitOfMeasure
+from catalog.models import HsnSac, Product, ProductCategory, ProductGstRate, UnitOfMeasure
 from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity
 from financial.services import apply_normalized_profile_payload, create_account_with_synced_ledger
 from invoice_import.models import ImportJob
@@ -997,6 +997,209 @@ class InvoiceImportServiceTests(TestCase):
         normalized = job.rows.get().normalized_payload
         self.assertEqual(normalized["product_id"], product.id)
         self.assertEqual(normalized["product_code"], product.sku)
+
+    def test_sales_import_normalizes_place_of_supply_state_alias_before_commit(self):
+        row = self._base_row(
+            party_name=self.customer.accountname,
+            source_key="sales-pos-alias-1",
+            source_invoice_number="S-POS-ALIAS-001",
+        )
+        row.update(
+            {
+                "party_gstin": "06ABCDE1234F1Z5",
+                "party_state_code": "HR",
+                "seller_gstin": "27AAAAA1111A1Z5",
+                "seller_state_code": "MH",
+                "place_of_supply_state_code": "HR",
+                "supply_category": SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B,
+                "taxability": SalesInvoiceHeader.Taxability.TAXABLE,
+                "tax_regime": SalesInvoiceHeader.TaxRegime.INTER_STATE,
+                "total_cgst": "0.00",
+                "total_sgst": "0.00",
+                "total_igst": "180.00",
+            }
+        )
+        job = self._build_job(
+            module=ImportJob.Module.SALES,
+            mode=ImportJob.Mode.OUTSTANDING_ONLY,
+            detail_level=ImportJob.DetailLevel.HEADER_ONLY,
+            rows=[row],
+        )
+
+        self.assertEqual(job.status, ImportJob.Status.VALIDATED)
+        normalized = job.rows.get().normalized_payload
+        self.assertEqual(normalized["party_state_code"], "06")
+        self.assertEqual(normalized["seller_state_code"], "27")
+        self.assertEqual(normalized["place_of_supply_state_code"], "06")
+
+        commit_job(job=job, user=self.user)
+
+        header = SalesInvoiceHeader.objects.get(legacy_source_key="sales-pos-alias-1")
+        self.assertEqual(header.customer_state_code, "06")
+        self.assertEqual(header.seller_state_code, "27")
+        self.assertEqual(header.place_of_supply_state_code, "06")
+
+    def test_sales_import_rejects_invalid_place_of_supply_state_code(self):
+        row = self._base_row(
+            party_name=self.customer.accountname,
+            source_key="sales-invalid-pos-1",
+            source_invoice_number="S-INVALID-POS-001",
+        )
+        row.update(
+            {
+                "party_gstin": "27ABCDE1234F1Z5",
+                "party_state_code": "27",
+                "seller_gstin": "27AAAAA1111A1Z5",
+                "seller_state_code": "27",
+                "place_of_supply_state_code": "XX",
+                "supply_category": SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B,
+                "taxability": SalesInvoiceHeader.Taxability.TAXABLE,
+                "tax_regime": SalesInvoiceHeader.TaxRegime.INTRA_STATE,
+            }
+        )
+        job = self._build_job(
+            module=ImportJob.Module.SALES,
+            mode=ImportJob.Mode.OUTSTANDING_ONLY,
+            detail_level=ImportJob.DetailLevel.HEADER_ONLY,
+            rows=[row],
+        )
+
+        self.assertEqual(job.status, ImportJob.Status.FAILED)
+        import_row = job.rows.get()
+        self.assertIn("place_of_supply_state_code", {error["field"] for error in import_row.errors})
+
+    def test_sales_import_rejects_taxable_detail_line_without_hsn_or_product_default(self):
+        uom = UnitOfMeasure.objects.create(entity=self.entity, code="BOX", description="Box")
+        category = ProductCategory.objects.create(entity=self.entity, pcategoryname="Missing HSN Goods")
+        product = Product.objects.create(
+            entity=self.entity,
+            productname="No HSN Widget",
+            sku="NO-HSN-WIDGET-001",
+            productcategory=category,
+            base_uom=uom,
+            sales_account=self.customer,
+        )
+        row = self._base_row(
+            party_name=self.customer.accountname,
+            source_key="sales-missing-hsn-1",
+            source_invoice_number="S-MISSING-HSN-001",
+        )
+        row.update(
+            {
+                "party_gstin": "27ABCDE1234F1Z5",
+                "party_state_code": "27",
+                "seller_gstin": "27AAAAA1111A1Z5",
+                "seller_state_code": "27",
+                "place_of_supply_state_code": "27",
+                "supply_category": SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B,
+                "taxability": SalesInvoiceHeader.Taxability.TAXABLE,
+                "tax_regime": SalesInvoiceHeader.TaxRegime.INTRA_STATE,
+                "line_no": 1,
+                "product_id": product.id,
+                "product_desc": "Imported widget without HSN",
+                "is_service": False,
+                "uom_id": uom.id,
+                "hsn_sac_code": "",
+                "qty": "10.000",
+                "free_qty": "0.000",
+                "rate": "100.0000",
+                "discount_type": 0,
+                "discount_percent": "0.0000",
+                "discount_amount": "0.00",
+                "gst_rate": "0.00",
+                "cess_percent": "0.00",
+                "taxable_value": "1000.00",
+                "cgst_amount": "0.00",
+                "sgst_amount": "0.00",
+                "igst_amount": "0.00",
+                "cess_amount": "0.00",
+                "line_total": "1000.00",
+            }
+        )
+        job = self._build_job(
+            module=ImportJob.Module.SALES,
+            mode=ImportJob.Mode.FULL_HISTORY,
+            detail_level=ImportJob.DetailLevel.HEADER_PLUS_LINES,
+            rows=[row],
+        )
+
+        self.assertEqual(job.status, ImportJob.Status.FAILED)
+        import_row = job.rows.get()
+        self.assertEqual(import_row.status, "error")
+        self.assertIn("hsn_sac_code", {error["field"] for error in import_row.errors})
+
+    def test_sales_import_fills_missing_hsn_from_product_default_gst_row(self):
+        uom = UnitOfMeasure.objects.create(entity=self.entity, code="PCS", description="Pieces")
+        category = ProductCategory.objects.create(entity=self.entity, pcategoryname="Default HSN Goods")
+        hsn = HsnSac.objects.create(entity=self.entity, code="998314", description="Default service HSN")
+        product = Product.objects.create(
+            entity=self.entity,
+            productname="Default HSN Widget",
+            sku="DEFAULT-HSN-WIDGET-001",
+            productcategory=category,
+            base_uom=uom,
+            sales_account=self.customer,
+        )
+        ProductGstRate.objects.create(
+            product=product,
+            hsn=hsn,
+            gst_type="regular",
+            cgst=Decimal("0.00"),
+            sgst=Decimal("0.00"),
+            igst=Decimal("0.00"),
+            isdefault=True,
+        )
+        row = self._base_row(
+            party_name=self.customer.accountname,
+            source_key="sales-default-hsn-1",
+            source_invoice_number="S-DEFAULT-HSN-001",
+        )
+        row.update(
+            {
+                "party_gstin": "27ABCDE1234F1Z5",
+                "party_state_code": "27",
+                "seller_gstin": "27AAAAA1111A1Z5",
+                "seller_state_code": "27",
+                "place_of_supply_state_code": "27",
+                "supply_category": SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B,
+                "taxability": SalesInvoiceHeader.Taxability.TAXABLE,
+                "tax_regime": SalesInvoiceHeader.TaxRegime.INTRA_STATE,
+                "line_no": 1,
+                "product_id": product.id,
+                "product_desc": "Imported widget with product default HSN",
+                "is_service": False,
+                "uom_id": uom.id,
+                "hsn_sac_code": "",
+                "qty": "10.000",
+                "free_qty": "0.000",
+                "rate": "100.0000",
+                "discount_type": 0,
+                "discount_percent": "0.0000",
+                "discount_amount": "0.00",
+                "gst_rate": "0.00",
+                "cess_percent": "0.00",
+                "taxable_value": "1000.00",
+                "cgst_amount": "0.00",
+                "sgst_amount": "0.00",
+                "igst_amount": "0.00",
+                "cess_amount": "0.00",
+                "line_total": "1000.00",
+            }
+        )
+        job = self._build_job(
+            module=ImportJob.Module.SALES,
+            mode=ImportJob.Mode.FULL_HISTORY,
+            detail_level=ImportJob.DetailLevel.HEADER_PLUS_LINES,
+            rows=[row],
+        )
+
+        self.assertEqual(job.status, ImportJob.Status.VALIDATED)
+        self.assertEqual(job.rows.get().normalized_payload["hsn_sac_code"], "998314")
+
+        commit_job(job=job, user=self.user)
+
+        header = SalesInvoiceHeader.objects.get(legacy_source_key="sales-default-hsn-1")
+        self.assertEqual(header.lines.get().hsn_sac_code, "998314")
 
     def test_full_history_sales_resolves_product_by_name_for_stock_replay(self):
         uom = UnitOfMeasure.objects.create(entity=self.entity, code="NOS", description="Numbers")

@@ -1833,6 +1833,28 @@ class Gstr1ReportAPITests(APITestCase):
         codes = {item["code"] for item in response.json().get("warnings", [])}
         self.assertIn("INVALID_PLACE_OF_SUPPLY", codes)
 
+    def test_missing_hsn_warning_includes_invoice_number(self):
+        invoice = self._create_sales_document(
+            customer=self.customer_alpha,
+            invoice_number="INV-HSN-001",
+            hsn_code="1001",
+        )
+        SalesInvoiceLine.objects.filter(header=invoice).update(
+            hsn_sac_code="",
+            gst_rate=Decimal("0.00"),
+        )
+
+        response = self.client.get(self.validation_url, self.base_params)
+
+        self.assertEqual(response.status_code, 200)
+        warning = next(
+            item
+            for item in response.json().get("warnings", [])
+            if item["code"] == "MISSING_HSN"
+        )
+        self.assertEqual(warning["invoice_id"], invoice.id)
+        self.assertEqual(warning["invoice_number"], "INV-HSN-001")
+
     def test_summary_vs_section_totals_alignment(self):
         inv = self._create_sales_document(customer=self.customer_alpha, taxable="200.00", cgst="18.00", sgst="18.00", grand_total="236.00")
         summary = self.client.get(self.summary_url, self.base_params).json()["summary"]["sections"]

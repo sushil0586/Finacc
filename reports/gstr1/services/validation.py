@@ -395,17 +395,21 @@ class Gstr1ValidationService:
     def _missing_hsn_warnings(self):
         qs = SalesInvoiceLine.objects.filter(header__in=self.base_queryset).filter(
             Q(hsn_sac_code__in=[None, ""]) & (Q(gst_rate__gt=0) | Q(taxable_value__gt=0))
-        ).values_list("header_id", flat=True)
-        header_ids = set(qs)
+        ).values("header_id", "header__invoice_number")
+        rows = {
+            row["header_id"]: row.get("header__invoice_number")
+            for row in qs
+        }
         return [
             _warning(
                 code="MISSING_HSN",
                 message="HSN/SAC code is missing on a taxable line.",
                 invoice_id=header_id,
+                invoice_number=invoice_number,
                 field="hsn_sac_code",
                 severity="warning",
             )
-            for header_id in header_ids
+            for header_id, invoice_number in rows.items()
         ]
 
     def _nil_exempt_tax_warnings(self):

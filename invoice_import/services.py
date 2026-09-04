@@ -273,12 +273,13 @@ def _template_row(*, module: str, mode: str, detail_level: str) -> dict[str, Any
         common.update(
             {
                 "party_account_code": 5001,
-        "party_name": "Alpha Retail",
-        "total_discount": "0.00",
-        "party_gstin": "27AAAAA9999A1Z5",
+                "party_name": "Alpha Retail",
+                "total_discount": "0.00",
+                "party_gstin": "27AAAAA9999A1Z5",
                 "party_state_code": "27",
                 "seller_gstin": "27BBBBB1111B1Z5",
                 "seller_state_code": "27",
+                "place_of_supply_state_code": "27",
                 "supply_category": int(SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B),
                 "taxability": int(SalesInvoiceHeader.Taxability.TAXABLE),
                 "tax_regime": int(SalesInvoiceHeader.TaxRegime.INTRA_STATE),
@@ -544,6 +545,48 @@ def _validate_row(*, job: ImportJob, row: dict[str, Any], row_no: int) -> RowVal
         row.get("product_code"),
         row.get("product_name"),
     )
+
+    sales_party_state_code = _normalize_text(row.get("party_state_code"))
+    sales_seller_state_code = _normalize_text(row.get("seller_state_code"))
+    sales_place_of_supply_state_code = _normalize_text(
+        row.get("place_of_supply_state_code") or row.get("place_of_supply_state") or sales_party_state_code
+    )
+    sales_line_hsn_sac_code = _normalize_text(row.get("hsn_sac_code"))
+    try:
+        sales_line_taxable_value = q2(_to_decimal(row.get("taxable_value"), default=ZERO2))
+    except Exception as exc:
+        errors.append({"field": "taxable_value", "message": str(exc)})
+        sales_line_taxable_value = ZERO2
+    if job.module == ImportJob.Module.SALES:
+        sales_party_state_code = SalesInvoiceService.normalize_state_code(sales_party_state_code)
+        sales_seller_state_code = SalesInvoiceService.normalize_state_code(sales_seller_state_code)
+        sales_place_of_supply_state_code = SalesInvoiceService.normalize_state_code(sales_place_of_supply_state_code)
+
+        if not (sales_place_of_supply_state_code.isdigit() and len(sales_place_of_supply_state_code) == 2):
+            errors.append(
+                {
+                    "field": "place_of_supply_state_code",
+                    "message": "place_of_supply_state_code must be a valid 2-digit GST state code.",
+                }
+            )
+
+        if job.detail_level == ImportJob.DetailLevel.HEADER_PLUS_LINES and not sales_line_hsn_sac_code:
+            sales_line_hsn_sac_code = SalesInvoiceService._default_hsn_sac_code_for_product(
+                product=product,
+                product_id=getattr(product, "id", None),
+            )
+        if (
+            job.detail_level == ImportJob.DetailLevel.HEADER_PLUS_LINES
+            and sales_line_taxable_value > ZERO2
+            and not sales_line_hsn_sac_code
+        ):
+            errors.append(
+                {
+                    "field": "hsn_sac_code",
+                    "message": "hsn_sac_code is required for taxable sales import lines.",
+                }
+            )
+
     if job.detail_level == ImportJob.DetailLevel.HEADER_PLUS_LINES:
         if not is_service and product is None and job.stock_replay:
             errors.append({"field": "product_id", "message": "product_id is required for stock replay on non-service lines."})
@@ -653,9 +696,10 @@ def _validate_row(*, job: ImportJob, row: dict[str, Any], row_no: int) -> RowVal
         "party_id": getattr(party, "id", None),
         "party_name": _normalize_text(row.get("party_name")) or getattr(party, "accountname", ""),
         "party_gstin": _normalize_text(row.get("party_gstin")),
-        "party_state_code": _normalize_text(row.get("party_state_code")),
+        "party_state_code": sales_party_state_code if job.module == ImportJob.Module.SALES else _normalize_text(row.get("party_state_code")),
         "seller_gstin": _normalize_text(row.get("seller_gstin")),
-        "seller_state_code": _normalize_text(row.get("seller_state_code")),
+        "seller_state_code": sales_seller_state_code if job.module == ImportJob.Module.SALES else _normalize_text(row.get("seller_state_code")),
+        "place_of_supply_state_code": sales_place_of_supply_state_code if job.module == ImportJob.Module.SALES else _normalize_text(row.get("place_of_supply_state_code")),
         "supplier_invoice_number": _normalize_text(row.get("supplier_invoice_number")),
         "supplier_invoice_date": _to_date(row.get("supplier_invoice_date")).isoformat() if _normalize_text(row.get("supplier_invoice_date")) else None,
         "taxability": _to_int(row.get("taxability")),
@@ -687,7 +731,7 @@ def _validate_row(*, job: ImportJob, row: dict[str, Any], row_no: int) -> RowVal
         "is_service": is_service,
         "purchase_behavior": _normalize_text(row.get("purchase_behavior")) or "inventory",
         "uom_id": _to_int(row.get("uom_id")),
-        "hsn_sac_code": _normalize_text(row.get("hsn_sac_code")),
+        "hsn_sac_code": sales_line_hsn_sac_code if job.module == ImportJob.Module.SALES else _normalize_text(row.get("hsn_sac_code")),
         "qty": str(q4(_to_decimal(row.get("qty"), default=ZERO4))),
         "free_qty": str(q4(_to_decimal(row.get("free_qty"), default=ZERO4))),
         "rate": str(_to_decimal(row.get("rate"), default=ZERO2)),
@@ -1255,6 +1299,7 @@ def _create_sales_header(job: ImportJob, normalized: dict[str, Any], *, original
         customer_state_code=normalized["party_state_code"],
         seller_gstin=normalized["seller_gstin"],
         seller_state_code=normalized["seller_state_code"],
+        place_of_supply_state_code=normalized["place_of_supply_state_code"],
         supply_category=int(normalized.get("supply_category") or SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B),
         taxability=int(normalized.get("taxability") or SalesInvoiceHeader.Taxability.TAXABLE),
         tax_regime=int(normalized.get("tax_regime") or SalesInvoiceHeader.TaxRegime.INTRA_STATE),

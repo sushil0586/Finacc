@@ -12,7 +12,7 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from entity.models import Entity, EntityFinancialYear, SubEntity
 from numbering.models import DocumentNumberSeries, DocumentType
-from sales.models import SalesInvoiceHeader, SalesSettings, SalesEWaySource
+from sales.models import SalesInvoiceHeader, SalesInvoiceLine, SalesSettings, SalesEWaySource
 from sales.models.sales_compliance import SalesEInvoiceStatus, SalesEWayStatus
 from sales.services.sales_invoice_service import SalesInvoiceService
 from sales.services.sales_stock_balance_service import SalesStockBalanceService
@@ -2229,6 +2229,7 @@ class SalesInvoiceAdditionalServiceUnitTests(SimpleTestCase):
             self.assertEqual(SalesInvoiceService.normalize_state_code("3"), "03")
             self.assertEqual(SalesInvoiceService.normalize_state_code("Maharashtra"), "27")
             self.assertEqual(SalesInvoiceService.normalize_state_code("mh"), "27")
+            self.assertEqual(SalesInvoiceService.normalize_state_code("HR"), "06")
 
     def test_normalize_state_code_falls_back_to_trimmed_upper_prefix(self):
         with patch("sales.services.sales_invoice_service.State.objects") as mocked_state_objects:
@@ -2236,6 +2237,77 @@ class SalesInvoiceAdditionalServiceUnitTests(SimpleTestCase):
 
             self.assertEqual(SalesInvoiceService.normalize_state_code("tx"), "TX")
             self.assertEqual(SalesInvoiceService.normalize_state_code(""), "")
+
+    def test_refresh_party_snapshots_normalizes_derived_place_of_supply_alias(self):
+        header = SimpleNamespace(
+            customer=None,
+            entity=None,
+            bill_to_state_code="",
+            customer_state_code="HR",
+            place_of_supply_state_code="",
+        )
+
+        SalesInvoiceService._refresh_party_snapshots(header=header)
+
+        self.assertEqual(header.place_of_supply_state_code, "06")
+
+    def test_refresh_party_snapshots_normalizes_existing_place_of_supply_alias(self):
+        header = SimpleNamespace(
+            customer=None,
+            entity=None,
+            bill_to_state_code="",
+            customer_state_code="29",
+            place_of_supply_state_code="HR",
+        )
+
+        SalesInvoiceService._refresh_party_snapshots(header=header)
+
+        self.assertEqual(header.place_of_supply_state_code, "06")
+
+    def test_apply_line_inputs_populates_missing_hsn_from_product_default(self):
+        product = SimpleNamespace(
+            pk=42,
+            default_taxability=SalesInvoiceHeader.Taxability.TAXABLE,
+            transaction_gst_rates=[
+                SimpleNamespace(hsn=SimpleNamespace(code="998314")),
+            ],
+        )
+        line = SimpleNamespace()
+
+        SalesInvoiceService.apply_line_inputs(
+            line,
+            {
+                "product": product,
+                "hsn_sac_code": "",
+                "taxability": "",
+            },
+            default_taxability=int(SalesInvoiceHeader.Taxability.TAXABLE),
+        )
+
+        self.assertEqual(line.hsn_sac_code, "998314")
+
+    def test_compute_line_amounts_rejects_taxable_value_without_hsn(self):
+        header = SimpleNamespace(is_reverse_charge=False, is_igst=False)
+        line = SimpleNamespace(
+            line_no=1,
+            qty=Decimal("1.0000"),
+            free_qty=Decimal("0.0000"),
+            rate=Decimal("100.0000"),
+            gst_rate=Decimal("0.0000"),
+            taxability=SalesInvoiceHeader.Taxability.TAXABLE,
+            hsn_sac_code="",
+            discount_type=SalesInvoiceLine.DiscountType.AMOUNT,
+            discount_percent=Decimal("0.0000"),
+            discount_amount=Decimal("0.00"),
+            is_rate_inclusive_of_tax=False,
+            cess_type=SalesInvoiceLine.CessType.NONE,
+            cess_percent=Decimal("0.0000"),
+            cess_specific_amount=Decimal("0.00"),
+            cess_amount=Decimal("0.00"),
+        )
+
+        with self.assertRaisesMessage(ValidationError, "HSN/SAC is required when taxable value is present"):
+            SalesInvoiceService.compute_line_amounts(header, line)
 
     def test_validate_doc_linkage_tax_invoice_disallows_original(self):
         original = SimpleNamespace(entity_id=1, entityfinid_id=1, subentity_id=None, customer_id=10)

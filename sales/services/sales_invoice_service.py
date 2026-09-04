@@ -21,7 +21,7 @@ from sales.services.compliance_audit_service import ComplianceAuditService
 from withholding.services import WithholdingResult, upsert_tcs_computation
 from financial.models import ShippingDetails, account
 from financial.profile_access import account_gstno, account_partytype, account_region_state
-from catalog.models import Product
+from catalog.models import Product, ProductGstRate
 from catalog.lot_tracking import resolve_tracked_lot_number
 from catalog.taxability import resolve_product_default_taxability
 from catalog.uom_helpers import resolve_product_uom
@@ -1017,10 +1017,12 @@ class SalesInvoiceService:
 
         # Derive POS from bill-to/ship-to/customer when missing.
         if not cls._has_meaningful_state_code(header.place_of_supply_state_code):
-            header.place_of_supply_state_code = (
+            header.place_of_supply_state_code = cls.normalize_state_code(
                 (header.bill_to_state_code or "").strip()
                 or (header.customer_state_code or "").strip()
             )
+        else:
+            header.place_of_supply_state_code = cls.normalize_state_code(header.place_of_supply_state_code)
 
     @classmethod
     def _align_note_tax_scope_from_original_invoice(
@@ -2390,6 +2392,32 @@ class SalesInvoiceService:
             else:
                 line.taxability = int(default_taxability)
 
+        if not (getattr(line, "hsn_sac_code", None) or "").strip():
+            line.hsn_sac_code = SalesInvoiceService._default_hsn_sac_code_for_product(
+                product=getattr(line, "product", None),
+                product_id=getattr(line, "product_id", None),
+            )
+
+    @staticmethod
+    def _default_hsn_sac_code_for_product(*, product=None, product_id=None) -> str:
+        prefetched_rows = getattr(product, "transaction_gst_rates", None)
+        if prefetched_rows:
+            hsn = getattr(prefetched_rows[0], "hsn", None)
+            return (getattr(hsn, "code", None) or "").strip()
+
+        resolved_product_id = getattr(product, "pk", None) or getattr(product, "id", None) or product_id
+        if not resolved_product_id:
+            return ""
+
+        gst_row = (
+            ProductGstRate.objects.select_related("hsn")
+            .filter(product_id=resolved_product_id)
+            .order_by("-isdefault", "-valid_from", "-id")
+            .first()
+        )
+        hsn = getattr(gst_row, "hsn", None) if gst_row is not None else None
+        return (getattr(hsn, "code", None) or "").strip()
+
     @staticmethod
     def compute_line_amounts(header: SalesInvoiceHeader, line: SalesInvoiceLine):
         """
@@ -2419,9 +2447,6 @@ class SalesInvoiceService:
             line.gst_rate = ZERO2
             line.cess_percent = ZERO2
             line.cess_amount = ZERO2
-        if gst_rate > ZERO4 and bill_qty > ZERO4 and not hsn:
-            raise ValidationError({"lines": [f"Line {line.line_no}: HSN/SAC is required when GST applies."]})
-
         gross = q2(bill_qty * rate)
 
         # discount
@@ -2449,6 +2474,9 @@ class SalesInvoiceService:
             tax_total = q2(net - taxable)
         elif gst_rate > ZERO4:
             tax_total = q2(taxable * gst_rate / Decimal("100"))
+
+        if taxable > ZERO2 and not hsn:
+            raise ValidationError({"lines": [f"Line {line.line_no}: HSN/SAC is required when taxable value is present."]})
 
         cess_type = str(
             getattr(line, "cess_type", SalesInvoiceLine.CessType.NONE) or SalesInvoiceLine.CessType.NONE
