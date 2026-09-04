@@ -128,6 +128,19 @@ from reports.gstr1.views import (
     Gstr1ValidationAPIView,
 )
 from reports.gstr3b.views import Gstr3bExportAPIView, Gstr3bMetaAPIView, Gstr3bSummaryAPIView, Gstr3bValidationAPIView
+from reports.gst_portal.views import (
+    GstPortalFilingEvcFileAPIView,
+    GstPortalFilingPrepareAPIView,
+    GstPortalFilingPollStatusAPIView,
+    GstPortalFilingPortalSummaryAPIView,
+    GstPortalFilingProceedAPIView,
+    GstPortalFilingRequestEvcAPIView,
+    GstPortalFilingSaveAPIView,
+    GstPortalFilingStatusAPIView,
+    GstPortalOtpRequestAPIView,
+    GstPortalOtpVerifyAPIView,
+    GstPortalProfileAPIView,
+)
 from reports.api.gst_reconciliation_views import (
     Gstr1VsGstr3bReconciliationAPIView,
     Gstr1VsGstr3bReconciliationExportAPIView,
@@ -439,6 +452,17 @@ urlpatterns = [
     path("gstr3b/validations/", Gstr3bValidationAPIView.as_view(), name="gstr3b-validations"),
     path("gstr3b/export/", Gstr3bExportAPIView.as_view(), name="gstr3b-export"),
     path("gstr3b/export", Gstr3bExportAPIView.as_view(), name="gstr3b-export-noslash"),
+    path("gst-portal/filing/prepare/", GstPortalFilingPrepareAPIView.as_view(), name="gst-portal-filing-prepare"),
+    path("gst-portal/filing/save/", GstPortalFilingSaveAPIView.as_view(), name="gst-portal-filing-save"),
+    path("gst-portal/filing/status/", GstPortalFilingStatusAPIView.as_view(), name="gst-portal-filing-status"),
+    path("gst-portal/filing/portal-summary/", GstPortalFilingPortalSummaryAPIView.as_view(), name="gst-portal-filing-portal-summary"),
+    path("gst-portal/filing/proceed/", GstPortalFilingProceedAPIView.as_view(), name="gst-portal-filing-proceed"),
+    path("gst-portal/filing/request-evc/", GstPortalFilingRequestEvcAPIView.as_view(), name="gst-portal-filing-request-evc"),
+    path("gst-portal/filing/file-evc/", GstPortalFilingEvcFileAPIView.as_view(), name="gst-portal-filing-file-evc"),
+    path("gst-portal/filing/poll-status/", GstPortalFilingPollStatusAPIView.as_view(), name="gst-portal-filing-poll-status"),
+    path("gst-portal/auth/request-otp/", GstPortalOtpRequestAPIView.as_view(), name="gst-portal-auth-request-otp"),
+    path("gst-portal/auth/verify-otp/", GstPortalOtpVerifyAPIView.as_view(), name="gst-portal-auth-verify-otp"),
+    path("gst-portal/profile/", GstPortalProfileAPIView.as_view(), name="gst-portal-profile"),
     path("gst-reconciliation/summary/", Gstr1VsGstr3bReconciliationAPIView.as_view(), name="gst-reconciliation-summary"),
     path("gst-reconciliation/export/", Gstr1VsGstr3bReconciliationExportAPIView.as_view(), name="gst-reconciliation-export"),
     path("gst-exception-dashboard/summary/", GstExceptionDashboardAPIView.as_view(), name="gst-exception-dashboard-summary"),

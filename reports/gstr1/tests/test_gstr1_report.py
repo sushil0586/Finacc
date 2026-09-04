@@ -4,6 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from unittest.mock import patch
 
+from django.db import IntegrityError
 from django.test import override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -280,12 +281,13 @@ class Gstr1ReportAPITests(APITestCase):
         self.assertTrue(payload["actions"]["can_export_pdf"])
         self.assertTrue(payload["actions"]["can_export_csv"])
         self.assertTrue(payload["actions"]["can_drilldown"])
-        self.assertEqual(set(payload["actions"]["export_urls"].keys()), {"excel", "csv", "json", "gstn_json"})
-        self.assertEqual(payload["available_exports"], ["excel", "csv", "json", "gstn_json"])
+        self.assertEqual(set(payload["actions"]["export_urls"].keys()), {"excel", "csv", "json", "gstn_json", "whitebox_json"})
+        self.assertEqual(payload["available_exports"], ["excel", "csv", "json", "gstn_json", "whitebox_json"])
         self.assertIn("format=xlsx", payload["actions"]["export_urls"]["excel"])
         self.assertIn("format=csv", payload["actions"]["export_urls"]["csv"])
         self.assertIn("format=json", payload["actions"]["export_urls"]["json"])
         self.assertIn("format=gstn_json", payload["actions"]["export_urls"]["gstn_json"])
+        self.assertIn("format=whitebox_json", payload["actions"]["export_urls"]["whitebox_json"])
 
     def test_invoice_detail_includes_posting_lookup_and_drilldowns(self):
         invoice = self._create_sales_document(customer=self.customer_alpha)
@@ -1965,14 +1967,12 @@ class Gstr1ReportAPITests(APITestCase):
 
     def test_duplicate_invoice_detection_with_doc_code(self):
         inv = self._create_sales_document(customer=self.customer_alpha)
-        self._create_sales_document(
-            customer=self.customer_alpha,
-            invoice_number=inv.invoice_number,
-            doc_code_override="SINV-DUP",
-        )
-        response = self.client.get(self.validation_url, self.base_params)
-        codes = {item["code"] for item in response.json().get("warnings", [])}
-        self.assertIn("DUPLICATE_INVOICE", codes)
+        with self.assertRaises(IntegrityError):
+            self._create_sales_document(
+                customer=self.customer_alpha,
+                invoice_number=inv.invoice_number,
+                doc_code_override="SINV-DUP",
+            )
 
     def test_pos_tax_regime_mismatch_validation(self):
         self._create_sales_document(

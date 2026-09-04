@@ -74,6 +74,7 @@ def attach_gstr1_export_actions(payload, request):
         "csv": f"/api/reports/gstr1/export/?format=csv&{query}",
         "json": f"/api/reports/gstr1/export/?format=json&{query}",
         "gstn_json": f"/api/reports/gstr1/export/?format=gstn_json&{query}",
+        "whitebox_json": f"/api/reports/gstr1/export/?format=whitebox_json&{query}",
     }
-    payload["available_exports"] = ["excel", "csv", "json", "gstn_json"]
+    payload["available_exports"] = ["excel", "csv", "json", "gstn_json", "whitebox_json"]
     return payload

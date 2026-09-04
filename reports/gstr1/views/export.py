@@ -17,6 +17,7 @@ from reports.gstr1.services.report import Gstr1ReportService
 from reports.gstr1.services.section import Gstr1SectionService
 from reports.gstr1.services.table_views import Gstr1TableViewService
 from reports.gstr1.views.utils import Gstr1ScopedReportMixin
+from reports.gst_portal.services import GstPortalService
 
 
 class Gstr1ExportAPIView(Gstr1ScopedReportMixin, APIView):
@@ -53,6 +54,15 @@ class Gstr1ExportAPIView(Gstr1ScopedReportMixin, APIView):
             filtered_qs = apply_smart_filters(scoped_qs, smart_filters)
             filing_payload = Gstr1GstnJsonExportService().build(scope=scope, base_queryset=filtered_qs)
             return Response(filing_payload)
+
+        if export_format == "whitebox_json":
+            try:
+                payload = GstPortalService().preview(return_type="gstr1", params=self.request.query_params)
+            except LookupError as exc:
+                return Response({"detail": str(exc)}, status=400)
+            except ValueError as exc:
+                return Response({"detail": str(exc)}, status=400)
+            return Response(payload)
 
         payload = service.summary(scope, smart_filters=smart_filters)
         if export_format == "json":

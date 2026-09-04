@@ -479,6 +479,56 @@ class Gstr3bSummaryService:
             },
         }
 
+    def interstate_breakups(self, scope: Gstr3bScope) -> dict[str, list[dict]]:
+        sales_qs = self._sales_qs(scope)
+        interstate_taxable_qs = (
+            sales_qs.filter(tax_regime=SalesInvoiceHeader.TaxRegime.INTER_STATE)
+            .exclude(taxability__in=self.NIL_EXEMPT_TAXABILITIES)
+            .exclude(supply_category__in=self.ZERO_RATED_SUPPLY_CATEGORIES)
+        )
+        composition_condition = Q(customer__compliance_profile__gstregtype__iexact="Composition")
+        uin_condition = Q(customer__compliance_profile__gstregtype__iexact="UIN")
+        unregistered_condition = (
+            Q(customer_gstin__in=["", None])
+            | Q(customer__compliance_profile__gstregtype__iexact="Unregistered")
+            | Q(customer__compliance_profile__gstregtype__iexact="Consumer")
+            | Q(supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2C)
+        )
+        return {
+            "unregistered": self._interstate_breakup_rows(
+                interstate_taxable_qs.filter(unregistered_condition).exclude(composition_condition | uin_condition)
+            ),
+            "composition": self._interstate_breakup_rows(interstate_taxable_qs.filter(composition_condition)),
+            "uin": self._interstate_breakup_rows(interstate_taxable_qs.filter(uin_condition)),
+        }
+
+    def _interstate_breakup_rows(self, qs) -> list[dict]:
+        sign = Case(
+            When(doc_type=SalesInvoiceHeader.DocType.CREDIT_NOTE, then=Value(Decimal("-1.00"))),
+            default=Value(Decimal("1.00")),
+            output_field=DecimalField(max_digits=5, decimal_places=2),
+        )
+        rows = (
+            qs.annotate(
+                signed_taxable=ExpressionWrapper(F("total_taxable_value") * sign, output_field=SIGNED_OUTPUT),
+                signed_igst=ExpressionWrapper(F("total_igst") * sign, output_field=SIGNED_OUTPUT),
+            )
+            .values("place_of_supply_state_code")
+            .annotate(
+                taxable_value=Coalesce(Sum("signed_taxable", output_field=SUM_OUTPUT), Value(ZERO)),
+                igst=Coalesce(Sum("signed_igst", output_field=SUM_OUTPUT), Value(ZERO)),
+            )
+            .order_by("place_of_supply_state_code")
+        )
+        return [
+            {
+                "place_of_supply_state_code": row.get("place_of_supply_state_code") or "",
+                "taxable_value": row.get("taxable_value") or ZERO,
+                "igst": row.get("igst") or ZERO,
+            }
+            for row in rows
+        ]
+
     def validations(self, scope: Gstr3bScope) -> list[dict]:
         sales_qs = self._sales_qs(scope)
         warnings: list[dict] = []

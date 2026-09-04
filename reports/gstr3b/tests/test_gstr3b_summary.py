@@ -227,7 +227,7 @@ class Gstr3bSummaryAPITests(APITestCase):
         payload = response.json()
         self.assertEqual(payload["report_code"], "gstr3b-summary")
         self.assertEqual(payload["report_name"], "GSTR-3B Summary")
-        self.assertEqual(set(payload["available_exports"]), {"json", "xlsx", "csv"})
+        self.assertEqual(set(payload["available_exports"]), {"json", "xlsx", "csv", "whitebox_json"})
         self.assertTrue(payload["actions"]["can_export_excel"])
         self.assertFalse(payload["actions"]["can_export_pdf"])
         self.assertTrue(payload["actions"]["can_export_csv"])
@@ -235,9 +235,11 @@ class Gstr3bSummaryAPITests(APITestCase):
         self.assertIn("excel", payload["actions"]["export_urls"])
         self.assertIn("csv", payload["actions"]["export_urls"])
         self.assertIn("json", payload["actions"]["export_urls"])
+        self.assertIn("whitebox_json", payload["actions"]["export_urls"])
         self.assertIn("format=xlsx", payload["actions"]["export_urls"]["excel"])
         self.assertIn("format=csv", payload["actions"]["export_urls"]["csv"])
         self.assertIn("format=json", payload["actions"]["export_urls"]["json"])
+        self.assertIn("format=whitebox_json", payload["actions"]["export_urls"]["whitebox_json"])
 
     def test_summary_computes_phase1_sections(self):
         self._create_sales_doc(
@@ -323,7 +325,7 @@ class Gstr3bSummaryAPITests(APITestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertIn("actions", payload)
-        self.assertEqual(set(payload["available_exports"]), {"json", "xlsx", "csv"})
+        self.assertEqual(set(payload["available_exports"]), {"json", "xlsx", "csv", "whitebox_json"})
         self.assertEqual(payload["actions"]["can_export_excel"], True)
         self.assertEqual(payload["actions"]["can_export_pdf"], False)
         self.assertEqual(payload["actions"]["can_export_csv"], True)

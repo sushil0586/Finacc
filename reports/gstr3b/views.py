@@ -13,6 +13,7 @@ from reports.gstr3b.exporters import export_gstr3b_csv_rows, export_gstr3b_excel
 from reports.gstr3b.selectors import scope_filters
 from reports.gstr3b.serializers import Gstr3bSummarySerializer, Gstr3bValidationSerializer
 from reports.gstr3b.services import Gstr3bSummaryService
+from reports.gst_portal.services import GstPortalService
 from reports.schemas.common import build_report_envelope
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
@@ -63,8 +64,9 @@ class Gstr3bSummaryAPIView(ScopedEntitlementMixin, APIView):
             "excel": f"/api/reports/gstr3b/export/?format=xlsx&{encoded}",
             "csv": f"/api/reports/gstr3b/export/?format=csv&{encoded}",
             "json": f"/api/reports/gstr3b/export/?format=json&{encoded}",
+            "whitebox_json": f"/api/reports/gstr3b/export/?format=whitebox_json&{encoded}",
         }
-        response["available_exports"] = ["json", "xlsx", "csv"]
+        response["available_exports"] = ["json", "xlsx", "csv", "whitebox_json"]
         response["actions"]["can_export_excel"] = True
         response["actions"]["can_export_pdf"] = False
         response["actions"]["can_export_csv"] = True
@@ -93,7 +95,7 @@ class Gstr3bMetaAPIView(ScopedEntitlementMixin, APIView):
                 "report_code": "gstr3b-summary",
                 "report_name": "GSTR-3B Summary",
                 "supported_sections": ["3.1", "3.2", "4", "5.1", "6.1"],
-                "supported_exports": ["json", "xlsx", "csv"],
+                "supported_exports": ["json", "xlsx", "csv", "whitebox_json"],
                 "phase": 2,
             }
         )
@@ -156,6 +158,14 @@ class Gstr3bExportAPIView(ScopedEntitlementMixin, APIView):
         warnings = Gstr3bValidationSerializer(service.validations(scope), many=True).data
         if export_format == "json":
             return Response({"summary": summary, "warnings": warnings})
+        if export_format == "whitebox_json":
+            try:
+                payload = GstPortalService().preview(return_type="gstr3b", params=self.request.query_params)
+            except LookupError as exc:
+                return Response({"detail": str(exc)}, status=400)
+            except ValueError as exc:
+                return Response({"detail": str(exc)}, status=400)
+            return Response(payload)
         if export_format == "csv":
             content = export_gstr3b_csv_rows(summary=summary, warnings=warnings)
             return _file_response("GSTR3B_Summary.csv", content, "text/csv")
