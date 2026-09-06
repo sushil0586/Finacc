@@ -12,6 +12,7 @@ from rest_framework.test import APIClient
 from Authentication.models import User
 from entity.models import Entity, EntityFinancialYear, EntityGstRegistration, GstRegistrationType, SubEntity, SubEntityGstRegistration
 from geography.models import Country, State
+from reports.gst_portal.error_codes import classify_whitebox_error, extract_whitebox_error_code, whitebox_error_resolution
 from reports.gst_portal.payloads import Gstr1WhiteboxPayloadBuilder, Gstr3bWhiteboxPayloadBuilder, build_gstr1_retfile_payload, ret_period_from_date, ret_period_from_scope
 from reports.gst_portal.scope import resolve_gst_portal_registration_scope
 from reports.gst_portal.whitebox import WhiteboxConfigurationError, WhiteboxContext, WhiteboxGstClient, WhiteboxRequestError, WhiteboxResponse, redacted_whitebox_snapshot
@@ -245,6 +246,29 @@ class GstPortalScopeTests(TestCase):
         self.assertEqual(scope.shared_subentity_ids, ())
 
 
+class WhiteboxErrorCodeMappingTests(TestCase):
+    def test_extracts_codes_from_nested_top_level_and_message_shapes(self):
+        self.assertEqual(extract_whitebox_error_code({"error": {"errorCode": "ret191112"}}), "RET191112")
+        self.assertEqual(extract_whitebox_error_code({"error_cd": "RET13509"}), "RET13509")
+        self.assertEqual(extract_whitebox_error_code(message="Provider rejected with RT_FIL_31"), "RT_FIL_31")
+
+    def test_maps_whitebooks_documented_codes_to_operator_categories(self):
+        cases = {
+            "RET191112": "pos_or_tax_mismatch",
+            "RET191150": "pos_or_tax_mismatch",
+            "RET191190": "duplicate_document",
+            "RET13509": "signature_evc",
+            "RET191194": "hsn_uqc_rate",
+            "RTN_15": "provider_processing",
+            "AUTH151": "authentication",
+        }
+        for code, expected_category in cases.items():
+            with self.subTest(code=code):
+                category = classify_whitebox_error(provider_code=code)
+                self.assertEqual(category, expected_category)
+                self.assertTrue(whitebox_error_resolution(category))
+
+
 @override_settings(
     WHITEBOX_GST_BASE_URL="https://whitebox.example.test",
     WHITEBOX_GST_CLIENT_ID="client",
@@ -309,6 +333,24 @@ class WhiteboxGstClientTests(TestCase):
             client.request_otp(context=WhiteboxContext(email="gst@example.com"))
 
         self.assertIn("AUTH403: Session limit reached", str(ctx.exception))
+        self.assertEqual(ctx.exception.error_code, "AUTH403")
+
+    def test_client_extracts_provider_code_from_top_level_error_payload(self):
+        response = Mock(status_code=200)
+        response.headers = {}
+        response.json.return_value = {"status_cd": "0", "errorCode": "RET191112", "message": "Do enter the correct State code in POS."}
+        session = Mock()
+        session.request.return_value = response
+        client = WhiteboxGstClient(session=session)
+
+        with self.assertRaises(WhiteboxRequestError) as ctx:
+            client.save_gstr1(
+                context=WhiteboxContext(email="gst@example.com", gstin="27AAAAA1111A1Z1", gst_username="GSTUSER"),
+                ret_period="082026",
+                payload={},
+            )
+
+        self.assertEqual(ctx.exception.error_code, "RET191112")
 
     def test_proceed_to_file_falls_back_to_legacy_endpoint_when_new_endpoint_is_unavailable(self):
         not_found = Mock(status_code=404)
@@ -610,6 +652,41 @@ class GstPortalPreviewExportAPITests(TestCase):
         session = GstPortalSession.objects.get()
         self.assertEqual(session.status, GstPortalSession.Status.FAILED)
 
+    @override_settings(WHITEBOOKS_CONTACT_EMAIL="ops@example.com", WHITEBOOKS_GST_USERNAME="GSTUSER")
+    @patch("reports.gst_portal.services.WhiteboxGstClient")
+    def test_gst_portal_request_otp_returns_structured_session_limit_error(self, client_class):
+        fake_client = Mock()
+        fake_client.request_otp.side_effect = WhiteboxRequestError(
+            status_code=None,
+            message="AUTH403: Maximum session allowed for user with this GSP account exceeded.",
+            response_payload={
+                "status_cd": "0",
+                "error": {
+                    "errorCode": "AUTH403",
+                    "errorMessage": "Maximum session allowed for user with this GSP account exceeded.",
+                },
+            },
+            error_code="AUTH403",
+        )
+        client_class.return_value = fake_client
+
+        response = self.client.post(
+            reverse("reports_api:gst-portal-auth-request-otp"),
+            {
+                "entity": self.entity.id,
+                "subentity": self.branch.id,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["provider"], "whitebox")
+        self.assertEqual(response.data["provider_code"], "AUTH403")
+        self.assertEqual(response.data["category"], "session_limit")
+        self.assertIn("session", response.data["resolution"].lower())
+        session = GstPortalSession.objects.get()
+        self.assertEqual(session.status, GstPortalSession.Status.FAILED)
+
     def test_gst_portal_save_is_blocked_until_whitebox_is_configured_and_marks_run_failed(self):
         prepared = self.client.post(
             reverse("reports_api:gst-portal-filing-prepare"),
@@ -700,6 +777,42 @@ class GstPortalPreviewExportAPITests(TestCase):
         self.assertEqual(verified.data["status"], GstPortalSession.Status.AUTHENTICATED)
         self.assertEqual(verified.data["last_response"]["auth_token"], "***redacted***")
         fake_client.auth_token.assert_called_once()
+
+    @override_settings(WHITEBOOKS_CONTACT_EMAIL="ops@example.com", WHITEBOOKS_GST_USERNAME="GSTUSER")
+    @patch("reports.gst_portal.services.WhiteboxGstClient")
+    def test_gst_portal_logout_marks_session_logged_out(self, client_class):
+        fake_client = Mock()
+        fake_client.logout.return_value = WhiteboxResponse(status_code=200, payload={"status_cd": "1"}, txn="LOGOUT-TXN")
+        client_class.return_value = fake_client
+        session = GstPortalSession.objects.create(
+            provider="whitebox",
+            entity=self.entity,
+            subentity=self.branch,
+            gstin="27AAAAA1111A1Z1",
+            state_cd="27",
+            gst_username="GSTUSER",
+            email="ops@example.com",
+            ip_address="203.0.113.10",
+            txn="AUTH-TXN",
+            status=GstPortalSession.Status.AUTHENTICATED,
+        )
+
+        response = self.client.post(
+            reverse("reports_api:gst-portal-auth-logout"),
+            {
+                "entity": self.entity.id,
+                "session_id": session.id,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["status"], GstPortalSession.Status.LOGGED_OUT)
+        session.refresh_from_db()
+        self.assertEqual(session.status, GstPortalSession.Status.LOGGED_OUT)
+        self.assertEqual(session.txn, "LOGOUT-TXN")
+        context = fake_client.logout.call_args.kwargs["context"]
+        self.assertEqual(context.txn, "AUTH-TXN")
 
     @override_settings(WHITEBOOKS_CONTACT_EMAIL="ops@example.com", WHITEBOOKS_GST_USERNAME="")
     @patch("reports.gst_portal.services.WhiteboxGstClient")

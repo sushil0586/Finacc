@@ -12,6 +12,7 @@ from catalog.models import ProductBulkJob
 from entity.models import Entity, EntityFinancialYear, SubEntity
 from financial.models import account
 from numbering.models import DocumentNumberSeries
+from rbac.models import Permission, Role, RolePermission, UserRoleAssignment
 from sales.models import SalesInvoiceHeader, SalesSettings
 from sales.serializers.sales_ar import CustomerSettlementCreateInputSerializer
 from sales.serializers.sales_charge_serializers import SalesChargeLineSerializer, SalesChargeTypeSerializer
@@ -27,6 +28,34 @@ from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
 User = get_user_model()
+
+
+class SalesBulkPrintManifestTests(TestCase):
+    def test_header_only_invoice_print_endpoint_does_not_require_goods_lines(self):
+        view = SalesBulkPrintJobListCreateAPIView()
+        header_only = SimpleNamespace(
+            id=41,
+            doc_type=SalesInvoiceHeader.DocType.TAX_INVOICE,
+            status=SalesInvoiceHeader.Status.POSTED,
+            doc_no=41,
+            invoice_number="LEGACY-41",
+            bill_date=None,
+            customer_name="Legacy Customer",
+            grand_total=100,
+            _has_service=False,
+            _has_goods=False,
+        )
+        goods = SimpleNamespace(**{**header_only.__dict__, "id": 42, "invoice_number": "GOODS-42", "_has_goods": True})
+
+        manifest = view._build_manifest(
+            [header_only, goods],
+            entity_id=1,
+            entityfinid_id=2,
+            subentity_id=3,
+        )
+
+        self.assertNotIn("line_mode=goods", manifest[0]["print_endpoint"])
+        self.assertIn("line_mode=goods", manifest[1]["print_endpoint"])
 
 
 class SalesApiTestBase(TestCase):
@@ -333,8 +362,8 @@ class SalesInvoiceEntitlementApiTests(SalesApiTestBase):
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(resp.data["feature_code"], SubscriptionLimitCodes.FEATURE_SALES)
 
-    @patch("sales.views.sales_bulk_print_views.EffectivePermissionService.permission_codes_for_user")
-    @patch("sales.views.sales_bulk_print_views.EffectivePermissionService.entity_for_user")
+    @patch("sales.views.rbac.EffectivePermissionService.permission_codes_for_user")
+    @patch("sales.views.rbac.EffectivePermissionService.entity_for_user")
     def test_bulk_print_job_create_is_blocked_when_sales_feature_disabled(
         self,
         mock_entity_for_user,
@@ -343,7 +372,7 @@ class SalesInvoiceEntitlementApiTests(SalesApiTestBase):
         entity, subentity, entityfinid = self._build_sales_entitlement_scope()
 
         mock_entity_for_user.return_value = entity
-        mock_codes.return_value = {"sales.invoice.view"}
+        mock_codes.return_value = {"sales.invoice.print"}
 
         factory = APIRequestFactory()
         request = factory.post(
@@ -362,8 +391,79 @@ class SalesInvoiceEntitlementApiTests(SalesApiTestBase):
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(resp.data["feature_code"], SubscriptionLimitCodes.FEATURE_SALES)
 
-    @patch("sales.views.sales_bulk_print_views.EffectivePermissionService.permission_codes_for_user")
-    @patch("sales.views.sales_bulk_print_views.EffectivePermissionService.entity_for_user")
+    @patch("sales.views.rbac.EffectivePermissionService.permission_codes_for_user")
+    @patch("sales.views.rbac.EffectivePermissionService.entity_for_user")
+    def test_bulk_print_job_create_requires_print_permission(
+        self,
+        mock_entity_for_user,
+        mock_codes,
+    ):
+        entity, subentity, entityfinid = self._build_sales_entitlement_scope()
+        sales_limit = SubscriptionService.ensure_active_subscription(
+            customer_account=entity.customer_account
+        ).plan.limits.get(key=SubscriptionLimitCodes.FEATURE_SALES)
+        sales_limit.bool_value = True
+        sales_limit.save(update_fields=["bool_value", "updated_at"])
+
+        mock_entity_for_user.return_value = entity
+        mock_codes.return_value = {"sales.invoice.view"}
+
+        factory = APIRequestFactory()
+        request = factory.post(
+            "/api/sales/bulk-print/jobs/",
+            {
+                "entity_id": entity.id,
+                "entityfinid": entityfinid.id,
+                "subentity_id": subentity.id,
+                "scope": {"doc_types": ["sale_invoice"]},
+            },
+            format="json",
+        )
+        force_authenticate(request, user=self.user)
+        resp = SalesBulkPrintJobListCreateAPIView.as_view()(request)
+
+        self.assertEqual(resp.status_code, 403)
+
+    def test_bulk_print_honors_branch_scoped_print_assignment(self):
+        entity, allowed_branch, entityfinid = self._build_sales_entitlement_scope()
+        denied_branch = SubEntity.objects.create(entity=entity, subentityname="Restricted Branch")
+        sales_limit = SubscriptionService.ensure_active_subscription(
+            customer_account=entity.customer_account
+        ).plan.limits.get(key=SubscriptionLimitCodes.FEATURE_SALES)
+        sales_limit.bool_value = True
+        sales_limit.save(update_fields=["bool_value", "updated_at"])
+
+        role = Role.objects.create(
+            entity=entity,
+            name="Branch Invoice Printer",
+            code=f"branch_invoice_printer_{entity.id}",
+        )
+        permission = Permission.objects.get(code="sales.invoice.print")
+        RolePermission.objects.create(role=role, permission=permission)
+        UserRoleAssignment.objects.create(
+            user=self.user,
+            entity=entity,
+            role=role,
+            subentity=allowed_branch,
+            is_primary=False,
+        )
+
+        allowed = self.client.post(
+            f"/api/sales/bulk-print/jobs/?entity_id={entity.id}&entityfinid={entityfinid.id}&subentity_id={allowed_branch.id}",
+            {"scope": {"doc_types": ["sale_invoice"]}},
+            format="json",
+        )
+        denied = self.client.post(
+            f"/api/sales/bulk-print/jobs/?entity_id={entity.id}&entityfinid={entityfinid.id}&subentity_id={denied_branch.id}",
+            {"scope": {"doc_types": ["sale_invoice"]}},
+            format="json",
+        )
+
+        self.assertEqual(allowed.status_code, 201)
+        self.assertEqual(denied.status_code, 403)
+
+    @patch("sales.views.rbac.EffectivePermissionService.permission_codes_for_user")
+    @patch("sales.views.rbac.EffectivePermissionService.entity_for_user")
     def test_bulk_print_job_detail_is_blocked_when_sales_feature_disabled(
         self,
         mock_entity_for_user,
@@ -389,7 +489,7 @@ class SalesInvoiceEntitlementApiTests(SalesApiTestBase):
         )
 
         mock_entity_for_user.return_value = entity
-        mock_codes.return_value = {"sales.invoice.view"}
+        mock_codes.return_value = {"sales.invoice.print"}
 
         factory = APIRequestFactory()
         request = factory.get(
@@ -401,8 +501,8 @@ class SalesInvoiceEntitlementApiTests(SalesApiTestBase):
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(resp.data["feature_code"], SubscriptionLimitCodes.FEATURE_SALES)
 
-    @patch("sales.views.sales_bulk_print_views.EffectivePermissionService.permission_codes_for_user")
-    @patch("sales.views.sales_bulk_print_views.EffectivePermissionService.entity_for_user")
+    @patch("sales.views.rbac.EffectivePermissionService.permission_codes_for_user")
+    @patch("sales.views.rbac.EffectivePermissionService.entity_for_user")
     def test_bulk_print_job_download_is_blocked_when_sales_feature_disabled(
         self,
         mock_entity_for_user,
@@ -428,7 +528,7 @@ class SalesInvoiceEntitlementApiTests(SalesApiTestBase):
         )
 
         mock_entity_for_user.return_value = entity
-        mock_codes.return_value = {"sales.invoice.view"}
+        mock_codes.return_value = {"sales.invoice.print"}
 
         factory = APIRequestFactory()
         request = factory.get(

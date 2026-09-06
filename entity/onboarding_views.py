@@ -1,3 +1,4 @@
+from django.db import IntegrityError
 from rest_framework import permissions, status
 from rest_framework.exceptions import ValidationError
 from rest_framework.generics import get_object_or_404
@@ -23,6 +24,14 @@ from geography.models import City, Country, District, State
 from helpers.utils.gst_api import get_gst_details
 from sales.models.mastergst_models import MasterGSTEnvironment, MasterGSTServiceScope
 from subscriptions.services import SubscriptionService
+
+
+def _raise_onboarding_integrity_validation(exc):
+    if "uq_entity_year_code" in str(exc):
+        raise ValidationError(
+            {"financial_years": ["That financial year already exists for this entity. Use a different date range."]}
+        ) from exc
+    raise exc
 
 
 def _entity_primary_gst(entity):
@@ -87,7 +96,10 @@ class EntityOnboardingCreateAPIView(APIView):
         serializer = EntityOnboardingCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        result = EntityOnboardingService.create_entity(actor=request.user, payload=serializer.validated_data)
+        try:
+            result = EntityOnboardingService.create_entity(actor=request.user, payload=serializer.validated_data)
+        except IntegrityError as exc:
+            _raise_onboarding_integrity_validation(exc)
         entity = result["entity"]
         output = EntityOnboardingResponseSerializer(_build_onboarding_payload(entity, result))
         return Response(output.data, status=status.HTTP_201_CREATED)
@@ -113,13 +125,20 @@ class EntityOnboardingDetailAPIView(APIView):
 
     def _update(self, request, pk, partial):
         entity = get_object_or_404(Entity, pk=pk)
-        serializer = EntityOnboardingUpdateSerializer(data=request.data, partial=partial)
-        serializer.is_valid(raise_exception=True)
-        payload = EntityOnboardingService.update_entity(
-            actor=request.user,
-            entity=entity,
-            payload=serializer.validated_data,
+        serializer = EntityOnboardingUpdateSerializer(
+            data=request.data,
+            partial=partial,
+            context={"request": request, "entity": entity},
         )
+        serializer.is_valid(raise_exception=True)
+        try:
+            payload = EntityOnboardingService.update_entity(
+                actor=request.user,
+                entity=entity,
+                payload=serializer.validated_data,
+            )
+        except IntegrityError as exc:
+            _raise_onboarding_integrity_validation(exc)
         output = EntityOnboardingDetailResponseSerializer(payload)
         return Response(output.data, status=status.HTTP_200_OK)
 

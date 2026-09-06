@@ -10,6 +10,7 @@ from rest_framework.views import APIView
 
 from core.entitlements import ScopedEntitlementMixin
 from reports.api.report_permissions import assert_any_report_permission
+from reports.gst_portal.error_codes import classify_whitebox_error, whitebox_error_resolution
 from reports.gst_portal.services import GstPortalService
 from reports.gst_portal.whitebox import WhiteboxConfigurationError, WhiteboxRequestError
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
@@ -160,7 +161,7 @@ class GstPortalOtpRequestAPIView(GstPortalScopedAPIView):
                 user=request.user,
             )
         except (ValueError, WhiteboxConfigurationError, WhiteboxRequestError) as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            return _known_error_response(exc)
         except LookupError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_404_NOT_FOUND)
         except APIException:
@@ -184,13 +185,35 @@ class GstPortalOtpVerifyAPIView(GstPortalScopedAPIView):
                 user=request.user,
             )
         except (ValueError, WhiteboxConfigurationError, WhiteboxRequestError) as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            return _known_error_response(exc)
         except LookupError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_404_NOT_FOUND)
         except APIException:
             raise
         except Exception as exc:
             return _unexpected_error_response(exc, action="verify GST portal OTP")
+        return Response(result, status=status.HTTP_200_OK)
+
+
+class GstPortalOtpLogoutAPIView(GstPortalScopedAPIView):
+    def post(self, request):
+        payload = request.data or {}
+        try:
+            entity_id, _, _ = self._enforce(request, payload=payload, file_permission=True)
+            session_id = _required_int(payload.get("session_id"), "session_id")
+            result = self.service_class().logout_session(
+                session_id=session_id,
+                entity_id=entity_id,
+                user=request.user,
+            )
+        except (ValueError, WhiteboxConfigurationError, WhiteboxRequestError) as exc:
+            return _known_error_response(exc)
+        except LookupError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+        except APIException:
+            raise
+        except Exception as exc:
+            return _unexpected_error_response(exc, action="logout GST portal session")
         return Response(result, status=status.HTTP_200_OK)
 
 
@@ -212,7 +235,7 @@ class GstPortalFilingSaveAPIView(GstPortalScopedAPIView):
                 user=request.user,
             )
         except (ValueError, WhiteboxConfigurationError, WhiteboxRequestError) as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            return _known_error_response(exc)
         except LookupError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_404_NOT_FOUND)
         except APIException:
@@ -241,7 +264,7 @@ class GstPortalFilingPortalSummaryAPIView(GstPortalScopedAPIView):
                 user=request.user,
             )
         except (ValueError, WhiteboxConfigurationError, WhiteboxRequestError) as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            return _known_error_response(exc)
         except LookupError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_404_NOT_FOUND)
         except APIException:
@@ -269,7 +292,7 @@ class GstPortalFilingProceedAPIView(GstPortalScopedAPIView):
                 user=request.user,
             )
         except (ValueError, WhiteboxConfigurationError, WhiteboxRequestError) as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            return _known_error_response(exc)
         except LookupError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_404_NOT_FOUND)
         except APIException:
@@ -300,7 +323,7 @@ class GstPortalFilingRequestEvcAPIView(GstPortalScopedAPIView):
                 user=request.user,
             )
         except (ValueError, WhiteboxConfigurationError, WhiteboxRequestError) as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            return _known_error_response(exc)
         except LookupError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_404_NOT_FOUND)
         except APIException:
@@ -332,7 +355,7 @@ class GstPortalFilingEvcFileAPIView(GstPortalScopedAPIView):
                 user=request.user,
             )
         except (ValueError, WhiteboxConfigurationError, WhiteboxRequestError) as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            return _known_error_response(exc)
         except LookupError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_404_NOT_FOUND)
         except APIException:
@@ -361,7 +384,7 @@ class GstPortalFilingPollStatusAPIView(GstPortalScopedAPIView):
                 user=request.user,
             )
         except (ValueError, WhiteboxConfigurationError, WhiteboxRequestError) as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            return _known_error_response(exc)
         except LookupError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_404_NOT_FOUND)
         except APIException:
@@ -395,6 +418,40 @@ def _optional_int(value, field: str) -> int | None:
     if parsed <= 0:
         raise ValueError(f"{field} must be a positive integer.")
     return parsed
+
+
+def _known_error_response(exc: Exception) -> Response:
+    if isinstance(exc, WhiteboxRequestError):
+        provider_code = str(getattr(exc, "error_code", "") or "").strip()
+        category = classify_whitebox_error(provider_code=provider_code, message=str(exc))
+        payload = {
+            "detail": str(exc),
+            "provider": "whitebox",
+            "provider_code": provider_code,
+            "category": category,
+            "resolution": whitebox_error_resolution(category),
+        }
+        if getattr(exc, "response_payload", None) is not None:
+            payload["provider_response"] = exc.response_payload
+        return Response(payload, status=status.HTTP_400_BAD_REQUEST)
+    if isinstance(exc, WhiteboxConfigurationError):
+        return Response(
+            {
+                "detail": str(exc),
+                "provider": "whitebox",
+                "category": "configuration",
+                "resolution": whitebox_error_resolution("configuration"),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    return Response(
+        {
+            "detail": str(exc),
+            "category": "validation",
+            "resolution": whitebox_error_resolution("validation"),
+        },
+        status=status.HTTP_400_BAD_REQUEST,
+    )
 
 
 def _unexpected_error_response(exc: Exception, *, action: str) -> Response:

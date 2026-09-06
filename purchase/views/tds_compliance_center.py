@@ -1871,6 +1871,18 @@ class PurchaseTdsComplianceCenterExportAPIView(PurchaseTdsComplianceCenterAPIVie
             )
         tab_id = str(request.query_params.get("tab") or "dashboard").strip()
         return_tab = str(request.query_params.get("return_tab") or "26q").strip().lower()
+
+        # A single-tab export does not need every workspace dataset. Keep the
+        # CA pack above comprehensive, while limiting ordinary exports to the
+        # selected table so large tenants do not repeat unrelated builders.
+        query_params = request._request.GET.copy()
+        query_params["include_datasets"] = "0"
+        query_params["include_return_datasets"] = "0"
+        query_params["tabs"] = tab_id
+        if tab_id == "return-filing":
+            query_params["return_tabs"] = return_tab
+        request._request.GET = query_params
+
         selected_columns = [
             value.strip()
             for value in str(request.query_params.get("columns") or "").split(",")

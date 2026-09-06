@@ -76,9 +76,19 @@ class Gstr9ReportService:
         table_6 = self._build_table_6(scope, {"code": "TABLE_6", "label": "Input Tax Credit Availed"})
         table_7 = self._build_table_7(scope, {"code": "TABLE_7", "label": "ITC Reversed and Ineligible"})
         table_8 = self._build_table_8(scope, {"code": "TABLE_8", "label": "ITC Reconciliation"})
-        table_9 = self._build_table_9(scope, {"code": "TABLE_9", "label": "Tax Paid and Payable"})
+        gstr3b_summary = self._build_gstr3b_summary(scope)
+        table_9 = self._build_table_9(
+            scope,
+            {"code": "TABLE_9", "label": "Tax Paid and Payable"},
+            table_4=table_4,
+            gstr3b_summary=gstr3b_summary,
+        )
         table_10_14 = self._build_table_10_14(scope, {"code": "TABLE_10_14", "label": "Amendments and Adjustments"})
-        table_15_19 = self._build_table_15_19(scope, {"code": "TABLE_15_19", "label": "Demands, Refunds and HSN"})
+        table_15_19 = self._build_table_15_19(
+            scope,
+            {"code": "TABLE_15_19", "label": "Demands, Refunds and HSN"},
+            table_9=table_9,
+        )
         table_4_total_tax = Decimal(table_4["rows"][-1]["total_tax"] or ZERO)
         table_9_payable = Decimal(table_9["rows"][0]["total_tax"] or ZERO)
         if table_4_total_tax != table_9_payable:
@@ -109,17 +119,6 @@ class Gstr9ReportService:
                 )
             )
 
-        from_date, to_date, effective_entityfinid_id = self._resolve_date_window(scope)
-        gstr3b_scope = Gstr3bSummaryService().build_scope(
-            {
-                "entity": scope.entity_id,
-                "entityfinid": effective_entityfinid_id,
-                "subentity": scope.subentity_id,
-                "from_date": from_date,
-                "to_date": to_date,
-            }
-        )
-        gstr3b_summary = Gstr3bSummaryService().build(gstr3b_scope)
         gstr9_itc_available = Decimal(table_6["rows"][-1]["total_tax"] or ZERO)
         gstr3b_itc_available = Decimal(gstr3b_summary["section_4"]["itc_available"]["total_tax"] or ZERO)
         if gstr9_itc_available != gstr3b_itc_available:
@@ -432,11 +431,10 @@ class Gstr9ReportService:
             },
         }
 
-    def _build_table_9(self, scope, definition):
-        table_4 = self._build_table_4(scope, {"code": "TABLE_4", "label": "Supplies on Which Tax is Payable"})
-        payable_row = table_4["rows"][-1]
+    def _build_gstr3b_summary(self, scope):
         from_date, to_date, effective_entityfinid_id = self._resolve_date_window(scope)
-        gstr3b_scope = Gstr3bSummaryService().build_scope(
+        service = Gstr3bSummaryService()
+        gstr3b_scope = service.build_scope(
             {
                 "entity": scope.entity_id,
                 "entityfinid": effective_entityfinid_id,
@@ -445,7 +443,12 @@ class Gstr9ReportService:
                 "to_date": to_date,
             }
         )
-        gstr3b_summary = Gstr3bSummaryService().build(gstr3b_scope)
+        return service.build(gstr3b_scope)
+
+    def _build_table_9(self, scope, definition, *, table_4=None, gstr3b_summary=None):
+        table_4 = table_4 or self._build_table_4(scope, {"code": "TABLE_4", "label": "Supplies on Which Tax is Payable"})
+        payable_row = table_4["rows"][-1]
+        gstr3b_summary = gstr3b_summary or self._build_gstr3b_summary(scope)
         paid_cash = gstr3b_summary["section_6_1"]["tax_paid_cash"]
         paid_itc = gstr3b_summary["section_6_1"]["tax_paid_itc"]
         paid_total = self._add_bucket(paid_cash, paid_itc)
@@ -649,8 +652,8 @@ class Gstr9ReportService:
             },
         }
 
-    def _build_table_15_19(self, scope, definition):
-        table_9 = self._build_table_9(scope, {"code": "TABLE_9", "label": "Tax Paid and Payable"})
+    def _build_table_15_19(self, scope, definition, *, table_9=None):
+        table_9 = table_9 or self._build_table_9(scope, {"code": "TABLE_9", "label": "Tax Paid and Payable"})
         tax_summary_qs = self._sales_tax_summary_qs(scope).filter(
             taxability=SalesInvoiceHeader.Taxability.TAXABLE
         )

@@ -45,6 +45,16 @@ def _workflow_feedback(message: str) -> dict:
     }
 
 
+def _serialize_receipt_action(header: ReceiptVoucherHeader) -> dict:
+    return ReceiptVoucherHeaderSerializer(
+        header,
+        context={
+            "skip_preview_numbers": True,
+            "skip_navigation": True,
+        },
+    ).data
+
+
 def _duplicate_reference_warnings(voucher: ReceiptVoucherHeader) -> list[str]:
     reference = str(getattr(voucher, "reference_number", "") or "").strip()
     if not reference:
@@ -240,6 +250,16 @@ class ReceiptVoucherLookupAPIView(generics.GenericAPIView):
             raise ValidationError({"limit": "limit must be an integer."})
         return min(max(parsed, 1), 250)
 
+    def _parse_offset(self) -> int:
+        raw_offset = self.request.query_params.get("offset")
+        if raw_offset in (None, "", "null"):
+            return 0
+        try:
+            parsed = int(raw_offset)
+        except (TypeError, ValueError):
+            raise ValidationError({"offset": "offset must be an integer."})
+        return max(parsed, 0)
+
     def _base_queryset(self):
         entity_id, entityfinid_id, subentity_id = self._scope_ids()
         _require_receipt_permission(self.request.user, entity_id=entity_id, action="view")
@@ -261,7 +281,17 @@ class ReceiptVoucherLookupAPIView(generics.GenericAPIView):
         receipt_type = self.request.query_params.get("receipt_type")
         party_id = self.request.query_params.get("received_from")
         if status_value:
-            qs = qs.filter(status=status_value)
+            normalized_status = str(status_value).strip().upper()
+            posting_statuses = {
+                "DRAFT": ReceiptVoucherHeader.Status.DRAFT,
+                "CONFIRMED": ReceiptVoucherHeader.Status.CONFIRMED,
+                "POSTED": ReceiptVoucherHeader.Status.POSTED,
+                "CANCELLED": ReceiptVoucherHeader.Status.CANCELLED,
+            }
+            if normalized_status in posting_statuses:
+                qs = qs.filter(status=posting_statuses[normalized_status])
+            elif normalized_status in {"SUBMITTED", "APPROVED", "REJECTED"}:
+                qs = qs.filter(workflow_payload___approval_state__status=normalized_status)
         if receipt_type:
             qs = qs.filter(receipt_type=receipt_type)
         if party_id:
@@ -281,7 +311,8 @@ class ReceiptVoucherLookupAPIView(generics.GenericAPIView):
         queryset = self._base_queryset()
         total_count = queryset.count()
         limit = self._parse_limit()
-        items = queryset[:limit]
+        offset = self._parse_offset()
+        items = queryset[offset:offset + limit]
         serializer = self.get_serializer(items, many=True, context={"request": request})
         returned_count = len(serializer.data)
         return Response({
@@ -289,7 +320,8 @@ class ReceiptVoucherLookupAPIView(generics.GenericAPIView):
             "total_count": total_count,
             "returned_count": returned_count,
             "limit": limit,
-            "has_more": total_count > returned_count,
+            "offset": offset,
+            "has_more": total_count > offset + returned_count,
         })
 
 
@@ -375,7 +407,7 @@ class ReceiptVoucherConfirmAPIView(_ReceiptVoucherScopedActionMixin, APIView):
         return Response({
             "message": result.message,
             **_workflow_feedback(result.message),
-            "data": ReceiptVoucherHeaderSerializer(result.header).data,
+            "data": _serialize_receipt_action(result.header),
         })
 
 
@@ -392,7 +424,7 @@ class ReceiptVoucherPostAPIView(_ReceiptVoucherScopedActionMixin, APIView):
         return Response({
             "message": result.message,
             **_workflow_feedback(result.message),
-            "data": ReceiptVoucherHeaderSerializer(result.header).data,
+            "data": _serialize_receipt_action(result.header),
         })
 
 
@@ -453,7 +485,7 @@ class ReceiptVoucherCancelAPIView(_ReceiptVoucherScopedActionMixin, APIView):
         return Response({
             "message": result.message,
             **_workflow_feedback(result.message),
-            "data": ReceiptVoucherHeaderSerializer(result.header).data,
+            "data": _serialize_receipt_action(result.header),
         }, status=status.HTTP_200_OK)
 
 
@@ -470,7 +502,7 @@ class ReceiptVoucherUnpostAPIView(_ReceiptVoucherScopedActionMixin, APIView):
         return Response({
             "message": result.message,
             **_workflow_feedback(result.message),
-            "data": ReceiptVoucherHeaderSerializer(result.header).data,
+            "data": _serialize_receipt_action(result.header),
         }, status=status.HTTP_200_OK)
 
 

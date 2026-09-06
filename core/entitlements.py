@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from entity.models import Entity, EntityFinancialYear, SubEntity
 from subscriptions.services import SubscriptionService
+from rbac.services import EffectivePermissionService
 
 
 def enforce_operational_entity_access(
@@ -37,6 +38,9 @@ def enforce_operational_entity_access(
 
     if subentity_id and not SubEntity.objects.filter(id=subentity_id, entity_id=entity.id, isactive=True).exists():
         raise ValidationError({"subentity": "Subentity is not valid for this entity."})
+
+    if not EffectivePermissionService.has_scope_access(request.user, entity.id, subentity_id):
+        raise PermissionDenied("You do not have access to the requested branch scope.")
 
     return entity
 

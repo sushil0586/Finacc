@@ -1204,7 +1204,9 @@ def build_receivable_aging_report(
             customer_group=customer_group,
             region_id=region_id,
             currency=currency,
-            search=search,
+            # Invoice view search also supports invoice/document fields, which
+            # are unavailable until the open-item rows have been assembled.
+            search=None if normalized_view == "invoice" else search,
         )
     )
     customer_by_id = {c.id: c for c in customers}
@@ -1407,8 +1409,24 @@ def build_receivable_aging_report(
             invoice_rows = [row for row in invoice_rows if row["customer_id"] == customer_id]
         if overdue_only:
             invoice_rows = [row for row in invoice_rows if q2(row["bucket_1_30"]) + q2(row["bucket_31_60"]) + q2(row["bucket_61_90"]) + q2(row["bucket_90_plus"]) > ZERO]
+        normalized_search = str(search or "").strip().lower()
+        if normalized_search:
+            invoice_rows = [
+                row for row in invoice_rows
+                if normalized_search in " ".join(
+                    str(row.get(key) or "").lower()
+                    for key in (
+                        "invoice_number",
+                        "customer_name",
+                        "customer_code",
+                        "gstin",
+                        "branch",
+                    )
+                )
+            ]
         _sort_rows(invoice_rows, sort_by or "balance", sort_order)
         paged_rows, total_rows = _paginate(invoice_rows, page, page_size)
+        total_pages = max(1, (total_rows + page_size - 1) // page_size)
         for row in paged_rows:
             for key in ("invoice_amount", "received_amount", "balance", "current", "bucket_1_30", "bucket_31_60", "bucket_61_90", "bucket_90_plus", "credit_applied_fifo"):
                 row[key] = f"{q2(row[key]):.2f}"
@@ -1427,12 +1445,19 @@ def build_receivable_aging_report(
                 "bucket_61_90": f"{q2(sum((q2(r['bucket_61_90']) for r in invoice_rows), ZERO)):.2f}",
                 "bucket_90_plus": f"{q2(sum((q2(r['bucket_90_plus']) for r in invoice_rows), ZERO)):.2f}",
             },
-            "pagination": {"page": page, "page_size": page_size, "total_rows": total_rows},
+            "pagination": {
+                "page": page,
+                "page_size": page_size,
+                "total_rows": total_rows,
+                "total_records": total_rows,
+                "total_pages": total_pages,
+            },
             **_report_meta_payload(),
         }
 
     _sort_rows(summary_rows, sort_by or "outstanding", sort_order)
     paged_rows, total_rows = _paginate(summary_rows, page, page_size)
+    total_pages = max(1, (total_rows + page_size - 1) // page_size)
     for row in paged_rows:
         for key in ("outstanding", "overdue_amount", "current", "bucket_1_30", "bucket_31_60", "bucket_61_90", "bucket_90_plus", "unapplied_receipt"):
             row[key] = f"{q2(row[key]):.2f}"
@@ -1444,7 +1469,13 @@ def build_receivable_aging_report(
         "view": "summary",
         "rows": paged_rows,
         "totals": {k: f"{q2(v):.2f}" for k, v in summary_totals.items()},
-        "pagination": {"page": page, "page_size": page_size, "total_rows": total_rows},
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total_rows": total_rows,
+            "total_records": total_rows,
+            "total_pages": total_pages,
+        },
         "summary": {
             "customer_count": total_rows,
             "reporting_note": (

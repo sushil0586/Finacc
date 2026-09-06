@@ -189,7 +189,14 @@ class OnboardingFinancialYearSerializer(serializers.ModelSerializer):
         return super().to_internal_value(mutable)
 
     def validate(self, attrs):
+        finstartyear = attrs.get("finstartyear")
         finendyear = attrs.get("finendyear")
+        if finstartyear and finendyear:
+            start_year = finstartyear.year
+            end_year = finendyear.year
+            attrs["desc"] = f"FY {start_year}-{str(end_year)[-2:]}"
+            attrs["year_code"] = f"FY{start_year}-{str(end_year)[-2:]}"
+            attrs["assessment_year_label"] = f"AY{end_year}-{str(end_year + 1)[-2:]}"
         fy_end_date = finendyear.date() if finendyear else None
         is_open_year = (
             attrs.get("period_status", EntityFinancialYear.PeriodStatus.OPEN)
@@ -206,6 +213,38 @@ class OnboardingFinancialYearSerializer(serializers.ModelSerializer):
                 if attrs.get(field) == fy_end_date:
                     attrs[field] = None
         return attrs
+
+
+def _validate_financial_year_rows(value, *, entity=None):
+    row_errors = [{} for _ in value]
+    seen_codes = {}
+
+    for index, row in enumerate(value):
+        code = str(row.get("year_code") or "").strip().upper()
+        if not code:
+            continue
+
+        if code in seen_codes:
+            first_row = seen_codes[code] + 1
+            row_errors[index]["year_code"] = (
+                f"Financial year {code} duplicates row {first_row}. Use a different date range."
+            )
+        else:
+            seen_codes[code] = index
+
+        if entity is not None:
+            conflict = EntityFinancialYear.objects.filter(entity=entity, year_code__iexact=code)
+            row_id = int(row.get("id") or 0)
+            if row_id:
+                conflict = conflict.exclude(pk=row_id)
+            if conflict.exists():
+                row_errors[index]["year_code"] = (
+                    f"Financial year {code} already exists for this entity. Use a different date range."
+                )
+
+    if any(row_errors):
+        raise serializers.ValidationError(row_errors)
+    return value
 
 
 class OnboardingBankAccountSerializer(serializers.ModelSerializer):
@@ -476,7 +515,7 @@ class EntityOnboardingCreateSerializer(serializers.Serializer):
         active_count = sum(1 for row in value if row.get("isactive"))
         if active_count > 1:
             raise serializers.ValidationError("Only one financial year can be active.")
-        return value
+        return _validate_financial_year_rows(value)
 
 
 class EntityOnboardingUpdateSerializer(serializers.Serializer):
@@ -495,7 +534,7 @@ class EntityOnboardingUpdateSerializer(serializers.Serializer):
         active_count = sum(1 for row in value if row.get("isactive"))
         if active_count > 1:
             raise serializers.ValidationError("Only one financial year can be active.")
-        return value
+        return _validate_financial_year_rows(value, entity=self.context.get("entity"))
 
 
 class EntityOnboardingDetailResponseSerializer(serializers.Serializer):

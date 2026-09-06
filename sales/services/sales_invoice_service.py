@@ -33,6 +33,8 @@ from posting.common.location_resolver import resolve_posting_location_id
 from posting.services.posting_service import PostingService, JLInput, IMInput
 from geography.gst_state_codes import normalize_india_state_code, normalize_state_code_for_country
 from geography.models import State
+from core.gst_document_validation import gst_classification_error
+from financial.gstin import validate_financial_gstin
 
 
 
@@ -59,7 +61,6 @@ ZERO4 = Decimal("0.0000")
 Q2 = Decimal("0.01")
 Q4 = Decimal("0.0001")
 TOL = Decimal("0.02")
-GSTIN_RE = re.compile(r"^[0-9A-Z]{15}$")
 SALES_POLICY_DEFAULTS = {
     "allow_edit_confirmed": "on",
     "allow_unpost_posted": "on",
@@ -111,6 +112,41 @@ class Totals:
 
 
 class SalesInvoiceService:
+    @staticmethod
+    def _validate_gst_classification(
+        lines: list[SalesInvoiceLine],
+        charges: list[SalesChargeLine] | tuple = (),
+        *,
+        seller_gstin: str = "",
+    ) -> None:
+        if not str(seller_gstin or "").strip():
+            return
+        errors = []
+        for line in lines:
+            if int(getattr(line, "taxability", 0) or 0) != int(SalesInvoiceHeader.Taxability.TAXABLE):
+                continue
+            if abs(q2(getattr(line, "taxable_value", ZERO2))) <= ZERO2:
+                continue
+            error = gst_classification_error(
+                getattr(line, "hsn_sac_code", ""),
+                is_service=bool(getattr(line, "is_service", False)),
+            )
+            if error:
+                errors.append(f"Line {getattr(line, 'line_no', '?')}: {error}")
+        for charge in charges:
+            if int(getattr(charge, "taxability", 0) or 0) != int(SalesInvoiceHeader.Taxability.TAXABLE):
+                continue
+            if abs(q2(getattr(charge, "taxable_value", ZERO2))) <= ZERO2:
+                continue
+            error = gst_classification_error(
+                getattr(charge, "hsn_sac_code", ""),
+                is_service=bool(getattr(charge, "is_service", True)),
+            )
+            if error:
+                errors.append(f"Charge {getattr(charge, 'line_no', '?')}: {error}")
+        if errors:
+            raise ValidationError({"lines": errors})
+
     _BACKEND_CONTROLLED_HEADER_FIELDS = {
         "status",
         "doc_no",
@@ -955,8 +991,10 @@ class SalesInvoiceService:
 
     @classmethod
     def _is_valid_gstin(cls, gstin: Optional[str]) -> bool:
-        g = cls._normalize_gstin(gstin)
-        return bool(GSTIN_RE.fullmatch(g))
+        try:
+            return bool(validate_financial_gstin(gstin))
+        except DjangoValidationError:
+            return False
 
     @staticmethod
     def _state_code_from_state_obj(state_obj) -> str:
@@ -1400,7 +1438,10 @@ class SalesInvoiceService:
 
             # Consume numbers only at lifecycle transition. If a branch series is stale
             # because older issued invoices already used its next value, skip forward.
-            max_attempts = 100
+            # Legacy/imported invoices can leave the numbering series well behind
+            # issued document numbers. Keep advancing until a practical recovery
+            # ceiling instead of failing valid note creation after only 100 gaps.
+            max_attempts = 10_000
             for _ in range(max_attempts):
                 res = DocumentNumberService.allocate_final(
                     entity_id=header.entity_id,
@@ -1913,6 +1954,18 @@ class SalesInvoiceService:
         header.status = SalesInvoiceHeader.Status.DRAFT
 
         cls._prepare_header_for_persistence(header=header)
+        if original_invoice is not None and doc_type in (
+            int(SalesInvoiceHeader.DocType.CREDIT_NOTE),
+            int(SalesInvoiceHeader.DocType.DEBIT_NOTE),
+        ):
+            # Snapshot refresh uses the entity's current seller registration. A
+            # correction must retain the seller/POS scope of its source invoice.
+            header.seller_gstin = (original_invoice.seller_gstin or "").strip()
+            header.seller_state_code = (original_invoice.seller_state_code or "").strip()
+            header.place_of_supply_state_code = (
+                original_invoice.place_of_supply_state_code or ""
+            ).strip()
+            cls.derive_tax_regime(header)
 
         header.full_clean(exclude=None)
         header.save()
@@ -2075,6 +2128,15 @@ class SalesInvoiceService:
         )
 
         cls._prepare_header_for_persistence(header=header)
+        if original_invoice is not None and doc_type in (
+            int(SalesInvoiceHeader.DocType.CREDIT_NOTE),
+            int(SalesInvoiceHeader.DocType.DEBIT_NOTE),
+        ):
+            # Preserve the source seller snapshot while retaining an explicit
+            # POS selected for a draft-note tax-context correction.
+            header.seller_gstin = (original_invoice.seller_gstin or "").strip()
+            header.seller_state_code = (original_invoice.seller_state_code or "").strip()
+            cls.derive_tax_regime(header)
 
         header.full_clean(exclude=None)
         header.save()
@@ -2474,9 +2536,6 @@ class SalesInvoiceService:
             tax_total = q2(net - taxable)
         elif gst_rate > ZERO4:
             tax_total = q2(taxable * gst_rate / Decimal("100"))
-
-        if taxable > ZERO2 and not hsn:
-            raise ValidationError({"lines": [f"Line {line.line_no}: HSN/SAC is required when taxable value is present."]})
 
         cess_type = str(
             getattr(line, "cess_type", SalesInvoiceLine.CessType.NONE) or SalesInvoiceLine.CessType.NONE
@@ -3119,6 +3178,11 @@ class SalesInvoiceService:
             lines=lines,
             charges=charges,
         )
+        cls._validate_gst_classification(
+            lines,
+            charges,
+            seller_gstin=getattr(header, "seller_gstin", ""),
+        )
         cls._validate_b2b_gstin_requirements(header=header)
         if header.is_eway_applicable and not header.shipping_detail_id:
             raise ValueError("Shipping detail is required when E-Way is applicable.")
@@ -3239,6 +3303,11 @@ class SalesInvoiceService:
             settings_obj=settings_obj,
             lines=lines,
             charges=charges,
+        )
+        cls._validate_gst_classification(
+            lines,
+            charges,
+            seller_gstin=getattr(header, "seller_gstin", ""),
         )
         cls._validate_b2b_gstin_requirements(header=header)
         if header.is_eway_applicable and not header.shipping_detail_id:

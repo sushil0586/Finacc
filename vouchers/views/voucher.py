@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from django.db.models import Prefetch
+from django.db.models import Prefetch, Q
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, permissions, status
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -133,8 +133,51 @@ class VoucherListCreateAPIView(_VoucherScopeMixin, generics.ListCreateAPIView):
             qs = qs.filter(voucher_type=voucher_type)
         status_param = self.request.query_params.get("status")
         if status_param:
-            qs = qs.filter(status=status_param)
+            normalized_status = str(status_param).strip().upper()
+            posting_statuses = {
+                "DRAFT": VoucherHeader.Status.DRAFT,
+                "CONFIRMED": VoucherHeader.Status.CONFIRMED,
+                "POSTED": VoucherHeader.Status.POSTED,
+                "CANCELLED": VoucherHeader.Status.CANCELLED,
+            }
+            if normalized_status in posting_statuses:
+                qs = qs.filter(status=posting_statuses[normalized_status])
+            elif normalized_status in {"SUBMITTED", "APPROVED", "REJECTED"}:
+                qs = qs.filter(workflow_payload___approval_state__status=normalized_status)
+        search = str(self.request.query_params.get("search") or "").strip()
+        if search:
+            qs = qs.filter(
+                Q(voucher_code__icontains=search)
+                | Q(doc_code__icontains=search)
+                | Q(doc_no__icontains=search)
+                | Q(reference_number__icontains=search)
+                | Q(narration__icontains=search)
+                | Q(cash_bank_account__accountname__icontains=search)
+            )
         return qs
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.get_queryset()
+        if str(request.query_params.get("browser") or "").lower() != "true":
+            serializer = self.get_serializer(queryset, many=True)
+            return Response(serializer.data)
+
+        try:
+            limit = min(max(int(request.query_params.get("limit") or 100), 1), 250)
+            offset = max(int(request.query_params.get("offset") or 0), 0)
+        except (TypeError, ValueError):
+            raise ValidationError({"pagination": "limit and offset must be integers."})
+        total_count = queryset.count()
+        serializer = self.get_serializer(queryset[offset:offset + limit], many=True)
+        returned_count = len(serializer.data)
+        return Response({
+            "items": serializer.data,
+            "total_count": total_count,
+            "returned_count": returned_count,
+            "limit": limit,
+            "offset": offset,
+            "has_more": total_count > offset + returned_count,
+        })
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)

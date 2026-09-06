@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import csv
+import zipfile
+
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import permissions, status
@@ -7,6 +10,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from openpyxl.utils.exceptions import InvalidFileException
 
 from entity.models import Entity
 from invoice_import.models import ImportJob, ImportProfile
@@ -96,22 +100,25 @@ class InvoiceImportJobCreateAPIView(InvoiceImportBaseAPIView):
             profile = get_object_or_404(ImportProfile, pk=int(data["profile"]), entity=entity, module=self.module)
         upload = data["file"]
         fmt = "xlsx" if upload.name.lower().endswith(".xlsx") else "csv"
-        job = create_validated_job(
-            entity=entity,
-            user=request.user,
-            module=self.module,
-            mode=data["mode"],
-            detail_level=data["detail_level"],
-            stock_replay=bool(data["stock_replay"]),
-            compliance_mode=data["compliance_mode"],
-            withholding_mode=data["withholding_mode"],
-            document_number_strategy=data["document_number_strategy"],
-            source_system=data["source_system"],
-            filename=upload.name,
-            fmt=fmt,
-            file_bytes=upload.read(),
-            profile=profile,
-        )
+        try:
+            job = create_validated_job(
+                entity=entity,
+                user=request.user,
+                module=self.module,
+                mode=data["mode"],
+                detail_level=data["detail_level"],
+                stock_replay=bool(data["stock_replay"]),
+                compliance_mode=data["compliance_mode"],
+                withholding_mode=data["withholding_mode"],
+                document_number_strategy=data["document_number_strategy"],
+                source_system=data["source_system"],
+                filename=upload.name,
+                fmt=fmt,
+                file_bytes=upload.read(),
+                profile=profile,
+            )
+        except (csv.Error, InvalidFileException, OSError, UnicodeError, ValueError, zipfile.BadZipFile) as exc:
+            raise ValidationError({"file": f"Unable to read import file: {exc}"}) from exc
         return Response(
             {
                 "job": ImportJobSerializer(job).data,

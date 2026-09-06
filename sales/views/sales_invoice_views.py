@@ -56,6 +56,7 @@ def require_sales_request_permission(
     action: str,
     access_mode: str | None = None,
     feature_code: str | None = None,
+    subentity_id: int | None = None,
 ):
     entity = EffectivePermissionService.entity_for_user(user, int(entity_id))
     if entity is None:
@@ -72,7 +73,11 @@ def require_sales_request_permission(
         )
 
     permission_code = f"{_sales_permission_prefix(doc_type)}.{action}"
-    permission_codes = EffectivePermissionService.permission_codes_for_user(user, int(entity_id))
+    permission_codes = EffectivePermissionService.permission_codes_for_user(
+        user,
+        int(entity_id),
+        subentity_id=subentity_id,
+    )
     if permission_code not in permission_codes:
         if action == "update" and "sales.invoice.edit" in permission_codes:
             return

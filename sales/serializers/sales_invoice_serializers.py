@@ -4,7 +4,7 @@ from rest_framework import serializers
 from financial.models import ShippingDetails
 from withholding.models import WithholdingSection, WithholdingTaxType
 from decimal import Decimal
-import re
+from django.core.exceptions import ValidationError as DjangoValidationError
 
 
 from entity.models import Godown
@@ -20,6 +20,7 @@ from sales.services.sales_settings_service import SalesSettingsService
 from helpers.utils.document_actions import build_document_action_flags
 from helpers.utils.document_scope import assert_document_subentity_unchanged
 from financial.invoice_custom_fields_service import InvoiceCustomFieldService
+from financial.gstin import validate_financial_gstin
 from sales.serializers.sales_charge_serializers import SalesChargeLineSerializer
 from sales.serializers.sales_attachment import SalesAttachmentSerializer
 from sales.serializers.sales_compliance_serializers import (
@@ -349,7 +350,6 @@ class SalesInvoiceLookupSerializer(serializers.ModelSerializer):
 
 
 class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
-    GSTIN_RE = re.compile(r"^[0-9A-Z]{15}$")
     # nested
     lines = SalesInvoiceLineSerializer(many=True, required=False)
     charges = SalesChargeLineSerializer(many=True, required=False)
@@ -720,10 +720,10 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
 
         for field in ("customer_gstin", "seller_gstin", "ecm_gstin"):
             if field in attrs and attrs.get(field):
-                val = str(attrs[field]).strip().upper()
-                if not self.GSTIN_RE.fullmatch(val):
-                    raise serializers.ValidationError({field: "GSTIN must be 15 uppercase alphanumeric characters."})
-                attrs[field] = val
+                try:
+                    attrs[field] = validate_financial_gstin(attrs[field])
+                except DjangoValidationError:
+                    raise serializers.ValidationError({field: "Enter a valid GSTIN."})
 
         if ("einvoice_applicable_manual" in attrs or "eway_applicable_manual" in attrs) and not (attrs.get("compliance_override_reason") or "").strip():
             raise serializers.ValidationError({"compliance_override_reason": "Required when manual compliance override is provided."})

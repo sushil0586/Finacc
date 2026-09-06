@@ -482,7 +482,7 @@ class Gstr9ScaffoldAPITests(APITestCase):
             },
         },
     )
-    def test_validation_contract(self, _mock_gstr3b_build):
+    def test_validation_contract(self, mock_gstr3b_build):
         self._create_purchase_doc(
             doc_no=11,
             doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
@@ -496,6 +496,7 @@ class Gstr9ScaffoldAPITests(APITestCase):
         )
         response = self.client.get(self.validation_url, self.params)
         self.assertEqual(response.status_code, 200)
+        mock_gstr3b_build.assert_called_once()
         payload = response.json()
         self.assertIn("warnings", payload)
         self.assertEqual(payload["warning_count"], len(payload["warnings"]))

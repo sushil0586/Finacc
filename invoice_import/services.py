@@ -32,6 +32,7 @@ from sales.models import SalesInvoiceHeader, SalesInvoiceLine, SalesTaxSummary
 from sales.models.sales_ar import CustomerBillOpenItem
 from sales.services.sales_ar_service import q2 as ar_q2
 from sales.services.sales_invoice_service import SalesInvoiceService
+from core.gst_document_validation import gst_classification_error
 
 ZERO2 = Decimal("0.00")
 ZERO4 = Decimal("0.0000")
@@ -124,14 +125,17 @@ def _read_xlsx(content: bytes) -> list[dict[str, Any]]:
     return payload
 
 
-def _read_csv_zip(content: bytes) -> list[dict[str, Any]]:
-    with zipfile.ZipFile(io.BytesIO(content), "r") as zf:
-        lookup = {str(name).strip().lower(): name for name in zf.namelist()}
-        actual = lookup.get(f"{SHEET}.csv")
-        if not actual:
-            return []
-        data = zf.read(actual).decode("utf-8-sig")
-        return [dict(row) for row in csv.DictReader(io.StringIO(data)) if any((v or "").strip() for v in row.values())]
+def _read_csv(content: bytes) -> list[dict[str, Any]]:
+    if zipfile.is_zipfile(io.BytesIO(content)):
+        with zipfile.ZipFile(io.BytesIO(content), "r") as zf:
+            lookup = {str(name).strip().lower(): name for name in zf.namelist()}
+            actual = lookup.get(f"{SHEET}.csv")
+            if not actual:
+                return []
+            data = zf.read(actual).decode("utf-8-sig")
+    else:
+        data = content.decode("utf-8-sig")
+    return [dict(row) for row in csv.DictReader(io.StringIO(data)) if any((v or "").strip() for v in row.values())]
 
 
 def _write_xlsx(rows: list[dict[str, Any]], *, sheet_name: str = SHEET) -> bytes:
@@ -148,29 +152,34 @@ def _write_xlsx(rows: list[dict[str, Any]], *, sheet_name: str = SHEET) -> bytes
     return buff.getvalue()
 
 
+def _write_csv(rows: list[dict[str, Any]]) -> bytes:
+    stream = io.StringIO()
+    headers = list(rows[0].keys()) if rows else []
+    writer = csv.DictWriter(stream, fieldnames=headers)
+    if headers:
+        writer.writeheader()
+        writer.writerows(rows)
+    return stream.getvalue().encode("utf-8-sig")
+
+
 def _write_csv_zip(rows: list[dict[str, Any]], *, sheet_name: str = SHEET) -> bytes:
+    """Build the historical zipped-CSV format for backward compatibility."""
     buff = io.BytesIO()
     with zipfile.ZipFile(buff, "w", zipfile.ZIP_DEFLATED) as zf:
-        stream = io.StringIO()
-        headers = list(rows[0].keys()) if rows else []
-        writer = csv.DictWriter(stream, fieldnames=headers)
-        if headers:
-            writer.writeheader()
-            writer.writerows(rows)
-        zf.writestr(f"{sheet_name}.csv", stream.getvalue())
+        zf.writestr(f"{sheet_name}.csv", _write_csv(rows))
     return buff.getvalue()
 
 
 def _parse_rows(file_bytes: bytes, fmt: str) -> list[dict[str, Any]]:
     if fmt == ImportJob.FileFormat.XLSX:
         return _read_xlsx(file_bytes)
-    return _read_csv_zip(file_bytes)
+    return _read_csv(file_bytes)
 
 
 def _render_rows(rows: list[dict[str, Any]], fmt: str, *, sheet_name: str = SHEET) -> bytes:
     if fmt == ImportJob.FileFormat.XLSX:
         return _write_xlsx(rows, sheet_name=sheet_name)
-    return _write_csv_zip(rows, sheet_name=sheet_name)
+    return _write_csv(rows)
 
 
 def _normalized_key(value: Any) -> str:
@@ -551,7 +560,7 @@ def _validate_row(*, job: ImportJob, row: dict[str, Any], row_no: int) -> RowVal
     sales_place_of_supply_state_code = _normalize_text(
         row.get("place_of_supply_state_code") or row.get("place_of_supply_state") or sales_party_state_code
     )
-    sales_line_hsn_sac_code = _normalize_text(row.get("hsn_sac_code"))
+    line_hsn_sac_code = _normalize_text(row.get("hsn_sac_code"))
     try:
         sales_line_taxable_value = q2(_to_decimal(row.get("taxable_value"), default=ZERO2))
     except Exception as exc:
@@ -570,22 +579,43 @@ def _validate_row(*, job: ImportJob, row: dict[str, Any], row_no: int) -> RowVal
                 }
             )
 
-        if job.detail_level == ImportJob.DetailLevel.HEADER_PLUS_LINES and not sales_line_hsn_sac_code:
-            sales_line_hsn_sac_code = SalesInvoiceService._default_hsn_sac_code_for_product(
+        if job.detail_level == ImportJob.DetailLevel.HEADER_PLUS_LINES and not line_hsn_sac_code:
+            line_hsn_sac_code = SalesInvoiceService._default_hsn_sac_code_for_product(
                 product=product,
                 product_id=getattr(product, "id", None),
             )
-        if (
-            job.detail_level == ImportJob.DetailLevel.HEADER_PLUS_LINES
-            and sales_line_taxable_value > ZERO2
-            and not sales_line_hsn_sac_code
-        ):
-            errors.append(
-                {
-                    "field": "hsn_sac_code",
-                    "message": "hsn_sac_code is required for taxable sales import lines.",
-                }
-            )
+
+    if job.module == ImportJob.Module.PURCHASE and job.detail_level == ImportJob.DetailLevel.HEADER_PLUS_LINES and not line_hsn_sac_code:
+        line_hsn_sac_code = SalesInvoiceService._default_hsn_sac_code_for_product(
+            product=product,
+            product_id=getattr(product, "id", None),
+        )
+
+    line_taxability = _to_int(row.get("taxability")) or 1
+    purchase_supply_category = _to_int(row.get("supply_category")) or int(PurchaseInvoiceHeader.SupplyCategory.DOMESTIC)
+    purchase_reverse_charge_for_classification = _to_bool(row.get("is_reverse_charge"), default=False)
+    if job.module == ImportJob.Module.SALES:
+        classification_required = bool(_normalize_text(row.get("seller_gstin")))
+    else:
+        classification_required = (
+            bool(_normalize_text(row.get("party_gstin")))
+            or purchase_reverse_charge_for_classification
+            or purchase_supply_category in {
+                int(PurchaseInvoiceHeader.SupplyCategory.IMPORT_GOODS),
+                int(PurchaseInvoiceHeader.SupplyCategory.IMPORT_SERVICES),
+                int(PurchaseInvoiceHeader.SupplyCategory.SEZ),
+            }
+        )
+    if (
+        job.detail_level == ImportJob.DetailLevel.HEADER_PLUS_LINES
+        and int(status) in {2, 3}
+        and classification_required
+        and line_taxability == 1
+        and abs(sales_line_taxable_value) > ZERO2
+    ):
+        classification_error = gst_classification_error(line_hsn_sac_code, is_service=is_service)
+        if classification_error:
+            errors.append({"field": "hsn_sac_code", "message": classification_error})
 
     if job.detail_level == ImportJob.DetailLevel.HEADER_PLUS_LINES:
         if not is_service and product is None and job.stock_replay:
@@ -731,7 +761,7 @@ def _validate_row(*, job: ImportJob, row: dict[str, Any], row_no: int) -> RowVal
         "is_service": is_service,
         "purchase_behavior": _normalize_text(row.get("purchase_behavior")) or "inventory",
         "uom_id": _to_int(row.get("uom_id")),
-        "hsn_sac_code": sales_line_hsn_sac_code if job.module == ImportJob.Module.SALES else _normalize_text(row.get("hsn_sac_code")),
+        "hsn_sac_code": line_hsn_sac_code,
         "qty": str(q4(_to_decimal(row.get("qty"), default=ZERO4))),
         "free_qty": str(q4(_to_decimal(row.get("free_qty"), default=ZERO4))),
         "rate": str(_to_decimal(row.get("rate"), default=ZERO2)),
@@ -1450,6 +1480,7 @@ def _create_sales_lines(header: SalesInvoiceHeader, rows: list[ImportRow]) -> li
             discount_type=int(n.get("discount_type") or SalesInvoiceLine.DiscountType.NONE),
             discount_percent=Decimal(n.get("discount_percent") or "0"),
             discount_amount=Decimal(n.get("discount_amount") or "0"),
+            taxability=int(n.get("taxability") or SalesInvoiceHeader.Taxability.TAXABLE),
             gst_rate=Decimal(n.get("gst_rate") or "0"),
             cess_percent=Decimal(n.get("cess_percent") or "0"),
             taxable_value=Decimal(n.get("taxable_value") or "0"),
@@ -1512,7 +1543,7 @@ def _rebuild_sales_tax_summary(header: SalesInvoiceHeader) -> None:
     })
     for line in header.lines.all():
         key = (
-            int(header.taxability or SalesInvoiceHeader.Taxability.TAXABLE),
+            int(line.taxability or header.taxability or SalesInvoiceHeader.Taxability.TAXABLE),
             line.hsn_sac_code or "",
             bool(line.is_service),
             Decimal(line.gst_rate or 0),

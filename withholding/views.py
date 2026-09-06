@@ -3331,7 +3331,9 @@ def _build_tcs_27eq_snapshot(*, entity_id: int, fy: str, quarter: str) -> dict:
         TcsComputation.objects.select_related("party_account", "section")
         .prefetch_related("collections__deposit_allocations")
         .filter(entity_id=entity_id, fiscal_year__in=fy_candidates, quarter=quarter)
+        .exclude(status__in=[TcsComputation.Status.DRAFT, TcsComputation.Status.REVERSED])
     )
+    computations = _exclude_cancelled_documents(computations)
     deposits = TcsDeposit.objects.filter(entity_id=entity_id, financial_year__in=fy_candidates, month__in=months)
 
     total_base = q2(computations.aggregate(v=Sum("tcs_base_amount")).get("v") or Decimal("0.00"))

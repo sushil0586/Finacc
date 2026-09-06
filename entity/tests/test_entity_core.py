@@ -280,6 +280,41 @@ class EntityOnboardingTests(TestCase):
         self.assertIsNone(branch["district"])
         self.assertIsNone(branch["city"])
 
+    def test_onboarding_create_serializer_rejects_duplicate_financial_year_codes(self):
+        serializer = EntityOnboardingCreateSerializer(
+            data={
+                "entity": {"entityname": "Duplicate FY Entity"},
+                "financial_years": [
+                    {"year_code": "FY2026-27", "finstartyear": "2026-04-01", "finendyear": "2027-03-31", "isactive": True},
+                    {"year_code": "fy2026-27", "finstartyear": "2026-04-01", "finendyear": "2027-03-31", "isactive": False},
+                ],
+            }
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("duplicates row 1", str(serializer.errors["financial_years"][1]["year_code"][0]))
+
+    def test_onboarding_update_serializer_rejects_existing_financial_year_code(self):
+        entity = Entity.objects.create(entityname="Existing FY Entity", createdby=self.user)
+        existing = EntityFinancialYear.objects.create(
+            entity=entity,
+            year_code="FY2026-27",
+            finstartyear="2026-04-01",
+            finendyear="2027-03-31",
+            createdby=self.user,
+        )
+        serializer = EntityOnboardingUpdateSerializer(
+            data={
+                "financial_years": [
+                    {"id": existing.id + 1000, "year_code": "FY2026-27", "finstartyear": "2026-04-01", "finendyear": "2027-03-31", "isactive": True},
+                ]
+            },
+            context={"entity": entity},
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("already exists for this entity", str(serializer.errors["financial_years"][0]["year_code"][0]))
+
     def test_onboarding_create_accepts_all_branch_types_with_profiles_and_capabilities(self):
         branch_rows = [
             self._branch_row("Launch Head Office", "head_office", code="HO", is_head_office=True, sort_order=1),

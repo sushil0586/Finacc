@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Optional
 
 from django.db import transaction
@@ -33,6 +34,7 @@ from purchase.models.purchase_ap import VendorBillOpenItem
 # ✅ Numbering imports (your requirement)
 from numbering.services.document_number_service import DocumentNumberService
 from numbering.models import DocumentType
+from core.gst_document_validation import gst_classification_error
 
 
 @dataclass(frozen=True)
@@ -42,6 +44,53 @@ class ActionResult:
 
 
 class PurchaseInvoiceActions:
+    @staticmethod
+    def _validate_gst_classification(header: PurchaseInvoiceHeader) -> None:
+        vendor_is_registered = bool(str(getattr(header, "vendor_gstin", "") or "").strip())
+        is_reverse_charge = bool(getattr(header, "is_reverse_charge", False))
+        supply_category = int(
+            getattr(header, "supply_category", PurchaseInvoiceHeader.SupplyCategory.DOMESTIC)
+            or PurchaseInvoiceHeader.SupplyCategory.DOMESTIC
+        )
+        classification_required = (
+            vendor_is_registered
+            or is_reverse_charge
+            or supply_category in {
+                int(PurchaseInvoiceHeader.SupplyCategory.IMPORT_GOODS),
+                int(PurchaseInvoiceHeader.SupplyCategory.IMPORT_SERVICES),
+                int(PurchaseInvoiceHeader.SupplyCategory.SEZ),
+            }
+        )
+        if not classification_required:
+            return
+
+        errors = []
+        for line in header.lines.all():
+            if int(getattr(line, "taxability", 0) or 0) != int(header.Taxability.TAXABLE):
+                continue
+            if abs(Decimal(getattr(line, "taxable_value", 0) or 0)) <= 0:
+                continue
+            error = gst_classification_error(
+                getattr(line, "hsn_sac", ""),
+                is_service=bool(getattr(line, "is_service", False)),
+            )
+            if error:
+                errors.append(f"Line {getattr(line, 'line_no', '?')}: {error}")
+        charge_relation = getattr(header, "charges", None)
+        for charge in charge_relation.all() if charge_relation is not None else ():
+            if str(getattr(charge, "taxability", "")).strip().lower() != "taxable":
+                continue
+            if abs(Decimal(getattr(charge, "taxable_value", 0) or 0)) <= 0:
+                continue
+            error = gst_classification_error(
+                getattr(charge, "hsn_sac_code", ""),
+                is_service=bool(getattr(charge, "is_service", True)),
+            )
+            if error:
+                errors.append(f"Charge {getattr(charge, 'line_no', '?')}: {error}")
+        if errors:
+            raise ValueError({"lines": errors})
+
     @staticmethod
     def _doc_number_exists_in_scope(header: PurchaseInvoiceHeader, doc_no: int) -> bool:
         qs = PurchaseInvoiceHeader.objects.filter(
@@ -338,6 +387,8 @@ class PurchaseInvoiceActions:
         # ✅ Ensure tax summary is up-to-date
         PurchaseInvoiceService.rebuild_tax_summary(h)
 
+        PurchaseInvoiceActions._validate_gst_classification(h)
+
         # If it was already confirmed, keep it confirmed and just return
         if int(h.status) == int(Status.CONFIRMED):
             if confirmed_by_id and not h.confirmed_by_id:
@@ -387,6 +438,8 @@ class PurchaseInvoiceActions:
         PurchaseInvoiceActions._backfill_note_batch_fields_from_reference(h)
 
         PurchaseInvoiceService.rebuild_tax_summary(h)
+
+        PurchaseInvoiceActions._validate_gst_classification(h)
 
         policy = PurchaseSettingsService.get_policy(h.entity_id, h.subentity_id)
         lines = list(h.lines.all())

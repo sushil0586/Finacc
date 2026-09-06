@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import io
+import zipfile
 from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
@@ -17,7 +19,7 @@ from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubE
 from financial.services import apply_normalized_profile_payload, create_account_with_synced_ledger
 from invoice_import.models import ImportJob
 from invoice_import.models import ImportProfile
-from invoice_import.services import _write_csv_zip, commit_job, create_validated_job
+from invoice_import.services import _parse_rows, _render_rows, _write_csv_zip, commit_job, create_validated_job
 from numbering.services import ensure_document_type, ensure_series
 from invoice_import.views import (
     PurchaseInvoiceImportJobCommitAPIView,
@@ -44,6 +46,21 @@ from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 @override_settings(AUTH_PASSWORD_VALIDATORS=[])
 class InvoiceImportServiceTests(TestCase):
+    def test_plain_csv_round_trip_uses_real_csv_bytes(self):
+        rows = [{"legacy_source_key": "csv-1", "source_invoice_number": "CSV-001"}]
+
+        content = _render_rows(rows, ImportJob.FileFormat.CSV)
+
+        self.assertFalse(zipfile.is_zipfile(io.BytesIO(content)))
+        self.assertEqual(_parse_rows(content, ImportJob.FileFormat.CSV), rows)
+
+    def test_csv_parser_retains_legacy_zip_compatibility(self):
+        rows = [{"legacy_source_key": "legacy-zip-1", "source_invoice_number": "ZIP-001"}]
+
+        content = _write_csv_zip(rows)
+
+        self.assertEqual(_parse_rows(content, ImportJob.FileFormat.CSV), rows)
+
     def setUp(self):
         suffix = uuid4().hex[:8]
         self.user = User.objects.create_user(
@@ -1478,6 +1495,29 @@ class InvoiceImportAPIViewTests(InvoiceImportServiceTests):
                 request.GET[key] = str(value)
         force_authenticate(request, user=self.user)
         return request
+
+    @patch("invoice_import.views.require_purchase_request_permission")
+    def test_purchase_create_rejects_corrupt_xlsx_without_server_error(self, _mock_permission):
+        request = self._request(
+            "post",
+            "/api/purchase/legacy-import/jobs/",
+            data={
+                "entity": self.entity.id,
+                "mode": ImportJob.Mode.OUTSTANDING_ONLY,
+                "detail_level": ImportJob.DetailLevel.HEADER_ONLY,
+                "file": SimpleUploadedFile(
+                    "corrupt.xlsx",
+                    b"this is not an Excel workbook",
+                    content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ),
+            },
+            format="multipart",
+        )
+
+        response = PurchaseInvoiceImportJobCreateAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Unable to read import file", str(response.data["file"]))
 
     @patch("invoice_import.views.require_sales_request_permission")
     def test_sales_template_endpoint_returns_download(self, _mock_permission):

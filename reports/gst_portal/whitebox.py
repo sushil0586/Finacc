@@ -7,6 +7,8 @@ from uuid import uuid4
 import requests
 from django.conf import settings
 
+from reports.gst_portal.error_codes import extract_whitebox_error_code
+
 
 REDACTED = "***redacted***"
 SENSITIVE_KEYS = {"api_secret", "client_secret", "otp", "evc_otp", "evcotp", "authorization", "auth_token", "sek", "token", "session_key"}
@@ -17,10 +19,11 @@ class WhiteboxConfigurationError(RuntimeError):
 
 
 class WhiteboxRequestError(RuntimeError):
-    def __init__(self, *, status_code: int | None, message: str, response_payload: Any = None):
+    def __init__(self, *, status_code: int | None, message: str, response_payload: Any = None, error_code: str = ""):
         super().__init__(message)
         self.status_code = status_code
         self.response_payload = response_payload
+        self.error_code = error_code
 
 
 @dataclass(frozen=True)
@@ -194,11 +197,17 @@ class WhiteboxGstClient:
                 status_code=None,
                 message=f"Whitebox GST request could not be completed for {path}.",
                 response_payload={"error": str(exc)},
+                error_code="REQUEST_FAILED",
             ) from exc
         payload = self._response_payload(response)
         response_txn = str(response.headers.get("txn") or txn).strip()
         if response.status_code >= 400:
-            raise WhiteboxRequestError(status_code=response.status_code, message=_provider_error_message(payload, default=f"Whitebox GST request failed for {path}."), response_payload=payload)
+            raise WhiteboxRequestError(
+                status_code=response.status_code,
+                message=_provider_error_message(payload, default=f"Whitebox GST request failed for {path}."),
+                response_payload=payload,
+                error_code=_provider_error_code(payload),
+            )
         _raise_for_provider_error(payload, path=path)
         return WhiteboxResponse(status_code=response.status_code, payload=payload, txn=response_txn)
 
@@ -280,17 +289,23 @@ def _raise_for_provider_error(payload: Any, *, path: str):
         status_code=None,
         message=_provider_error_message(payload, default=f"Whitebox GST rejected the request for {path}."),
         response_payload=payload,
+        error_code=_provider_error_code(payload),
     )
+
+
+def _provider_error_code(payload: Any) -> str:
+    return extract_whitebox_error_code(payload)
 
 
 def _provider_error_message(payload: Any, *, default: str) -> str:
     if not isinstance(payload, dict):
         return default
     error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
-    error_code = str(error.get("error_cd") or error.get("errorCode") or "").strip()
+    error_code = extract_whitebox_error_code(payload)
     error_message = str(
         error.get("message")
         or error.get("errorMessage")
+        or payload.get("errorMessage")
         or payload.get("status_desc")
         or payload.get("message")
         or default

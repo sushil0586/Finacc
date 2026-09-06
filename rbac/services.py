@@ -36,6 +36,27 @@ class EffectivePermissionService:
         )
 
     @staticmethod
+    def has_scope_access(user, entity_id, subentity_id=None):
+        """Return whether active RBAC assignments cover the requested branch scope.
+
+        Entity-wide assignments cover every branch. When all assignments are
+        branch-scoped, callers must request one of those branches explicitly.
+        """
+        if RBACDevelopmentAccess.allow_all():
+            return True
+
+        assignments = EffectivePermissionService.active_assignments_queryset(user, entity_id)
+        if not assignments.exists():
+            # Entity membership remains the compatibility authority for owners
+            # and legacy users that have not been migrated to RBAC assignments.
+            return True
+        if assignments.filter(subentity__isnull=True).exists():
+            return True
+        if subentity_id is None:
+            return False
+        return assignments.filter(subentity_id=subentity_id).exists()
+
+    @staticmethod
     def role_summaries_for_user(user, entity_id):
         if RBACDevelopmentAccess.allow_all():
             return [
@@ -70,7 +91,7 @@ class EffectivePermissionService:
         return []
 
     @staticmethod
-    def permission_codes_for_user(user, entity_id, role_id=None):
+    def permission_codes_for_user(user, entity_id, role_id=None, subentity_id=None):
         if RBACDevelopmentAccess.allow_all():
             return set(
                 Permission.objects.filter(isactive=True).values_list("code", flat=True)
@@ -79,6 +100,8 @@ class EffectivePermissionService:
         assignments = EffectivePermissionService.active_assignments_queryset(user, entity_id).select_related("role")
         if role_id is not None:
             assignments = assignments.filter(role_id=role_id)
+        if subentity_id is not None:
+            assignments = assignments.filter(Q(subentity__isnull=True) | Q(subentity_id=subentity_id))
 
         role_ids = list(assignments.values_list("role_id", flat=True))
         if not role_ids:

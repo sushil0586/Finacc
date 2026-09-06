@@ -131,7 +131,15 @@ class _BulkPrintMixin:
             subentity_id = None
         return int(entity_id), entityfinid_id, subentity_id
 
-    def _require_doc_permissions(self, *, user, entity_id: int, doc_slugs: list[str]) -> None:
+    def _require_doc_permissions(
+        self,
+        *,
+        user,
+        entity_id: int,
+        doc_slugs: list[str],
+        action: str = "print",
+        subentity_id: int | None = None,
+    ) -> None:
         if not doc_slugs:
             doc_slugs = ["sale_invoice"]
         checked_doc_types: set[int] = set()
@@ -143,20 +151,29 @@ class _BulkPrintMixin:
                 user=user,
                 entity_id=entity_id,
                 doc_type=doc_type,
-                action="view",
+                action=action,
                 feature_code=SubscriptionLimitCodes.FEATURE_SALES,
+                subentity_id=subentity_id,
             )
             checked_doc_types.add(doc_type)
 
     def _require_job_permissions(self, *, user, entity_id: int, job: ProductBulkJob) -> None:
         payload = self._as_dict(job.payload)
         manifest = self._as_list(payload.get("manifest"))
+        scope = self._as_dict(payload.get("scope"))
+        subentity_id = self._as_int(scope.get("subentity_id"), "subentity_id", required=False)
         doc_slugs = []
         for row in manifest:
             doc_slug = str(self._as_dict(row).get("doc_type") or "").strip()
             if doc_slug:
                 doc_slugs.append(doc_slug)
-        self._require_doc_permissions(user=user, entity_id=entity_id, doc_slugs=doc_slugs)
+        self._require_doc_permissions(
+            user=user,
+            entity_id=entity_id,
+            doc_slugs=doc_slugs,
+            action="print",
+            subentity_id=subentity_id,
+        )
 
     def _build_queryset(self, *, entity_id: int, entityfinid_id: int | None, subentity_id: int | None, payload: dict):
         scope = self._as_dict(payload.get("scope"))
@@ -282,7 +299,7 @@ class _BulkPrintMixin:
                 line_mode = "service"
             else:
                 endpoint = f"/api/sales/invoices/{header.id}/print/"
-                line_mode = "goods" if doc_slug == "sale_invoice" else None
+                line_mode = "goods" if doc_slug == "sale_invoice" and bool(getattr(header, "_has_goods", False)) else None
             query = query_parts.copy()
             if line_mode:
                 query.append(f"line_mode={line_mode}")
@@ -335,7 +352,13 @@ class SalesBulkPrintJobListCreateAPIView(_BulkPrintMixin, APIView):
         scope = self._as_dict(payload.get("scope"))
         doc_types = [str(item).strip() for item in self._as_list(scope.get("doc_types")) if str(item).strip()]
 
-        self._require_doc_permissions(user=request.user, entity_id=entity_id, doc_slugs=doc_types)
+        self._require_doc_permissions(
+            user=request.user,
+            entity_id=entity_id,
+            doc_slugs=doc_types,
+            action="print",
+            subentity_id=subentity_id,
+        )
 
         headers_qs = self._build_queryset(
             entity_id=entity_id,
@@ -471,7 +494,10 @@ class SalesBulkPrintJobDownloadAPIView(_BulkPrintMixin, APIView):
         story = []
         invoice_number = str(row.get("invoice_number") or getattr(header, "invoice_number", "") or f"INV-{header.id}").strip()
         doc_label = str(row.get("doc_type") or "").replace("_", " ").title()
+        entity = getattr(header, "entity", None)
+        business_name = str(getattr(entity, "trade_name", None) or getattr(entity, "entityname", None) or "Finacc ERP").strip()
 
+        story.append(Paragraph(business_name, styles["Heading1"]))
         story.append(Paragraph(f"{doc_label} - {invoice_number}", title_style))
         story.append(Paragraph(
             f"Date: {row.get('bill_date') or ''} | Customer: {row.get('customer_name') or ''} | "
@@ -480,6 +506,11 @@ class SalesBulkPrintJobDownloadAPIView(_BulkPrintMixin, APIView):
         ))
         story.append(Paragraph(
             f"Total: INR {cls._money(row.get('grand_total'))} | Doc No: {row.get('doc_no') or '--'} | Invoice ID: {header.id}",
+            meta_style,
+        ))
+        story.append(Paragraph(
+            f"Seller GSTIN: {getattr(header, 'seller_gstin', None) or '--'} | "
+            f"Customer GSTIN: {getattr(header, 'customer_gstin', None) or '--'}",
             meta_style,
         ))
         story.append(Spacer(1, 8))
@@ -668,13 +699,17 @@ class SalesBulkPrintJobDownloadAPIView(_BulkPrintMixin, APIView):
         summary = job.summary or {}
 
         invoice_ids = [int(row.get("invoice_id") or 0) for row in manifest if int(row.get("invoice_id") or 0) > 0]
-        headers_qs = SalesInvoiceHeader.objects.filter(entity_id=entity_id, id__in=invoice_ids).only(
+        headers_qs = SalesInvoiceHeader.objects.filter(entity_id=entity_id, id__in=invoice_ids).select_related("entity").only(
             "id",
+            "entity__entityname",
+            "entity__trade_name",
             "invoice_number",
             "doc_no",
             "bill_date",
             "status",
             "customer_name",
+            "customer_gstin",
+            "seller_gstin",
             "total_taxable_value",
             "total_cgst",
             "total_sgst",

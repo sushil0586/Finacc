@@ -337,6 +337,22 @@ class ReceivablesRouteContractTests(TestCase):
         invoice_row = next(row for row in report["rows"] if row["invoice_number"] == invoice.invoice_number)
         self.assertEqual(invoice_row["drilldown"]["invoice"]["route"], "/saleserviceinvoice")
 
+    def test_receivable_aging_invoice_view_searches_invoice_number(self):
+        invoice = self._create_service_invoice()
+
+        report = build_receivable_aging_report(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            as_of_date="2025-04-30",
+            search=invoice.invoice_number,
+            view="invoice",
+        )
+
+        self.assertEqual([row["invoice_number"] for row in report["rows"]], [invoice.invoice_number])
+        self.assertEqual(report["pagination"]["total_records"], 1)
+        self.assertEqual(report["pagination"]["total_pages"], 1)
+
     def test_receivable_aging_summary_and_invoice_views_keep_expected_totals(self):
         invoice = self._create_service_invoice()
 

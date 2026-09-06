@@ -2286,7 +2286,7 @@ class SalesInvoiceAdditionalServiceUnitTests(SimpleTestCase):
 
         self.assertEqual(line.hsn_sac_code, "998314")
 
-    def test_compute_line_amounts_rejects_taxable_value_without_hsn(self):
+    def test_compute_line_amounts_allows_missing_hsn_while_invoice_is_draft(self):
         header = SimpleNamespace(is_reverse_charge=False, is_igst=False)
         line = SimpleNamespace(
             line_no=1,
@@ -2306,8 +2306,44 @@ class SalesInvoiceAdditionalServiceUnitTests(SimpleTestCase):
             cess_amount=Decimal("0.00"),
         )
 
-        with self.assertRaisesMessage(ValidationError, "HSN/SAC is required when taxable value is present"):
-            SalesInvoiceService.compute_line_amounts(header, line)
+        SalesInvoiceService.compute_line_amounts(header, line)
+
+        self.assertEqual(line.taxable_value, Decimal("100.00"))
+
+    def test_gst_classification_rejects_missing_hsn_before_confirm(self):
+        line = SimpleNamespace(
+            line_no=1,
+            taxability=SalesInvoiceHeader.Taxability.TAXABLE,
+            taxable_value=Decimal("100.00"),
+            hsn_sac_code="",
+            is_service=False,
+        )
+
+        with self.assertRaisesMessage(ValidationError, "HSN is required"):
+            SalesInvoiceService._validate_gst_classification([line], seller_gstin="27ABCDE1234F1Z5")
+
+    def test_gst_classification_rejects_invalid_sac_on_note(self):
+        line = SimpleNamespace(
+            line_no=1,
+            taxability=SalesInvoiceHeader.Taxability.TAXABLE,
+            taxable_value=Decimal("-100.00"),
+            hsn_sac_code="9983",
+            is_service=True,
+        )
+
+        with self.assertRaisesMessage(ValidationError, "SAC must contain exactly 6 digits"):
+            SalesInvoiceService._validate_gst_classification([line], seller_gstin="27ABCDE1234F1Z5")
+
+    def test_gst_classification_allows_non_gst_entity_document(self):
+        line = SimpleNamespace(
+            line_no=1,
+            taxability=SalesInvoiceHeader.Taxability.TAXABLE,
+            taxable_value=Decimal("100.00"),
+            hsn_sac_code="",
+            is_service=False,
+        )
+
+        SalesInvoiceService._validate_gst_classification([line], seller_gstin="")
 
     def test_validate_doc_linkage_tax_invoice_disallows_original(self):
         original = SimpleNamespace(entity_id=1, entityfinid_id=1, subentity_id=None, customer_id=10)
@@ -6528,7 +6564,11 @@ class SalesSettingsPolicyControlUnitTests(SimpleTestCase):
 class SalesSettingsNumberingBranchCleanupTests(TestCase):
     def setUp(self):
         user_model = get_user_model()
-        self.user = user_model.objects.create_user(username="sales_settings_tester", password="x")
+        self.user = user_model.objects.create_user(
+            username="sales_settings_tester",
+            email="sales-settings-tester@example.com",
+            password="x",
+        )
         self.entity = Entity.objects.create(entityname="Sales Settings Entity", createdby=self.user)
         self.entityfin = EntityFinancialYear.objects.create(
             entity=self.entity,

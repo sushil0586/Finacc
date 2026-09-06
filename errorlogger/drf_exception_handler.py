@@ -4,8 +4,10 @@ import logging
 
 from rest_framework.views import exception_handler
 from rest_framework import exceptions
+from rest_framework import status
+from rest_framework.response import Response
 from django.contrib.auth import get_user_model
-from django.db import OperationalError
+from django.db import IntegrityError, OperationalError
 from django.test.testcases import DatabaseOperationForbidden
 
 from .models import ErrorLog
@@ -85,5 +87,22 @@ def custom_exception_handler(exc, context):
                 **normalized_error,
                 **({"wait": response.data.get("wait")} if isinstance(response.data, dict) and response.data.get("wait") is not None else {}),
             }
+
+    if response is None:
+        if isinstance(exc, IntegrityError):
+            return Response(
+                {
+                    "code": "data_conflict",
+                    "detail": "This change conflicts with an existing record. Review unique fields and try again.",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        return Response(
+            {
+                "code": "server_error",
+                "detail": "The server could not complete this request. Please try again or contact support if the problem continues.",
+            },
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
 
     return response

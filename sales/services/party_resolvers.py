@@ -9,8 +9,8 @@ from financial.profile_access import (
     account_primary_phone,
 )
 from sales.services.profile_resolvers import entity_primary_address
-
-GSTIN_RE = re.compile(r"^[0-9A-Z]{15}$")
+from financial.gstin import validate_financial_gstin
+from django.core.exceptions import ValidationError as DjangoValidationError
 
 
 def _name(x) -> Optional[str]:
@@ -81,9 +81,10 @@ def _normalize_gstin(gstin: Optional[str], *, allow_urp: bool = False) -> str:
     s = (gstin or "").strip().upper()
     if allow_urp and s == "URP":
         return "URP"
-    if not GSTIN_RE.fullmatch(s):
-        raise ValueError("GSTIN must be 15 uppercase alphanumeric characters.")
-    return s
+    try:
+        return validate_financial_gstin(s) or ""
+    except DjangoValidationError as exc:
+        raise ValueError("Enter a valid GSTIN.") from exc
 
 
 def seller_from_entity(entity) -> Dict[str, Any]:

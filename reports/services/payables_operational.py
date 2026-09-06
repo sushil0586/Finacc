@@ -386,7 +386,7 @@ def _build_vendor_note_register_uncached(
             "document": {
                 "label": "Purchase Document Detail",
                 "target": "purchase_document_detail",
-                "kind": "navigate",
+                "kind": "document",
                 "route": _purchase_note_route(header),
                 "params": {"id": header.id, "entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id},
             },

@@ -9746,6 +9746,75 @@ class PurchaseApiPermissionTests(APITestCase):
 
 
 class PurchaseActionConcurrencyHardeningTests(SimpleTestCase):
+    def test_gst_classification_covers_invoice_and_note_document_types(self):
+        class Lines:
+            def __init__(self, rows):
+                self.rows = rows
+
+            def all(self):
+                return self.rows
+
+        for doc_type in (
+            PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            PurchaseInvoiceHeader.DocType.CREDIT_NOTE,
+            PurchaseInvoiceHeader.DocType.DEBIT_NOTE,
+        ):
+            header = SimpleNamespace(
+                doc_type=doc_type,
+                Taxability=PurchaseInvoiceHeader.Taxability,
+                vendor_gstin="27AACCV1234F1Z5",
+                is_reverse_charge=False,
+                supply_category=PurchaseInvoiceHeader.SupplyCategory.DOMESTIC,
+                charges=Lines([]),
+                lines=Lines([
+                    SimpleNamespace(
+                        line_no=1,
+                        taxability=PurchaseInvoiceHeader.Taxability.TAXABLE,
+                        taxable_value=Decimal("-100.00") if doc_type == PurchaseInvoiceHeader.DocType.CREDIT_NOTE else Decimal("100.00"),
+                        hsn_sac="",
+                        is_service=False,
+                    )
+                ]),
+            )
+            with self.subTest(doc_type=doc_type), self.assertRaisesMessage(ValueError, "HSN is required"):
+                PurchaseInvoiceActions._validate_gst_classification(header)
+
+    def test_gst_classification_allows_non_taxable_line_without_hsn(self):
+        header = SimpleNamespace(
+            Taxability=PurchaseInvoiceHeader.Taxability,
+            vendor_gstin="27AACCV1234F1Z5",
+            is_reverse_charge=False,
+            supply_category=PurchaseInvoiceHeader.SupplyCategory.DOMESTIC,
+            charges=SimpleNamespace(all=lambda: []),
+            lines=SimpleNamespace(all=lambda: [SimpleNamespace(
+                line_no=1,
+                taxability=PurchaseInvoiceHeader.Taxability.EXEMPT,
+                taxable_value=Decimal("100.00"),
+                hsn_sac="",
+                is_service=False,
+            )]),
+        )
+
+        PurchaseInvoiceActions._validate_gst_classification(header)
+
+    def test_gst_classification_allows_ordinary_unregistered_vendor_purchase(self):
+        header = SimpleNamespace(
+            Taxability=PurchaseInvoiceHeader.Taxability,
+            vendor_gstin="",
+            is_reverse_charge=False,
+            supply_category=PurchaseInvoiceHeader.SupplyCategory.DOMESTIC,
+            charges=SimpleNamespace(all=lambda: []),
+            lines=SimpleNamespace(all=lambda: [SimpleNamespace(
+                line_no=1,
+                taxability=PurchaseInvoiceHeader.Taxability.TAXABLE,
+                taxable_value=Decimal("100.00"),
+                hsn_sac="",
+                is_service=False,
+            )]),
+        )
+
+        PurchaseInvoiceActions._validate_gst_classification(header)
+
     @patch("purchase.services.purchase_invoice_actions.PurchaseSettingsService.get_policy")
     @patch("purchase.services.purchase_invoice_actions.PurchaseInvoiceActions._get_for_update")
     def test_confirm_uses_locked_header_fetch(self, mock_get_for_update, mock_get_policy):

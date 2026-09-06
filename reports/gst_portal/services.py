@@ -189,6 +189,33 @@ class GstPortalService:
         session.save(update_fields=["status", "txn", "last_response", "authenticated_by", "authenticated_at", "updated_at"])
         return self.serialize_session(session)
 
+    def logout_session(self, *, session_id: int, entity_id: int, user=None) -> dict:
+        session = GstPortalSession.objects.filter(id=session_id, entity_id=entity_id).first()
+        if not session:
+            raise LookupError(f"GST portal session not found for session_id={session_id}.")
+        context = WhiteboxContext(
+            email=session.email,
+            gstin=session.gstin,
+            gst_username=session.gst_username,
+            state_cd=session.state_cd,
+            ip_address=session.ip_address,
+            txn=session.txn or _extract_txn(session.last_response),
+        )
+        try:
+            response = self.client.logout(context=context)
+        except (WhiteboxConfigurationError, WhiteboxRequestError) as exc:
+            session.last_error = str(exc)
+            if isinstance(exc, WhiteboxRequestError):
+                session.last_response = redacted_whitebox_snapshot(exc.response_payload)
+            session.save(update_fields=["last_error", "last_response", "updated_at"])
+            raise
+        session.status = GstPortalSession.Status.LOGGED_OUT
+        session.txn = response.txn
+        session.last_response = redacted_whitebox_snapshot(response.payload)
+        session.last_error = ""
+        session.save(update_fields=["status", "txn", "last_response", "last_error", "updated_at"])
+        return self.serialize_session(session)
+
     def save_to_portal(self, *, filing_id: int, entity_id: int, email: str = "", gst_username: str = "", ip_address: str = "", user=None) -> dict:
         run = GstPortalFilingRun.objects.filter(id=filing_id, entity_id=entity_id).first()
         if not run:
@@ -781,6 +808,13 @@ def _extract_portal_reference(payload: Any) -> str:
             if nested:
                 return nested
     return ""
+
+
+def _extract_txn(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    header = payload.get("header") if isinstance(payload.get("header"), dict) else {}
+    return str(payload.get("txn") or header.get("txn") or "").strip()
 
 
 def _is_nil_filing_payload(payload: Any) -> bool:

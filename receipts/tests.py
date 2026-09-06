@@ -2022,6 +2022,9 @@ class ReceiptVoucherViewValidationTests(SimpleTestCase):
             "Round-off line inserted",
             "Static fallback used",
         ])
+        _, serializer_kwargs = mocked_serializer.call_args
+        self.assertEqual(serializer_kwargs["context"]["skip_preview_numbers"], True)
+        self.assertEqual(serializer_kwargs["context"]["skip_navigation"], True)
 
     @patch("receipts.views.receipt_voucher.ReceiptVoucherService.post_voucher")
     @patch("receipts.views.receipt_voucher.EffectivePermissionService.permission_codes_for_user", return_value=set())

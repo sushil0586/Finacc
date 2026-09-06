@@ -2274,6 +2274,10 @@ class PurchaseStatutoryService:
             bill_date__lte=period_to,
             status=PurchaseInvoiceHeader.Status.POSTED,
         ).select_related("tds_section")
+        if tax_type == PurchaseStatutoryChallan.TaxType.IT_TDS:
+            headers = headers.filter(tds_amount__gt=ZERO2)
+        else:
+            headers = headers.filter(gst_tds_amount__gt=ZERO2)
         if subentity_id is not None:
             headers = headers.filter(subentity_id=subentity_id)
 
