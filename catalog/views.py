@@ -1027,12 +1027,23 @@ class OpeningStockByLocationRUDAPIView(ProductScopedChildMixin, generics.Retriev
             .filter(entity_id=self._get_entity_id())
         )
 
+    def perform_update(self, serializer):
+        with transaction.atomic():
+            locked = self.get_queryset().select_related(None).select_for_update().filter(pk=serializer.instance.pk).first()
+            if locked is None:
+                raise NotFound("Opening stock row no longer exists.")
+            serializer.instance = locked
+            serializer.save()
+
     def perform_destroy(self, instance):
         from .services.opening_stock_posting import clear_catalog_opening_stock_posting
 
         with transaction.atomic():
-            clear_catalog_opening_stock_posting(instance)
-            instance.delete()
+            locked = self.get_queryset().select_related(None).select_for_update().filter(pk=instance.pk).first()
+            if locked is None:
+                return
+            clear_catalog_opening_stock_posting(locked)
+            locked.delete()
 
 
 class ProductPriceListCreateAPIView(ProductScopedChildMixin, generics.ListCreateAPIView):

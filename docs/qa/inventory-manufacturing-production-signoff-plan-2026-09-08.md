@@ -114,7 +114,7 @@ Evidence:
 
 ### Phase 1: Masters, Settings, And Opening Position
 
-Status: Local certification completed on 8 September 2026; staging blocked pending deployment and retest
+Status: Local certification completed on 8 September 2026; staging blocked pending backend/frontend deployment and retest
 
 Goal: prove configuration and opening data are valid before transactional testing.
 
@@ -155,7 +155,14 @@ Evidence:
 - Post-fix local opening-stock suite result: `11 passed`, zero failures, completed in 2.123 seconds.
 - Staging QA products `145` and `147` and their exact orphan postings were removed after diagnosis; no unrelated data was changed.
 - Staging timing observation: the complete multi-tab product lifecycle exceeded 180 seconds once. Its test budget is now 300 seconds, and the duration is retained for Phase 8 performance review.
-- No local product defect remains open from Phase 1. The API cleanup fix must be checked in, deployed, and the staging `FIN-CAT-PR-003` workflow rerun before Phase 1 receives final production certification.
+- First post-deployment staging rerun reached the planning step but timed out after 300 seconds because **Delete / Reset** did not open its confirmation dialog. The application showed `Planning saved` before the asynchronous planning reload had populated `planningRow`; an immediate delete therefore silently reset the form instead of deleting the saved row.
+- Frontend fix: the save helper now passes the API result to its success callback before showing success, and planning adopts that returned row immediately. A regression test proves that deletion is available immediately after save.
+- Frontend verification: all `128` product-form unit tests passed, TypeScript type-check passed, and `git diff --check` passed.
+- The staging database audit after both reruns found new orphan opening-stock movements `321` and `323`, each with one entry, one posting batch, and two journal lines after its source opening row had been deleted.
+- Nginx evidence identified the concurrency root cause: the opening-stock `PUT` and `DELETE` overlapped; the delete completed first and the slower update completed afterward, recreating postings after the source row was removed.
+- Backend fix: opening-stock update and delete now lock the source row with `select_for_update()` inside a transaction, serializing the two mutations. The lock query deliberately excludes nullable related joins so it is valid on PostgreSQL.
+- Post-lock local verification: all `11` opening-stock/planning backend tests passed, `manage.py check` passed, and `git diff --check` passed.
+- Phase 1 remains blocked until both fixes are deployed, `FIN-CAT-PR-003` passes on staging, and a post-run database audit shows no new orphan `catalog_opening_stock` movements or journals.
 
 ### Phase 2: Inventory Quantity And Movement Integrity
 
