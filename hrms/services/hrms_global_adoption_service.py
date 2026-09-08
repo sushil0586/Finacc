@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date
 
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from hrms.models import (
@@ -167,14 +168,15 @@ class HrmsGlobalAdoptionService:
     @classmethod
     def entity_setup_summary(cls, *, entity, subentity=None) -> dict:
         setup_filters = {"entity": entity, "deleted_at__isnull": True}
+        scope_filter = Q()
         if subentity is not None:
-            setup_filters["subentity__in"] = [subentity, None]
-        leave_types = LeaveType.objects.filter(**setup_filters).order_by("code")
-        leave_policies = LeavePolicy.objects.filter(**setup_filters).order_by("code")
-        shifts = HrShift.objects.filter(**setup_filters).order_by("code")
-        calendars = HrHolidayCalendar.objects.filter(**setup_filters).order_by("-calendar_year", "code")
-        attendance_policies = AttendancePolicy.objects.filter(**setup_filters).order_by("code")
-        hr_policies = HRPolicy.objects.filter(**setup_filters).order_by("policy_area", "code")
+            scope_filter = Q(subentity=subentity) | Q(subentity__isnull=True)
+        leave_types = LeaveType.objects.filter(scope_filter, **setup_filters).order_by("code")
+        leave_policies = LeavePolicy.objects.filter(scope_filter, **setup_filters).order_by("code")
+        shifts = HrShift.objects.filter(scope_filter, **setup_filters).order_by("code")
+        calendars = HrHolidayCalendar.objects.filter(scope_filter, **setup_filters).order_by("-calendar_year", "code")
+        attendance_policies = AttendancePolicy.objects.filter(scope_filter, **setup_filters).order_by("code")
+        hr_policies = HRPolicy.objects.filter(scope_filter, **setup_filters).order_by("policy_area", "code")
         return {
             "counts": {
                 "leave_types": leave_types.count(),

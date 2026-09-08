@@ -8,7 +8,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from Authentication.models import User
-from entity.models import Entity
+from entity.models import Entity, SubEntity
 from hrms.models import (
     AttendancePolicy,
     GlobalLeavePolicyTemplate,
@@ -110,6 +110,24 @@ class HrmsGlobalAdoptionServiceTests(TestCase):
 
         leave_type.source_global_leave_type.refresh_from_db()
         self.assertEqual(leave_type.source_global_leave_type.name, global_name)
+
+    def test_branch_summary_includes_shared_entity_setup(self):
+        HrmsGlobalAdoptionService.adopt_recommended_templates(
+            entity=self.entity,
+            industry_type="services",
+            employee_category="services",
+            year=2026,
+        )
+        branch = SubEntity.objects.create(
+            entity=self.entity,
+            subentityname="Head Office",
+        )
+
+        summary = HrmsGlobalAdoptionService.entity_setup_summary(entity=self.entity, subentity=branch)
+
+        self.assertGreaterEqual(summary["counts"]["leave_types"], 1)
+        self.assertGreaterEqual(summary["counts"]["leave_policies"], 1)
+        self.assertGreaterEqual(summary["counts"]["shifts"], 1)
 
     def test_runtime_uses_entity_adopted_setup_only(self):
         HrmsGlobalAdoptionService.adopt_recommended_templates(
