@@ -1027,6 +1027,13 @@ class OpeningStockByLocationRUDAPIView(ProductScopedChildMixin, generics.Retriev
             .filter(entity_id=self._get_entity_id())
         )
 
+    def perform_destroy(self, instance):
+        from .services.opening_stock_posting import clear_catalog_opening_stock_posting
+
+        with transaction.atomic():
+            clear_catalog_opening_stock_posting(instance)
+            instance.delete()
+
 
 class ProductPriceListCreateAPIView(ProductScopedChildMixin, generics.ListCreateAPIView):
     serializer_class = ProductPriceSerializer

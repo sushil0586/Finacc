@@ -1700,6 +1700,151 @@ class CatalogOpeningStockAndPlanningTests(TestCase):
         self.assertIn("Opening Inventory Carry Forward", tb_rows)
         self.assertIn("Opening Equity Transfer", tb_rows)
 
+    def test_opening_stock_update_replaces_inventory_move_and_journal(self):
+        create_response = self.client.post(
+            f"/api/catalog/products/{self.product.id}/opening-stocks/?entity={self.entity.id}",
+            {
+                "branch": self.branch.id,
+                "godown": self.godown.id,
+                "openingqty": "12.00",
+                "openingrate": "7.50",
+                "as_of_date": "2026-04-01",
+            },
+            format="json",
+        )
+        self.assertEqual(create_response.status_code, 201, create_response.json())
+        row_id = create_response.json()["id"]
+        txn_id = -row_id
+
+        update_response = self.client.patch(
+            f"/api/catalog/opening-stocks/{row_id}/?entity={self.entity.id}",
+            {
+                "openingqty": "8.00",
+                "openingrate": "11.25",
+            },
+            format="json",
+        )
+        self.assertEqual(update_response.status_code, 200, update_response.json())
+
+        row = OpeningStockByLocation.objects.get(pk=row_id)
+        self.assertEqual(row.openingvalue, Decimal("90.0000"))
+        moves = InventoryMove.objects.filter(
+            entity_id=self.entity.id,
+            txn_type=TxnType.OPENING_BALANCE,
+            txn_id=txn_id,
+        )
+        self.assertEqual(moves.count(), 1)
+        self.assertEqual(moves.get().base_qty, Decimal("8.0000"))
+        self.assertEqual(moves.get().unit_cost, Decimal("11.2500"))
+
+        entries = Entry.objects.filter(
+            entity_id=self.entity.id,
+            txn_type=TxnType.OPENING_BALANCE,
+            txn_id=txn_id,
+        )
+        self.assertEqual(entries.count(), 1)
+        journal_lines = JournalLine.objects.filter(
+            entity_id=self.entity.id,
+            txn_type=TxnType.OPENING_BALANCE,
+            txn_id=txn_id,
+        )
+        self.assertEqual(journal_lines.count(), 2)
+        self.assertEqual(sum(line.amount for line in journal_lines if line.drcr), Decimal("90.00"))
+        self.assertEqual(sum(line.amount for line in journal_lines if not line.drcr), Decimal("90.00"))
+
+    def test_opening_stock_delete_clears_inventory_move_and_journal(self):
+        create_response = self.client.post(
+            f"/api/catalog/products/{self.product.id}/opening-stocks/?entity={self.entity.id}",
+            {
+                "branch": self.branch.id,
+                "godown": self.godown.id,
+                "openingqty": "3.00",
+                "openingrate": "25.00",
+                "as_of_date": "2026-04-01",
+            },
+            format="json",
+        )
+        self.assertEqual(create_response.status_code, 201, create_response.json())
+        row_id = create_response.json()["id"]
+        txn_id = -row_id
+
+        delete_response = self.client.delete(
+            f"/api/catalog/opening-stocks/{row_id}/?entity={self.entity.id}"
+        )
+        self.assertEqual(delete_response.status_code, 204)
+        self.assertFalse(OpeningStockByLocation.objects.filter(pk=row_id).exists())
+        self.assertFalse(
+            InventoryMove.objects.filter(
+                entity_id=self.entity.id,
+                txn_type=TxnType.OPENING_BALANCE,
+                txn_id=txn_id,
+            ).exists()
+        )
+        self.assertFalse(
+            Entry.objects.filter(
+                entity_id=self.entity.id,
+                txn_type=TxnType.OPENING_BALANCE,
+                txn_id=txn_id,
+            ).exists()
+        )
+        self.assertFalse(
+            JournalLine.objects.filter(
+                entity_id=self.entity.id,
+                txn_type=TxnType.OPENING_BALANCE,
+                txn_id=txn_id,
+            ).exists()
+        )
+
+    def test_duplicate_opening_stock_is_rejected_without_extra_postings(self):
+        payload = {
+            "branch": self.branch.id,
+            "godown": self.godown.id,
+            "openingqty": "4.00",
+            "openingrate": "10.00",
+            "as_of_date": "2026-04-01",
+        }
+        first_response = self.client.post(
+            f"/api/catalog/products/{self.product.id}/opening-stocks/?entity={self.entity.id}",
+            payload,
+            format="json",
+        )
+        self.assertEqual(first_response.status_code, 201, first_response.json())
+
+        duplicate_response = self.client.post(
+            f"/api/catalog/products/{self.product.id}/opening-stocks/?entity={self.entity.id}",
+            payload,
+            format="json",
+        )
+        self.assertEqual(duplicate_response.status_code, 400)
+        self.assertIn("Opening stock already exists", str(duplicate_response.json()))
+        self.assertEqual(
+            OpeningStockByLocation.objects.filter(
+                entity=self.entity,
+                product=self.product,
+                branch=self.branch,
+                godown=self.godown,
+                as_of_date="2026-04-01",
+            ).count(),
+            1,
+        )
+        txn_id = -first_response.json()["id"]
+        self.assertEqual(
+            InventoryMove.objects.filter(
+                entity_id=self.entity.id,
+                txn_type=TxnType.OPENING_BALANCE,
+                txn_id=txn_id,
+            ).count(),
+            1,
+        )
+        self.assertEqual(
+            JournalLine.objects.filter(
+                entity_id=self.entity.id,
+                txn_type=TxnType.OPENING_BALANCE,
+                txn_id=txn_id,
+            ).count(),
+            2,
+        )
+
     def test_opening_stock_rejects_godown_from_another_branch(self):
         serializer = OpeningStockByLocationSerializer(
             data={
