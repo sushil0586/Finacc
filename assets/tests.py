@@ -14,6 +14,7 @@ from entity.models import Entity, EntityFinancialYear, SubEntity
 from financial.models import Ledger, accountHead
 from posting.models import Entry, EntryStatus, JournalLine
 from purchase.models.purchase_core import PurchaseInvoiceHeader
+from rbac.models import Permission, Role, RolePermission, UserRoleAssignment
 from subscriptions.models import PlanLimit
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
@@ -167,6 +168,76 @@ class AssetApiScopeTests(APITestCase):
             )
 
         self.client.force_authenticate(self.owner)
+
+    def _assign_asset_role(self, *permission_codes: str, subentity=None):
+        role = Role.objects.create(
+            entity=self.entity,
+            name=f"Asset test role {Role.objects.count() + 1}",
+            code=f"asset_test_{self.entity.id}_{Role.objects.count() + 1}",
+        )
+        for code in permission_codes:
+            RolePermission.objects.create(role=role, permission=Permission.objects.get(code=code))
+        return UserRoleAssignment.objects.create(
+            user=self.owner,
+            entity=self.entity,
+            subentity=subentity,
+            role=role,
+            is_primary=True,
+        )
+
+    def test_read_only_asset_role_cannot_update_or_run_lifecycle_prechecks(self):
+        self._assign_asset_role("assets.asset.view", subentity=self.subentity)
+
+        update_response = self.client.patch(
+            reverse("assets_api:fixed-asset-detail", args=[self.asset.id]),
+            {"asset_name": "Unauthorized update"},
+            format="json",
+        )
+        transfer_response = self.client.post(
+            reverse("assets_api:fixed-asset-transfer-precheck", args=[self.asset.id]),
+            {"transfer_date": "2026-06-01", "location_name": "Warehouse"},
+            format="json",
+        )
+
+        self.assertEqual(update_response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(transfer_response.status_code, status.HTTP_403_FORBIDDEN)
+        self.asset.refresh_from_db()
+        self.assertEqual(self.asset.asset_name, "Office Printer")
+
+    def test_asset_update_role_can_update_asset_within_assigned_branch(self):
+        self._assign_asset_role("assets.asset.view", "assets.asset.update", subentity=self.subentity)
+
+        response = self.client.patch(
+            reverse("assets_api:fixed-asset-detail", args=[self.asset.id]),
+            {"asset_name": "Authorized update"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.asset.refresh_from_db()
+        self.assertEqual(self.asset.asset_name, "Authorized update")
+
+    def test_branch_scoped_asset_role_cannot_access_asset_in_another_branch(self):
+        other_branch = SubEntity.objects.create(entity=self.entity, subentityname="Restricted Branch")
+        other_asset = FixedAsset.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=other_branch,
+            category=self.category,
+            asset_code="FA-RESTRICTED",
+            asset_name="Restricted asset",
+            acquisition_date=date(2026, 4, 1),
+            gross_block="1000.00",
+            residual_value="0.00",
+            net_book_value="1000.00",
+            created_by=self.owner,
+            updated_by=self.owner,
+        )
+        self._assign_asset_role("assets.asset.view", "assets.asset.update", subentity=self.subentity)
+
+        response = self.client.get(reverse("assets_api:fixed-asset-detail", args=[other_asset.id]))
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def _create_vendor_account(self, name: str):
         from financial.models import account

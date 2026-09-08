@@ -30,10 +30,12 @@ from catalog.seeding import CatalogSeedService
 from financial.seeding import FinancialSeedService
 from numbering.seeding import NumberingSeedService, NumberingSeedSpec
 from posting.services.static_accounts import StaticAccountService
+from purchase.models.purchase_config import PurchaseSettings
 from purchase.seeding import PurchaseSeedService
 from rbac.models import UserRoleAssignment
 from rbac.seeding import RBACSeedService
 from sales.seeding import SalesSeedService
+from sales.models.sales_settings import SalesSettings
 from subscriptions.services import SubscriptionService
 
 # Default numbering specs mirrored from numbering.management.commands.seed_doc_sequences
@@ -714,6 +716,11 @@ class EntityOnboardingService:
                 template_code=seed_options.get("template_code"),
             )
 
+        required_posting_mapping_summary = StaticAccountService.seed_required_entity_mappings(
+            entity=entity,
+            actor=actor,
+        )
+
         static_account_default_clone_summary = StaticAccountService.clone_default_entity_mappings(
             target_entity_id=entity.id,
             actor=actor,
@@ -754,10 +761,17 @@ class EntityOnboardingService:
         purchase_choice_summary = {}
         if seed_options.get("seed_purchase_choices", True):
             purchase_choice_summary = PurchaseSeedService.seed_choice_overrides(entity=entity, subentity=None)
+            PurchaseSettings.objects.get_or_create(entity=entity, subentity=None)
 
         sales_choice_summary = {}
         if seed_options.get("seed_sales_choices", True):
             sales_choice_summary = SalesSeedService.seed_choice_overrides(entity=entity, subentity=None)
+            active_fy = entity.fy.filter(isactive=True).order_by("id").first()
+            SalesSettings.objects.get_or_create(
+                entity=entity,
+                subentity=None,
+                defaults={"created_by": actor, "entityfinid": active_fy},
+            )
 
         SubscriptionService.register_entity_creation(
             entity=entity,
@@ -773,6 +787,7 @@ class EntityOnboardingService:
             "ownership_ids": ownership_ids,
             "compliance_credential_ids": [row["id"] for row in cls.build_entity_payload(entity=entity).get("compliance_credentials", []) if row.get("id")],
             "posting_static_accounts": posting_static_accounts_summary,
+            "required_posting_mappings": required_posting_mapping_summary,
             "posting_static_account_defaults": static_account_default_clone_summary,
             "financial": financial_summary,
             "rbac": rbac_summary,

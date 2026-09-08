@@ -186,3 +186,6 @@ Check:
 - `python manage.py check` passes
 - `sudo systemctl status finacc-gunicorn` is healthy
 - `sudo nginx -t` passes
+- platform approval-expiry timer is enabled and active
+- approval-expiry staging acceptance is completed using
+  `docs/platform-operations-staging-runbook.md`

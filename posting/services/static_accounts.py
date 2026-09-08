@@ -117,6 +117,65 @@ class StaticAccountService:
         return {"created": created, "updated": updated}
 
     @staticmethod
+    @transaction.atomic
+    def seed_required_entity_mappings(*, entity, actor=None) -> Dict[str, object]:
+        canonical_ledger_codes = {
+            "PURCHASE_MISC_EXPENSE": 8351,
+            "ROUND_OFF_INCOME": 7081,
+            "ROUND_OFF_EXPENSE": 8403,
+            "PAYROLL_SALARY_PAYABLE": 5204,
+        }
+        required = {
+            row.code: row
+            for row in StaticAccount.objects.filter(
+                code__in=canonical_ledger_codes,
+                is_required=True,
+                is_active=True,
+            )
+        }
+        ledgers = {
+            str(row.ledger_code): row
+            for row in Ledger.objects.filter(
+                entity=entity,
+                ledger_code__in=canonical_ledger_codes.values(),
+                isactive=True,
+            )
+        }
+        accounts = {
+            row.ledger_id: row
+            for row in account.objects.filter(
+                entity=entity,
+                ledger_id__in=[ledger.id for ledger in ledgers.values()],
+            )
+        }
+        created, existing, unresolved = [], [], []
+        for static_code, ledger_code in canonical_ledger_codes.items():
+            static_account = required.get(static_code)
+            ledger = ledgers.get(str(ledger_code))
+            if static_account is None or ledger is None:
+                unresolved.append(static_code)
+                continue
+            if EntityStaticAccountMap.objects.filter(
+                entity=entity,
+                sub_entity__isnull=True,
+                static_account=static_account,
+                is_active=True,
+            ).exists():
+                existing.append(static_code)
+                continue
+            EntityStaticAccountMap.objects.create(
+                entity=entity,
+                sub_entity=None,
+                static_account=static_account,
+                account=accounts.get(ledger.id),
+                ledger=ledger,
+                createdby=actor if getattr(actor, "id", None) else None,
+            )
+            created.append(static_code)
+        StaticAccountService.invalidate(entity.id)
+        return {"created": created, "existing": existing, "unresolved": unresolved}
+
+    @staticmethod
     @lru_cache(maxsize=2048)
     def _entity_map(entity_id: int) -> Dict[str, StaticAccountResolved]:
         qs = (

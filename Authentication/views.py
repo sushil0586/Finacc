@@ -435,6 +435,9 @@ class ResetPasswordApiView(GenericAPIView):
             user=user,
             new_password=serializer.validated_data["new_password"],
         )
+        # A successful reset OTP proves control of the user's registered mailbox.
+        if user.email and user.email.lower() == email.lower():
+            AuthEmailVerificationService.verify_user_email(user)
 
         return Response({"message": "Password reset successfully."}, status=status.HTTP_200_OK)
 
@@ -575,4 +578,3 @@ class VerifyEmailApiView(GenericAPIView):
         AuthEmailVerificationService.verify_user_email(user)
 
         return Response({"message": "Email verified successfully."}, status=status.HTTP_200_OK)
-

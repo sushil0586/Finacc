@@ -1,0 +1,22 @@
+[Unit]
+Description=Expire elapsed Finacc platform access
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=www-data
+WorkingDirectory=/home/ubuntu/Finacc
+EnvironmentFile=/home/ubuntu/Finacc/.env
+ExecStart=/home/ubuntu/Finacc/venv/bin/python manage.py expire_platform_access --json
+Nice=10
+TimeoutStartSec=300
+PrivateTmp=true
+NoNewPrivileges=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=finacc-platform-access-expiry
+
+[Install]
+WantedBy=multi-user.target

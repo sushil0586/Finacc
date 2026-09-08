@@ -18,6 +18,22 @@ python manage.py collectstatic --noinput
 echo "Running Django system checks..."
 python manage.py check
 
+echo "Installing platform approval-expiry timer..."
+sudo cp deploy/ec2/finacc-platform-approval-expiry.service /etc/systemd/system/
+sudo cp deploy/ec2/finacc-platform-approval-expiry.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now finacc-platform-approval-expiry.timer
+sudo systemctl start finacc-platform-approval-expiry.service
+sudo systemctl status finacc-platform-approval-expiry.timer --no-pager
+
+echo "Installing platform access-expiry timer..."
+sudo cp deploy/ec2/finacc-platform-access-expiry.service /etc/systemd/system/
+sudo cp deploy/ec2/finacc-platform-access-expiry.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now finacc-platform-access-expiry.timer
+sudo systemctl start finacc-platform-access-expiry.service
+sudo systemctl status finacc-platform-access-expiry.timer --no-pager
+
 echo "Ensuring media directories are writable..."
 sudo mkdir -p "$MEDIA_DIR/barcodes"
 sudo mkdir -p "$MEDIA_DIR/products"

@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import csv
+import io
 from datetime import date
+from decimal import Decimal, InvalidOperation
 
+from django.db import transaction
 from django.db.models import Q
+from django.utils import timezone
 from django.utils.dateparse import parse_date
 from rest_framework import permissions, status
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -125,7 +130,6 @@ class HrmsScopedAPIView(ScopedEntitlementMixin, APIView):
             )
         except PermissionError as err:
             raise PermissionDenied(detail=str(err))
-        self.enforce_scope(request, entity_id=entity_id)
 
     @staticmethod
     def _is_self_service_contract_access(*, user, contract) -> bool:
@@ -388,19 +392,20 @@ class HrEmployeeDetailAPIView(HrmsScopedAPIView):
 class HrEmploymentContractListCreateAPIView(HrmsScopedAPIView):
     def get(self, request):
         entity_id, subentity_id = self._scope_from_query(request)
-        self._assert_hrms_permission(
-            request,
-            entity_id=entity_id,
-            permission_key="employment_contract_view",
-            label="view HRMS employment contracts",
-        )
+        mine = self._query_bool(request, "mine")
+        if not mine:
+            self._assert_hrms_permission(
+                request,
+                entity_id=entity_id,
+                permission_key="employment_contract_view",
+                label="view HRMS employment contracts",
+            )
         employee_id = self._query_value(request, "employee")
         status_value = self._query_value(request, "status")
         search = self._query_value(request, "search")
         ordering = self._query_value(request, "ordering") or "-payroll_effective_from"
         payroll_eligible = self._query_bool(request, "payroll_eligible")
-        serializer = HrEmploymentContractSerializer(
-            EmploymentContractService.list_contracts(
+        contracts = EmploymentContractService.list_contracts(
                 entity_id=entity_id,
                 subentity_id=subentity_id,
                 employee_id=employee_id,
@@ -409,7 +414,11 @@ class HrEmploymentContractListCreateAPIView(HrmsScopedAPIView):
                 search=search,
                 active_only=(request.query_params.get("active_only") or "true").strip().lower() != "false",
                 ordering=ordering,
-            ),
+            )
+        if mine:
+            contracts = contracts.filter(employee__linked_user_id=request.user.id)
+        serializer = HrEmploymentContractSerializer(
+            contracts,
             many=True,
         )
         return Response(serializer.data)
@@ -1034,6 +1043,184 @@ class AttendanceImportBatchListCreateAPIView(HrmsScopedAPIView):
         serializer.is_valid(raise_exception=True)
         serializer.save(created_by=request.user, updated_by=request.user)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class AttendanceImportValidateAPIView(HrmsScopedAPIView):
+    REQUIRED_COLUMNS = {"contract_code", "attendance_date", "status"}
+    ALLOWED_STATUSES = {choice for choice, _label in DailyAttendance.AttendanceStatus.choices}
+
+    def post(self, request):
+        entity_id, subentity_id = self._scope_from_payload(request, request.data)
+        self._assert_hrms_permission(
+            request,
+            entity_id=entity_id,
+            permission_key="attendance_import_batch_create",
+            label="validate attendance imports",
+        )
+        upload = request.FILES.get("file")
+        batch_code = str(request.data.get("batch_code") or "").strip().upper()
+        if not upload:
+            raise ValidationError({"file": "Select a CSV file."})
+        if not batch_code:
+            raise ValidationError({"batch_code": "Batch code is required."})
+        if not str(upload.name).lower().endswith(".csv"):
+            raise ValidationError({"file": "Only CSV attendance files are supported."})
+        try:
+            content = upload.read().decode("utf-8-sig")
+        except UnicodeDecodeError:
+            raise ValidationError({"file": "CSV file must use UTF-8 encoding."})
+
+        reader = csv.DictReader(io.StringIO(content))
+        columns = {str(value or "").strip().lower() for value in (reader.fieldnames or [])}
+        missing = sorted(self.REQUIRED_COLUMNS - columns)
+        if missing:
+            raise ValidationError({"file": f"Missing required columns: {', '.join(missing)}."})
+
+        contracts = {
+            contract.contract_code.upper(): contract
+            for contract in HrEmploymentContract.objects.filter(entity_id=entity_id, deleted_at__isnull=True)
+            .select_related("entity", "subentity")
+        }
+        prepared_rows = []
+        errors = []
+        seen = set()
+        for row_number, source_row in enumerate(reader, start=2):
+            row = {str(key or "").strip().lower(): str(value or "").strip() for key, value in source_row.items()}
+            contract_code = row.get("contract_code", "").upper()
+            contract = contracts.get(contract_code)
+            attendance_date = parse_date(row.get("attendance_date", ""))
+            attendance_status = row.get("status", "").lower()
+            row_errors = []
+            if contract is None:
+                row_errors.append("Contract code was not found in this entity.")
+            elif subentity_id is not None and contract.subentity_id != subentity_id:
+                row_errors.append("Contract does not belong to the selected branch.")
+            if attendance_date is None:
+                row_errors.append("Attendance date must be YYYY-MM-DD.")
+            if attendance_status not in self.ALLOWED_STATUSES:
+                row_errors.append(f"Status must be one of: {', '.join(sorted(self.ALLOWED_STATUSES))}.")
+            try:
+                overtime_hours = Decimal(row.get("overtime_hours") or "0")
+                if overtime_hours < 0:
+                    raise InvalidOperation
+            except (InvalidOperation, ValueError):
+                overtime_hours = Decimal("0")
+                row_errors.append("Overtime hours must be a non-negative number.")
+            duplicate_key = (contract_code, attendance_date)
+            if attendance_date and duplicate_key in seen:
+                row_errors.append("Duplicate contract and attendance date in file.")
+            seen.add(duplicate_key)
+            if contract and attendance_date and not row_errors:
+                try:
+                    AttendanceCaptureService._ensure_not_closed(contract=contract, attendance_date=attendance_date)
+                except ValueError as err:
+                    detail = err.args[0] if err.args else {}
+                    messages = detail.get("attendance_date", []) if isinstance(detail, dict) else [str(detail)]
+                    row_errors.extend(str(message) for message in messages)
+            if row_errors:
+                errors.append({"row": row_number, "contract_code": contract_code, "errors": row_errors})
+                continue
+            prepared_rows.append({
+                "contract_id": str(contract.id),
+                "contract_code": contract.contract_code,
+                "attendance_date": attendance_date.isoformat(),
+                "status": attendance_status,
+                "overtime_hours": str(overtime_hours),
+                "late_mark": row.get("late_mark", "").lower() in {"1", "true", "yes", "y"},
+                "remarks": row.get("remarks", ""),
+            })
+
+        if not prepared_rows and not errors:
+            errors.append({"row": 1, "errors": ["CSV file contains no attendance rows."]})
+        if AttendanceImportBatch.objects.filter(entity_id=entity_id, batch_code=batch_code, deleted_at__isnull=True).exists():
+            raise ValidationError({"batch_code": "This batch code already exists."})
+
+        batch = AttendanceImportBatch.objects.create(
+            entity_id=entity_id,
+            subentity_id=subentity_id,
+            batch_code=batch_code,
+            import_mode=AttendanceImportBatch.ImportMode.CSV,
+            import_status=AttendanceImportBatch.ImportStatus.DRAFT if not errors else AttendanceImportBatch.ImportStatus.FAILED,
+            file_name=upload.name,
+            processed_rows=len(prepared_rows) + len(errors),
+            successful_rows=0,
+            failed_rows=len(errors),
+            payload_json={"rows": prepared_rows},
+            result_json={"errors": errors},
+            remarks=str(request.data.get("remarks") or ""),
+            created_by=request.user,
+            updated_by=request.user,
+        )
+        return Response(AttendanceImportBatchSerializer(batch).data, status=status.HTTP_201_CREATED)
+
+
+class AttendanceImportCommitAPIView(HrmsScopedAPIView):
+    @transaction.atomic
+    def post(self, request, pk):
+        entity_id, requested_subentity_id = self._scope_from_payload(request, request.data)
+        self._assert_hrms_permission(
+            request,
+            entity_id=entity_id,
+            permission_key="attendance_import_batch_create",
+            label="commit attendance imports",
+        )
+        batch = AttendanceImportBatch.objects.select_for_update().filter(
+            pk=pk, entity_id=entity_id, deleted_at__isnull=True
+        ).first()
+        if batch is None:
+            raise ValidationError({"detail": "Attendance import batch was not found."})
+        self.enforce_scope(request, entity_id=batch.entity_id, subentity_id=batch.subentity_id)
+        if requested_subentity_id is not None and requested_subentity_id != batch.subentity_id:
+            raise ValidationError({"subentity": "Attendance import batch does not belong to the selected branch."})
+        if batch.import_status == AttendanceImportBatch.ImportStatus.PROCESSED:
+            data = AttendanceImportBatchSerializer(batch).data
+            data["idempotent_replay"] = True
+            return Response(data)
+        if batch.import_status != AttendanceImportBatch.ImportStatus.DRAFT or batch.failed_rows:
+            raise ValidationError({"detail": "Resolve validation errors before committing this batch."})
+
+        rows = batch.payload_json.get("rows", [])
+        contracts = {
+            str(contract.id): contract
+            for contract in HrEmploymentContract.objects.filter(
+                entity_id=entity_id,
+                id__in={row.get("contract_id") for row in rows},
+                deleted_at__isnull=True,
+            ).select_related("entity", "subentity")
+        }
+        grouped = {}
+        for row in rows:
+            contract = contracts.get(str(row.get("contract_id")))
+            if contract is None:
+                raise ValidationError({"detail": f"Contract {row.get('contract_code')} is no longer available."})
+            grouped.setdefault(str(contract.id), {"contract": contract, "rows": []})["rows"].append({
+                "attendance_date": parse_date(row["attendance_date"]),
+                "status": row["status"],
+                "overtime_hours": row.get("overtime_hours", "0"),
+                "late_mark": row.get("late_mark", False),
+                "remarks": row.get("remarks", ""),
+                "import_batch": batch,
+                "trace_json": {"attendance_import_batch": batch.batch_code},
+            })
+        try:
+            for group in grouped.values():
+                AttendanceCaptureService.bulk_upsert_entries(
+                    contract=group["contract"],
+                    rows=group["rows"],
+                    actor=request.user,
+                    source=DailyAttendance.EntrySource.IMPORT,
+                )
+        except ValueError as err:
+            _raise_service_validation(err)
+
+        batch.import_status = AttendanceImportBatch.ImportStatus.PROCESSED
+        batch.successful_rows = len(rows)
+        batch.failed_rows = 0
+        batch.processed_at = timezone.now()
+        batch.result_json = {"message": "Attendance imported successfully.", "committed_rows": len(rows)}
+        batch.updated_by = request.user
+        batch.save()
+        return Response(AttendanceImportBatchSerializer(batch).data)
 
 
 class AttendanceMonthlySummaryAPIView(HrmsScopedAPIView):

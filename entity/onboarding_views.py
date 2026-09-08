@@ -4,6 +4,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.generics import get_object_or_404
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework.throttling import ScopedRateThrottle
 
 from entity.models import Constitution, Entity, EntityConstitutionV2, EntityFinancialYear, EntityOwnershipV2, GstRegistrationType, SubEntity
 from entity.onboarding_serializers import (
@@ -21,15 +22,20 @@ from entity.onboarding_serializers import (
 )
 from entity.onboarding_services import EntityOnboardingService
 from geography.models import City, Country, District, State
-from helpers.utils.gst_api import get_gst_details
+from entity.gstin_lookup import lookup_gstin, public_lookup_entity_id
 from sales.models.mastergst_models import MasterGSTEnvironment, MasterGSTServiceScope
 from subscriptions.services import SubscriptionService
 
 
 def _raise_onboarding_integrity_validation(exc):
-    if "uq_entity_year_code" in str(exc):
+    message = str(exc).lower()
+    if "uq_entity_year_code" in message:
         raise ValidationError(
             {"financial_years": ["That financial year already exists for this entity. Use a different date range."]}
+        ) from exc
+    if "username" in message or "email" in message:
+        raise ValidationError(
+            {"user": {"email": ["An account with this email already exists. Sign in or use a different email."]}}
         ) from exc
     raise exc
 
@@ -97,7 +103,10 @@ class EntityOnboardingCreateAPIView(APIView):
         serializer.is_valid(raise_exception=True)
 
         try:
-            result = EntityOnboardingService.create_entity(actor=request.user, payload=serializer.validated_data)
+            try:
+                result = EntityOnboardingService.create_entity(actor=request.user, payload=serializer.validated_data)
+            except IntegrityError as exc:
+                _raise_onboarding_integrity_validation(exc)
         except IntegrityError as exc:
             _raise_onboarding_integrity_validation(exc)
         entity = result["entity"]
@@ -151,11 +160,14 @@ class RegisterAndEntityOnboardingCreateAPIView(APIView):
         serializer = RegisterAndOnboardSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        result = EntityOnboardingService.register_user_and_create_entity(
-            payload=serializer.validated_data,
-            user_agent=request.META.get("HTTP_USER_AGENT", ""),
-            ip_address=_client_ip(request),
-        )
+        try:
+            result = EntityOnboardingService.register_user_and_create_entity(
+                payload=serializer.validated_data,
+                user_agent=request.META.get("HTTP_USER_AGENT", ""),
+                ip_address=_client_ip(request),
+            )
+        except IntegrityError as exc:
+            _raise_onboarding_integrity_validation(exc)
         output = RegisterAndOnboardResponseSerializer(_build_register_payload(result))
         return Response(output.data, status=status.HTTP_201_CREATED)
 
@@ -179,11 +191,14 @@ class EntityOnboardingSubmitAPIView(APIView):
         serializer = RegisterAndOnboardSerializer(data=payload)
         serializer.is_valid(raise_exception=True)
 
-        result = EntityOnboardingService.register_user_and_create_entity(
-            payload=serializer.validated_data,
-            user_agent=request.META.get("HTTP_USER_AGENT", ""),
-            ip_address=_client_ip(request),
-        )
+        try:
+            result = EntityOnboardingService.register_user_and_create_entity(
+                payload=serializer.validated_data,
+                user_agent=request.META.get("HTTP_USER_AGENT", ""),
+                ip_address=_client_ip(request),
+            )
+        except IntegrityError as exc:
+            _raise_onboarding_integrity_validation(exc)
         output = RegisterAndOnboardResponseSerializer(_build_register_payload(result))
         return Response(output.data, status=status.HTTP_201_CREATED)
 
@@ -406,55 +421,18 @@ class OnboardingCityOptionsAPIView(APIView):
 class OnboardingGstLookupAPIView(APIView):
     permission_classes = [permissions.AllowAny]
     authentication_classes = []
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "public_gstin_lookup"
 
     def get(self, request, *args, **kwargs):
         gstno = (request.query_params.get("gstno") or "").strip()
         if not gstno:
             raise ValidationError({"gstno": "gstno query parameter is required."})
 
-        gst_data = get_gst_details(gstno)
-        if not gst_data:
-            raise ValidationError({"gstno": "GST details could not be fetched."})
-
-        try:
-            state_code = str(gst_data.get("StateCode") or "").strip().zfill(2)
-            state = State.objects.filter(isactive=True, statecode=state_code).first()
-            city = City.objects.filter(isactive=True, pincode=gst_data.get("AddrPncd")).first()
-            if state and city and city.distt_id and city.distt and city.distt.state_id != state.id:
-                city = City.objects.filter(
-                    isactive=True,
-                    pincode=gst_data.get("AddrPncd"),
-                    distt__state=state,
-                    distt__isactive=True,
-                ).first()
-            district = city.distt if city else None
-            country = state.country if state else None
-        except Exception:
-            state = None
-            city = None
-            district = None
-            country = None
-
-        payload = {
-            "gstno": gst_data.get("Gstin"),
-            "entityname": gst_data.get("TradeName"),
-            "legalname": gst_data.get("LegalName"),
-            "address": gst_data.get("AddrBnm"),
-            "address2": gst_data.get("AddrBno"),
-            "addressfloorno": gst_data.get("AddrFlno"),
-            "addressstreet": gst_data.get("AddrSt"),
-            "stateid": state.id if state else None,
-            "cityid": city.id if city else None,
-            "countryid": country.id if country else None,
-            "disttid": district.id if district else None,
-            "pincode": gst_data.get("AddrPncd"),
-            "gstintype": gst_data.get("TxpType"),
-            "dateofreg": gst_data.get("DtReg"),
-            "dateofdreg": gst_data.get("DtDReg"),
-            "blockstatus": gst_data.get("BlkStatus"),
-            "status": gst_data.get("Status"),
-        }
-        return Response(payload, status=status.HTTP_200_OK)
+        return Response(
+            lookup_gstin(gstin=gstno, credential_entity_id=public_lookup_entity_id()),
+            status=status.HTTP_200_OK,
+        )
 
 
 def _client_ip(request):

@@ -13,12 +13,14 @@ from .views import (
     TenantMembershipPasswordResetView,
     TenantMembershipResendInviteView,
 )
+from platform_ops.customer_request_views import TenantCustomerServiceRequestAPIView
 
 
 app_name = "subscriptions_api"
 
 
 urlpatterns = [
+    path("service-requests", TenantCustomerServiceRequestAPIView.as_view(), name="service-requests"),
     path("public/plans", PublicSubscriptionPlanListView.as_view(), name="public-plans"),
     path("me/summary", CurrentSubscriptionSnapshotView.as_view(), name="current-summary"),
     path("admin/accounts/<int:account_id>", SubscriptionAccountAdminDetailView.as_view(), name="admin-account-detail"),

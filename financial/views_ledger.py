@@ -9,7 +9,9 @@ from rest_framework.generics import ListAPIView, ListCreateAPIView, RetrieveUpda
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from entity.models import EntityFinancialYear
+from entity.models import Entity, EntityFinancialYear
+from entity.gstin_lookup import lookup_gstin
+from entity.onboarding_services import EntityOnboardingService
 from financial.models import AccountAddress, AccountBankDetails, ContactDetails, FinancialMasterRule, Ledger, ShippingDetails, account, accountHead, accounttype
 from financial.serializers_catalog_v2 import AccountHeadV2Serializer, AccountTypeV2Serializer
 from financial.serializers_ledger import (
@@ -962,6 +964,32 @@ class AccountListPostV2APIView(APIView):
 
         serializer = AccountListPostV2RowSerializer(final_rows, many=True)
         return _attach_deprecation_headers(request, Response(serializer.data))
+
+
+class AccountGstinLookupAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        try:
+            entity_id = int(request.query_params.get("entity") or 0)
+        except (TypeError, ValueError):
+            entity_id = 0
+        gstno = str(request.query_params.get("gstno") or "").strip()
+        if not entity_id:
+            raise serializers.ValidationError({"entity": "entity query parameter is required."})
+        entity = Entity.objects.filter(pk=entity_id).first()
+        if not entity:
+            raise serializers.ValidationError({"entity": "Entity was not found."})
+        if not EntityOnboardingService.can_manage_entity(user=request.user, entity=entity):
+            return Response({"detail": "You are not allowed to manage accounts for this entity."}, status=status.HTTP_403_FORBIDDEN)
+        return Response(
+            lookup_gstin(
+                gstin=gstno,
+                credential_entity_id=entity_id,
+                duplicate_entity_id=entity_id,
+            ),
+            status=status.HTTP_200_OK,
+        )
 
 
 class AccountProfileV2ListCreateAPIView(ListCreateAPIView):

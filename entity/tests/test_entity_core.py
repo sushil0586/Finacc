@@ -6,6 +6,7 @@ from django.core.management import call_command
 from django.core import mail
 from django.test import TestCase, override_settings
 from django.core.exceptions import ValidationError
+from django.db import IntegrityError
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.test import APIClient
 
@@ -2591,6 +2592,57 @@ class RegisterAndEntityOnboardingTests(TestCase):
         self.assertIn("email", response.data["user"])
         self.assertEqual(User.objects.filter(email="existingfounder@example.com").count(), 1)
         self.assertFalse(CustomerAccount.objects.filter(owner__email="existingfounder@example.com").exists())
+
+    def test_register_and_onboard_converts_concurrent_email_collision_to_validation_error(self):
+        payload = {
+            "user": {
+                "email": "racefounder@example.com",
+                "username": "racefounder@example.com",
+                "first_name": "Race",
+                "last_name": "Founder",
+                "password": "secret123",
+            },
+            "onboarding": {
+                "entity": {
+                    "entityname": "Race Entity",
+                    "legalname": "Race Entity Pvt Ltd",
+                    "GstRegitrationType": self.gst_type.id,
+                    "gstno": "29APXPB5894F1Z3",
+                    "panno": "APXPB5894F",
+                    "phoneoffice": "9855966534",
+                    "phoneresidence": "9855966534",
+                    "email": "racefounder@example.com",
+                    "address": "4369 GT Road",
+                    "country": self.country.id,
+                    "state": self.state.id,
+                    "district": self.district.id,
+                    "city": self.city.id,
+                    "pincode": "140406",
+                    "const": self.constitution.id,
+                },
+                "financial_years": [
+                    {
+                        "finstartyear": "2026-04-01T00:00:00Z",
+                        "finendyear": "2027-03-31T00:00:00Z",
+                        "desc": "FY 2026-27",
+                        "isactive": True,
+                    }
+                ],
+            },
+        }
+
+        with mock.patch.object(
+            EntityOnboardingService,
+            "register_user_and_create_entity",
+            side_effect=IntegrityError('duplicate key value violates unique constraint "auth_user_username_key"'),
+        ):
+            response = self.client.post("/api/entity/onboarding/register/", payload, format="json")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.data["user"]["email"][0],
+            "An account with this email already exists. Sign in or use a different email.",
+        )
 
     def test_register_and_onboard_rolls_back_signup_when_onboarding_fails(self):
         payload = {

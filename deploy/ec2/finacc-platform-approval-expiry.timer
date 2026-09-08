@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Finacc platform approval expiry hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=120
+Unit=finacc-platform-approval-expiry.service
+
+[Install]
+WantedBy=timers.target

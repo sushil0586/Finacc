@@ -229,11 +229,16 @@ INSTALLED_APPS = [
     "gst_reconciliation.apps.GstReconciliationConfig",
     "rbac",
     "subscriptions",
+    "platform_ops.apps.PlatformOpsConfig",
     "bank_reconciliation.apps.BankReconciliationConfig",
     "bank_reco.apps.BankRecoConfig",
 ]
 
 INSTALLED_APPS += ['auditlogger']
+
+PLATFORM_OPS_ENABLED = config('PLATFORM_OPS_ENABLED', default=False, cast=_cast_boolish_env)
+PLATFORM_OPS_MUTATIONS_ENABLED = config('PLATFORM_OPS_MUTATIONS_ENABLED', default=False, cast=_cast_boolish_env)
+PLATFORM_OPS_APPROVAL_TTL_HOURS = config('PLATFORM_OPS_APPROVAL_TTL_HOURS', default=24, cast=int)
 
 if FILE_STORAGE_BACKEND == 's3':
     INSTALLED_APPS += ['storages']
@@ -262,7 +267,7 @@ MIDDLEWARE.insert(0, 'auditlogger.middleware.AuditMiddleware')
 # ---------------------------------------------------------------------------
 # CORS
 # ---------------------------------------------------------------------------
-CORS_ORIGIN_ALLOW_ALL = config('CORS_ORIGIN_ALLOW_ALL', default=False, cast=bool)
+CORS_ORIGIN_ALLOW_ALL = config('CORS_ORIGIN_ALLOW_ALL', default=False, cast=_cast_boolish_env)
 CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', default='', cast=Csv())
 CORS_ALLOW_CREDENTIALS = True
 CSRF_TRUSTED_ORIGINS = config('CSRF_TRUSTED_ORIGINS', default='', cast=Csv())
@@ -353,6 +358,9 @@ REST_FRAMEWORK = {
         '%Y-%m-%dT%H:%M:%S.%f',
         '%Y-%m-%dT%H:%M:%S',
     ],
+    'DEFAULT_THROTTLE_RATES': {
+        'public_gstin_lookup': '20/hour',
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -465,6 +473,7 @@ WHITEBOOKS_GST_USERNAME = config('WHITEBOOKS_GST_USERNAME', default=config('WHIT
 WHITEBOOKS_STATE_CODE = config('WHITEBOOKS_STATE_CODE', default=config('WHITEBOX_GST_STATE_CODE', default=''))
 WHITEBOOKS_IP_ADDRESS = config('WHITEBOOKS_IP_ADDRESS', default=config('WHITEBOX_GST_IP_ADDRESS', default=MASTERGST_IP_ADDRESS))
 WHITEBOOKS_TIMEOUT_SECONDS = config('WHITEBOOKS_TIMEOUT_SECONDS', default=config('WHITEBOX_GST_TIMEOUT_SECONDS', default=30), cast=int)
+WHITEBOOKS_GST_LOOKUP_ENTITY_ID = config('WHITEBOOKS_GST_LOOKUP_ENTITY_ID', default=0, cast=int)
 WHITEBOOKS_ENABLE_GSTR1_SAVE_LIVE = config('WHITEBOOKS_ENABLE_GSTR1_SAVE_LIVE', default=False, cast=_cast_boolish_env)
 WHITEBOOKS_ENABLE_GSTR1_FILE_LIVE = config('WHITEBOOKS_ENABLE_GSTR1_FILE_LIVE', default=False, cast=_cast_boolish_env)
 WHITEBOOKS_ENABLE_GSTR3B_SAVE_LIVE = config('WHITEBOOKS_ENABLE_GSTR3B_SAVE_LIVE', default=False, cast=_cast_boolish_env)
@@ -484,8 +493,8 @@ GST_PROVIDER_BASE_URLS = {
     'mastergst': MASTERGST_BASE_URL,
     'whitebooks': WHITEBOOKS_BASE_URL or MASTERGST_BASE_URL,
 }
-ALLOW_RELAXED_GSTIN_FOR_SANDBOX = config('ALLOW_RELAXED_GSTIN_FOR_SANDBOX', default=False, cast=bool)
-FINANCIAL_ACCOUNT_ALLOW_RELAXED_GSTIN = config('FINANCIAL_ACCOUNT_ALLOW_RELAXED_GSTIN', default=False, cast=bool)
+ALLOW_RELAXED_GSTIN_FOR_SANDBOX = config('ALLOW_RELAXED_GSTIN_FOR_SANDBOX', default=False, cast=_cast_boolish_env)
+FINANCIAL_ACCOUNT_ALLOW_RELAXED_GSTIN = config('FINANCIAL_ACCOUNT_ALLOW_RELAXED_GSTIN', default=False, cast=_cast_boolish_env)
 
 # ---------------------------------------------------------------------------
 # OpenAI
@@ -499,8 +508,8 @@ OPENAI_MODEL = config('OPENAI_MODEL', default='gpt-4o')
 EMAIL_BACKEND = config('EMAIL_BACKEND', default='django.core.mail.backends.smtp.EmailBackend')
 EMAIL_HOST = config('EMAIL_HOST', default='smtp.gmail.com')
 EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
-EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
-EMAIL_USE_SSL = config('EMAIL_USE_SSL', default=False, cast=bool)
+EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=_cast_boolish_env)
+EMAIL_USE_SSL = config('EMAIL_USE_SSL', default=False, cast=_cast_boolish_env)
 EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
 EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
 DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default=EMAIL_HOST_USER)

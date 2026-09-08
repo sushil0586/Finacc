@@ -187,6 +187,8 @@ class AuthFlowTests(TestCase):
         self.assertNotEqual(original_refresh_token, refresh_resp.cookies[settings.AUTH_REFRESH_COOKIE_NAME].value)
 
     def test_forgot_and_reset_password_flow(self):
+        self.user.email_verified = False
+        self.user.save(update_fields=["email_verified", "updated_at"])
         forgot_resp = self.client.post("/api/auth/forgotpassword", {"email": self.user.email}, format="json")
         self.assertEqual(forgot_resp.status_code, 200)
         otp_code = self._extract_otp_from_last_email()
@@ -198,6 +200,7 @@ class AuthFlowTests(TestCase):
         self.assertEqual(reset_resp.status_code, 200)
         self.user.refresh_from_db()
         self.assertTrue(self.user.check_password("newpass@123"))
+        self.assertTrue(self.user.email_verified)
 
     def test_email_verification_flow(self):
         self.user.email_verified = False

@@ -157,6 +157,18 @@ class LeaveApprovalWorkflowTests(TestCase):
 
         self.assertEqual(approved.status, LeaveApplication.Status.APPROVED)
         self.assertEqual(approved.approval_status, LeaveApplication.ApprovalStatus.APPROVED)
+
+        repeated = LeaveApprovalService.approve(
+            application=application,
+            approver=self.user,
+            approved_days=Decimal("2.00"),
+            manager_note="Repeated request",
+        )
+        self.assertEqual(repeated.approval_status, LeaveApplication.ApprovalStatus.APPROVED)
+        self.assertEqual(
+            ContractLeaveLedgerEntry.objects.filter(reference_id=str(application.id)).count(),
+            1,
+        )
         self.assertEqual(approved.payroll_impact_json["paid_leave_days"], "2.00")
         ledger = ContractLeaveLedgerEntry.objects.get(reference_id=str(application.id))
         self.assertEqual(ledger.quantity_days, Decimal("-2.00"))

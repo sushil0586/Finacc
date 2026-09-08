@@ -52,6 +52,7 @@ urlpatterns = [
     path("api/assets/", include("assets.urls")),
     path("api/rbac/", include("rbac.urls", namespace="rbac_api")),
     path("api/subscriptions/", include("subscriptions.urls", namespace="subscriptions_api")),
+    path("api/platform/", include("platform_ops.urls", namespace="platform_ops")),
     path("api/bank-reconciliation/", include("bank_reconciliation.urls", namespace="bank_reconciliation_api")),
     path("api/bank-reco/", include("bank_reco.urls", namespace="bank_reco_api")),
     path("api/vouchers/", include("vouchers.urls")),

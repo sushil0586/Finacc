@@ -12,7 +12,9 @@ class AuditMiddleware(MiddlewareMixin):
         path = request.path
 
         try:
-            if method == 'GET':
+            if path.startswith('/api/platform/'):
+                new_data = {'redacted': True}
+            elif method == 'GET':
                 new_data = request.GET.dict()
             elif request.content_type == 'application/json':
                 try:

@@ -5,7 +5,7 @@ import secrets
 from django.db import transaction
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework import generics, permissions, status
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
@@ -40,6 +40,7 @@ from assets.services.asset_service import AssetService
 from assets.services.settings import AssetSettingsService
 from financial.models import account
 from financial.models import Ledger
+from rbac.services import EffectivePermissionService
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
@@ -47,6 +48,19 @@ class AssetScopedAPIView(ScopedEntitlementMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     subscription_feature_code = SubscriptionLimitCodes.FEATURE_ASSETS
     subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
+
+    @staticmethod
+    def _require_permission(request, *, entity_id: int, permission_code: str, subentity_id: int | None = None):
+        assignments = EffectivePermissionService.active_assignments_queryset(request.user, entity_id)
+        if not assignments.exists():
+            return
+        permission_codes = EffectivePermissionService.permission_codes_for_user(
+            request.user,
+            entity_id,
+            subentity_id=subentity_id,
+        )
+        if permission_code not in permission_codes:
+            raise PermissionDenied(f"Missing permission: {permission_code}")
 
     @staticmethod
     def _parse_int(raw_value, field_name: str, *, required: bool) -> int | None:
@@ -90,14 +104,28 @@ class AssetScopedAPIView(ScopedEntitlementMixin, APIView):
             qs = qs.filter(subentity_id=subentity_id)
         return qs
 
-    def _scoped_asset(self, request, pk: int):
+    def _scoped_asset(self, request, pk: int, permission_code: str | None = None):
         asset = get_object_or_404(FixedAsset.objects.select_related("category", "ledger", "vendor_account", "subentity"), pk=pk)
         self.enforce_scope(request, entity_id=asset.entity_id, entityfinid_id=asset.entityfinid_id, subentity_id=asset.subentity_id)
+        if permission_code:
+            self._require_permission(
+                request,
+                entity_id=asset.entity_id,
+                subentity_id=asset.subentity_id,
+                permission_code=permission_code,
+            )
         return asset
 
-    def _scoped_run(self, request, pk: int):
+    def _scoped_run(self, request, pk: int, permission_code: str | None = None):
         run = get_object_or_404(DepreciationRun.objects.prefetch_related("lines__asset__category"), pk=pk)
         self.enforce_scope(request, entity_id=run.entity_id, entityfinid_id=run.entityfinid_id, subentity_id=run.subentity_id)
+        if permission_code:
+            self._require_permission(
+                request,
+                entity_id=run.entity_id,
+                subentity_id=run.subentity_id,
+                permission_code=permission_code,
+            )
         return run
 
 
@@ -113,6 +141,7 @@ class AssetSettingsAPIView(AssetScopedAPIView):
         if not isinstance(request.data, dict):
             raise ValidationError({"detail": "Expected an object payload."})
         entity_id, _, subentity_id = self._scope_from_payload(request, request.data)
+        self._require_permission(request, entity_id=entity_id, subentity_id=subentity_id, permission_code="assets.settings.update")
         settings_obj = AssetSettingsService.get_settings(entity_id, subentity_id)
         serializer = AssetSettingsSerializer(instance=settings_obj, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
@@ -149,6 +178,12 @@ class AssetCategoryListCreateAPIView(AssetScopedAPIView, generics.ListCreateAPIV
             entity_id=serializer.validated_data["entity"].id,
             subentity_id=getattr(serializer.validated_data.get("subentity"), "id", None),
         )
+        self._require_permission(
+            request,
+            entity_id=serializer.validated_data["entity"].id,
+            subentity_id=getattr(serializer.validated_data.get("subentity"), "id", None),
+            permission_code="assets.category.create",
+        )
         self.perform_create(serializer)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
@@ -169,6 +204,12 @@ class AssetCategoryRetrieveUpdateAPIView(AssetScopedAPIView, generics.RetrieveUp
         return obj
 
     def perform_update(self, serializer):
+        self._require_permission(
+            self.request,
+            entity_id=serializer.instance.entity_id,
+            subentity_id=serializer.instance.subentity_id,
+            permission_code="assets.category.update",
+        )
         serializer.save(updated_by=self.request.user)
 
 
@@ -177,6 +218,7 @@ class AssetCategoryDestroyAPIView(AssetScopedAPIView):
     def delete(self, request, pk: int):
         category = get_object_or_404(AssetCategory.objects.select_related("entity", "subentity"), pk=pk)
         self.enforce_scope(request, entity_id=category.entity_id, subentity_id=category.subentity_id)
+        self._require_permission(request, entity_id=category.entity_id, subentity_id=category.subentity_id, permission_code="assets.category.delete")
         try:
             AssetService.archive_category(category=category, user_id=request.user.id)
         except ValueError as exc:
@@ -219,6 +261,12 @@ class FixedAssetListCreateAPIView(AssetScopedAPIView, generics.ListCreateAPIView
             entityfinid_id=getattr(entityfinid, "id", None),
             subentity_id=getattr(subentity, "id", None),
         )
+        self._require_permission(
+            request,
+            entity_id=entity.id,
+            subentity_id=getattr(subentity, "id", None),
+            permission_code="assets.asset.create",
+        )
         asset = AssetService.create_asset(data=serializer.validated_data, user_id=request.user.id)
         return Response(FixedAssetListSerializer(asset).data, status=status.HTTP_201_CREATED)
 
@@ -251,6 +299,12 @@ class FixedAssetRetrieveUpdateAPIView(AssetScopedAPIView, generics.RetrieveUpdat
             entityfinid_id=instance.entityfinid_id,
             subentity_id=instance.subentity_id,
         )
+        self._require_permission(
+            request,
+            entity_id=instance.entity_id,
+            subentity_id=instance.subentity_id,
+            permission_code="assets.asset.update",
+        )
         try:
             asset = AssetService.update_asset(instance=instance, data=serializer.validated_data, user_id=request.user.id)
         except ValueError as exc:
@@ -265,6 +319,7 @@ class FixedAssetRetrieveUpdateAPIView(AssetScopedAPIView, generics.RetrieveUpdat
             entityfinid_id=instance.entityfinid_id,
             subentity_id=instance.subentity_id,
         )
+        self._require_permission(request, entity_id=instance.entity_id, subentity_id=instance.subentity_id, permission_code="assets.asset.delete")
         try:
             AssetService.archive_asset(asset=instance, user_id=request.user.id)
         except ValueError as exc:
@@ -277,6 +332,7 @@ class FixedAssetDestroyAPIView(AssetScopedAPIView):
     def delete(self, request, pk: int):
         asset = get_object_or_404(FixedAsset.objects.select_related("category", "ledger", "vendor_account", "subentity"), pk=pk)
         self.enforce_scope(request, entity_id=asset.entity_id, entityfinid_id=asset.entityfinid_id, subentity_id=asset.subentity_id)
+        self._require_permission(request, entity_id=asset.entity_id, subentity_id=asset.subentity_id, permission_code="assets.asset.delete")
         try:
             AssetService.archive_asset(asset=asset, user_id=request.user.id)
         except ValueError as exc:
@@ -287,7 +343,7 @@ class FixedAssetDestroyAPIView(AssetScopedAPIView):
 class FixedAssetCapitalizeAPIView(AssetScopedAPIView):
 
     def post(self, request, pk: int):
-        asset = self._scoped_asset(request, pk)
+        asset = self._scoped_asset(request, pk, "assets.asset.update")
         serializer = AssetCapitalizeSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -300,7 +356,7 @@ class FixedAssetCapitalizeAPIView(AssetScopedAPIView):
 class FixedAssetCapitalizePrecheckAPIView(AssetScopedAPIView):
 
     def post(self, request, pk: int):
-        asset = self._scoped_asset(request, pk)
+        asset = self._scoped_asset(request, pk, "assets.asset.update")
         serializer = AssetCapitalizeSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -313,7 +369,7 @@ class FixedAssetCapitalizePrecheckAPIView(AssetScopedAPIView):
 class FixedAssetImpairAPIView(AssetScopedAPIView):
 
     def post(self, request, pk: int):
-        asset = self._scoped_asset(request, pk)
+        asset = self._scoped_asset(request, pk, "assets.asset.update")
         serializer = AssetImpairSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -326,7 +382,7 @@ class FixedAssetImpairAPIView(AssetScopedAPIView):
 class FixedAssetImpairPrecheckAPIView(AssetScopedAPIView):
 
     def post(self, request, pk: int):
-        asset = self._scoped_asset(request, pk)
+        asset = self._scoped_asset(request, pk, "assets.asset.update")
         serializer = AssetImpairSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -339,7 +395,7 @@ class FixedAssetImpairPrecheckAPIView(AssetScopedAPIView):
 class FixedAssetTransferAPIView(AssetScopedAPIView):
 
     def post(self, request, pk: int):
-        asset = self._scoped_asset(request, pk)
+        asset = self._scoped_asset(request, pk, "assets.asset.update")
         serializer = AssetTransferSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -352,7 +408,7 @@ class FixedAssetTransferAPIView(AssetScopedAPIView):
 class FixedAssetTransferPrecheckAPIView(AssetScopedAPIView):
 
     def post(self, request, pk: int):
-        asset = self._scoped_asset(request, pk)
+        asset = self._scoped_asset(request, pk, "assets.asset.update")
         serializer = AssetTransferSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -365,7 +421,7 @@ class FixedAssetTransferPrecheckAPIView(AssetScopedAPIView):
 class FixedAssetDisposePrecheckAPIView(AssetScopedAPIView):
 
     def post(self, request, pk: int):
-        asset = self._scoped_asset(request, pk)
+        asset = self._scoped_asset(request, pk, "assets.asset.update")
         serializer = AssetDisposalSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         payload = AssetService.dispose_asset_precheck(asset=asset, **serializer.validated_data)
@@ -375,7 +431,7 @@ class FixedAssetDisposePrecheckAPIView(AssetScopedAPIView):
 class FixedAssetDisposeAPIView(AssetScopedAPIView):
 
     def post(self, request, pk: int):
-        asset = self._scoped_asset(request, pk)
+        asset = self._scoped_asset(request, pk, "assets.asset.update")
         serializer = AssetDisposalSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -388,7 +444,7 @@ class FixedAssetDisposeAPIView(AssetScopedAPIView):
 class FixedAssetDisposePrecheckAPIView(AssetScopedAPIView):
 
     def post(self, request, pk: int):
-        asset = self._scoped_asset(request, pk)
+        asset = self._scoped_asset(request, pk, "assets.asset.update")
         serializer = AssetDisposalSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -401,11 +457,11 @@ class FixedAssetDisposePrecheckAPIView(AssetScopedAPIView):
 class FixedAssetReverseCapitalizationAPIView(AssetScopedAPIView):
 
     def get(self, request, pk: int):
-        asset = self._scoped_asset(request, pk)
+        asset = self._scoped_asset(request, pk, "assets.asset.update")
         return Response(AssetService.reverse_capitalization_precheck(asset=asset))
 
     def post(self, request, pk: int):
-        asset = self._scoped_asset(request, pk)
+        asset = self._scoped_asset(request, pk, "assets.asset.update")
         serializer = AssetReverseLifecycleSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -418,11 +474,11 @@ class FixedAssetReverseCapitalizationAPIView(AssetScopedAPIView):
 class FixedAssetReverseImpairmentAPIView(AssetScopedAPIView):
 
     def get(self, request, pk: int):
-        asset = self._scoped_asset(request, pk)
+        asset = self._scoped_asset(request, pk, "assets.asset.update")
         return Response(AssetService.reverse_impairment_precheck(asset=asset))
 
     def post(self, request, pk: int):
-        asset = self._scoped_asset(request, pk)
+        asset = self._scoped_asset(request, pk, "assets.asset.update")
         serializer = AssetReverseLifecycleSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -435,11 +491,11 @@ class FixedAssetReverseImpairmentAPIView(AssetScopedAPIView):
 class FixedAssetReverseDisposalAPIView(AssetScopedAPIView):
 
     def get(self, request, pk: int):
-        asset = self._scoped_asset(request, pk)
+        asset = self._scoped_asset(request, pk, "assets.asset.update")
         return Response(AssetService.reverse_disposal_precheck(asset=asset))
 
     def post(self, request, pk: int):
-        asset = self._scoped_asset(request, pk)
+        asset = self._scoped_asset(request, pk, "assets.asset.update")
         serializer = AssetReverseLifecycleSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -510,6 +566,8 @@ class AssetBulkAPIView(AssetScopedAPIView):
 
     def _validate_response(self, request):
         entity_id, entityfinid_id, subentity_id = self._scope_from_request(request, require_entityfinid=False)
+        permission_code = "assets.category.create" if self.bulk_scope_type == AssetBulkJob.ScopeType.CATEGORY else "assets.asset.create"
+        self._require_permission(request, entity_id=entity_id, subentity_id=subentity_id, permission_code=permission_code)
         upload = request.FILES.get("file")
         if not upload:
             raise ValidationError({"file": "Upload file is required."})
@@ -567,6 +625,8 @@ class AssetBulkAPIView(AssetScopedAPIView):
 
     def _commit_response(self, request):
         entity_id, entityfinid_id, subentity_id = self._scope_from_request(request, require_entityfinid=False)
+        permission_code = "assets.category.create" if self.bulk_scope_type == AssetBulkJob.ScopeType.CATEGORY else "assets.asset.create"
+        self._require_permission(request, entity_id=entity_id, subentity_id=subentity_id, permission_code=permission_code)
         entity = get_object_or_404(Entity, pk=entity_id)
         subentity = None
         if subentity_id is not None:
@@ -791,6 +851,12 @@ class DepreciationRunListCreateAPIView(AssetScopedAPIView, generics.ListCreateAP
             entityfinid_id=entityfinid.id,
             subentity_id=getattr(subentity, "id", None),
         )
+        self._require_permission(
+            request,
+            entity_id=entity.id,
+            subentity_id=getattr(subentity, "id", None),
+            permission_code="assets.depreciation_run.create",
+        )
         run = serializer.save(created_by=request.user, updated_by=request.user)
         return Response(DepreciationRunSerializer(run).data, status=status.HTTP_201_CREATED)
 
@@ -815,7 +881,7 @@ class DepreciationRunRetrieveAPIView(AssetScopedAPIView, generics.RetrieveAPIVie
 class DepreciationRunCalculateAPIView(AssetScopedAPIView):
 
     def post(self, request, pk: int):
-        run = self._scoped_run(request, pk)
+        run = self._scoped_run(request, pk, "assets.depreciation_run.create")
         serializer = DepreciationRunCalculateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -828,7 +894,7 @@ class DepreciationRunCalculateAPIView(AssetScopedAPIView):
 class DepreciationRunPostAPIView(AssetScopedAPIView):
 
     def post(self, request, pk: int):
-        run = self._scoped_run(request, pk)
+        run = self._scoped_run(request, pk, "assets.depreciation_run.create")
         try:
             run = AssetService.post_run(run=run, user_id=request.user.id)
         except ValueError as exc:
@@ -839,7 +905,7 @@ class DepreciationRunPostAPIView(AssetScopedAPIView):
 class DepreciationRunCancelAPIView(AssetScopedAPIView):
 
     def post(self, request, pk: int):
-        run = self._scoped_run(request, pk)
+        run = self._scoped_run(request, pk, "assets.depreciation_run.create")
         try:
             run = AssetService.cancel_run(run=run, user_id=request.user.id)
         except ValueError as exc:

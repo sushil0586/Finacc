@@ -14,6 +14,7 @@ from .views_settings_hub import (
 from .views_ledger import (
     AccountHeadV2ListCreateAPIView,
     AccountHeadV2RetrieveUpdateDestroyAPIView,
+    AccountGstinLookupAPIView,
     AccountListPostV2APIView,
     AccountProfileV2ListCreateAPIView,
     AccountProfileV2RetrieveUpdateDestroyAPIView,
@@ -74,6 +75,7 @@ urlpatterns = [
     path("ledgers/simple", LedgerSimpleListAPIView.as_view(), name="ledger-simple-list"),
     path("ledger-balances", LedgerBalanceListAPIView.as_view(), name="ledger-balance-list"),
     path("accounts-v2", AccountProfileV2ListCreateAPIView.as_view(), name="account-profile-v2-list-create"),
+    path("accounts-v2/gstin-lookup/", AccountGstinLookupAPIView.as_view(), name="account-gstin-lookup"),
     path("accounts-v2/<int:pk>", AccountProfileV2RetrieveUpdateDestroyAPIView.as_view(), name="account-profile-v2-detail"),
     path("accounts-v2/bulk/template/", AccountsBulkTemplateAPIView.as_view(), name="accounts-v2-bulk-template"),
     path("accounts-v2/bulk/export/", AccountsBulkExportAPIView.as_view(), name="accounts-v2-bulk-export"),

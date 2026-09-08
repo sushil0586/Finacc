@@ -33,8 +33,8 @@ def _extract_error(raw_any):
                 arr = json.loads(s)
                 if isinstance(arr, list) and arr:
                     first = arr[0] if isinstance(arr[0], dict) else {}
-                    code = code or first.get("ErrorCode") or first.get("error_code") or first.get("code")
-                    msg = msg or first.get("ErrorMessage") or first.get("error_message") or first.get("message")
+                    code = code or first.get("ErrorCode") or first.get("errorCode") or first.get("error_code") or first.get("code")
+                    msg = msg or first.get("ErrorMessage") or first.get("errorMessage") or first.get("error_message") or first.get("message")
             except Exception:
                 pass
 

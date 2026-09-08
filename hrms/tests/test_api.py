@@ -1,11 +1,13 @@
 from datetime import date, datetime
+from unittest.mock import patch
 
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
 from Authentication.models import User
-from entity.models import Entity, EntityFinancialYear
+from entity.models import Entity, EntityFinancialYear, SubEntity
 from hrms.models import (
     AttendanceApproval,
     AttendanceImportBatch,
@@ -24,7 +26,9 @@ from hrms.models import (
     LeavePolicyRule,
     LeaveType,
 )
+from hrms.services import AttendanceCaptureService
 from payroll.models import PayrollPeriod
+from rbac.models import Permission, Role, RolePermission, UserRoleAssignment
 
 
 class HrmsApiTests(APITestCase):
@@ -191,6 +195,18 @@ class HrmsApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data), 1)
         self.assertEqual(response.data[0]["contract_code"], "CTR-2002")
+
+    def test_contracts_mine_returns_only_authenticated_users_contracts(self):
+        self.employee.linked_user = self.user
+        self.employee.save(update_fields=["linked_user"])
+
+        response = self.client.get(
+            "/api/hrms/contracts/",
+            {"entity": self.entity.id, "mine": "true", "active_only": "false"},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual([item["contract_code"] for item in response.data], ["CTR-2001"])
 
     def test_holiday_calendars_api_filters_by_year(self):
         response = self.client.get(
@@ -520,6 +536,243 @@ class HrmsApiTests(APITestCase):
         import_list = self.client.get("/api/hrms/attendance-import-batches/", {"entity": self.entity.id})
         self.assertEqual(import_list.status_code, status.HTTP_200_OK)
         self.assertEqual(import_list.data[0]["batch_code"], "ATT-JUN-2026")
+
+    def test_attendance_csv_validate_commit_and_replay_are_atomic_and_idempotent(self):
+        PayrollPeriod.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            code="APR-2026-CSV",
+            period_start=date(2026, 4, 1),
+            period_end=date(2026, 4, 30),
+            pay_frequency=PayrollPeriod.PayFrequency.MONTHLY,
+        )
+        csv_file = SimpleUploadedFile(
+            "attendance.csv",
+            (
+                "contract_code,attendance_date,status,overtime_hours,late_mark,remarks\n"
+                "CTR-2001,2026-04-02,present,1.50,true,Imported row\n"
+                "CTR-2001,2026-04-03,half_day,0,false,Half day\n"
+            ).encode(),
+            content_type="text/csv",
+        )
+        validate_response = self.client.post(
+            "/api/hrms/attendance-import-batches/validate/",
+            {"entity": self.entity.id, "batch_code": "ATT-CSV-001", "file": csv_file},
+            format="multipart",
+        )
+        self.assertEqual(validate_response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(validate_response.data["import_status"], AttendanceImportBatch.ImportStatus.DRAFT)
+        self.assertEqual(validate_response.data["processed_rows"], 2)
+        self.assertEqual(validate_response.data["failed_rows"], 0)
+        self.assertEqual(DailyAttendance.objects.filter(entity=self.entity).count(), 0)
+
+        commit_url = f"/api/hrms/attendance-import-batches/{validate_response.data['id']}/commit/"
+        commit_response = self.client.post(commit_url, {"entity": self.entity.id}, format="json")
+        self.assertEqual(commit_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(commit_response.data["import_status"], AttendanceImportBatch.ImportStatus.PROCESSED)
+        self.assertEqual(commit_response.data["successful_rows"], 2)
+        self.assertEqual(DailyAttendance.objects.filter(entity=self.entity, source=DailyAttendance.EntrySource.IMPORT).count(), 2)
+
+        replay_response = self.client.post(commit_url, {"entity": self.entity.id}, format="json")
+        self.assertEqual(replay_response.status_code, status.HTTP_200_OK)
+        self.assertTrue(replay_response.data["idempotent_replay"])
+        self.assertEqual(DailyAttendance.objects.filter(entity=self.entity, source=DailyAttendance.EntrySource.IMPORT).count(), 2)
+
+    def test_attendance_csv_validation_errors_create_no_attendance_entries(self):
+        csv_file = SimpleUploadedFile(
+            "invalid-attendance.csv",
+            (
+                "contract_code,attendance_date,status,overtime_hours\n"
+                "UNKNOWN,not-a-date,invalid,-1\n"
+            ).encode(),
+            content_type="text/csv",
+        )
+        response = self.client.post(
+            "/api/hrms/attendance-import-batches/validate/",
+            {"entity": self.entity.id, "batch_code": "ATT-CSV-BAD", "file": csv_file},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["import_status"], AttendanceImportBatch.ImportStatus.FAILED)
+        self.assertEqual(response.data["failed_rows"], 1)
+        self.assertGreaterEqual(len(response.data["result_json"]["errors"][0]["errors"]), 3)
+        self.assertEqual(DailyAttendance.objects.filter(entity=self.entity).count(), 0)
+
+        duplicate = SimpleUploadedFile(
+            "invalid-attendance.csv",
+            "contract_code,attendance_date,status\nCTR-2001,2026-04-02,present\n".encode(),
+            content_type="text/csv",
+        )
+        duplicate_response = self.client.post(
+            "/api/hrms/attendance-import-batches/validate/",
+            {"entity": self.entity.id, "batch_code": "ATT-CSV-BAD", "file": duplicate},
+            format="multipart",
+        )
+        self.assertEqual(duplicate_response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("already exists", str(duplicate_response.data["batch_code"]).lower())
+
+    def _assign_hrms_role(self, *permission_codes, subentity=None):
+        self.user.is_superuser = False
+        self.user.save(update_fields=["is_superuser"])
+        role = Role.objects.create(
+            entity=self.entity,
+            name=f"HRMS test role {Role.objects.count() + 1}",
+            code=f"hrms_test_{self.entity.id}_{Role.objects.count() + 1}",
+        )
+        for code in permission_codes:
+            permission, _ = Permission.objects.get_or_create(
+                code=code,
+                defaults={
+                    "name": code,
+                    "module": "hrms",
+                    "resource": "attendance_import_batch",
+                    "action": code.rsplit(".", 1)[-1],
+                },
+            )
+            RolePermission.objects.create(role=role, permission=permission)
+        UserRoleAssignment.objects.create(
+            user=self.user,
+            entity=self.entity,
+            subentity=subentity,
+            role=role,
+            is_primary=subentity is None,
+        )
+
+    def test_attendance_import_view_role_cannot_validate_files(self):
+        self._assign_hrms_role("hrms.attendance_import_batch.view")
+        list_response = self.client.get("/api/hrms/attendance-import-batches/", {"entity": self.entity.id})
+        csv_file = SimpleUploadedFile(
+            "attendance.csv",
+            "contract_code,attendance_date,status\nCTR-2001,2026-04-02,present\n".encode(),
+            content_type="text/csv",
+        )
+        validate_response = self.client.post(
+            "/api/hrms/attendance-import-batches/validate/",
+            {"entity": self.entity.id, "batch_code": "ATT-READ-ONLY", "file": csv_file},
+            format="multipart",
+        )
+
+        self.assertEqual(list_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(validate_response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(AttendanceImportBatch.objects.filter(batch_code="ATT-READ-ONLY").exists())
+
+    def test_branch_importer_cannot_validate_contract_from_another_branch(self):
+        allowed_branch = SubEntity.objects.create(entity=self.entity, subentityname="Allowed Branch")
+        restricted_branch = SubEntity.objects.create(entity=self.entity, subentityname="Restricted Branch")
+        self.contract.subentity = restricted_branch
+        self.contract.save(update_fields=["subentity"])
+        self._assign_hrms_role(
+            "hrms.attendance_import_batch.view",
+            "hrms.attendance_import_batch.create",
+            subentity=allowed_branch,
+        )
+        csv_file = SimpleUploadedFile(
+            "attendance.csv",
+            "contract_code,attendance_date,status\nCTR-2001,2026-04-02,present\n".encode(),
+            content_type="text/csv",
+        )
+        response = self.client.post(
+            "/api/hrms/attendance-import-batches/validate/",
+            {
+                "entity": self.entity.id,
+                "subentity": allowed_branch.id,
+                "batch_code": "ATT-CROSS-BRANCH",
+                "file": csv_file,
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["import_status"], AttendanceImportBatch.ImportStatus.FAILED)
+        self.assertIn("selected branch", str(response.data["result_json"]["errors"]).lower())
+        self.assertEqual(DailyAttendance.objects.filter(entity=self.entity).count(), 0)
+
+    def test_branch_importer_cannot_commit_batch_from_another_branch(self):
+        allowed_branch = SubEntity.objects.create(entity=self.entity, subentityname="Allowed Branch")
+        restricted_branch = SubEntity.objects.create(entity=self.entity, subentityname="Restricted Branch")
+        self._assign_hrms_role(
+            "hrms.attendance_import_batch.view",
+            "hrms.attendance_import_batch.create",
+            subentity=allowed_branch,
+        )
+        batch = AttendanceImportBatch.objects.create(
+            entity=self.entity,
+            subentity=restricted_branch,
+            batch_code="ATT-RESTRICTED",
+            import_mode=AttendanceImportBatch.ImportMode.CSV,
+            import_status=AttendanceImportBatch.ImportStatus.DRAFT,
+            payload_json={"rows": []},
+            created_by=self.user,
+            updated_by=self.user,
+        )
+
+        response = self.client.post(
+            f"/api/hrms/attendance-import-batches/{batch.id}/commit/",
+            {"entity": self.entity.id, "subentity": allowed_branch.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        batch.refresh_from_db()
+        self.assertEqual(batch.import_status, AttendanceImportBatch.ImportStatus.DRAFT)
+
+    def test_attendance_import_commit_rolls_back_all_rows_when_a_contract_group_fails(self):
+        second_contract = HrEmploymentContract.objects.create(
+            entity=self.entity,
+            employee=self.second_employee,
+            contract_code="CTR-ROLLBACK-2",
+            start_date=date(2026, 4, 1),
+            payroll_effective_from=date(2026, 4, 1),
+            status=HrEmploymentContract.ContractStatus.ACTIVE,
+            created_by=self.user,
+            updated_by=self.user,
+        )
+        batch = AttendanceImportBatch.objects.create(
+            entity=self.entity,
+            batch_code="ATT-ROLLBACK",
+            import_mode=AttendanceImportBatch.ImportMode.CSV,
+            import_status=AttendanceImportBatch.ImportStatus.DRAFT,
+            processed_rows=2,
+            payload_json={"rows": [
+                {
+                    "contract_id": str(self.contract.id),
+                    "contract_code": self.contract.contract_code,
+                    "attendance_date": "2026-05-02",
+                    "status": DailyAttendance.AttendanceStatus.PRESENT,
+                    "overtime_hours": "0",
+                },
+                {
+                    "contract_id": str(second_contract.id),
+                    "contract_code": second_contract.contract_code,
+                    "attendance_date": "2026-05-02",
+                    "status": DailyAttendance.AttendanceStatus.PRESENT,
+                    "overtime_hours": "0",
+                },
+            ]},
+            created_by=self.user,
+            updated_by=self.user,
+        )
+        original = AttendanceCaptureService.bulk_upsert_entries
+        calls = 0
+
+        def fail_second_group(**kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise ValueError({"detail": "Simulated second-group failure."})
+            return original(**kwargs)
+
+        with patch("hrms.views.AttendanceCaptureService.bulk_upsert_entries", side_effect=fail_second_group):
+            response = self.client.post(
+                f"/api/hrms/attendance-import-batches/{batch.id}/commit/",
+                {"entity": self.entity.id},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(DailyAttendance.objects.filter(import_batch=batch).count(), 0)
+        batch.refresh_from_db()
+        self.assertEqual(batch.import_status, AttendanceImportBatch.ImportStatus.DRAFT)
 
     def test_attendance_approval_list_filters_by_payroll_period_id(self):
         AttendanceApproval.objects.create(

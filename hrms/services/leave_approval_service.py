@@ -39,6 +39,14 @@ class LeaveApprovalService:
     @classmethod
     @transaction.atomic
     def approve(cls, *, application: LeaveApplication, approver, approved_days: Decimal | None = None, manager_note: str = "") -> LeaveApplication:
+        application = LeaveApplication.objects.select_for_update().get(pk=application.pk)
+        if application.approval_status == LeaveApplication.ApprovalStatus.APPROVED:
+            return application
+        if application.approval_status in {
+            LeaveApplication.ApprovalStatus.REJECTED,
+            LeaveApplication.ApprovalStatus.CANCELLED,
+        }:
+            raise DRFValidationError({"detail": "Only a pending leave application can be approved."})
         ApprovalWorkflowService.approve(
             instance=application,
             workflow_key="leave_application",
@@ -86,6 +94,14 @@ class LeaveApprovalService:
     @classmethod
     @transaction.atomic
     def reject(cls, *, application: LeaveApplication, approver, manager_note: str = "") -> LeaveApplication:
+        application = LeaveApplication.objects.select_for_update().get(pk=application.pk)
+        if application.approval_status == LeaveApplication.ApprovalStatus.REJECTED:
+            return application
+        if application.approval_status in {
+            LeaveApplication.ApprovalStatus.APPROVED,
+            LeaveApplication.ApprovalStatus.CANCELLED,
+        }:
+            raise DRFValidationError({"detail": "Only a pending leave application can be rejected."})
         ApprovalWorkflowService.reject(
             instance=application,
             workflow_key="leave_application",
