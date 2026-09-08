@@ -2415,7 +2415,7 @@ class TcsReportFilingPackAPIView(APIView):
 
         fy_candidates = _expand_fy_values(fy)
         computations = (
-            TcsComputation.objects.select_related("party_account", "section")
+            TcsComputation.objects.select_related("party_account", "party_account__compliance_profile", "section")
             .prefetch_related("collections__deposit_allocations__deposit")
             .filter(entity_id=entity_id, fiscal_year__in=fy_candidates, quarter=quarter)
             .order_by("doc_date", "id")
@@ -2432,6 +2432,16 @@ class TcsReportFilingPackAPIView(APIView):
                 computations = computations.filter(section__isnull=True)
             else:
                 computations = computations.filter(section__section_code__iexact=section_code)
+        if search:
+            computations = computations.filter(
+                Q(document_no__icontains=search)
+                | Q(party_account__accountname__icontains=search)
+                | Q(party_account__legalname__icontains=search)
+                | Q(party_account__compliance_profile__pan__icontains=search)
+                | Q(section__section_code__icontains=search)
+                | Q(document_type__icontains=search)
+                | Q(trigger_basis__icontains=search)
+            )
         if not include_cancelled:
             computations = _exclude_cancelled_documents(computations)
         computations = list(computations)

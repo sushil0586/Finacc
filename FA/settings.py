@@ -395,6 +395,13 @@ else:
         }
     }
 
+# Namespace-version invalidation must be visible to every application worker.
+# LocMemCache keeps an isolated copy per process, so enabling metadata caches
+# with multiple Gunicorn workers can serve stale masters after a write.
+if CACHES['default']['BACKEND'].endswith('.LocMemCache'):
+    META_CACHE_ENABLED = False
+    PAYABLES_META_CACHE_ENABLED = False
+
 if FILE_STORAGE_BACKEND == 's3':
     AWS_STORAGE_BUCKET_NAME = _require_config('AWS_STORAGE_BUCKET_NAME')
     AWS_S3_REGION_NAME = config('AWS_S3_REGION_NAME', default='ap-south-1')
