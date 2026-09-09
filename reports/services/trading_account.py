@@ -756,6 +756,7 @@ def build_trading_account_summary(
     )
     if opening_value == 0 and gl_opening_stock != 0:
         opening_value = gl_opening_stock
+        cogs_issues = Q2(cogs_issues + gl_opening_stock)
         opening_stock_source = "effective_gl_opening"
 
     total_debits = total_dr + opening_value
@@ -904,6 +905,7 @@ def build_trading_account_dynamic(
     )
     if opening_value == 0 and gl_opening_stock != 0:
         opening_value = gl_opening_stock
+        cogs_issues = Q2(cogs_issues + gl_opening_stock)
         opening_stock_source = "effective_gl_opening"
 
     # 3) Place Opening/Closing; balance with GP/GL (GP on DEBIT, GL on CREDIT)

@@ -2920,7 +2920,7 @@ class BookReportAPITests(APITestCase):
 
     def test_balance_sheet_uses_effective_opening_stock_for_profit_transfer(self):
         from reports.services.financial.statements import build_balance_sheet
-        from reports.services.trading_account import build_trading_account_summary
+        from reports.services.trading_account import build_trading_account_dynamic, build_trading_account_summary
 
         current_asset_type = accounttype.objects.create(
             entity=self.entity,
@@ -3020,7 +3020,20 @@ class BookReportAPITests(APITestCase):
             posted_only=True,
         )
         self.assertEqual(Decimal(str(trading["opening_stock"])), Decimal("100.0"))
+        self.assertEqual(Decimal(str(trading["cogs_from_issues"])), Decimal("100.0"))
         self.assertEqual(trading["params"]["opening_stock_source"], "effective_gl_opening")
+
+        detailed_trading = build_trading_account_dynamic(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            startdate="2025-05-01",
+            enddate="2025-05-31",
+            posted_only=True,
+        )
+        self.assertEqual(Decimal(str(detailed_trading["opening_stock"])), Decimal("100.0"))
+        self.assertEqual(Decimal(str(detailed_trading["cogs_from_issues"])), Decimal("100.0"))
+        self.assertEqual(detailed_trading["params"]["opening_stock_source"], "effective_gl_opening")
 
         balance_sheet = build_balance_sheet(
             entity_id=self.entity.id,
