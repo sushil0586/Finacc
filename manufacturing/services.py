@@ -16,7 +16,7 @@ from numbering.services import DocumentNumberService, ensure_document_type, ensu
 from posting.common.location_resolver import resolve_posting_location_id
 from posting.common.static_accounts import StaticAccountCodes
 from posting.models import Entry, EntryStatus, InventoryMove, JournalLine, TxnType
-from posting.services.posting_service import IMInput, JLInput, PostingService
+from posting.services.posting_service import IMInput, JLInput, PostingService, lock_inventory_products
 from posting.services.static_accounts import StaticAccountService
 
 from .models import (
@@ -1191,6 +1191,13 @@ class ManufacturingWorkOrderService:
 
         materials = list(work_order.materials.all().select_related("material_product"))
         outputs = list(work_order.outputs.all().select_related("finished_product"))
+        lock_inventory_products(
+            entity_id=work_order.entity_id,
+            product_ids=[
+                *(line.material_product_id for line in materials),
+                *(line.finished_product_id for line in outputs),
+            ],
+        )
         additional_costs = list(work_order.additional_costs.all())
         settings_obj = _get_settings(entity_id=work_order.entity_id, subentity_id=work_order.subentity_id)
         ManufacturingWorkOrderService._validate_posting_setup(
@@ -1380,6 +1387,10 @@ class ManufacturingWorkOrderService:
                 move_type=InventoryMove.MoveType.IN_,
                 posting_batch__is_active=True,
             )
+        )
+        lock_inventory_products(
+            entity_id=work_order.entity_id,
+            product_ids=(move.product_id for move in output_moves),
         )
         for output_move in output_moves:
             downstream = InventoryMove.objects.select_for_update().filter(

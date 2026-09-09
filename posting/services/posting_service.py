@@ -11,6 +11,7 @@ from django.db import transaction, connection, models
 from django.db.models import Sum, Q
 from django.utils import timezone
 
+from catalog.models import Product
 from entity.models import EntityFinancialYear
 from financial.models import account as FinancialAccount
 from posting.models import (
@@ -23,6 +24,17 @@ Q2 = Decimal("0.01")
 Q4 = Decimal("0.0001")
 ENTRY_NARRATION_MAX = Entry._meta.get_field("narration").max_length or 500
 JOURNAL_DESCRIPTION_MAX = JournalLine._meta.get_field("description").max_length or 500
+
+
+def lock_inventory_products(*, entity_id: int, product_ids: Iterable[int]) -> None:
+    normalized_ids = sorted({int(product_id) for product_id in product_ids if product_id})
+    if normalized_ids:
+        list(
+            Product.objects.select_for_update().filter(
+                entity_id=entity_id,
+                id__in=normalized_ids,
+            ).order_by("id")
+        )
 
 
 def q2(x) -> Decimal:
@@ -318,6 +330,12 @@ class PostingService:
         use_advisory_lock: bool = True,
         mark_posted: bool = True,
     ) -> Entry:
+        im_inputs = list(im_inputs)
+        lock_inventory_products(
+            entity_id=self.entity_id,
+            product_ids=(row.product_id for row in im_inputs),
+        )
+
         if use_advisory_lock:
             # Postgres only; comment out if you need cross-db
             self._lock_for_txn(txn_type, txn_id)

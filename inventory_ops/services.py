@@ -16,7 +16,7 @@ from catalog.uom_helpers import resolve_product_uom
 from numbering.services import DocumentNumberService, ensure_document_type, ensure_series
 from posting.common.location_resolver import resolve_posting_location_id
 from posting.models import Entry, EntryStatus, InventoryMove, TxnType
-from posting.services.posting_service import IMInput, PostingService
+from posting.services.posting_service import IMInput, PostingService, lock_inventory_products
 
 from .models import (
     InventoryAdjustment,
@@ -609,6 +609,11 @@ class InventoryTransferService:
         if transfer.status == InventoryTransferStatus.POSTED:
             return InventoryTransferResult(transfer=transfer, entry_id=transfer.posting_entry_id)
 
+        lock_inventory_products(
+            entity_id=transfer.entity_id,
+            product_ids=transfer.lines.values_list("product_id", flat=True),
+        )
+
         payload = {
             "entity": transfer.entity_id,
             "entityfinid": transfer.entityfin_id,
@@ -966,6 +971,10 @@ class InventoryAdjustmentService:
             raise ValidationError("Cancelled adjustment cannot be posted.")
         if adjustment.status == InventoryAdjustmentStatus.POSTED:
             return InventoryAdjustmentResult(adjustment=adjustment, entry_id=adjustment.posting_entry_id)
+        lock_inventory_products(
+            entity_id=adjustment.entity_id,
+            product_ids=adjustment.lines.values_list("product_id", flat=True),
+        )
         payload = {
             "entity": adjustment.entity_id,
             "entityfinid": adjustment.entityfin_id,

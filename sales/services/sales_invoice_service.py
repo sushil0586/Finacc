@@ -30,7 +30,7 @@ from sales.services.profile_resolvers import seller_gstin_for_scope, seller_stat
 from posting.adapters.sales_invoice import SalesInvoicePostingAdapter, SalesInvoicePostingConfig
 from posting.models import TxnType, Entry, EntryStatus, JournalLine, InventoryMove
 from posting.common.location_resolver import resolve_posting_location_id
-from posting.services.posting_service import PostingService, JLInput, IMInput
+from posting.services.posting_service import PostingService, JLInput, IMInput, lock_inventory_products
 from geography.gst_state_codes import normalize_india_state_code, normalize_state_code_for_country
 from geography.models import State
 from core.gst_document_validation import gst_classification_error
@@ -3296,6 +3296,10 @@ class SalesInvoiceService:
             entityfinid_id=getattr(header, "entityfinid_id", None),
         )
         lines, charges = cls._load_invoice_rows(header=header)
+        lock_inventory_products(
+            entity_id=header.entity_id,
+            product_ids=(getattr(line, "product_id", None) for line in lines),
+        )
         cls._prepare_header_for_persistence(header=header)
         lines, charges = cls._recompute_invoice_state(
             header=header,
