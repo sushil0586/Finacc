@@ -6,7 +6,16 @@ from django.utils import timezone
 from entity.models import Entity
 from subscriptions.services import SubscriptionService
 
-from .models import Menu, MenuPermission, Permission, RBACAuditLog, Role, RolePermission, UserRoleAssignment
+from .models import (
+    DataAccessPolicy,
+    Menu,
+    MenuPermission,
+    Permission,
+    RBACAuditLog,
+    Role,
+    RolePermission,
+    UserRoleAssignment,
+)
 
 
 class MenuTreeService:
@@ -55,6 +64,75 @@ class EffectivePermissionService:
         if subentity_id is None:
             return False
         return assignments.filter(subentity_id=subentity_id).exists()
+
+    @staticmethod
+    def has_data_scope_access(user, entity_id, policy_type, resource_id):
+        """Return whether any active role assignment permits an exact data scope.
+
+        Restrictive policy configuration accepts ``ids``, ``allowed_ids``, or
+        ``values``. Policies linked to one role are intersected; separate role
+        assignments are additive, matching normal RBAC permission semantics.
+        """
+        return str(resource_id) in EffectivePermissionService.permitted_data_scope_ids(
+            user,
+            entity_id,
+            policy_type,
+            {resource_id},
+        )
+
+    @staticmethod
+    def permitted_data_scope_ids(user, entity_id, policy_type, resource_ids):
+        """Return the permitted subset of candidate IDs without per-row queries."""
+        normalized_candidates = {str(resource_id) for resource_id in resource_ids if resource_id}
+        if not normalized_candidates or RBACDevelopmentAccess.allow_all():
+            return normalized_candidates
+
+        assignments = list(
+            EffectivePermissionService.active_assignments_queryset(user, entity_id)
+            .prefetch_related("role__data_policies__policy")
+        )
+        if not assignments:
+            return normalized_candidates
+
+        permitted = set()
+        for assignment in assignments:
+            policies = [
+                link.policy
+                for link in assignment.role.data_policies.all()
+                if link.isactive
+                and link.policy.isactive
+                and link.policy.policy_type == policy_type
+                and link.policy.entity_id in (None, entity_id)
+            ]
+            if not policies:
+                return normalized_candidates
+
+            role_permitted = set(normalized_candidates)
+            for policy in policies:
+                configuration = policy.configuration or {}
+                configured_values = (
+                    configuration.get("ids")
+                    or configuration.get("allowed_ids")
+                    or configuration.get("values")
+                    or []
+                )
+                if not isinstance(configured_values, (list, tuple, set)):
+                    configured_values = []
+                normalized_values = {str(value) for value in configured_values}
+
+                if policy.scope_mode == DataAccessPolicy.MODE_ALLOW_ALL:
+                    continue
+                elif policy.scope_mode == DataAccessPolicy.MODE_INCLUDE:
+                    role_permitted.intersection_update(normalized_values)
+                elif policy.scope_mode == DataAccessPolicy.MODE_EXCLUDE:
+                    role_permitted.difference_update(normalized_values)
+                else:
+                    role_permitted.clear()
+                    break
+
+            permitted.update(role_permitted)
+
+        return permitted
 
     @staticmethod
     def role_summaries_for_user(user, entity_id):

@@ -5,6 +5,8 @@ from datetime import date as date_cls
 from decimal import Decimal, ROUND_HALF_UP
 from math import ceil
 
+from django.db.models import Q
+
 from catalog.models import Product
 from posting.models import InventoryMove
 from reports.selectors.financial import resolve_scope_names
@@ -61,6 +63,7 @@ def _base_queryset(
     category_ids=None,
     hsn_ids=None,
     location_ids=None,
+    batch_numbers=None,
     search=None,
 ):
     qs = InventoryMove.objects.filter(
@@ -77,6 +80,8 @@ def _base_queryset(
     )
     if entityfin_id:
         qs = qs.filter(entityfin_id=entityfin_id)
+    if batch_numbers is not None:
+        qs = qs.filter(Q(batch_number="") | Q(batch_number__in=batch_numbers))
     if subentity_id is not None:
         qs = qs.filter(subentity_id=subentity_id)
     return qs
@@ -252,6 +257,7 @@ def build_inventory_stock_movement(
     category_ids: list[int] | None = None,
     hsn_ids: list[int] | None = None,
     location_ids: list[int] | None = None,
+    batch_numbers: list[str] | None = None,
     group_by_location: bool = True,
     include_zero: bool = True,
     include_negative: bool = True,
@@ -273,6 +279,7 @@ def build_inventory_stock_movement(
         category_ids=category_ids,
         hsn_ids=hsn_ids,
         location_ids=location_ids,
+        batch_numbers=batch_numbers,
         search=search,
     )
     moves = _movement_rows(qs, group_by_location=group_by_location)
@@ -430,6 +437,7 @@ def build_inventory_stock_day_book(
     category_ids: list[int] | None = None,
     hsn_ids: list[int] | None = None,
     location_ids: list[int] | None = None,
+    batch_numbers: list[str] | None = None,
     group_by_location: bool = False,
     include_zero: bool = True,
     include_negative: bool = True,
@@ -451,6 +459,7 @@ def build_inventory_stock_day_book(
         category_ids=category_ids,
         hsn_ids=hsn_ids,
         location_ids=location_ids,
+        batch_numbers=batch_numbers,
         search=search,
     )
     moves = _movement_rows(qs, group_by_location=False)
@@ -625,6 +634,7 @@ def build_inventory_stock_book_detail(
     category_ids: list[int] | None = None,
     hsn_ids: list[int] | None = None,
     location_ids: list[int] | None = None,
+    batch_numbers: list[str] | None = None,
     group_by_location: bool = True,
     include_zero: bool = True,
     include_negative: bool = True,
@@ -646,6 +656,7 @@ def build_inventory_stock_book_detail(
         category_ids=category_ids,
         hsn_ids=hsn_ids,
         location_ids=location_ids,
+        batch_numbers=batch_numbers,
         search=search,
     )
     moves = _movement_rows(qs, group_by_location=group_by_location)

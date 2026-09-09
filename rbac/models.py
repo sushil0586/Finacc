@@ -140,12 +140,14 @@ class DataAccessPolicy(TrackingModel):
     TYPE_BRANCH = "branch"
     TYPE_DEPARTMENT = "department"
     TYPE_WAREHOUSE = "warehouse"
+    TYPE_BATCH = "batch"
     TYPE_FINANCIAL_YEAR = "financial_year"
     TYPE_CUSTOM = "custom"
     TYPE_CHOICES = (
         (TYPE_BRANCH, "Branch"),
         (TYPE_DEPARTMENT, "Department"),
         (TYPE_WAREHOUSE, "Warehouse"),
+        (TYPE_BATCH, "Batch"),
         (TYPE_FINANCIAL_YEAR, "Financial Year"),
         (TYPE_CUSTOM, "Custom"),
     )

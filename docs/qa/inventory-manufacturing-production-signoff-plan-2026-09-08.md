@@ -349,7 +349,7 @@ Evidence:
 
 ### Phase 4: Manufacturing Execution And Traceability
 
-Status: Pending
+Status: Supported scope completed locally and on staging
 
 Goal: prove physical production flows from raw material to finished goods with complete lineage.
 
@@ -372,11 +372,11 @@ Exit criteria:
 
 - Normal, partial, variance, scrap, rework, and reversal paths preserve quantity integrity and lineage.
 
-Evidence: Pending.
+Evidence: See the Phase 4 entries in the update log and capability boundary below.
 
 ### Phase 5: Manufacturing Costing And Accounting Reconciliation
 
-Status: Local core reconciliation complete; staging proof pending
+Status: Supported scope completed locally and on staging
 
 Goal: prove production cost flows into WIP and finished goods and reconciles to finance.
 
@@ -415,10 +415,12 @@ Evidence:
 - Both summary and detailed Trading Account builders now apply the effective GL opening fallback consistently to opening stock and COGS. The existing opening-stock/balance-sheet regression now asserts `100.00` opening and `100.00` COGS in both contracts.
 - The two focused regressions passed 2/2. The complete manufacturing, inventory-report, book-report, and financial suite passed 231/231 after the second correction, with zero failures and zero system-check issues in 65.846 seconds.
 - Remaining deployment gate: deploy the GL-opening COGS correction, rerun the read-only equation audit, and rerun the staging financial statement relationship lane. Until then Phase 5 remains locally complete but not staging complete.
+- Final staging revision `c1b3ae8b` passed Django system checks and the read-only Manav-T audit. Production inflows of `418.31` were excluded exactly; detailed and summary Trading Account both reported opening `5200.00`, closing `1619724.40`, external inflows `4008894.00`, and COGS `2394369.60`, with a `0.00` equation difference.
+- Final Chromium sign-off passed all three selected financial relationship checks and all six manufacturing reconciliation checks. The combined run returned 9/10 initially because the first manufacturing hub navigation exceeded 120 seconds before executing test logic; its isolated rerun passed 2/2 including authentication in 36.8 seconds. Record the isolated navigation delay under Phase 8 performance monitoring rather than as a functional accounting failure.
 
 ### Phase 6: Permissions, Isolation, Failure, And Recovery
 
-Status: Pending
+Status: In progress; direct-object, tenant, FY, warehouse, and report isolation locally certified
 
 Goal: prove controls hold under unauthorized access and infrastructure failures.
 
@@ -435,7 +437,39 @@ Exit criteria:
 - Unauthorized operations are blocked in both UI and API.
 - Failure and retry cannot duplicate stock movements, batches, work-order events, or journals.
 
-Evidence: Pending.
+Evidence:
+
+- Added direct-object authorization matrices for inventory transfers, inventory adjustments, and manufacturing work orders. They cover view, update, post, unpost, and cancel after the corresponding action permissions are removed.
+- Every denied action returns `403` and preserves draft state. No posting entry or inventory movement is created by a denied request.
+- Added authenticated outsider probes against direct detail and post URLs. These exposed that missing tenant membership was returned as `400 Bad Request`; the shared subscription entitlement service now returns `403 Forbidden` with the existing `tenant_membership_required` code.
+- Added a tenant member with an inventory role restricted to Branch A. The same user can read a Branch A adjustment but receives `403` for both direct detail and post attempts against Branch B; the Branch B adjustment remains `DRAFT` with no inventory movements.
+- Added the equivalent manufacturing proof with real Plant A and Plant B locations, BOMs, and draft work orders. A Plant A-restricted operator can read Plant A but receives `403` for Plant B detail and post; the denied work order retains draft state, no posting entry, and no inventory movement.
+- Activated financial-year data policies in the shared entitlement guard. Restrictive role policies accept `ids`, `allowed_ids`, or `values`; include/exclude policies are enforced, policies on one role intersect, separate role assignments remain additive, and unsupported custom policy logic fails closed.
+- An API-level two-FY proof confirms that a permitted FY remains readable while direct detail and post against an excluded FY return `403`; the denied adjustment remains `DRAFT` with no inventory movement.
+- Extended the shared guard with exact warehouse context and wired inventory transfer/adjustment plus manufacturing work-order create, detail, update, operation, QC, post, unpost, and cancel paths. Every referenced source/destination warehouse must be valid for the entity and allowed by policy.
+- Same-branch warehouse proofs show that permitted adjustments/work orders remain readable, restricted warehouse detail/post calls return `403`, and denied documents retain draft state with no posting or movement. A transfer whose destination warehouse is excluded is rejected before any header is created.
+- Inventory transfer/adjustment and manufacturing work-order lists now filter by both permitted FY and warehouse IDs before serialization, counts, and pagination. Restricted rows are absent rather than merely disabled, and mixed source/destination transfers are visible only when both warehouses are permitted.
+- Inventory report JSON, CSV/export generation, and report metadata now share warehouse-policy enforcement. Restricted warehouses are removed from both result rows and selectable location metadata, while an explicitly requested restricted warehouse returns `403`.
+- Manufacturing summary, material consumption, output yield, posting audit, and WIP cost reports now derive all rows and aggregates from the FY/warehouse-filtered work-order queryset. Tests prove the restricted work order is absent from summaries, report rows, and output-line details.
+- Focused report-isolation probes passed `2/2`. The complete inventory-report and manufacturing regression passed `67/67` with zero failures and zero system-check issues in 40.427 seconds.
+- Added injected persistence-failure proofs at transaction boundaries. A transfer failure after posting records are produced rolls back the entry and every inventory movement while leaving the document draft; adjustment and manufacturing failures after header creation roll back the complete header and child graph.
+- The focused rollback matrix passed `3/3`. The complete inventory-operations and manufacturing regression passed `95/95` with zero failures and zero system-check issues in 92.008 seconds.
+- Added optimistic concurrency to transfer, adjustment, and manufacturing work-order draft edits. Detail and list contracts expose `updated_at`; Angular editors return it as `expected_updated_at`; and locked service updates reject an obsolete revision with structured `409 stale_object` instead of overwriting a newer save.
+- API tests simulate a second writer and prove stale header/line submissions preserve the newer database version for all three document types. The focused stale-write matrix passed `2/2`, the complete backend regression passed `97/97`, the three Angular editor suites passed `62/62`, and TypeScript validation passed.
+- Browser recovery coverage now exercises structured `409` conflicts in transfer, adjustment, and work-order editors. Each editor retains the unsaved field value, exits its saving state, and re-enables Save so the user can recover without re-entering the document.
+- A fail-once transfer update returns `503`, preserves the edited reference, and succeeds after one explicit user retry. Request accounting proves exactly one failed PATCH followed by one successful PATCH; the shared saving guard prevents repeated clicks while either request is active.
+- A browser-level connection drop now covers the no-response/offline path independently of HTTP failures. The editor displays a useful fallback error, retains the complete draft, returns Save to an enabled state, and commits once after reconnect retry with exactly two PATCH attempts.
+- The focused transient-retry and interrupted-request browser cases each passed `1/1`. The complete Chromium inventory/manufacturing operational suite passed `88/88` in 1.6 minutes after adding stale-update, HTTP-failure, and network-interruption recovery coverage.
+- Added `batch` as an explicit RBAC data-policy type using exact normalized batch-number values. Transfer, adjustment, and work-order create/update/detail/lifecycle/list paths now enforce both persisted and submitted input/output batches; roles without a batch policy retain existing allow-all behavior, and blank batches remain valid for non-batch-managed products.
+- Same-warehouse adversarial tests prove an allowed batch remains visible while a restricted batch is absent from lists, direct detail/post returns `403`, denied creates leave no header, and restricted drafts retain zero movements. Focused inventory/manufacturing batch isolation passed `2/2`; the complete affected backend suites passed `99/99` in 31.798 seconds.
+- Movement-backed stock summary, ledger, aging, location, movement, day-book, stock-book, non-moving, reorder, and slow/dead-stock builders now receive the permitted batch set at the shared report scope. JSON and every export recalculate from allowed named batches while retaining legitimate blank-batch movements for non-batch-managed products.
+- Focused report proof confirms restricted-lot quantity is excluded from stock summary, ledger JSON, and ledger CSV. The focused report case passed `1/1`; the complete inventory-report, inventory-operations, and manufacturing regression passed `124/124` in 44.247 seconds.
+- Required-field, invalid-scope, inactive-subscription, and disabled-feature conditions remain validation responses; only authenticated non-membership was reclassified.
+- Focused tenant/entity/subscription and direct-action run passed 92/92 with zero failures and zero system-check issues.
+- Complete inventory and manufacturing backend suites passed 87/87 with zero failures and zero system-check issues in 31.677 seconds.
+- The focused branch/direct-object matrix passed 3/3. After adding the equivalent manufacturing branch proof, the complete inventory/manufacturing regression passed 89/89 with zero failures and zero system-check issues.
+- Relevant shared-guard regression passed 209/209 across RBAC scope/admin access, subscriptions, entity APIs, inventory, and manufacturing. The retained test database's separate full RBAC menu-seeding lane still has missing catalog fixture rows and is not counted as policy-regression evidence.
+- Remaining gate: execute the complete restricted-role matrix on staging.
 
 ### Phase 7: Reports, UX, Accessibility, And Cross-Browser Certification
 
@@ -543,6 +577,20 @@ Confidence above 95% requires all critical invariants to pass locally and on sta
 | 9 Sep 2026 | Phase 4 | Supported scope staging complete | Revision eecf28af verified with lock-before-validation in manufacturing, sales, transfer, and adjustment services; server check passed. Cross-module Chromium gate passed 7/7 across transfer, adjustment, production lifecycle, costing/byproduct, negative-stock rollback, and idempotent goods sale. A rollback-contained database proof found real downstream sale SI-SINV-82 consuming work order 14 output; unpost was rejected, status remained POSTED, and the probe left zero batches or movements. | 97% |
 | 9 Sep 2026 | Phase 5 | Local core reconciliation complete | Corrected periodic COGS double counting by excluding internal production receipts from external inflows. Deterministic raw-material -> production -> finished-goods sale proof reconciled WIP, finished-goods capitalization, closing stock, and sale COGS; focused 25/25 and wider manufacturing/report/financial 231/231 suites passed. Staging financial-statement proof remains. | 97% |
 | 9 Sep 2026 | Phase 5 | Staging audit found second defect; local fix green | Staging manufacturing and financial browser lane passed 15 checks with 1 conditional skip; a date-abbreviation test defect passed after correction. Read-only Manav-T audit proved production exclusion but exposed a 5200.00 GL-opening fallback mismatch in COGS. Summary/detailed builders were corrected and the full local accounting lane passed 231/231. Redeployment and final staging audit remain. | 97% |
+| 9 Sep 2026 | Phase 5 | Supported scope staging complete | Revision c1b3ae8b produced zero COGS-equation difference in detailed and summary Trading Account after excluding 418.31 of production receipts. Financial relationships passed 3/3; manufacturing reconciliations passed 6/6 after one transient 120-second navigation timeout passed an isolated rerun. | 97% |
+| 9 Sep 2026 | Phase 6 | Direct-object and tenant isolation locally certified | Inventory transfer, adjustment, and manufacturing work-order action matrices deny direct view/update/post/unpost/cancel with no mutation. Authenticated outsiders now receive 403 instead of 400 for missing tenant membership. Focused entitlement scope passed 92/92 and full inventory/manufacturing suites passed 87/87. | 97% |
+| 9 Sep 2026 | Phase 6 | Branch-scoped inventory isolation locally certified | A tenant member restricted to Branch A can read its adjustment but cannot directly read or post a Branch B adjustment. Both denied calls return 403 and the foreign-branch document retains draft state with zero movements. Focused branch/direct-object matrix passed 3/3 and the complete inventory/manufacturing regression passed 88/88. | 97% |
+| 9 Sep 2026 | Phase 6 | Branch-scoped manufacturing isolation locally certified | A Plant A-restricted tenant member can read its own work order but cannot directly read or post a Plant B work order created with Plant B locations and BOM. Denied calls return 403 and preserve draft state with no posting entry or inventory movement. The combined branch matrix passed 2/2 and the full regression passed 89/89. Review found warehouse/FY data-access policies are modeled but not yet enforced by the shared operational guard. | 97% |
+| 9 Sep 2026 | Phase 6 | Financial-year policy enforcement locally certified | Shared entitlements now enforce include/exclude FY policies with role-aware semantics and fail-closed custom mode. Two-FY direct detail/post probes preserve excluded documents without movements. Relevant RBAC, subscription, entity, inventory, and manufacturing regression passed 207/207. | 97% |
+| 9 Sep 2026 | Phase 6 | Operational warehouse list isolation locally certified | Transfer, adjustment, and work-order querysets now apply permitted FY/warehouse sets before rows, totals, and pagination. Same-branch tests prove allowed rows remain visible and restricted rows disappear. Focused scope matrix passed 11/11 and the relevant shared regression passed 209/209. | 97% |
+| 9 Sep 2026 | Phase 6 | Warehouse mutation and direct-object isolation locally certified | Shared entitlements validate and authorize every source/destination warehouse used by inventory operations and manufacturing work orders. Same-branch negative probes return 403 without posting or movement; mixed-scope transfer creation leaves no header. Relevant regression passed 209/209. List/report filtering remains open. | 97% |
+| 9 Sep 2026 | Phase 6 | Inventory and manufacturing report isolation locally certified | Warehouse policies now filter inventory report data, exports, and filter metadata; explicit restricted filters return 403. All five manufacturing summary/report APIs exclude restricted work orders before rows and aggregates. Focused probes passed 2/2 and the complete affected regression passed 67/67. | 97% |
+| 9 Sep 2026 | Phase 6 | Transaction rollback locally certified | Injected failures after header creation and after posting prove atomic rollback for inventory transfer, inventory adjustment, and manufacturing work-order paths. No orphan header, entry, journal, or inventory movement survives. Focused probes passed 3/3 and the full operational regression passed 95/95. | 97% |
+| 9 Sep 2026 | Phase 6 | Optimistic concurrency locally certified | Transfer, adjustment, and work-order editors now exchange an `updated_at` revision token. Locked updates reject stale revisions with HTTP 409 and preserve the newer document. Backend passed 97/97, focused Angular editors passed 62/62, and TypeScript validation passed. | 97% |
+| 9 Sep 2026 | Phase 6 | Browser conflict and retry recovery locally certified | All three operational editors preserve unsaved values and become retryable after stale 409 responses. A transfer update also survives a fail-once 503 and succeeds on one explicit retry with exactly two PATCH attempts. Focused recovery passed 1/1 and the complete Chromium operational suite passed 87/87. | 97% |
+| 9 Sep 2026 | Phase 6 | Interrupted-request recovery locally certified | A browser-level connection failure preserves the transfer draft, restores the Save action, and commits once after reconnect retry. The focused case passed 1/1 and the complete Chromium operational suite passed 88/88 in 1.6 minutes. | 97% |
+| 9 Sep 2026 | Phase 6 | Batch document isolation locally certified; report propagation open | Added exact batch-number RBAC policy support across transfer, adjustment, and work-order mutations, direct actions, and lists. Focused isolation passed 2/2 and full affected suites passed 99/99. Movement-backed inventory reports/exports still require batch filtering before full closure. | 97% |
+| 9 Sep 2026 | Phase 6 | Batch report and export isolation locally certified | All movement-backed inventory report families now recalculate using blank batches plus permitted named batches. Stock summary, ledger JSON, and CSV proof passed 1/1; the complete affected backend regression passed 124/124. Local batch-policy enforcement is closed. | 97% |
 
 Phase 4 capability boundary identified during certification:
 
@@ -583,8 +631,8 @@ To be completed after Phase 8.
 | Quantity and movement integrity | Pending | Not assessed | Not assessed |
 | Inventory valuation and GL | Pending | Not assessed | Not assessed |
 | Manufacturing execution | Pending | Not assessed | Not assessed |
-| Manufacturing costing and GL | Pending | Not assessed | Not assessed |
-| RBAC and isolation | Pending | Not assessed | Not assessed |
+| Manufacturing costing and GL | Passed for supported single-final-post workflow | None in supported scope | Incremental partial completions remain unsupported; staging navigation latency is tracked for Phase 8 |
+| RBAC and isolation | In progress | No local direct-object defect remains | Branch-restricted and staging role matrices remain |
 | Failure and recovery | Pending | Not assessed | Not assessed |
 | Reports and usability | Pending | Not assessed | Not assessed |
 | Performance and repeatability | Pending | Not assessed | Not assessed |

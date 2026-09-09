@@ -69,6 +69,7 @@ def _base_summary_rows(
     category_ids: list[int] | None = None,
     hsn_ids: list[int] | None = None,
     location_ids: list[int] | None = None,
+    batch_numbers: list[str] | None = None,
     search: str | None = None,
 ):
     data = build_inventory_stock_summary(
@@ -83,6 +84,7 @@ def _base_summary_rows(
         category_ids=category_ids,
         hsn_ids=hsn_ids,
         location_ids=location_ids,
+        batch_numbers=batch_numbers,
         include_zero=True,
         include_negative=True,
         search=search,
@@ -154,6 +156,7 @@ def build_inventory_non_moving_stock(
     category_ids: list[int] | None = None,
     hsn_ids: list[int] | None = None,
     location_ids: list[int] | None = None,
+    batch_numbers: list[str] | None = None,
     search: str | None = None,
     include_zero: bool = False,
     include_negative: bool = True,
@@ -178,6 +181,7 @@ def build_inventory_non_moving_stock(
         category_ids=category_ids,
         hsn_ids=hsn_ids,
         location_ids=location_ids,
+        batch_numbers=batch_numbers,
         search=search,
     )
 
@@ -258,6 +262,7 @@ def build_inventory_reorder_status(
     category_ids: list[int] | None = None,
     hsn_ids: list[int] | None = None,
     location_ids: list[int] | None = None,
+    batch_numbers: list[str] | None = None,
     search: str | None = None,
     include_zero: bool = True,
     include_negative: bool = True,
@@ -281,6 +286,7 @@ def build_inventory_reorder_status(
         category_ids=category_ids,
         hsn_ids=hsn_ids,
         location_ids=location_ids,
+        batch_numbers=batch_numbers,
         search=search,
     )
 
@@ -371,6 +377,7 @@ def build_inventory_slow_moving_dead_stock(
     category_ids: list[int] | None = None,
     hsn_ids: list[int] | None = None,
     location_ids: list[int] | None = None,
+    batch_numbers: list[str] | None = None,
     search: str | None = None,
     include_zero: bool = False,
     include_negative: bool = True,
@@ -398,6 +405,7 @@ def build_inventory_slow_moving_dead_stock(
         category_ids=category_ids,
         hsn_ids=hsn_ids,
         location_ids=location_ids,
+        batch_numbers=batch_numbers,
         search=search,
     )
 

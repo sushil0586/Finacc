@@ -368,6 +368,7 @@ def build_inventory_stock_summary(
     category_ids: list[int] | None = None,
     hsn_ids: list[int] | None = None,
     location_ids: list[int] | None = None,
+    batch_numbers: list[str] | None = None,
     include_zero: bool = False,
     include_negative: bool = True,
     search: str | None = None,
@@ -379,6 +380,8 @@ def build_inventory_stock_summary(
 ):
     end_date = _resolve_end_date(from_date=from_date, to_date=to_date, as_of_date=as_of_date)
     base_qs = InventoryMove.objects.filter(entity_id=entity_id, posting_date__lte=end_date, product__is_service=False)
+    if batch_numbers is not None:
+        base_qs = base_qs.filter(Q(batch_number="") | Q(batch_number__in=batch_numbers))
     base_qs = _apply_filters(
         base_qs,
         entity_id=entity_id,

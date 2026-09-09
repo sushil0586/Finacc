@@ -250,6 +250,7 @@ def build_inventory_stock_ledger(
     category_ids: list[int] | None = None,
     hsn_ids: list[int] | None = None,
     location_ids: list[int] | None = None,
+    batch_numbers: list[str] | None = None,
     search: str | None = None,
     include_zero: bool = True,
     include_negative: bool = True,
@@ -270,6 +271,8 @@ def build_inventory_stock_ledger(
             search=search,
         )
     )
+    if batch_numbers is not None:
+        base_qs = base_qs.filter(Q(batch_number="") | Q(batch_number__in=batch_numbers))
     if entityfin_id:
         base_qs = base_qs.filter(entityfin_id=entityfin_id)
     if subentity_id is not None:

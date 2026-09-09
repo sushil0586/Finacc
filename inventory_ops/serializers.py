@@ -193,6 +193,7 @@ class InventoryTransferLineSerializer(serializers.Serializer):
 
 
 class InventoryTransferCreateSerializer(serializers.Serializer):
+    expected_updated_at = serializers.DateTimeField(required=False, allow_null=True, write_only=True)
     entity = serializers.IntegerField()
     entityfinid = serializers.IntegerField(required=False, allow_null=True)
     subentity = serializers.IntegerField(required=False, allow_null=True)
@@ -271,6 +272,7 @@ class InventoryTransferResponseSerializer(serializers.ModelSerializer):
             "narration",
             "status",
             "posting_entry_id",
+            "updated_at",
             "source_location_id",
             "source_location_name",
             "source_location_code",
@@ -317,6 +319,7 @@ class InventoryTransferListSerializer(serializers.ModelSerializer):
             "narration",
             "status",
             "posting_entry_id",
+            "updated_at",
             "source_location_name",
             "source_location_display_name",
             "destination_location_name",
@@ -364,6 +367,7 @@ class InventoryAdjustmentLineSerializer(serializers.Serializer):
 
 
 class InventoryAdjustmentCreateSerializer(serializers.Serializer):
+    expected_updated_at = serializers.DateTimeField(required=False, allow_null=True, write_only=True)
     entity = serializers.IntegerField()
     entityfinid = serializers.IntegerField(required=False, allow_null=True)
     subentity = serializers.IntegerField(required=False, allow_null=True)
@@ -430,6 +434,7 @@ class InventoryAdjustmentResponseSerializer(serializers.ModelSerializer):
             "narration",
             "status",
             "posting_entry_id",
+            "updated_at",
             "location_id",
             "location_name",
             "location_code",
@@ -471,6 +476,7 @@ class InventoryAdjustmentListSerializer(serializers.ModelSerializer):
             "narration",
             "status",
             "posting_entry_id",
+            "updated_at",
             "location_id",
             "location_name",
             "location_display_name",

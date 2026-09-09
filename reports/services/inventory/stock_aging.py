@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import date as date_cls
 from decimal import Decimal, ROUND_HALF_UP
 
+from django.db.models import Q
+
 from catalog.models import Product
 from reports.selectors.financial import resolve_scope_names
 from reports.services.inventory.stock_ledger import (
@@ -149,6 +151,7 @@ def build_inventory_stock_aging(
     category_ids: list[int] | None = None,
     hsn_ids: list[int] | None = None,
     location_ids: list[int] | None = None,
+    batch_numbers: list[str] | None = None,
     search: str | None = None,
     include_zero: bool = False,
     include_negative: bool = True,
@@ -178,6 +181,8 @@ def build_inventory_stock_aging(
             search=search,
         )
     )
+    if batch_numbers is not None:
+        base_qs = base_qs.filter(Q(batch_number="") | Q(batch_number__in=batch_numbers))
     if entityfin_id:
         base_qs = base_qs.filter(entityfin_id=entityfin_id)
     if subentity_id is not None:

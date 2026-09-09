@@ -24,13 +24,23 @@ from posting.common.static_accounts import StaticAccountCodes
 from posting.models import EntityStaticAccountMap, InventoryMove, JournalLine, StaticAccount, TxnType
 from posting.services.posting_service import IMInput, PostingService
 from posting.services.static_accounts import StaticAccountService
-from rbac.models import Permission, Role, RolePermission, UserRoleAssignment
+from rbac.models import (
+    DataAccessPolicy,
+    Permission,
+    Role,
+    RoleDataAccessPolicy,
+    RolePermission,
+    UserRoleAssignment,
+)
+from subscriptions.models import UserEntityAccess
+from subscriptions.services import SubscriptionService
 from manufacturing.models import (
     DEFAULT_MANUFACTURING_ADDITIONAL_COST_TYPES,
     ManufacturingOperationStatus,
     ManufacturingSettings,
     ManufacturingWorkOrder,
 )
+from manufacturing.services import ManufacturingWorkOrderService
 from manufacturing.report_correctness_audit import audit_manufacturing_report_correctness
 from reports.services.trading_account import build_trading_account_dynamic
 
@@ -928,6 +938,462 @@ class ManufacturingPhaseOneTests(APITestCase):
         )
         self.assertEqual(work_order_update_resp.status_code, 400)
         self.assertIn("entityfinid", work_order_update_resp.json())
+
+    def test_work_order_direct_actions_require_permissions_without_partial_mutation(self):
+        bom = self.client.post(reverse("manufacturing:manufacturing-boms"), self._bom_payload(), format="json").json()
+        work_order_resp = self.client.post(
+            reverse("manufacturing:manufacturing-work-orders"),
+            self._work_order_payload(bom["id"]),
+            format="json",
+        )
+        self.assertEqual(work_order_resp.status_code, 201)
+        work_order_id = work_order_resp.json()["work_order"]["id"]
+
+        outsider = User.objects.create_user(
+            username=f"manufacturing-outsider-{uuid4().hex[:8]}",
+            email=f"manufacturing-outsider-{uuid4().hex[:8]}@example.com",
+            password="pass123",
+        )
+        self.client.force_authenticate(user=outsider)
+        self.assertEqual(
+            self.client.get(
+                reverse("manufacturing:manufacturing-work-order-detail", kwargs={"pk": work_order_id})
+            ).status_code,
+            403,
+        )
+        self.assertEqual(
+            self.client.post(
+                reverse("manufacturing:manufacturing-work-order-post", kwargs={"pk": work_order_id}),
+                {},
+                format="json",
+            ).status_code,
+            403,
+        )
+        self.client.force_authenticate(user=self.user)
+
+        denied_codes = [
+            "manufacturing.workorder.view",
+            "manufacturing.workorder.update",
+            "manufacturing.workorder.post",
+            "manufacturing.workorder.unpost",
+            "manufacturing.workorder.cancel",
+        ]
+        RolePermission.objects.filter(role=self.role, permission__code__in=denied_codes).delete()
+
+        denied_requests = [
+            ("get", reverse("manufacturing:manufacturing-work-order-detail", kwargs={"pk": work_order_id}), None),
+            ("put", reverse("manufacturing:manufacturing-work-order-detail", kwargs={"pk": work_order_id}), self._work_order_payload(bom["id"])),
+            ("post", reverse("manufacturing:manufacturing-work-order-post", kwargs={"pk": work_order_id}), {}),
+            ("post", reverse("manufacturing:manufacturing-work-order-unpost", kwargs={"pk": work_order_id}), {"reason": "Denied"}),
+            ("post", reverse("manufacturing:manufacturing-work-order-cancel", kwargs={"pk": work_order_id}), {"reason": "Denied"}),
+        ]
+        for method, url, payload in denied_requests:
+            response = getattr(self.client, method)(url, payload, format="json") if payload is not None else getattr(self.client, method)(url)
+            self.assertEqual(response.status_code, 403, f"{method.upper()} {url} should be denied")
+
+        work_order = ManufacturingWorkOrder.objects.get(pk=work_order_id)
+        self.assertEqual(work_order.status, "DRAFT")
+        self.assertIsNone(work_order.posting_entry_id)
+        self.assertFalse(
+            InventoryMove.objects.filter(
+                txn_type=TxnType.MANUFACTURING_WORK_ORDER,
+                txn_id=work_order_id,
+            ).exists()
+        )
+
+    def test_branch_scoped_user_cannot_access_or_post_other_plant_work_order(self):
+        plant_a_bom_response = self.client.post(
+            reverse("manufacturing:manufacturing-boms"),
+            self._bom_payload(),
+            format="json",
+        )
+        self.assertEqual(plant_a_bom_response.status_code, 201)
+        plant_a_work_order_response = self.client.post(
+            reverse("manufacturing:manufacturing-work-orders"),
+            self._work_order_payload(plant_a_bom_response.json()["id"]),
+            format="json",
+        )
+        self.assertEqual(plant_a_work_order_response.status_code, 201)
+
+        plant_b_source = Godown.objects.create(
+            entity=self.entity,
+            subentity=self.second_subentity,
+            name="Plant B Manufacturing Floor",
+            code="MFG-B-01",
+            address="Plant B",
+            city="Ludhiana",
+            state="Punjab",
+            pincode="141003",
+            is_active=True,
+        )
+        plant_b_destination = Godown.objects.create(
+            entity=self.entity,
+            subentity=self.second_subentity,
+            name="Plant B Finished Goods Store",
+            code="FG-B-01",
+            address="Plant B Store",
+            city="Ludhiana",
+            state="Punjab",
+            pincode="141004",
+            is_active=True,
+        )
+        plant_b_bom_payload = self._bom_payload()
+        plant_b_bom_payload.update({
+            "subentity": self.second_subentity.id,
+            "code": "BOM-SUG-1KG-B",
+            "name": "Plant B Sugar 1kg Packing BOM",
+        })
+        plant_b_bom_response = self.client.post(
+            reverse("manufacturing:manufacturing-boms"),
+            plant_b_bom_payload,
+            format="json",
+        )
+        self.assertEqual(plant_b_bom_response.status_code, 201, plant_b_bom_response.json())
+        plant_b_work_order_payload = self._work_order_payload(plant_b_bom_response.json()["id"])
+        plant_b_work_order_payload.update({
+            "subentity": self.second_subentity.id,
+            "source_location": plant_b_source.id,
+            "destination_location": plant_b_destination.id,
+            "reference_no": "WO-REF-PLANT-B",
+        })
+        plant_b_work_order_payload["outputs"][0]["batch_number"] = "FG-PLANT-B-001"
+        plant_b_work_order_response = self.client.post(
+            reverse("manufacturing:manufacturing-work-orders"),
+            plant_b_work_order_payload,
+            format="json",
+        )
+        self.assertEqual(plant_b_work_order_response.status_code, 201, plant_b_work_order_response.json())
+
+        branch_user = User.objects.create_user(
+            username=f"manufacturing-plant-user-{uuid4().hex[:8]}",
+            email=f"manufacturing-plant-user-{uuid4().hex[:8]}@example.com",
+            password="pass123",
+        )
+        self.entity.refresh_from_db()
+        SubscriptionService.ensure_account_membership(
+            customer_account=self.entity.customer_account,
+            user=branch_user,
+            role=UserEntityAccess.Role.MEMBER,
+            granted_by=self.user,
+        )
+        branch_role = Role.objects.create(
+            entity=self.entity,
+            name="Plant A Manufacturing Operator",
+            code=f"manufacturing_plant_a_{uuid4().hex[:8]}",
+            role_level=Role.LEVEL_ENTITY,
+            createdby=self.user,
+        )
+        for role_permission in RolePermission.objects.filter(role=self.role, isactive=True):
+            RolePermission.objects.create(
+                role=branch_role,
+                permission=role_permission.permission,
+                effect=role_permission.effect,
+            )
+        UserRoleAssignment.objects.create(
+            user=branch_user,
+            entity=self.entity,
+            role=branch_role,
+            subentity=self.subentity,
+            assigned_by=self.user,
+        )
+
+        plant_a_work_order_id = plant_a_work_order_response.json()["work_order"]["id"]
+        plant_b_work_order_id = plant_b_work_order_response.json()["work_order"]["id"]
+        self.client.force_authenticate(user=branch_user)
+
+        allowed_detail = self.client.get(
+            reverse("manufacturing:manufacturing-work-order-detail", kwargs={"pk": plant_a_work_order_id})
+        )
+        denied_detail = self.client.get(
+            reverse("manufacturing:manufacturing-work-order-detail", kwargs={"pk": plant_b_work_order_id})
+        )
+        denied_post = self.client.post(
+            reverse("manufacturing:manufacturing-work-order-post", kwargs={"pk": plant_b_work_order_id}),
+            {},
+            format="json",
+        )
+
+        self.assertEqual(allowed_detail.status_code, 200)
+        self.assertEqual(denied_detail.status_code, 403)
+        self.assertEqual(denied_post.status_code, 403)
+        plant_b_work_order = ManufacturingWorkOrder.objects.get(pk=plant_b_work_order_id)
+        self.assertEqual(plant_b_work_order.status, "DRAFT")
+        self.assertIsNone(plant_b_work_order.posting_entry_id)
+        self.assertFalse(
+            InventoryMove.objects.filter(
+                txn_type=TxnType.MANUFACTURING_WORK_ORDER,
+                txn_id=plant_b_work_order_id,
+            ).exists()
+        )
+
+    def test_batch_policy_filters_and_blocks_work_orders_without_mutation(self):
+        bom_response = self.client.post(
+            reverse("manufacturing:manufacturing-boms"),
+            self._bom_payload(),
+            format="json",
+        )
+        self.assertEqual(bom_response.status_code, 201, bom_response.json())
+        bom_id = bom_response.json()["id"]
+
+        allowed_payload = self._work_order_payload(bom_id)
+        allowed_payload["reference_no"] = "WO-BATCH-ALLOWED"
+        allowed_payload["outputs"][0]["batch_number"] = "FG-ALLOWED-001"
+        restricted_payload = self._work_order_payload(bom_id)
+        restricted_payload["reference_no"] = "WO-BATCH-RESTRICTED"
+        restricted_payload["outputs"][0]["batch_number"] = "FG-RESTRICTED-001"
+        allowed = self.client.post(
+            reverse("manufacturing:manufacturing-work-orders"), allowed_payload, format="json"
+        )
+        restricted = self.client.post(
+            reverse("manufacturing:manufacturing-work-orders"), restricted_payload, format="json"
+        )
+        self.assertEqual(allowed.status_code, 201, allowed.json())
+        self.assertEqual(restricted.status_code, 201, restricted.json())
+
+        policy = DataAccessPolicy.objects.create(
+            entity=self.entity,
+            name="Allowed manufacturing lots",
+            code=f"allowed_manufacturing_lots_{uuid4().hex[:8]}",
+            policy_type=DataAccessPolicy.TYPE_BATCH,
+            scope_mode=DataAccessPolicy.MODE_INCLUDE,
+            configuration={"values": ["FG-ALLOWED-001"]},
+        )
+        RoleDataAccessPolicy.objects.create(role=self.role, policy=policy)
+
+        allowed_id = allowed.json()["work_order"]["id"]
+        restricted_id = restricted.json()["work_order"]["id"]
+        self.assertEqual(self.client.get(
+            reverse("manufacturing:manufacturing-work-order-detail", kwargs={"pk": allowed_id})
+        ).status_code, 200)
+        self.assertEqual(self.client.get(
+            reverse("manufacturing:manufacturing-work-order-detail", kwargs={"pk": restricted_id})
+        ).status_code, 403)
+        self.assertEqual(self.client.post(
+            reverse("manufacturing:manufacturing-work-order-post", kwargs={"pk": restricted_id}),
+            {},
+            format="json",
+        ).status_code, 403)
+
+        listed = self.client.get(
+            reverse("manufacturing:manufacturing-work-orders"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+            },
+        )
+        listed_ids = {row["id"] for row in listed.json()["rows"]}
+        self.assertIn(allowed_id, listed_ids)
+        self.assertNotIn(restricted_id, listed_ids)
+
+        denied_payload = self._work_order_payload(bom_id)
+        denied_payload["reference_no"] = "WO-BATCH-DENIED-NEW"
+        denied_payload["outputs"][0]["batch_number"] = "FG-DENIED-NEW"
+        denied_create = self.client.post(
+            reverse("manufacturing:manufacturing-work-orders"), denied_payload, format="json"
+        )
+        self.assertEqual(denied_create.status_code, 403)
+        self.assertFalse(ManufacturingWorkOrder.objects.filter(reference_no="WO-BATCH-DENIED-NEW").exists())
+        restricted_work_order = ManufacturingWorkOrder.objects.get(pk=restricted_id)
+        self.assertEqual(restricted_work_order.status, "DRAFT")
+        self.assertIsNone(restricted_work_order.posting_entry_id)
+        self.assertFalse(InventoryMove.objects.filter(
+            txn_type=TxnType.MANUFACTURING_WORK_ORDER,
+            txn_id=restricted_id,
+        ).exists())
+
+    def test_warehouse_policy_blocks_same_plant_direct_work_order_actions(self):
+        bom_response = self.client.post(
+            reverse("manufacturing:manufacturing-boms"),
+            self._bom_payload(),
+            format="json",
+        )
+        self.assertEqual(bom_response.status_code, 201)
+        allowed_response = self.client.post(
+            reverse("manufacturing:manufacturing-work-orders"),
+            self._work_order_payload(bom_response.json()["id"]),
+            format="json",
+        )
+        self.assertEqual(allowed_response.status_code, 201)
+
+        restricted_source = Godown.objects.create(
+            entity=self.entity,
+            subentity=self.subentity,
+            name="Restricted Manufacturing Floor",
+            code="MFG-RESTRICTED",
+            address="Restricted Plant Area",
+            city="Ludhiana",
+            state="Punjab",
+            pincode="141005",
+            is_active=True,
+        )
+        restricted_destination = Godown.objects.create(
+            entity=self.entity,
+            subentity=self.subentity,
+            name="Restricted Finished Store",
+            code="FG-RESTRICTED",
+            address="Restricted Store Area",
+            city="Ludhiana",
+            state="Punjab",
+            pincode="141006",
+            is_active=True,
+        )
+        restricted_payload = self._work_order_payload(bom_response.json()["id"])
+        restricted_payload.update({
+            "source_location": restricted_source.id,
+            "destination_location": restricted_destination.id,
+            "reference_no": "WO-REF-RESTRICTED-WAREHOUSE",
+        })
+        restricted_payload["outputs"][0]["batch_number"] = "FG-RESTRICTED-001"
+        restricted_response = self.client.post(
+            reverse("manufacturing:manufacturing-work-orders"),
+            restricted_payload,
+            format="json",
+        )
+        self.assertEqual(restricted_response.status_code, 201, restricted_response.json())
+
+        policy = DataAccessPolicy.objects.create(
+            entity=self.entity,
+            name="Primary manufacturing warehouses only",
+            code=f"primary_mfg_warehouses_{uuid4().hex[:8]}",
+            policy_type=DataAccessPolicy.TYPE_WAREHOUSE,
+            scope_mode=DataAccessPolicy.MODE_INCLUDE,
+            configuration={"ids": [self.location.id, self.finished_location.id]},
+        )
+        RoleDataAccessPolicy.objects.create(role=self.role, policy=policy)
+
+        allowed_id = allowed_response.json()["work_order"]["id"]
+        restricted_id = restricted_response.json()["work_order"]["id"]
+        self.assertEqual(
+            self.client.get(
+                reverse("manufacturing:manufacturing-work-order-detail", kwargs={"pk": allowed_id})
+            ).status_code,
+            200,
+        )
+        self.assertEqual(
+            self.client.get(
+                reverse("manufacturing:manufacturing-work-order-detail", kwargs={"pk": restricted_id})
+            ).status_code,
+            403,
+        )
+        self.assertEqual(
+            self.client.post(
+                reverse("manufacturing:manufacturing-work-order-post", kwargs={"pk": restricted_id}),
+                {},
+                format="json",
+            ).status_code,
+            403,
+        )
+        list_response = self.client.get(
+            reverse("manufacturing:manufacturing-work-orders"),
+            {"entity": self.entity.id, "subentity": self.subentity.id},
+        )
+        self.assertEqual(list_response.status_code, 200)
+        listed_ids = {row["id"] for row in list_response.json()["rows"]}
+        self.assertIn(allowed_id, listed_ids)
+        self.assertNotIn(restricted_id, listed_ids)
+        self.assertEqual(list_response.json()["total_count"], len(list_response.json()["rows"]))
+
+        report_scope = {
+            "entity": self.entity.id,
+            "subentity": self.subentity.id,
+            "entityfinid": self.entityfin.id,
+        }
+        summary = self.client.get(reverse("manufacturing:manufacturing-summary"), report_scope)
+        self.assertEqual(summary.status_code, 200)
+        self.assertEqual(summary.json()["overview"]["total_work_orders"], 1)
+        self.assertEqual(
+            {row["id"] for row in summary.json()["recent_work_orders"]},
+            {allowed_id},
+        )
+
+        report_row_keys = {
+            "manufacturing-material-consumption": "work_order_id",
+            "manufacturing-output-yield": "id",
+            "manufacturing-posting-audit": "id",
+            "manufacturing-wip-cost-summary": "id",
+        }
+        for route_name, row_key in report_row_keys.items():
+            report = self.client.get(reverse(f"manufacturing:{route_name}"), report_scope)
+            self.assertEqual(report.status_code, 200, route_name)
+            report_ids = {row[row_key] for row in report.json()["rows"]}
+            self.assertIn(allowed_id, report_ids, route_name)
+            self.assertNotIn(restricted_id, report_ids, route_name)
+
+        output_yield = self.client.get(
+            reverse("manufacturing:manufacturing-output-yield"),
+            report_scope,
+        )
+        self.assertNotIn(
+            restricted_id,
+            {row["work_order_id"] for row in output_yield.json()["output_lines"]},
+        )
+        restricted_work_order = ManufacturingWorkOrder.objects.get(pk=restricted_id)
+        self.assertEqual(restricted_work_order.status, "DRAFT")
+        self.assertIsNone(restricted_work_order.posting_entry_id)
+        self.assertFalse(
+            InventoryMove.objects.filter(
+                txn_type=TxnType.MANUFACTURING_WORK_ORDER,
+                txn_id=restricted_id,
+            ).exists()
+        )
+
+    def test_work_order_create_rolls_back_header_when_line_persistence_fails(self):
+        bom = self.client.post(
+            reverse("manufacturing:manufacturing-boms"),
+            self._bom_payload(),
+            format="json",
+        ).json()
+        payload = self._work_order_payload(bom["id"])
+
+        with patch.object(
+            ManufacturingWorkOrderService,
+            "_replace_lines",
+            side_effect=RuntimeError("injected line persistence failure"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "injected line persistence failure"):
+                ManufacturingWorkOrderService.create_work_order(
+                    payload=payload,
+                    user_id=self.user.id,
+                )
+
+        self.assertFalse(
+            ManufacturingWorkOrder.objects.filter(
+                entity=self.entity,
+                reference_no=payload["reference_no"],
+            ).exists()
+        )
+
+    def test_stale_work_order_update_returns_conflict_without_mutation(self):
+        bom = self.client.post(
+            reverse("manufacturing:manufacturing-boms"),
+            self._bom_payload(),
+            format="json",
+        ).json()
+        payload = self._work_order_payload(bom["id"])
+        created = ManufacturingWorkOrderService.create_work_order(
+            payload=payload,
+            user_id=self.user.id,
+        ).work_order
+        stale_version = created.updated_at
+        ManufacturingWorkOrder.objects.filter(pk=created.id).update(
+            reference_no="NEWER-WORK-ORDER",
+            updated_at=timezone.now(),
+        )
+        stale_payload = self._work_order_payload(bom["id"])
+        stale_payload["expected_updated_at"] = stale_version.isoformat()
+        stale_payload["reference_no"] = "STALE-WORK-ORDER"
+
+        response = self.client.patch(
+            reverse("manufacturing:manufacturing-work-order-detail", kwargs={"pk": created.id}),
+            stale_payload,
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["code"], "stale_object")
+        created.refresh_from_db()
+        self.assertEqual(created.reference_no, "NEWER-WORK-ORDER")
 
     def test_work_order_create_rejects_oversized_fields(self):
         bom = self.client.post(reverse("manufacturing:manufacturing-boms"), self._bom_payload(), format="json").json()

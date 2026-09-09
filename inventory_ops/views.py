@@ -20,6 +20,7 @@ from entity.models import Godown
 from numbering.models import DocumentNumberSeries
 from numbering.services import ensure_document_type, ensure_series
 from posting.models import TxnType
+from rbac.models import DataAccessPolicy
 from rbac.services import EffectivePermissionService
 from sales.services.sales_stock_balance_service import SalesStockBalanceService
 
@@ -121,6 +122,22 @@ def _raise_inventory_validation(err: Exception) -> None:
     if isinstance(payload, dict):
         raise ValidationError(payload)
     raise ValidationError({"detail": str(payload)})
+
+
+def _line_batch_numbers(lines) -> set[str]:
+    return {
+        str(line.get("batch_number") or "").strip()
+        for line in (lines or [])
+        if str(line.get("batch_number") or "").strip()
+    }
+
+
+def _document_batch_numbers(document) -> set[str]:
+    return {
+        str(batch_number).strip()
+        for batch_number in document.lines.values_list("batch_number", flat=True)
+        if str(batch_number or "").strip()
+    }
 
 
 class _BaseInventoryOpsAPIView(ScopedEntitlementMixin, APIView):
@@ -692,6 +709,8 @@ class InventoryTransferCreateAPIView(_BaseInventoryOpsAPIView):
             entity_id=payload["entity"],
             entityfinid_id=payload.get("entityfinid"),
             subentity_id=payload.get("subentity"),
+            warehouse_ids=[payload.get("source_location"), payload.get("destination_location")],
+            batch_numbers=_line_batch_numbers(payload.get("lines")),
         )
         self.assert_permission(request, payload["entity"], "inventory.transfer.create")
         try:
@@ -719,6 +738,35 @@ class InventoryTransferListAPIView(_BaseInventoryOpsAPIView):
             qs = qs.filter(entityfin_id=entityfinid_id)
         if subentity_id is not None:
             qs = qs.filter(subentity_id=subentity_id)
+        permitted_fy_ids = EffectivePermissionService.permitted_data_scope_ids(
+            request.user,
+            entity_id,
+            DataAccessPolicy.TYPE_FINANCIAL_YEAR,
+            qs.values_list("entityfin_id", flat=True).distinct(),
+        )
+        warehouse_candidates = set(qs.values_list("source_location_id", flat=True))
+        warehouse_candidates.update(qs.values_list("destination_location_id", flat=True))
+        permitted_warehouse_ids = EffectivePermissionService.permitted_data_scope_ids(
+            request.user,
+            entity_id,
+            DataAccessPolicy.TYPE_WAREHOUSE,
+            warehouse_candidates,
+        )
+        batch_candidates = set(qs.values_list("lines__batch_number", flat=True).distinct()) - {"", None}
+        permitted_batch_numbers = EffectivePermissionService.permitted_data_scope_ids(
+            request.user,
+            entity_id,
+            DataAccessPolicy.TYPE_BATCH,
+            batch_candidates,
+        )
+        restricted_batch_numbers = batch_candidates - permitted_batch_numbers
+        qs = qs.filter(
+            entityfin_id__in=permitted_fy_ids,
+            source_location_id__in=permitted_warehouse_ids,
+            destination_location_id__in=permitted_warehouse_ids,
+        )
+        if restricted_batch_numbers:
+            qs = qs.exclude(lines__batch_number__in=restricted_batch_numbers)
         qs = (
             qs
             .select_related("source_location", "destination_location")
@@ -745,17 +793,18 @@ class InventoryTransferDetailAPIView(_BaseInventoryOpsAPIView):
 
     def get(self, request, pk: int):
         transfer = self.get_object(pk)
-        self.enforce_scope(request, entity_id=transfer.entity_id, entityfinid_id=transfer.entityfin_id, subentity_id=transfer.subentity_id)
+        self.enforce_scope(request, entity_id=transfer.entity_id, entityfinid_id=transfer.entityfin_id, subentity_id=transfer.subentity_id, warehouse_ids=[transfer.source_location_id, transfer.destination_location_id], batch_numbers=_document_batch_numbers(transfer))
         self.assert_permission(request, transfer.entity_id, "inventory.transfer.view")
         return Response(self._serialize_transfer(request, transfer))
 
     def patch(self, request, pk: int):
         transfer = self.get_object(pk)
-        self.enforce_scope(request, entity_id=transfer.entity_id, entityfinid_id=transfer.entityfin_id, subentity_id=transfer.subentity_id)
+        self.enforce_scope(request, entity_id=transfer.entity_id, entityfinid_id=transfer.entityfin_id, subentity_id=transfer.subentity_id, warehouse_ids=[transfer.source_location_id, transfer.destination_location_id], batch_numbers=_document_batch_numbers(transfer))
         self.assert_permission(request, transfer.entity_id, "inventory.transfer.update")
         serializer = InventoryTransferCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
+        self.enforce_scope(request, entity_id=transfer.entity_id, batch_numbers=_line_batch_numbers(payload.get("lines")))
         try:
             result = InventoryTransferService.update_transfer(transfer_id=pk, payload=payload, user_id=request.user.id)
         except (ValueError, ValidationError) as exc:
@@ -772,7 +821,7 @@ class InventoryTransferDetailAPIView(_BaseInventoryOpsAPIView):
 class InventoryTransferPostAPIView(_BaseInventoryOpsAPIView):
     def post(self, request, pk: int):
         transfer = get_object_or_404(InventoryTransfer, pk=pk)
-        self.enforce_scope(request, entity_id=transfer.entity_id, entityfinid_id=transfer.entityfin_id, subentity_id=transfer.subentity_id)
+        self.enforce_scope(request, entity_id=transfer.entity_id, entityfinid_id=transfer.entityfin_id, subentity_id=transfer.subentity_id, warehouse_ids=[transfer.source_location_id, transfer.destination_location_id], batch_numbers=_document_batch_numbers(transfer))
         self.assert_permission(request, transfer.entity_id, "inventory.transfer.post")
         try:
             result = InventoryTransferService.post_transfer(transfer_id=pk, user_id=request.user.id)
@@ -790,7 +839,7 @@ class InventoryTransferPostAPIView(_BaseInventoryOpsAPIView):
 class InventoryTransferUnpostAPIView(_BaseInventoryOpsAPIView):
     def post(self, request, pk: int):
         transfer = get_object_or_404(InventoryTransfer, pk=pk)
-        self.enforce_scope(request, entity_id=transfer.entity_id, entityfinid_id=transfer.entityfin_id, subentity_id=transfer.subentity_id)
+        self.enforce_scope(request, entity_id=transfer.entity_id, entityfinid_id=transfer.entityfin_id, subentity_id=transfer.subentity_id, warehouse_ids=[transfer.source_location_id, transfer.destination_location_id], batch_numbers=_document_batch_numbers(transfer))
         self.assert_permission(request, transfer.entity_id, "inventory.transfer.unpost")
         reason = str(request.data.get("reason") or "").strip() or None
         try:
@@ -809,7 +858,7 @@ class InventoryTransferUnpostAPIView(_BaseInventoryOpsAPIView):
 class InventoryTransferCancelAPIView(_BaseInventoryOpsAPIView):
     def post(self, request, pk: int):
         transfer = get_object_or_404(InventoryTransfer, pk=pk)
-        self.enforce_scope(request, entity_id=transfer.entity_id, entityfinid_id=transfer.entityfin_id, subentity_id=transfer.subentity_id)
+        self.enforce_scope(request, entity_id=transfer.entity_id, entityfinid_id=transfer.entityfin_id, subentity_id=transfer.subentity_id, warehouse_ids=[transfer.source_location_id, transfer.destination_location_id], batch_numbers=_document_batch_numbers(transfer))
         self.assert_permission(request, transfer.entity_id, "inventory.transfer.cancel")
         reason = str(request.data.get("reason") or "").strip() or None
         try:
@@ -835,6 +884,8 @@ class InventoryAdjustmentCreateAPIView(_BaseInventoryOpsAPIView):
             entity_id=payload["entity"],
             entityfinid_id=payload.get("entityfinid"),
             subentity_id=payload.get("subentity"),
+            warehouse_ids=[payload.get("location")],
+            batch_numbers=_line_batch_numbers(payload.get("lines")),
         )
         self.assert_permission(request, payload["entity"], "inventory.adjustment.create")
         try:
@@ -862,6 +913,32 @@ class InventoryAdjustmentListAPIView(_BaseInventoryOpsAPIView):
             qs = qs.filter(entityfin_id=entityfinid_id)
         if subentity_id is not None:
             qs = qs.filter(subentity_id=subentity_id)
+        permitted_fy_ids = EffectivePermissionService.permitted_data_scope_ids(
+            request.user,
+            entity_id,
+            DataAccessPolicy.TYPE_FINANCIAL_YEAR,
+            qs.values_list("entityfin_id", flat=True).distinct(),
+        )
+        permitted_warehouse_ids = EffectivePermissionService.permitted_data_scope_ids(
+            request.user,
+            entity_id,
+            DataAccessPolicy.TYPE_WAREHOUSE,
+            qs.values_list("location_id", flat=True).distinct(),
+        )
+        batch_candidates = set(qs.values_list("lines__batch_number", flat=True).distinct()) - {"", None}
+        permitted_batch_numbers = EffectivePermissionService.permitted_data_scope_ids(
+            request.user,
+            entity_id,
+            DataAccessPolicy.TYPE_BATCH,
+            batch_candidates,
+        )
+        restricted_batch_numbers = batch_candidates - permitted_batch_numbers
+        qs = qs.filter(
+            entityfin_id__in=permitted_fy_ids,
+            location_id__in=permitted_warehouse_ids,
+        )
+        if restricted_batch_numbers:
+            qs = qs.exclude(lines__batch_number__in=restricted_batch_numbers)
         qs = (
             qs
             .select_related("location")
@@ -887,17 +964,18 @@ class InventoryAdjustmentDetailAPIView(_BaseInventoryOpsAPIView):
 
     def get(self, request, pk: int):
         adjustment = self.get_object(pk)
-        self.enforce_scope(request, entity_id=adjustment.entity_id, entityfinid_id=adjustment.entityfin_id, subentity_id=adjustment.subentity_id)
+        self.enforce_scope(request, entity_id=adjustment.entity_id, entityfinid_id=adjustment.entityfin_id, subentity_id=adjustment.subentity_id, warehouse_ids=[adjustment.location_id], batch_numbers=_document_batch_numbers(adjustment))
         self.assert_permission(request, adjustment.entity_id, "inventory.adjustment.view")
         return Response(self._serialize_adjustment(request, adjustment))
 
     def patch(self, request, pk: int):
         adjustment = self.get_object(pk)
-        self.enforce_scope(request, entity_id=adjustment.entity_id, entityfinid_id=adjustment.entityfin_id, subentity_id=adjustment.subentity_id)
+        self.enforce_scope(request, entity_id=adjustment.entity_id, entityfinid_id=adjustment.entityfin_id, subentity_id=adjustment.subentity_id, warehouse_ids=[adjustment.location_id], batch_numbers=_document_batch_numbers(adjustment))
         self.assert_permission(request, adjustment.entity_id, "inventory.adjustment.update")
         serializer = InventoryAdjustmentCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
+        self.enforce_scope(request, entity_id=adjustment.entity_id, batch_numbers=_line_batch_numbers(payload.get("lines")))
         try:
             result = InventoryAdjustmentService.update_adjustment(adjustment_id=pk, payload=payload, user_id=request.user.id)
         except (ValueError, ValidationError) as exc:
@@ -916,7 +994,7 @@ class InventoryAdjustmentPostAPIView(_BaseInventoryOpsAPIView):
         from .models import InventoryAdjustment
 
         adjustment = get_object_or_404(InventoryAdjustment, pk=pk)
-        self.enforce_scope(request, entity_id=adjustment.entity_id, entityfinid_id=adjustment.entityfin_id, subentity_id=adjustment.subentity_id)
+        self.enforce_scope(request, entity_id=adjustment.entity_id, entityfinid_id=adjustment.entityfin_id, subentity_id=adjustment.subentity_id, warehouse_ids=[adjustment.location_id], batch_numbers=_document_batch_numbers(adjustment))
         self.assert_permission(request, adjustment.entity_id, "inventory.adjustment.post")
         try:
             result = InventoryAdjustmentService.post_adjustment(adjustment_id=pk, user_id=request.user.id)
@@ -936,7 +1014,7 @@ class InventoryAdjustmentUnpostAPIView(_BaseInventoryOpsAPIView):
         from .models import InventoryAdjustment
 
         adjustment = get_object_or_404(InventoryAdjustment, pk=pk)
-        self.enforce_scope(request, entity_id=adjustment.entity_id, entityfinid_id=adjustment.entityfin_id, subentity_id=adjustment.subentity_id)
+        self.enforce_scope(request, entity_id=adjustment.entity_id, entityfinid_id=adjustment.entityfin_id, subentity_id=adjustment.subentity_id, warehouse_ids=[adjustment.location_id], batch_numbers=_document_batch_numbers(adjustment))
         self.assert_permission(request, adjustment.entity_id, "inventory.adjustment.unpost")
         reason = str(request.data.get("reason") or "").strip() or None
         try:
@@ -957,7 +1035,7 @@ class InventoryAdjustmentCancelAPIView(_BaseInventoryOpsAPIView):
         from .models import InventoryAdjustment
 
         adjustment = get_object_or_404(InventoryAdjustment, pk=pk)
-        self.enforce_scope(request, entity_id=adjustment.entity_id, entityfinid_id=adjustment.entityfin_id, subentity_id=adjustment.subentity_id)
+        self.enforce_scope(request, entity_id=adjustment.entity_id, entityfinid_id=adjustment.entityfin_id, subentity_id=adjustment.subentity_id, warehouse_ids=[adjustment.location_id], batch_numbers=_document_batch_numbers(adjustment))
         self.assert_permission(request, adjustment.entity_id, "inventory.adjustment.cancel")
         reason = str(request.data.get("reason") or "").strip() or None
         try:

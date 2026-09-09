@@ -19,6 +19,8 @@ from rest_framework.views import APIView
 from xml.sax.saxutils import escape
 
 from core.entitlements import ScopedEntitlementMixin
+from entity.models import Godown
+from posting.models import InventoryMove
 from reports.schemas.common import build_report_envelope
 from reports.schemas.inventory_reports import InventoryReportScopeSerializer
 from reports.selectors.financial import resolve_scope_names
@@ -38,6 +40,7 @@ from reports.services.inventory.operational import (
 from reports.services.inventory.stock_aging import build_inventory_stock_aging
 from reports.services.inventory.stock_ledger import build_inventory_stock_ledger
 from reports.services.inventory.stock_summary import build_inventory_stock_summary
+from rbac.models import DataAccessPolicy
 from rbac.services import EffectivePermissionService
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
@@ -277,6 +280,41 @@ class _BaseInventoryReportAPIView(ScopedEntitlementMixin, APIView):
             entityfinid_id=scope.get("entityfinid"),
             subentity_id=scope.get("subentity"),
         )
+        candidate_location_ids = set(
+            Godown.objects.filter(entity_id=scope["entity"], is_active=True)
+            .values_list("id", flat=True)
+        )
+        permitted_location_ids = {
+            int(value)
+            for value in EffectivePermissionService.permitted_data_scope_ids(
+                request.user,
+                scope["entity"],
+                DataAccessPolicy.TYPE_WAREHOUSE,
+                candidate_location_ids,
+            )
+        }
+        requested_location_ids = set(scope.get("location_ids") or [])
+        if requested_location_ids:
+            if not requested_location_ids.issubset(permitted_location_ids):
+                raise PermissionDenied("You do not have access to one or more requested warehouse scopes.")
+        elif permitted_location_ids != candidate_location_ids:
+            scope["location_ids"] = sorted(permitted_location_ids) or [-1]
+        candidate_batch_numbers = {
+            str(value).strip()
+            for value in InventoryMove.objects.filter(entity_id=scope["entity"])
+            .exclude(batch_number="")
+            .values_list("batch_number", flat=True)
+            .distinct()
+            if str(value or "").strip()
+        }
+        permitted_batch_numbers = EffectivePermissionService.permitted_data_scope_ids(
+            request.user,
+            scope["entity"],
+            DataAccessPolicy.TYPE_BATCH,
+            candidate_batch_numbers,
+        )
+        if permitted_batch_numbers != candidate_batch_numbers:
+            scope["batch_numbers"] = sorted(permitted_batch_numbers) or ["__no_permitted_batch__"]
         return scope
 
     def get_permission_codes(self, request, scope):
@@ -303,6 +341,7 @@ class _BaseInventoryReportAPIView(ScopedEntitlementMixin, APIView):
             "category_ids": scope.get("category_ids", []),
             "hsn_ids": scope.get("hsn_ids", []),
             "location_ids": scope.get("location_ids", []),
+            "batch_numbers": scope.get("batch_numbers"),
             "include_zero": scope.get("include_zero", INVENTORY_REPORT_DEFAULTS["show_zero_balances_default"]),
             "include_negative": scope.get("include_negative", True),
             "search": scope.get("search"),
@@ -344,6 +383,32 @@ class InventoryReportsMetaAPIView(ScopedEntitlementMixin, APIView):
         entity_id = int(entity_id)
         self.enforce_scope(request, entity_id=entity_id)
         meta = build_inventory_report_meta(entity_id)
+        financial_year_ids = [row["id"] for row in meta["financial_years"]]
+        permitted_financial_year_ids = {
+            int(value)
+            for value in EffectivePermissionService.permitted_data_scope_ids(
+                request.user,
+                entity_id,
+                DataAccessPolicy.TYPE_FINANCIAL_YEAR,
+                financial_year_ids,
+            )
+        }
+        location_ids = [row["id"] for row in meta["locations"]]
+        permitted_location_ids = {
+            int(value)
+            for value in EffectivePermissionService.permitted_data_scope_ids(
+                request.user,
+                entity_id,
+                DataAccessPolicy.TYPE_WAREHOUSE,
+                location_ids,
+            )
+        }
+        meta["financial_years"] = [
+            row for row in meta["financial_years"] if row["id"] in permitted_financial_year_ids
+        ]
+        meta["locations"] = [
+            row for row in meta["locations"] if row["id"] in permitted_location_ids
+        ]
         meta["required_permission_codes"] = [
             "reports.inventory.view",
             "reports.inventory.stock_summary.view",
@@ -378,6 +443,7 @@ class InventoryStockSummaryAPIView(_BaseInventoryReportAPIView):
             category_ids=scope.get("category_ids") or None,
             hsn_ids=scope.get("hsn_ids") or None,
             location_ids=scope.get("location_ids") or None,
+            batch_numbers=scope.get("batch_numbers"),
             include_zero=scope.get("include_zero", False),
             include_negative=scope.get("include_negative", True),
             search=scope.get("search"),
@@ -423,6 +489,7 @@ class _BaseInventoryStockSummaryExportAPIView(_BaseInventoryReportAPIView):
             category_ids=scope.get("category_ids") or None,
             hsn_ids=scope.get("hsn_ids") or None,
             location_ids=scope.get("location_ids") or None,
+            batch_numbers=scope.get("batch_numbers"),
             include_zero=scope.get("include_zero", False),
             include_negative=scope.get("include_negative", True),
             search=scope.get("search"),
@@ -565,6 +632,7 @@ class InventoryStockLedgerAPIView(_BaseInventoryReportAPIView):
             category_ids=scope.get("category_ids") or None,
             hsn_ids=scope.get("hsn_ids") or None,
             location_ids=scope.get("location_ids") or None,
+            batch_numbers=scope.get("batch_numbers"),
             search=scope.get("search"),
             include_zero=scope.get("include_zero", True),
             include_negative=scope.get("include_negative", True),
@@ -608,6 +676,7 @@ class _BaseInventoryStockLedgerExportAPIView(_BaseInventoryReportAPIView):
             category_ids=scope.get("category_ids") or None,
             hsn_ids=scope.get("hsn_ids") or None,
             location_ids=scope.get("location_ids") or None,
+            batch_numbers=scope.get("batch_numbers"),
             search=scope.get("search"),
             include_zero=scope.get("include_zero", True),
             include_negative=scope.get("include_negative", True),
@@ -739,6 +808,7 @@ class InventoryStockAgingAPIView(_BaseInventoryReportAPIView):
             category_ids=scope.get("category_ids") or None,
             hsn_ids=scope.get("hsn_ids") or None,
             location_ids=scope.get("location_ids") or None,
+            batch_numbers=scope.get("batch_numbers"),
             search=scope.get("search"),
             include_zero=scope.get("include_zero", False),
             include_negative=scope.get("include_negative", True),
@@ -785,6 +855,7 @@ class _BaseInventoryStockAgingExportAPIView(_BaseInventoryReportAPIView):
             category_ids=scope.get("category_ids") or None,
             hsn_ids=scope.get("hsn_ids") or None,
             location_ids=scope.get("location_ids") or None,
+            batch_numbers=scope.get("batch_numbers"),
             search=scope.get("search"),
             include_zero=scope.get("include_zero", False),
             include_negative=scope.get("include_negative", True),
@@ -903,6 +974,7 @@ class InventoryLocationStockAPIView(_BaseInventoryReportAPIView):
             category_ids=scope.get("category_ids") or None,
             hsn_ids=scope.get("hsn_ids") or None,
             location_ids=scope.get("location_ids") or None,
+            batch_numbers=scope.get("batch_numbers"),
             include_zero=scope.get("include_zero", True),
             include_negative=scope.get("include_negative", True),
             search=scope.get("search"),
@@ -947,6 +1019,7 @@ class _BaseInventoryLocationStockExportAPIView(_BaseInventoryReportAPIView):
             category_ids=scope.get("category_ids") or None,
             hsn_ids=scope.get("hsn_ids") or None,
             location_ids=scope.get("location_ids") or None,
+            batch_numbers=scope.get("batch_numbers"),
             include_zero=scope.get("include_zero", True),
             include_negative=scope.get("include_negative", True),
             search=scope.get("search"),
@@ -1053,6 +1126,7 @@ class InventoryNonMovingStockAPIView(_BaseInventoryReportAPIView):
             category_ids=scope.get("category_ids") or None,
             hsn_ids=scope.get("hsn_ids") or None,
             location_ids=scope.get("location_ids") or None,
+            batch_numbers=scope.get("batch_numbers"),
             search=scope.get("search"),
             include_zero=scope.get("include_zero", False),
             include_negative=scope.get("include_negative", True),
@@ -1098,6 +1172,7 @@ class _BaseInventoryNonMovingStockExportAPIView(_BaseInventoryReportAPIView):
             category_ids=scope.get("category_ids") or None,
             hsn_ids=scope.get("hsn_ids") or None,
             location_ids=scope.get("location_ids") or None,
+            batch_numbers=scope.get("batch_numbers"),
             search=scope.get("search"),
             include_zero=scope.get("include_zero", False),
             include_negative=scope.get("include_negative", True),
@@ -1216,6 +1291,7 @@ class InventoryReorderStatusAPIView(_BaseInventoryReportAPIView):
             category_ids=scope.get("category_ids") or None,
             hsn_ids=scope.get("hsn_ids") or None,
             location_ids=scope.get("location_ids") or None,
+            batch_numbers=scope.get("batch_numbers"),
             search=scope.get("search"),
             include_zero=scope.get("include_zero", True),
             include_negative=scope.get("include_negative", True),
@@ -1260,6 +1336,7 @@ class _BaseInventoryReorderStatusExportAPIView(_BaseInventoryReportAPIView):
             category_ids=scope.get("category_ids") or None,
             hsn_ids=scope.get("hsn_ids") or None,
             location_ids=scope.get("location_ids") or None,
+            batch_numbers=scope.get("batch_numbers"),
             search=scope.get("search"),
             include_zero=scope.get("include_zero", True),
             include_negative=scope.get("include_negative", True),
@@ -1385,6 +1462,7 @@ class InventorySlowMovingDeadStockAPIView(_BaseInventoryReportAPIView):
             category_ids=scope.get("category_ids") or None,
             hsn_ids=scope.get("hsn_ids") or None,
             location_ids=scope.get("location_ids") or None,
+            batch_numbers=scope.get("batch_numbers"),
             search=scope.get("search"),
             include_zero=scope.get("include_zero", False),
             include_negative=scope.get("include_negative", True),
@@ -1431,6 +1509,7 @@ class _BaseInventorySlowMovingDeadStockExportAPIView(_BaseInventoryReportAPIView
             category_ids=scope.get("category_ids") or None,
             hsn_ids=scope.get("hsn_ids") or None,
             location_ids=scope.get("location_ids") or None,
+            batch_numbers=scope.get("batch_numbers"),
             search=scope.get("search"),
             include_zero=scope.get("include_zero", False),
             include_negative=scope.get("include_negative", True),
@@ -1549,6 +1628,7 @@ def _inventory_operational_base_kwargs(scope, *, paginate: bool, page: int, page
         "category_ids": scope.get("category_ids") or None,
         "hsn_ids": scope.get("hsn_ids") or None,
         "location_ids": scope.get("location_ids") or None,
+        "batch_numbers": scope.get("batch_numbers"),
         "search": scope.get("search"),
         "include_zero": scope.get("include_zero", True),
         "include_negative": scope.get("include_negative", True),

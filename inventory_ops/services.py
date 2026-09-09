@@ -11,6 +11,7 @@ from django.utils.dateparse import parse_date
 from rest_framework.exceptions import ValidationError
 
 from catalog.lot_tracking import resolve_tracked_lot_number
+from core.concurrency import assert_expected_updated_at
 from catalog.models import Product, ProductUomConversion, UnitOfMeasure
 from catalog.uom_helpers import resolve_product_uom
 from numbering.services import DocumentNumberService, ensure_document_type, ensure_series
@@ -565,6 +566,7 @@ class InventoryTransferService:
     @transaction.atomic
     def update_transfer(*, transfer_id: int, payload: dict, user_id: int | None) -> InventoryTransferResult:
         transfer = InventoryTransferService._get_transfer_for_update(transfer_id=transfer_id)
+        assert_expected_updated_at(transfer, payload.get("expected_updated_at"))
         if transfer.status != InventoryTransferStatus.DRAFT:
             raise ValidationError("Only draft transfers can be edited.")
         source_location_id, destination_location_id = InventoryTransferService._resolve_locations(payload=payload)
@@ -923,6 +925,7 @@ class InventoryAdjustmentService:
     @transaction.atomic
     def update_adjustment(*, adjustment_id: int, payload: dict, user_id: int | None) -> InventoryAdjustmentResult:
         adjustment = InventoryAdjustmentService._get_adjustment_for_update(adjustment_id=adjustment_id)
+        assert_expected_updated_at(adjustment, payload.get("expected_updated_at"))
         if adjustment.status != InventoryAdjustmentStatus.DRAFT:
             raise ValidationError("Only draft adjustments can be edited.")
         location_id = resolve_posting_location_id(

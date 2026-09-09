@@ -17,6 +17,7 @@ from entity.models import Godown
 from numbering.models import DocumentNumberSeries
 from numbering.services import ensure_document_type, ensure_series, validate_unique_series_pattern
 from posting.models import EntityStaticAccountMap
+from rbac.models import DataAccessPolicy
 from rbac.services import EffectivePermissionService
 
 from .models import (
@@ -164,6 +165,21 @@ def _assert_field_is_unchanged(*, field_name: str, current_value: Any, payload_v
         raise ValidationError({field_name: f"{label} cannot be changed after creation."})
 
 
+def _work_order_payload_batch_numbers(payload) -> set[str]:
+    rows = [*(payload.get("materials") or []), *(payload.get("outputs") or [])]
+    return {
+        str(row.get("batch_number") or "").strip()
+        for row in rows
+        if str(row.get("batch_number") or "").strip()
+    }
+
+
+def _work_order_batch_numbers(work_order: ManufacturingWorkOrder) -> set[str]:
+    values = set(work_order.materials.values_list("batch_number", flat=True))
+    values.update(work_order.outputs.values_list("batch_number", flat=True))
+    return {str(value).strip() for value in values if str(value or "").strip()}
+
+
 def _get_scoped_route_for_bom(*, entity_id: int, subentity_id: Optional[int], route_id: int) -> ManufacturingRoute:
     route = (
         ManufacturingRoute.objects
@@ -262,6 +278,51 @@ class _BaseManufacturingAPIView(ScopedEntitlementMixin, APIView):
         if from_date and to_date and from_date > to_date:
             raise ValidationError({"to_date": "to_date cannot be earlier than from_date."})
         return entity_id, subentity_id, entityfinid_id, from_date, to_date
+
+    def _enforce_work_order_scope(self, request, work_order: ManufacturingWorkOrder):
+        return self.enforce_scope(
+            request,
+            entity_id=work_order.entity_id,
+            entityfinid_id=work_order.entityfin_id,
+            subentity_id=work_order.subentity_id,
+            warehouse_ids=[work_order.source_location_id, work_order.destination_location_id],
+            batch_numbers=_work_order_batch_numbers(work_order),
+        )
+
+    def _filter_work_orders_for_data_scope(self, request, entity_id: int, queryset):
+        permitted_fy_ids = EffectivePermissionService.permitted_data_scope_ids(
+            request.user,
+            entity_id,
+            DataAccessPolicy.TYPE_FINANCIAL_YEAR,
+            queryset.values_list("entityfin_id", flat=True).distinct(),
+        )
+        warehouse_candidates = set(queryset.values_list("source_location_id", flat=True))
+        warehouse_candidates.update(queryset.values_list("destination_location_id", flat=True))
+        permitted_warehouse_ids = EffectivePermissionService.permitted_data_scope_ids(
+            request.user,
+            entity_id,
+            DataAccessPolicy.TYPE_WAREHOUSE,
+            warehouse_candidates,
+        )
+        batch_candidates = set(queryset.values_list("materials__batch_number", flat=True).distinct()) - {"", None}
+        batch_candidates.update(set(queryset.values_list("outputs__batch_number", flat=True).distinct()) - {"", None})
+        permitted_batch_numbers = EffectivePermissionService.permitted_data_scope_ids(
+            request.user,
+            entity_id,
+            DataAccessPolicy.TYPE_BATCH,
+            batch_candidates,
+        )
+        restricted_batch_numbers = batch_candidates - permitted_batch_numbers
+        queryset = queryset.filter(
+            entityfin_id__in=permitted_fy_ids,
+            source_location_id__in=permitted_warehouse_ids,
+            destination_location_id__in=permitted_warehouse_ids,
+        )
+        if restricted_batch_numbers:
+            queryset = queryset.exclude(materials__batch_number__in=restricted_batch_numbers).exclude(
+                outputs__batch_number__in=restricted_batch_numbers
+            )
+        return queryset.distinct()
 
 
 class ManufacturingSettingsAPIView(_BaseManufacturingAPIView):
@@ -807,7 +868,39 @@ class ManufacturingWorkOrderListCreateAPIView(_BaseManufacturingAPIView, generic
             qs = qs.filter(production_date__gte=from_date)
         if to_date:
             qs = qs.filter(production_date__lte=to_date)
-        return qs.order_by("-production_date", "-id")
+        permitted_fy_ids = EffectivePermissionService.permitted_data_scope_ids(
+            self.request.user,
+            entity_id,
+            DataAccessPolicy.TYPE_FINANCIAL_YEAR,
+            qs.values_list("entityfin_id", flat=True).distinct(),
+        )
+        warehouse_candidates = set(qs.values_list("source_location_id", flat=True))
+        warehouse_candidates.update(qs.values_list("destination_location_id", flat=True))
+        permitted_warehouse_ids = EffectivePermissionService.permitted_data_scope_ids(
+            self.request.user,
+            entity_id,
+            DataAccessPolicy.TYPE_WAREHOUSE,
+            warehouse_candidates,
+        )
+        qs = qs.filter(
+            entityfin_id__in=permitted_fy_ids,
+            source_location_id__in=permitted_warehouse_ids,
+            destination_location_id__in=permitted_warehouse_ids,
+        )
+        batch_candidates = set(qs.values_list("materials__batch_number", flat=True).distinct()) - {"", None}
+        batch_candidates.update(set(qs.values_list("outputs__batch_number", flat=True).distinct()) - {"", None})
+        permitted_batch_numbers = EffectivePermissionService.permitted_data_scope_ids(
+            self.request.user,
+            entity_id,
+            DataAccessPolicy.TYPE_BATCH,
+            batch_candidates,
+        )
+        restricted_batch_numbers = batch_candidates - permitted_batch_numbers
+        if restricted_batch_numbers:
+            qs = qs.exclude(materials__batch_number__in=restricted_batch_numbers).exclude(
+                outputs__batch_number__in=restricted_batch_numbers
+            )
+        return qs.distinct().order_by("-production_date", "-id")
 
     def get_serializer_class(self):
         if self.request.method.upper() == "GET":
@@ -837,7 +930,14 @@ class ManufacturingWorkOrderListCreateAPIView(_BaseManufacturingAPIView, generic
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
         entity_id = payload["entity"]
-        self.enforce_scope(request, entity_id=entity_id, entityfinid_id=payload.get("entityfinid"), subentity_id=payload.get("subentity"))
+        self.enforce_scope(
+            request,
+            entity_id=entity_id,
+            entityfinid_id=payload.get("entityfinid"),
+            subentity_id=payload.get("subentity"),
+            warehouse_ids=[payload.get("source_location"), payload.get("destination_location")],
+            batch_numbers=_work_order_payload_batch_numbers(payload),
+        )
         self.assert_permission(request, entity_id, "manufacturing.workorder.create")
         result = ManufacturingWorkOrderService.create_work_order(payload=payload, user_id=request.user.id)
         return Response({"work_order": ManufacturingWorkOrderResponseSerializer(result.work_order).data}, status=status.HTTP_201_CREATED)
@@ -859,18 +959,23 @@ class ManufacturingWorkOrderDetailAPIView(_BaseManufacturingAPIView, generics.Re
 
     def retrieve(self, request, *args, **kwargs):
         work_order = self.get_object()
-        self.enforce_scope(request, entity_id=work_order.entity_id, entityfinid_id=work_order.entityfin_id, subentity_id=work_order.subentity_id)
+        self._enforce_work_order_scope(request, work_order)
         self.assert_permission(request, work_order.entity_id, "manufacturing.workorder.view")
         return Response(ManufacturingWorkOrderResponseSerializer(work_order).data)
 
     @transaction.atomic
     def update(self, request, *args, **kwargs):
         work_order = self.get_object()
-        self.enforce_scope(request, entity_id=work_order.entity_id, entityfinid_id=work_order.entityfin_id, subentity_id=work_order.subentity_id)
+        self._enforce_work_order_scope(request, work_order)
         self.assert_permission(request, work_order.entity_id, "manufacturing.workorder.update")
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
+        self.enforce_scope(
+            request,
+            entity_id=work_order.entity_id,
+            batch_numbers=_work_order_payload_batch_numbers(payload),
+        )
         _assert_field_is_unchanged(field_name="entity", current_value=work_order.entity_id, payload_value=payload["entity"], label="Entity")
         _assert_field_is_unchanged(field_name="entityfinid", current_value=work_order.entityfin_id, payload_value=payload.get("entityfinid"), label="Financial year scope")
         _assert_field_is_unchanged(field_name="subentity", current_value=work_order.subentity_id, payload_value=payload.get("subentity"), label="Work order scope")
@@ -885,7 +990,7 @@ class ManufacturingWorkOrderDetailAPIView(_BaseManufacturingAPIView, generics.Re
 class ManufacturingWorkOrderPostAPIView(_BaseManufacturingAPIView):
     def post(self, request, pk: int):
         work_order = get_object_or_404(ManufacturingWorkOrder, pk=pk)
-        self.enforce_scope(request, entity_id=work_order.entity_id, entityfinid_id=work_order.entityfin_id, subentity_id=work_order.subentity_id)
+        self._enforce_work_order_scope(request, work_order)
         self.assert_permission(request, work_order.entity_id, "manufacturing.workorder.post")
         result = ManufacturingWorkOrderService.post_work_order(work_order_id=pk, user_id=request.user.id)
         return Response({"work_order": ManufacturingWorkOrderResponseSerializer(result.work_order).data})
@@ -894,7 +999,7 @@ class ManufacturingWorkOrderPostAPIView(_BaseManufacturingAPIView):
 class ManufacturingWorkOrderOperationStartAPIView(_BaseManufacturingAPIView):
     def post(self, request, pk: int, operation_pk: int):
         work_order = get_object_or_404(ManufacturingWorkOrder, pk=pk)
-        self.enforce_scope(request, entity_id=work_order.entity_id, entityfinid_id=work_order.entityfin_id, subentity_id=work_order.subentity_id)
+        self._enforce_work_order_scope(request, work_order)
         self.assert_permission(request, work_order.entity_id, "manufacturing.workorder.operate")
         result = ManufacturingWorkOrderService.start_operation(work_order_id=pk, operation_id=operation_pk, user_id=request.user.id)
         return Response({"work_order": ManufacturingWorkOrderResponseSerializer(result.work_order).data})
@@ -903,7 +1008,7 @@ class ManufacturingWorkOrderOperationStartAPIView(_BaseManufacturingAPIView):
 class ManufacturingWorkOrderOperationCompleteAPIView(_BaseManufacturingAPIView):
     def post(self, request, pk: int, operation_pk: int):
         work_order = get_object_or_404(ManufacturingWorkOrder, pk=pk)
-        self.enforce_scope(request, entity_id=work_order.entity_id, entityfinid_id=work_order.entityfin_id, subentity_id=work_order.subentity_id)
+        self._enforce_work_order_scope(request, work_order)
         self.assert_permission(request, work_order.entity_id, "manufacturing.workorder.operate")
         serializer = ManufacturingOperationActionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -919,7 +1024,7 @@ class ManufacturingWorkOrderOperationCompleteAPIView(_BaseManufacturingAPIView):
 class ManufacturingWorkOrderOperationApproveAPIView(_BaseManufacturingAPIView):
     def post(self, request, pk: int, operation_pk: int):
         work_order = get_object_or_404(ManufacturingWorkOrder, pk=pk)
-        self.enforce_scope(request, entity_id=work_order.entity_id, entityfinid_id=work_order.entityfin_id, subentity_id=work_order.subentity_id)
+        self._enforce_work_order_scope(request, work_order)
         self.assert_permission(request, work_order.entity_id, "manufacturing.workorder.qc_approve")
         serializer = ManufacturingOperationActionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -935,7 +1040,7 @@ class ManufacturingWorkOrderOperationApproveAPIView(_BaseManufacturingAPIView):
 class ManufacturingWorkOrderOperationRejectAPIView(_BaseManufacturingAPIView):
     def post(self, request, pk: int, operation_pk: int):
         work_order = get_object_or_404(ManufacturingWorkOrder, pk=pk)
-        self.enforce_scope(request, entity_id=work_order.entity_id, entityfinid_id=work_order.entityfin_id, subentity_id=work_order.subentity_id)
+        self._enforce_work_order_scope(request, work_order)
         self.assert_permission(request, work_order.entity_id, "manufacturing.workorder.qc_approve")
         serializer = ManufacturingOperationActionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -951,7 +1056,7 @@ class ManufacturingWorkOrderOperationRejectAPIView(_BaseManufacturingAPIView):
 class ManufacturingWorkOrderOperationSkipAPIView(_BaseManufacturingAPIView):
     def post(self, request, pk: int, operation_pk: int):
         work_order = get_object_or_404(ManufacturingWorkOrder, pk=pk)
-        self.enforce_scope(request, entity_id=work_order.entity_id, entityfinid_id=work_order.entityfin_id, subentity_id=work_order.subentity_id)
+        self._enforce_work_order_scope(request, work_order)
         self.assert_permission(request, work_order.entity_id, "manufacturing.workorder.operate")
         serializer = ManufacturingOperationActionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -967,7 +1072,7 @@ class ManufacturingWorkOrderOperationSkipAPIView(_BaseManufacturingAPIView):
 class ManufacturingWorkOrderUnpostAPIView(_BaseManufacturingAPIView):
     def post(self, request, pk: int):
         work_order = get_object_or_404(ManufacturingWorkOrder, pk=pk)
-        self.enforce_scope(request, entity_id=work_order.entity_id, entityfinid_id=work_order.entityfin_id, subentity_id=work_order.subentity_id)
+        self._enforce_work_order_scope(request, work_order)
         self.assert_permission(request, work_order.entity_id, "manufacturing.workorder.unpost")
         result = ManufacturingWorkOrderService.unpost_work_order(
             work_order_id=pk,
@@ -980,7 +1085,7 @@ class ManufacturingWorkOrderUnpostAPIView(_BaseManufacturingAPIView):
 class ManufacturingWorkOrderCancelAPIView(_BaseManufacturingAPIView):
     def post(self, request, pk: int):
         work_order = get_object_or_404(ManufacturingWorkOrder, pk=pk)
-        self.enforce_scope(request, entity_id=work_order.entity_id, entityfinid_id=work_order.entityfin_id, subentity_id=work_order.subentity_id)
+        self._enforce_work_order_scope(request, work_order)
         self.assert_permission(request, work_order.entity_id, "manufacturing.workorder.cancel")
         result = ManufacturingWorkOrderService.cancel_work_order(
             work_order_id=pk,
@@ -1002,6 +1107,7 @@ class ManufacturingSummaryAPIView(_BaseManufacturingAPIView):
             from_date=from_date,
             to_date=to_date,
         )
+        work_orders = self._filter_work_orders_for_data_scope(request, entity_id, work_orders)
 
         recent_rows = list(
             work_orders.select_related("bom")
@@ -1188,6 +1294,7 @@ class ManufacturingMaterialConsumptionAPIView(_BaseManufacturingAPIView):
             from_date=from_date,
             to_date=to_date,
         )
+        work_orders = self._filter_work_orders_for_data_scope(request, entity_id, work_orders)
         line_value_expr = ExpressionWrapper(
             F("actual_qty") * F("unit_cost"),
             output_field=DecimalField(max_digits=22, decimal_places=4),
@@ -1251,6 +1358,7 @@ class ManufacturingOutputYieldAPIView(_BaseManufacturingAPIView):
             from_date=from_date,
             to_date=to_date,
         ).select_related("bom")
+        work_orders = self._filter_work_orders_for_data_scope(request, entity_id, work_orders)
         rows = list(
             work_orders.order_by("-production_date", "-id").values(
                 "id",
@@ -1330,6 +1438,7 @@ class ManufacturingPostingAuditAPIView(_BaseManufacturingAPIView):
             from_date=from_date,
             to_date=to_date,
         ).select_related("bom", "posted_by", "last_unposted_by", "cancelled_by")
+        work_orders = self._filter_work_orders_for_data_scope(request, entity_id, work_orders)
         rows = list(
             work_orders.order_by("-production_date", "-id").values(
                 "id",
@@ -1383,6 +1492,7 @@ class ManufacturingWipCostSummaryAPIView(_BaseManufacturingAPIView):
             from_date=from_date,
             to_date=to_date,
         ).select_related("bom")
+        work_orders = self._filter_work_orders_for_data_scope(request, entity_id, work_orders)
         rows = list(
             work_orders.order_by("-production_date", "-id").values(
                 "id",

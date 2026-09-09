@@ -5,7 +5,7 @@ from django.apps import apps
 from django.db.models import Q
 from django.db import transaction
 from django.utils import timezone
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from entity.models import Entity
 
@@ -563,7 +563,7 @@ class SubscriptionService:
             )
 
         if membership is None:
-            raise ValidationError(
+            raise PermissionDenied(
                 {
                     "detail": "You do not have tenant membership for this entity.",
                     "code": "tenant_membership_required",

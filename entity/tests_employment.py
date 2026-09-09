@@ -213,7 +213,7 @@ class EntityEmploymentApiTests(TestCase):
 
         response = other_client.get(f"/api/entity/employment/?entity={self.entity.id}")
 
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 403)
         self.assertEqual(response.data["code"], "tenant_membership_required")
 
     def test_create_employment_profile_rejects_oversized_fields(self):

@@ -12,6 +12,7 @@ from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
 from catalog.models import Product
+from core.concurrency import assert_expected_updated_at
 from numbering.services import DocumentNumberService, ensure_document_type, ensure_series
 from posting.common.location_resolver import resolve_posting_location_id
 from posting.common.static_accounts import StaticAccountCodes
@@ -1137,6 +1138,7 @@ class ManufacturingWorkOrderService:
     @transaction.atomic
     def update_work_order(*, work_order_id: int, payload: dict, user_id: int | None) -> ManufacturingWorkOrderResult:
         work_order = ManufacturingWorkOrderService._get_work_order_for_update(work_order_id=work_order_id)
+        assert_expected_updated_at(work_order, payload.get("expected_updated_at"))
         if work_order.status != ManufacturingWorkOrderStatus.DRAFT:
             raise ValidationError("Only draft work orders can be edited.")
         settings_obj = _get_settings(entity_id=work_order.entity_id, subentity_id=work_order.subentity_id)

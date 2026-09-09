@@ -291,6 +291,7 @@ class ManufacturingWorkOrderAdditionalCostWriteSerializer(serializers.Serializer
 
 
 class ManufacturingWorkOrderWriteSerializer(serializers.Serializer):
+    expected_updated_at = serializers.DateTimeField(required=False, allow_null=True, write_only=True)
     entity = serializers.IntegerField()
     entityfinid = serializers.IntegerField(required=False, allow_null=True)
     subentity = serializers.IntegerField(required=False, allow_null=True)
@@ -570,6 +571,7 @@ class ManufacturingWorkOrderResponseSerializer(serializers.ModelSerializer):
             "narration",
             "status",
             "posting_entry_id",
+            "updated_at",
             "posted_at",
             "posted_by_id",
             "posted_by_name",
@@ -659,6 +661,7 @@ class ManufacturingWorkOrderListSerializer(serializers.ModelSerializer):
             "reference_no",
             "status",
             "posting_entry_id",
+            "updated_at",
             "bom_code",
             "route_code",
             "operation_count",

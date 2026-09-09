@@ -5,6 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 from threading import Barrier
 from unittest import skipUnless
+from unittest.mock import patch
 from uuid import uuid4
 
 from django.db import close_old_connections, connection
@@ -20,7 +21,16 @@ from numbering.models import DocumentNumberSeries, DocumentType
 from posting.models import Entry, EntryStatus, InventoryMove, JournalLine, PostingBatch
 from posting.models import TxnType
 from posting.services.posting_service import IMInput, PostingService
-from rbac.models import Permission, Role, RolePermission, UserRoleAssignment
+from rbac.models import (
+    DataAccessPolicy,
+    Permission,
+    Role,
+    RoleDataAccessPolicy,
+    RolePermission,
+    UserRoleAssignment,
+)
+from subscriptions.models import UserEntityAccess
+from subscriptions.services import SubscriptionService
 from inventory_ops.models import InventoryAdjustment, InventoryTransfer
 from inventory_ops.services import InventoryAdjustmentService, InventoryTransferService
 
@@ -948,6 +958,402 @@ class InventoryOpsTests(APITestCase):
             ],
         }
 
+    def test_transfer_post_rolls_back_entry_and_movements_when_final_save_fails(self):
+        created = InventoryTransferService.create_transfer(
+            payload=self._transfer_payload(),
+            user_id=self.user.id,
+        ).transfer
+
+        with patch.object(type(created), 'save', side_effect=RuntimeError('injected final save failure')):
+            with self.assertRaisesRegex(RuntimeError, 'injected final save failure'):
+                InventoryTransferService.post_transfer(
+                    transfer_id=created.id,
+                    user_id=self.user.id,
+                )
+
+        created.refresh_from_db()
+        self.assertEqual(created.status, 'DRAFT')
+        self.assertIsNone(created.posting_entry_id)
+        self.assertFalse(
+            Entry.objects.filter(
+                entity=self.entity,
+                txn_type=TxnType.INVENTORY_TRANSFER,
+                txn_id=created.id,
+            ).exists()
+        )
+        self.assertFalse(
+            InventoryMove.objects.filter(
+                entity=self.entity,
+                txn_type=TxnType.INVENTORY_TRANSFER,
+                txn_id=created.id,
+            ).exists()
+        )
+
+    def test_adjustment_create_rolls_back_header_when_line_persistence_fails(self):
+        with patch.object(
+            InventoryAdjustmentService,
+            '_build_adjustment_lines_and_inputs',
+            side_effect=RuntimeError('injected line persistence failure'),
+        ):
+            with self.assertRaisesRegex(RuntimeError, 'injected line persistence failure'):
+                InventoryAdjustmentService.create_adjustment(
+                    payload=self._adjustment_payload(),
+                    user_id=self.user.id,
+                )
+
+        self.assertFalse(
+            InventoryAdjustment.objects.filter(
+                entity=self.entity,
+                reference_no='ADJ-1001',
+            ).exists()
+        )
+
+    def test_stale_transfer_and_adjustment_updates_return_conflict_without_mutation(self):
+        transfer = InventoryTransferService.create_transfer(
+            payload=self._transfer_payload(),
+            user_id=self.user.id,
+        ).transfer
+        stale_transfer_version = transfer.updated_at
+        InventoryTransfer.objects.filter(pk=transfer.id).update(
+            reference_no='NEWER-TRANSFER',
+            updated_at=timezone.now(),
+        )
+        transfer_payload = self._transfer_payload()
+        transfer_payload['expected_updated_at'] = stale_transfer_version.isoformat()
+        transfer_payload['reference_no'] = 'STALE-TRANSFER'
+        transfer_response = self.client.patch(
+            reverse('inventory_ops:inventory-transfer-detail', kwargs={'pk': transfer.id}),
+            transfer_payload,
+            format='json',
+        )
+        self.assertEqual(transfer_response.status_code, 409)
+        self.assertEqual(transfer_response.json()['code'], 'stale_object')
+        transfer.refresh_from_db()
+        self.assertEqual(transfer.reference_no, 'NEWER-TRANSFER')
+
+        adjustment = InventoryAdjustmentService.create_adjustment(
+            payload=self._adjustment_payload(),
+            user_id=self.user.id,
+            auto_post=False,
+        ).adjustment
+        stale_adjustment_version = adjustment.updated_at
+        InventoryAdjustment.objects.filter(pk=adjustment.id).update(
+            reference_no='NEWER-ADJUSTMENT',
+            updated_at=timezone.now(),
+        )
+        adjustment_payload = self._adjustment_payload()
+        adjustment_payload['expected_updated_at'] = stale_adjustment_version.isoformat()
+        adjustment_payload['reference_no'] = 'STALE-ADJUSTMENT'
+        adjustment_response = self.client.patch(
+            reverse('inventory_ops:inventory-adjustment-detail', kwargs={'pk': adjustment.id}),
+            adjustment_payload,
+            format='json',
+        )
+        self.assertEqual(adjustment_response.status_code, 409)
+        self.assertEqual(adjustment_response.json()['code'], 'stale_object')
+        adjustment.refresh_from_db()
+        self.assertEqual(adjustment.reference_no, 'NEWER-ADJUSTMENT')
+
+    def test_direct_object_actions_require_permissions_without_partial_mutation(self):
+        transfer_resp = self.client.post(
+            reverse('inventory_ops:inventory-transfers'),
+            self._transfer_payload(),
+            format='json',
+        )
+        adjustment_resp = self.client.post(
+            reverse('inventory_ops:inventory-adjustments'),
+            self._adjustment_payload(),
+            format='json',
+        )
+        self.assertEqual(transfer_resp.status_code, 201)
+        self.assertEqual(adjustment_resp.status_code, 201)
+        transfer_id = transfer_resp.json()['transfer']['id']
+        adjustment_id = adjustment_resp.json()['adjustment']['id']
+
+        outsider = User.objects.create_user(
+            username=f'inventory-outsider-{uuid4().hex[:8]}',
+            email=f'inventory-outsider-{uuid4().hex[:8]}@example.com',
+            password='pass123',
+        )
+        self.client.force_authenticate(user=outsider)
+        self.assertEqual(
+            self.client.get(reverse('inventory_ops:inventory-transfer-detail', kwargs={'pk': transfer_id})).status_code,
+            403,
+        )
+        self.assertEqual(
+            self.client.post(reverse('inventory_ops:inventory-adjustment-post', kwargs={'pk': adjustment_id}), {}, format='json').status_code,
+            403,
+        )
+        self.client.force_authenticate(user=self.user)
+
+        denied_codes = [
+            'inventory.transfer.view',
+            'inventory.transfer.update',
+            'inventory.transfer.post',
+            'inventory.transfer.unpost',
+            'inventory.transfer.cancel',
+            'inventory.adjustment.view',
+            'inventory.adjustment.update',
+            'inventory.adjustment.post',
+            'inventory.adjustment.unpost',
+            'inventory.adjustment.cancel',
+        ]
+        RolePermission.objects.filter(role=self.role, permission__code__in=denied_codes).delete()
+
+        denied_requests = [
+            ('get', reverse('inventory_ops:inventory-transfer-detail', kwargs={'pk': transfer_id}), None),
+            ('patch', reverse('inventory_ops:inventory-transfer-detail', kwargs={'pk': transfer_id}), self._transfer_payload()),
+            ('post', reverse('inventory_ops:inventory-transfer-post', kwargs={'pk': transfer_id}), {}),
+            ('post', reverse('inventory_ops:inventory-transfer-unpost', kwargs={'pk': transfer_id}), {'reason': 'Denied'}),
+            ('post', reverse('inventory_ops:inventory-transfer-cancel', kwargs={'pk': transfer_id}), {'reason': 'Denied'}),
+            ('get', reverse('inventory_ops:inventory-adjustment-detail', kwargs={'pk': adjustment_id}), None),
+            ('patch', reverse('inventory_ops:inventory-adjustment-detail', kwargs={'pk': adjustment_id}), self._adjustment_payload()),
+            ('post', reverse('inventory_ops:inventory-adjustment-post', kwargs={'pk': adjustment_id}), {}),
+            ('post', reverse('inventory_ops:inventory-adjustment-unpost', kwargs={'pk': adjustment_id}), {'reason': 'Denied'}),
+            ('post', reverse('inventory_ops:inventory-adjustment-cancel', kwargs={'pk': adjustment_id}), {'reason': 'Denied'}),
+        ]
+        for method, url, payload in denied_requests:
+            response = getattr(self.client, method)(url, payload, format='json') if payload is not None else getattr(self.client, method)(url)
+            self.assertEqual(response.status_code, 403, f'{method.upper()} {url} should be denied')
+
+        self.assertEqual(InventoryTransfer.objects.get(pk=transfer_id).status, 'DRAFT')
+        self.assertEqual(InventoryAdjustment.objects.get(pk=adjustment_id).status, 'DRAFT')
+        self.assertFalse(Entry.objects.filter(txn_type=TxnType.INVENTORY_TRANSFER, txn_id=transfer_id).exists())
+        self.assertFalse(Entry.objects.filter(txn_type=TxnType.INVENTORY_ADJUSTMENT, txn_id=adjustment_id).exists())
+        self.assertFalse(InventoryMove.objects.filter(txn_type=TxnType.INVENTORY_TRANSFER, txn_id=transfer_id).exists())
+        self.assertFalse(InventoryMove.objects.filter(txn_type=TxnType.INVENTORY_ADJUSTMENT, txn_id=adjustment_id).exists())
+
+    def test_branch_scoped_user_cannot_access_or_post_other_branch_objects(self):
+        branch_a_response = self.client.post(
+            reverse('inventory_ops:inventory-adjustments'),
+            self._adjustment_payload(),
+            format='json',
+        )
+        self.assertEqual(branch_a_response.status_code, 201)
+
+        branch_b_payload = self._adjustment_payload()
+        branch_b_payload.update({
+            'entityfinid': self.entityfin_alt.id,
+            'subentity': self.subentity_alt.id,
+            'adjustment_date': '2026-04-12',
+            'location': self.source_alt.id,
+            'reference_no': 'ADJ-BRANCH-B',
+        })
+        branch_b_response = self.client.post(
+            reverse('inventory_ops:inventory-adjustments'),
+            branch_b_payload,
+            format='json',
+        )
+        self.assertEqual(branch_b_response.status_code, 201)
+
+        branch_user = User.objects.create_user(
+            username=f'inventory-branch-user-{uuid4().hex[:8]}',
+            email=f'inventory-branch-user-{uuid4().hex[:8]}@example.com',
+            password='pass123',
+        )
+        self.entity.refresh_from_db()
+        SubscriptionService.ensure_account_membership(
+            customer_account=self.entity.customer_account,
+            user=branch_user,
+            role=UserEntityAccess.Role.MEMBER,
+            granted_by=self.user,
+        )
+        branch_role = Role.objects.create(
+            entity=self.entity,
+            name='Branch A Inventory Operator',
+            code=f'inventory_branch_a_{uuid4().hex[:8]}',
+            role_level=Role.LEVEL_ENTITY,
+            createdby=self.user,
+        )
+        for role_permission in RolePermission.objects.filter(role=self.role, isactive=True):
+            RolePermission.objects.create(
+                role=branch_role,
+                permission=role_permission.permission,
+                effect=role_permission.effect,
+            )
+        UserRoleAssignment.objects.create(
+            user=branch_user,
+            entity=self.entity,
+            role=branch_role,
+            subentity=self.subentity,
+            assigned_by=self.user,
+        )
+
+        branch_a_id = branch_a_response.json()['adjustment']['id']
+        branch_b_id = branch_b_response.json()['adjustment']['id']
+        self.client.force_authenticate(user=branch_user)
+
+        self.assertEqual(
+            self.client.get(
+                reverse('inventory_ops:inventory-adjustment-detail', kwargs={'pk': branch_a_id})
+            ).status_code,
+            200,
+        )
+        denied_detail = self.client.get(
+            reverse('inventory_ops:inventory-adjustment-detail', kwargs={'pk': branch_b_id})
+        )
+        denied_post = self.client.post(
+            reverse('inventory_ops:inventory-adjustment-post', kwargs={'pk': branch_b_id}),
+            {},
+            format='json',
+        )
+        self.assertEqual(denied_detail.status_code, 403)
+        self.assertEqual(denied_post.status_code, 403)
+
+        branch_b_adjustment = InventoryAdjustment.objects.get(pk=branch_b_id)
+        self.assertEqual(branch_b_adjustment.status, 'DRAFT')
+        self.assertFalse(
+            InventoryMove.objects.filter(
+                txn_type=TxnType.INVENTORY_ADJUSTMENT,
+                txn_id=branch_b_id,
+            ).exists()
+        )
+
+    def test_financial_year_policy_blocks_direct_access_and_post_without_mutation(self):
+        current_response = self.client.post(
+            reverse('inventory_ops:inventory-adjustments'),
+            self._adjustment_payload(),
+            format='json',
+        )
+        self.assertEqual(current_response.status_code, 201)
+
+        alternate_payload = self._adjustment_payload()
+        alternate_payload.update({
+            'entityfinid': self.entityfin_alt.id,
+            'adjustment_date': '2026-04-12',
+            'reference_no': 'ADJ-RESTRICTED-FY',
+        })
+        alternate_response = self.client.post(
+            reverse('inventory_ops:inventory-adjustments'),
+            alternate_payload,
+            format='json',
+        )
+        self.assertEqual(alternate_response.status_code, 201)
+
+        policy = DataAccessPolicy.objects.create(
+            entity=self.entity,
+            name='Current FY only',
+            code=f'current_fy_only_{uuid4().hex[:8]}',
+            policy_type=DataAccessPolicy.TYPE_FINANCIAL_YEAR,
+            scope_mode=DataAccessPolicy.MODE_INCLUDE,
+            configuration={'ids': [self.entityfin.id]},
+        )
+        RoleDataAccessPolicy.objects.create(role=self.role, policy=policy)
+
+        current_id = current_response.json()['adjustment']['id']
+        alternate_id = alternate_response.json()['adjustment']['id']
+        self.assertEqual(
+            self.client.get(
+                reverse('inventory_ops:inventory-adjustment-detail', kwargs={'pk': current_id})
+            ).status_code,
+            200,
+        )
+        denied_detail = self.client.get(
+            reverse('inventory_ops:inventory-adjustment-detail', kwargs={'pk': alternate_id})
+        )
+        denied_post = self.client.post(
+            reverse('inventory_ops:inventory-adjustment-post', kwargs={'pk': alternate_id}),
+            {},
+            format='json',
+        )
+        self.assertEqual(denied_detail.status_code, 403)
+        self.assertEqual(denied_post.status_code, 403)
+        list_response = self.client.get(
+            reverse('inventory_ops:inventory-adjustments-list'),
+            {'entity': self.entity.id},
+        )
+        self.assertEqual(list_response.status_code, 200)
+        listed_ids = {row['id'] for row in list_response.json()['rows']}
+        self.assertIn(current_id, listed_ids)
+        self.assertNotIn(alternate_id, listed_ids)
+        restricted_adjustment = InventoryAdjustment.objects.get(pk=alternate_id)
+        self.assertEqual(restricted_adjustment.status, 'DRAFT')
+        self.assertFalse(
+            InventoryMove.objects.filter(
+                txn_type=TxnType.INVENTORY_ADJUSTMENT,
+                txn_id=alternate_id,
+            ).exists()
+        )
+
+    def test_warehouse_policy_blocks_same_branch_direct_access_and_post(self):
+        allowed_response = self.client.post(
+            reverse('inventory_ops:inventory-adjustments'),
+            self._adjustment_payload(),
+            format='json',
+        )
+        self.assertEqual(allowed_response.status_code, 201)
+
+        restricted_payload = self._adjustment_payload()
+        restricted_payload.update({
+            'location': self.destination.id,
+            'reference_no': 'ADJ-RESTRICTED-WAREHOUSE',
+        })
+        restricted_response = self.client.post(
+            reverse('inventory_ops:inventory-adjustments'),
+            restricted_payload,
+            format='json',
+        )
+        self.assertEqual(restricted_response.status_code, 201)
+
+        policy = DataAccessPolicy.objects.create(
+            entity=self.entity,
+            name='Main warehouse only',
+            code=f'main_warehouse_only_{uuid4().hex[:8]}',
+            policy_type=DataAccessPolicy.TYPE_WAREHOUSE,
+            scope_mode=DataAccessPolicy.MODE_INCLUDE,
+            configuration={'ids': [self.source.id]},
+        )
+        RoleDataAccessPolicy.objects.create(role=self.role, policy=policy)
+
+        allowed_id = allowed_response.json()['adjustment']['id']
+        restricted_id = restricted_response.json()['adjustment']['id']
+        self.assertEqual(
+            self.client.get(
+                reverse('inventory_ops:inventory-adjustment-detail', kwargs={'pk': allowed_id})
+            ).status_code,
+            200,
+        )
+        self.assertEqual(
+            self.client.get(
+                reverse('inventory_ops:inventory-adjustment-detail', kwargs={'pk': restricted_id})
+            ).status_code,
+            403,
+        )
+        self.assertEqual(
+            self.client.post(
+                reverse('inventory_ops:inventory-adjustment-post', kwargs={'pk': restricted_id}),
+                {},
+                format='json',
+            ).status_code,
+            403,
+        )
+        list_response = self.client.get(
+            reverse('inventory_ops:inventory-adjustments-list'),
+            {'entity': self.entity.id},
+        )
+        self.assertEqual(list_response.status_code, 200)
+        listed_ids = {row['id'] for row in list_response.json()['rows']}
+        self.assertIn(allowed_id, listed_ids)
+        self.assertNotIn(restricted_id, listed_ids)
+        restricted_adjustment = InventoryAdjustment.objects.get(pk=restricted_id)
+        self.assertEqual(restricted_adjustment.status, 'DRAFT')
+        self.assertFalse(
+            InventoryMove.objects.filter(
+                txn_type=TxnType.INVENTORY_ADJUSTMENT,
+                txn_id=restricted_id,
+            ).exists()
+        )
+
+        denied_transfer = self.client.post(
+            reverse('inventory_ops:inventory-transfers'),
+            self._transfer_payload(),
+            format='json',
+        )
+        self.assertEqual(denied_transfer.status_code, 403)
+        self.assertFalse(
+            InventoryTransfer.objects.filter(reference_no='REF-1001').exists()
+        )
+
     def test_create_adjustment_saves_draft_without_posting_moves(self):
         response = self.client.post(reverse('inventory_ops:inventory-adjustments'), self._adjustment_payload(), format='json')
         self.assertEqual(response.status_code, 201)
@@ -993,14 +1399,14 @@ class InventoryOpsTests(APITestCase):
         self.assertIn('reference_no', response.json())
         self.assertIn('narration', response.json())
 
-    def test_create_adjustment_wraps_service_validation_errors(self):
+    def test_create_adjustment_rejects_unknown_warehouse_before_service(self):
         payload = self._adjustment_payload()
         payload['location'] = 999999
 
         response = self.client.post(reverse('inventory_ops:inventory-adjustments'), payload, format='json')
 
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json()['detail'], 'Selected location does not belong to the entity/subentity scope.')
+        self.assertEqual(response.json()['warehouse'], 'Warehouse is not valid for this entity.')
 
     def test_adjustment_post_unpost_and_cancel_flow(self):
         created = self.client.post(reverse('inventory_ops:inventory-adjustments'), self._adjustment_payload(), format='json')
@@ -1401,6 +1807,81 @@ class InventoryOpsTests(APITestCase):
         )
         self.assertEqual(transfer_series.prefix, 'TRF')
         self.assertEqual(transfer_series.current_number, 12)
+
+
+    def test_batch_policy_filters_and_blocks_inventory_documents_without_mutation(self):
+        def batch_payload(batch_number, reference):
+            payload = self._adjustment_payload()
+            payload["reference_no"] = reference
+            payload["lines"] = [{
+                "product": self.batch_product.id,
+                "direction": "INCREASE",
+                "qty": "2.0000",
+                "unit_cost": "100.0000",
+                "batch_number": batch_number,
+                "expiry_date": "2026-04-30",
+                "note": "Batch scope proof",
+            }]
+            return payload
+
+        allowed = self.client.post(
+            reverse("inventory_ops:inventory-adjustments"),
+            batch_payload("LOT-ALLOWED", "ADJ-BATCH-ALLOWED"),
+            format="json",
+        )
+        restricted = self.client.post(
+            reverse("inventory_ops:inventory-adjustments"),
+            batch_payload("LOT-RESTRICTED", "ADJ-BATCH-RESTRICTED"),
+            format="json",
+        )
+        self.assertEqual(allowed.status_code, 201, allowed.json())
+        self.assertEqual(restricted.status_code, 201, restricted.json())
+
+        policy = DataAccessPolicy.objects.create(
+            entity=self.entity,
+            name="Allowed inventory lots",
+            code=f"allowed_inventory_lots_{uuid4().hex[:8]}",
+            policy_type=DataAccessPolicy.TYPE_BATCH,
+            scope_mode=DataAccessPolicy.MODE_INCLUDE,
+            configuration={"values": ["LOT-ALLOWED"]},
+        )
+        RoleDataAccessPolicy.objects.create(role=self.role, policy=policy)
+
+        allowed_id = allowed.json()["adjustment"]["id"]
+        restricted_id = restricted.json()["adjustment"]["id"]
+        self.assertEqual(self.client.get(
+            reverse("inventory_ops:inventory-adjustment-detail", kwargs={"pk": allowed_id})
+        ).status_code, 200)
+        self.assertEqual(self.client.get(
+            reverse("inventory_ops:inventory-adjustment-detail", kwargs={"pk": restricted_id})
+        ).status_code, 403)
+        self.assertEqual(self.client.post(
+            reverse("inventory_ops:inventory-adjustment-post", kwargs={"pk": restricted_id}),
+            {},
+            format="json",
+        ).status_code, 403)
+
+        listed = self.client.get(
+            reverse("inventory_ops:inventory-adjustments-list"),
+            {"entity": self.entity.id},
+        )
+        listed_ids = {row["id"] for row in listed.json()["rows"]}
+        self.assertIn(allowed_id, listed_ids)
+        self.assertNotIn(restricted_id, listed_ids)
+
+        denied_create = self.client.post(
+            reverse("inventory_ops:inventory-adjustments"),
+            batch_payload("LOT-DENIED-NEW", "ADJ-BATCH-DENIED-NEW"),
+            format="json",
+        )
+        self.assertEqual(denied_create.status_code, 403)
+        self.assertFalse(InventoryAdjustment.objects.filter(reference_no="ADJ-BATCH-DENIED-NEW").exists())
+        restricted_document = InventoryAdjustment.objects.get(pk=restricted_id)
+        self.assertEqual(restricted_document.status, "DRAFT")
+        self.assertFalse(InventoryMove.objects.filter(
+            txn_type=TxnType.INVENTORY_ADJUSTMENT,
+            txn_id=restricted_id,
+        ).exists())
 
 
 @skipUnless(connection.vendor == 'postgresql', 'Concurrent posting requires PostgreSQL row locking.')

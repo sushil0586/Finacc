@@ -12,7 +12,14 @@ from rest_framework.test import APIClient, APITestCase
 from Authentication.models import User
 from catalog.models import HsnSac, Product, ProductCategory, ProductGstRate, ProductPlanning, UnitOfMeasure
 from entity.models import Entity, EntityFinancialYear, GstRegistrationType, Godown, SubEntity
-from rbac.models import Permission, Role, RolePermission, UserRoleAssignment
+from rbac.models import (
+    DataAccessPolicy,
+    Permission,
+    Role,
+    RoleDataAccessPolicy,
+    RolePermission,
+    UserRoleAssignment,
+)
 from posting.models import Entry, EntryStatus, InventoryMove, PostingBatch, TxnType
 from posting.common.inventory_valuation import (
     fifo_issue_unit_cost,
@@ -1606,6 +1613,143 @@ class InventoryReportAPITests(APITestCase):
         self.assertIn('attachment', csv_response.headers.get('Content-Disposition', '').lower())
         self.assertIn('attachment', pdf.headers.get('Content-Disposition', '').lower())
         self.assertIn('inline', print_response.headers.get('Content-Disposition', '').lower())
+
+    def test_warehouse_policy_filters_inventory_report_data_exports_and_meta(self):
+        restricted_godown = Godown.objects.create(
+            entity=self.entity,
+            subentity=self.subentity,
+            name='Restricted Warehouse',
+            code='WH-RESTRICTED',
+            address='Restricted Area',
+            city='Delhi',
+            state='Delhi',
+            pincode='110001',
+            is_active=True,
+        )
+        self._create_purchase_stock(
+            productname='Restricted Switch',
+            sku='SW-RESTRICTED',
+            qty=Decimal('12.0000'),
+            unit_cost=Decimal('8000.0000'),
+            reorder_level=Decimal('4.0000'),
+            min_stock=Decimal('2.0000'),
+            max_stock=Decimal('18.0000'),
+            posting_date='2025-04-09',
+            txn_id=3099,
+            location=restricted_godown,
+        )
+        policy = DataAccessPolicy.objects.create(
+            entity=self.entity,
+            name='Main warehouse only',
+            code=f'main_warehouse_only_{uuid4().hex[:8]}',
+            policy_type=DataAccessPolicy.TYPE_WAREHOUSE,
+            scope_mode=DataAccessPolicy.MODE_INCLUDE,
+            configuration={'ids': [self.godown.id]},
+        )
+        role_ids = UserRoleAssignment.objects.filter(
+            user=self.user,
+            entity=self.entity,
+        ).values_list('role_id', flat=True)
+        RoleDataAccessPolicy.objects.bulk_create([
+            RoleDataAccessPolicy(role_id=role_id, policy=policy)
+            for role_id in role_ids
+        ])
+
+        response = self.client.get(reverse('reports_api:inventory-location-stock'), self._scope())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['summary']['location_count'], 1)
+        self.assertEqual(
+            {row['location_name'] for row in response.json()['rows']},
+            {'Main Warehouse'},
+        )
+
+        denied = self.client.get(
+            reverse('reports_api:inventory-location-stock'),
+            self._scope(location_ids=str(restricted_godown.id)),
+        )
+        self.assertEqual(denied.status_code, 403)
+
+        csv_response = self.client.get(
+            reverse('reports_api:inventory-location-stock-csv'),
+            self._scope(),
+        )
+        self.assertEqual(csv_response.status_code, 200)
+        csv_text = csv_response.content.decode('utf-8')
+        self.assertIn('Main Warehouse', csv_text)
+        self.assertNotIn('Restricted Warehouse', csv_text)
+
+        meta = self.client.get(
+            reverse('reports_api:inventory-meta'),
+            {'entity': self.entity.id},
+        )
+        self.assertEqual(meta.status_code, 200)
+        self.assertEqual(
+            {row['name'] for row in meta.json()['locations']},
+            {'Main Warehouse'},
+        )
+
+    def test_batch_policy_recalculates_inventory_reports_and_exports(self):
+        initial_move = InventoryMove.objects.get(txn_type=TxnType.PURCHASE, txn_id=1001, detail_id=1)
+        initial_move.batch_number = 'LOT-ALLOWED'
+        initial_move.save(update_fields=['batch_number'])
+        InventoryMove.objects.create(
+            entry=self.entry,
+            posting_batch=self.batch,
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.PURCHASE,
+            txn_id=1002,
+            detail_id=2,
+            voucher_no='PUR-RESTRICTED-BATCH',
+            product=self.product,
+            location=self.godown,
+            uom=self.uom,
+            base_uom=self.uom,
+            qty=Decimal('7.0000'),
+            uom_factor=Decimal('1'),
+            base_qty=Decimal('7.0000'),
+            unit_cost=Decimal('40000.0000'),
+            ext_cost=Decimal('280000.00'),
+            cost_source=InventoryMove.CostSource.PURCHASE,
+            move_type=InventoryMove.MoveType.IN_,
+            movement_nature=InventoryMove.MovementNature.PURCHASE,
+            batch_number='LOT-RESTRICTED',
+            posting_date='2025-04-11',
+        )
+        policy = DataAccessPolicy.objects.create(
+            entity=self.entity,
+            name='Allowed report lots',
+            code=f'allowed_report_lots_{uuid4().hex[:8]}',
+            policy_type=DataAccessPolicy.TYPE_BATCH,
+            scope_mode=DataAccessPolicy.MODE_INCLUDE,
+            configuration={'values': ['LOT-ALLOWED']},
+        )
+        role_ids = UserRoleAssignment.objects.filter(
+            user=self.user,
+            entity=self.entity,
+        ).values_list('role_id', flat=True)
+        RoleDataAccessPolicy.objects.bulk_create([
+            RoleDataAccessPolicy(role_id=role_id, policy=policy)
+            for role_id in role_ids
+        ])
+
+        summary = self.client.get(reverse('reports_api:inventory-stock-summary'), self._scope())
+        self.assertEqual(summary.status_code, 200)
+        laptop = next(row for row in summary.json()['rows'] if row['sku'] == 'LP-001')
+        self.assertEqual(Decimal(str(laptop['closing_qty'])), Decimal('15.0000'))
+
+        ledger = self.client.get(reverse('reports_api:inventory-stock-ledger'), self._scope())
+        self.assertEqual(ledger.status_code, 200)
+        ledger_text = str(ledger.json())
+        self.assertIn('PUR-1001', ledger_text)
+        self.assertNotIn('PUR-RESTRICTED-BATCH', ledger_text)
+
+        csv_response = self.client.get(reverse('reports_api:inventory-stock-ledger-csv'), self._scope())
+        self.assertEqual(csv_response.status_code, 200)
+        csv_text = csv_response.content.decode('utf-8')
+        self.assertIn('PUR-1001', csv_text)
+        self.assertNotIn('PUR-RESTRICTED-BATCH', csv_text)
 
     def test_inventory_location_stock_respects_category_hsn_location_and_search_filters(self):
         alternate_category = ProductCategory.objects.create(
