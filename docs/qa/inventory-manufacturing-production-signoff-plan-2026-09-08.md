@@ -518,6 +518,34 @@ Confidence above 95% requires all critical invariants to pass locally and on sta
 | 9 Sep 2026 | Phase 2 | In progress | Concurrency matrix expanded to update-versus-post, duplicate unpost, and duplicate cancel for transfer and adjustment; exact final states and posting/movement cardinality passed in the full 45/45 inventory suite | 94% |
 | 9 Sep 2026 | Phase 2 | Staging partially certified | Deployed transfer/adjustment browser lifecycles passed 3/3; inventory reconciliation passed 6/8 initially and both latency failures passed targeted rerun. Staging-host concurrency test DB creation is blocked by database-role privileges | 94% |
 | 9 Sep 2026 | Phase 3 | In progress | Valuation/financial baseline passed 115/115; audit identified periodic-versus-perpetual accounting policy ambiguity and selling-price-derived outbound movement cost metadata requiring correction before valuation sign-off | 94% |
+| 9 Sep 2026 | Phase 3 | Staging partially certified | Deployed inventory report/resilience/numeric reconciliation passed 15/15; transfer and adjustment lifecycle passed 3/3; goods-sale idempotent posting passed 2/2. Read-only database proof for sale 1048 found one active batch and one active move, FIFO cost 100.0000 from matching purchase layers, extended cost 100.00, and no duplicate commit. Manufacturing report reconciliation passed 5/5. Fresh manufacturing posting remains blocked by missing WIP, consumption, overhead absorption, and finished-goods static-account mappings in Manav-T; the standard-cost fixture also selected a batch-managed output without supplying a batch number. | 95% |
+| 9 Sep 2026 | Phase 3 | Staging transaction proof complete | Standard-cost manufacturing proof passed after making the test fixture batch/expiry aware and temporarily provisioning all required mappings. Work order 4 produced one active batch and entry; material issues were 45.90 and 2.00, finished output was 0.9800 at 47.0000 with the required batch, and journal debits/credits both totalled 95.80. All temporary mappings were removed after the test. | 96% |
+| 9 Sep 2026 | Phase 4 | In progress, core staging matrix green | Applied seven dedicated manufacturing static-account mappings for Manav-T branch 2 through the supported bootstrap command; post-apply Django check passed. Browser execution covered post/unpost/cancel, QC reject/rework/approve, operation skip, capitalized cost/byproduct recovery, and insufficient-stock rollback. Five business scenarios passed; the costing scenario had one report-hub navigation timeout and passed its isolated retry. Genealogy and downstream-consumption lock proofs remain. | 96% |
+| 9 Sep 2026 | Phase 4 | Local complete, staging retest pending deployment | Batch genealogy proof covers multiple inputs and outputs with exact allocated input quantities and output batch linkage. Manufacturing unpost now rejects an active downstream OUT movement for the same entity/FY/branch/product/location/batch, preserves the posted work order and production movements, and succeeds after the downstream posting is reversed. Focused controls passed 2/2 and the full manufacturing backend suite passed 39/39. | 96% |
+
+### Phase 3 Staging Evidence - 9 Sep 2026
+
+Environment and revision:
+
+- Application: `https://accerio.in`
+- Entity: `Manav-T`
+- Deployed revision: `8a1d2fbd`
+- Browser: Chromium through Playwright
+
+Executed evidence:
+
+- Inventory control resilience, cross-report scope, and numeric reconciliation: 15 passed, 0 failed.
+- Transfer and adjustment draft lifecycle through cancellation: 3 passed, 0 failed.
+- Manufacturing summary/material/output/WIP/posting-audit reconciliation: 5 passed, 0 failed.
+- Goods invoice repeated-post/idempotency workflow: 2 passed, 0 failed.
+- Persisted sale valuation audit: transaction 1048 has one active posting batch and one active inventory move; `cost_source=FIFO`, base quantity `1.0000`, unit cost `100.0000`, and extended cost `100.00`. Matching purchase receipt layers at the same product/location carry unit cost `100.0000`.
+- Persisted movement cost constraints: 127 pre-proof Manav-T movements had zero negative costs and zero extended-cost mismatches. Historical sales rows retain their original `SALES` source; newly posted rows use `FIFO`.
+
+Open staging blockers:
+
+- Seven dedicated manufacturing ledgers and mappings are now permanently configured for `Manav-T` branch 2 using `bootstrap_static_accounts`. Accounting should review their classifications and reporting placement before production sign-off.
+- `FIN-MFG-STD-COST-RECON-001` is now batch/expiry aware and passed on staging. The API validation remains enforced for incomplete controlled-product output lines.
+- Periodic versus perpetual inventory accounting remains a product-policy decision; FIFO movement valuation is now correct, but Phase 3 financial sign-off requires the selected GL policy to be explicit and tested end to end.
 
 ## Final Launch Matrix
 

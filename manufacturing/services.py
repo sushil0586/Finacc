@@ -1370,6 +1370,42 @@ class ManufacturingWorkOrderService:
         if not reason_text:
             raise ValidationError({"reason": "Reason is required to unpost a manufacturing work order."})
 
+        output_moves = list(
+            InventoryMove.objects.select_for_update().filter(
+                entity_id=work_order.entity_id,
+                entityfin_id=work_order.entityfin_id,
+                subentity_id=work_order.subentity_id,
+                txn_type=TxnType.MANUFACTURING_WORK_ORDER,
+                txn_id=work_order.id,
+                move_type=InventoryMove.MoveType.IN_,
+                posting_batch__is_active=True,
+            )
+        )
+        for output_move in output_moves:
+            downstream = InventoryMove.objects.select_for_update().filter(
+                entity_id=work_order.entity_id,
+                entityfin_id=work_order.entityfin_id,
+                subentity_id=work_order.subentity_id,
+                product_id=output_move.product_id,
+                location_id=output_move.location_id,
+                batch_number=output_move.batch_number or "",
+                move_type=InventoryMove.MoveType.OUT,
+                posting_batch__is_active=True,
+                created_at__gt=output_move.created_at,
+            ).exclude(
+                txn_type=TxnType.MANUFACTURING_WORK_ORDER,
+                txn_id=work_order.id,
+            ).order_by("created_at", "id").first()
+            if downstream:
+                reference = downstream.voucher_no or f"{downstream.txn_type}#{downstream.txn_id}"
+                batch_label = f" batch {output_move.batch_number}" if output_move.batch_number else ""
+                raise ValidationError({
+                    "work_order": (
+                        f"Cannot unpost {work_order.work_order_no}; finished output{batch_label} "
+                        f"has a downstream movement in {reference}. Reverse that transaction first."
+                    )
+                })
+
         old_jls = list(
             JournalLine.objects.filter(
                 entity_id=work_order.entity_id,

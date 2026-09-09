@@ -22,6 +22,7 @@ from inventory_ops.services import InventoryAdjustmentService
 from numbering.models import DocumentNumberSeries
 from posting.common.static_accounts import StaticAccountCodes
 from posting.models import EntityStaticAccountMap, InventoryMove, JournalLine, StaticAccount, TxnType
+from posting.services.posting_service import IMInput, PostingService
 from posting.services.static_accounts import StaticAccountService
 from rbac.models import Permission, Role, RolePermission, UserRoleAssignment
 from manufacturing.models import (
@@ -795,6 +796,50 @@ class ManufacturingPhaseOneTests(APITestCase):
             sum((line.amount for line in journal_lines if line.drcr), Decimal("0.00")),
             sum((line.amount for line in journal_lines if not line.drcr), Decimal("0.00")),
         )
+
+        downstream_entry = PostingService(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            user_id=self.user.id,
+        ).post(
+            txn_type=TxnType.INVENTORY_ADJUSTMENT,
+            txn_id=987654,
+            voucher_no="DOWNSTREAM-FG-001",
+            voucher_date=self.entityfin.finstartyear.date(),
+            posting_date=self.entityfin.finstartyear.date(),
+            narration="Synthetic finished-goods consumption dependency",
+            jl_inputs=[],
+            im_inputs=[
+                IMInput(
+                    product_id=self.finished_pack.id,
+                    qty=Decimal("1.0000"),
+                    base_qty=Decimal("1.0000"),
+                    uom_id=self.finished_pack.base_uom_id,
+                    base_uom_id=self.finished_pack.base_uom_id,
+                    unit_cost=Decimal("47.0000"),
+                    move_type=InventoryMove.MoveType.OUT,
+                    cost_source=InventoryMove.CostSource.AVG,
+                    location_id=self.finished_location.id,
+                    movement_nature=InventoryMove.MovementNature.ADJUSTMENT,
+                    batch_number="FG-APR-001",
+                )
+            ],
+            mark_posted=True,
+        )
+        blocked_unpost = self.client.post(
+            reverse("manufacturing:manufacturing-work-order-unpost", kwargs={"pk": work_order_id}),
+            {"reason": "Should remain blocked"},
+            format="json",
+        )
+        self.assertEqual(blocked_unpost.status_code, 400)
+        self.assertIn("Reverse that transaction first", str(blocked_unpost.json()))
+        self.assertEqual(ManufacturingWorkOrder.objects.get(pk=work_order_id).status, "POSTED")
+        self.assertEqual(
+            InventoryMove.objects.filter(txn_id=work_order_id, txn_type=TxnType.MANUFACTURING_WORK_ORDER).count(),
+            3,
+        )
+        downstream_entry.posting_batch.delete()
 
         source_bulk_balance = InventoryMove.objects.filter(
             entity_id=self.entity.id,
