@@ -32,6 +32,7 @@ from manufacturing.models import (
     ManufacturingWorkOrder,
 )
 from manufacturing.report_correctness_audit import audit_manufacturing_report_correctness
+from reports.services.trading_account import build_trading_account_dynamic
 
 
 @override_settings(ROOT_URLCONF="FA.urls", AUTH_PASSWORD_VALIDATORS=[])
@@ -1672,6 +1673,99 @@ class ManufacturingPhaseOneTests(APITestCase):
         self.assertEqual(Decimal(str(output_rows[0]["net_production_cost_snapshot"])).quantize(Decimal("0.01")), Decimal("520.00"))
         self.assertEqual(Decimal(str(wip_rows[0]["net_production_cost_snapshot"])).quantize(Decimal("0.01")), Decimal("520.00"))
         self.assertEqual(posting_rows[0]["posting_entry_id"], posted["posting_entry_id"])
+
+    def test_production_and_finished_goods_sale_reconcile_cost_without_double_counting_cogs(self):
+        bom = self.client.post(reverse("manufacturing:manufacturing-boms"), self._bom_payload(), format="json").json()
+        work_order_resp = self.client.post(
+            reverse("manufacturing:manufacturing-work-orders"),
+            self._work_order_payload(bom["id"]),
+            format="json",
+        )
+        self.assertEqual(work_order_resp.status_code, 201)
+        work_order_id = work_order_resp.json()["work_order"]["id"]
+
+        post_resp = self.client.post(
+            reverse("manufacturing:manufacturing-work-order-post", kwargs={"pk": work_order_id}),
+            {},
+            format="json",
+        )
+        self.assertEqual(post_resp.status_code, 200)
+        work_order = ManufacturingWorkOrder.objects.get(pk=work_order_id)
+        self.assertEqual(work_order.net_production_cost_snapshot, Decimal("470.0000"))
+
+        manufacturing_lines = JournalLine.objects.filter(entry_id=work_order.posting_entry_id)
+        self.assertEqual(
+            manufacturing_lines.filter(drcr=True).aggregate(total=Sum("amount"))["total"],
+            manufacturing_lines.filter(drcr=False).aggregate(total=Sum("amount"))["total"],
+        )
+        finished_goods_account_id = EntityStaticAccountMap.objects.get(
+            entity=self.entity,
+            static_account__code=StaticAccountCodes.MANUFACTURING_FINISHED_GOODS,
+        ).account_id
+        wip_account_id = EntityStaticAccountMap.objects.get(
+            entity=self.entity,
+            static_account__code=StaticAccountCodes.MANUFACTURING_WIP,
+        ).account_id
+        self.assertEqual(
+            manufacturing_lines.filter(drcr=True, account_id=finished_goods_account_id).aggregate(total=Sum("amount"))["total"],
+            Decimal("470.00"),
+        )
+        self.assertEqual(
+            manufacturing_lines.filter(drcr=False, account_id=wip_account_id).aggregate(total=Sum("amount"))["total"],
+            Decimal("470.00"),
+        )
+
+        report_args = {
+            "entity_id": self.entity.id,
+            "entityfin_id": self.entityfin.id,
+            "subentity_id": self.subentity.id,
+            "startdate": "2025-04-01",
+            "enddate": "2025-04-30",
+            "valuation_method": "fifo",
+        }
+        before_sale = build_trading_account_dynamic(**report_args)
+        self.assertEqual(Decimal(str(before_sale["closing_stock"])), Decimal("4700.0"))
+        self.assertEqual(Decimal(str(before_sale["cogs_from_issues"])), Decimal("0.0"))
+
+        PostingService(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            user_id=self.user.id,
+        ).post(
+            txn_type=TxnType.SALES,
+            txn_id=987655,
+            voucher_no="FG-SALE-001",
+            voucher_date=datetime(2025, 4, 13).date(),
+            posting_date=datetime(2025, 4, 13).date(),
+            narration="Finished-goods sale costing proof",
+            jl_inputs=[],
+            im_inputs=[
+                IMInput(
+                    product_id=self.finished_pack.id,
+                    qty=Decimal("4.0000"),
+                    base_qty=Decimal("4.0000"),
+                    uom_id=self.finished_pack.base_uom_id,
+                    base_uom_id=self.finished_pack.base_uom_id,
+                    unit_cost=Decimal("47.0000"),
+                    move_type=InventoryMove.MoveType.OUT,
+                    cost_source=InventoryMove.CostSource.FIFO,
+                    location_id=self.finished_location.id,
+                    source_location_id=self.finished_location.id,
+                    movement_nature=InventoryMove.MovementNature.SALE,
+                    batch_number="FG-APR-001",
+                )
+            ],
+            mark_posted=True,
+        )
+
+        after_sale = build_trading_account_dynamic(**report_args)
+        self.assertEqual(Decimal(str(after_sale["closing_stock"])), Decimal("4512.0"))
+        self.assertEqual(Decimal(str(after_sale["cogs_from_issues"])), Decimal("188.0"))
+        self.assertEqual(
+            InventoryMove.objects.get(txn_type=TxnType.SALES, txn_id=987655).ext_cost,
+            Decimal("188.00"),
+        )
 
     def test_manufacturing_report_correctness_command_fails_on_snapshot_drift(self):
         bom = self.client.post(reverse("manufacturing:manufacturing-boms"), self._bom_payload(), format="json").json()

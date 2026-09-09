@@ -378,7 +378,7 @@ def _period_inventory_inflow_value(*, entity_id, entityfin_id=None, subentity_id
             entity_id=entity_id,
             posting_date__range=(start_date, end_date),
             move_type="IN",
-        ),
+        ).exclude(movement_nature=InventoryMove.MovementNature.PRODUCTION),
         entityfin_id=entityfin_id,
         subentity_id=subentity_id,
     ).aggregate(total=Sum("ext_cost"))["total"] or Decimal("0")
