@@ -2508,16 +2508,18 @@ class PurchaseLineTaxabilityValidationTests(TestCase):
         with self.assertRaisesMessage(ValueError, "Import and SEZ purchases must use INTER tax regime."):
             PurchaseInvoiceService.validate_header(attrs)
 
+    @patch("purchase.services.purchase_invoice_service.PurchaseSettingsService.get_policy")
     @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService.assert_note_correction_date_open")
-    def test_purchase_note_ref_document_requires_same_vendor(self, mocked_assert_note_window):
+    def test_purchase_note_ref_document_requires_same_vendor(self, mocked_assert_note_window, mocked_get_policy):
+        mocked_get_policy.return_value = SimpleNamespace(controls={})
         attrs = {
-            "entity": SimpleNamespace(id=1),
+            "entity": self.entity,
             "entityfinid_id": 10,
             "subentity": SimpleNamespace(id=100),
-            "vendor": SimpleNamespace(id=200),
+            "vendor": SimpleNamespace(id=200, ledger_id=300),
             "doc_type": int(PurchaseInvoiceHeader.DocType.CREDIT_NOTE),
             "ref_document": SimpleNamespace(
-                entity_id=1,
+                entity_id=self.entity.id,
                 entityfinid_id=10,
                 subentity_id=100,
                 vendor_id=201,
@@ -2531,16 +2533,18 @@ class PurchaseLineTaxabilityValidationTests(TestCase):
 
         mocked_assert_note_window.assert_not_called()
 
+    @patch("purchase.services.purchase_invoice_service.PurchaseSettingsService.get_policy")
     @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService.assert_note_correction_date_open")
-    def test_purchase_note_ref_document_requires_same_subentity_scope(self, mocked_assert_note_window):
+    def test_purchase_note_ref_document_requires_same_subentity_scope(self, mocked_assert_note_window, mocked_get_policy):
+        mocked_get_policy.return_value = SimpleNamespace(controls={})
         attrs = {
-            "entity": SimpleNamespace(id=1),
+            "entity": self.entity,
             "entityfinid_id": 10,
             "subentity": SimpleNamespace(id=100),
-            "vendor": SimpleNamespace(id=200),
+            "vendor": SimpleNamespace(id=200, ledger_id=300),
             "doc_type": int(PurchaseInvoiceHeader.DocType.CREDIT_NOTE),
             "ref_document": SimpleNamespace(
-                entity_id=1,
+                entity_id=self.entity.id,
                 entityfinid_id=10,
                 subentity_id=101,
                 vendor_id=200,
@@ -3810,6 +3814,7 @@ class PurchaseApiSmokeTests(APITestCase):
         mock_payload.assert_not_called()
 
     @patch("purchase.views.purchase_settings.PurchaseSettingsAPIView._payload", return_value={"ok": True})
+    @patch("purchase.views.purchase_settings.PurchaseSettingsAPIView._drop_unissued_generated_branch_series_if_conflicting", return_value=True)
     @patch("purchase.views.purchase_settings.validate_unique_series_pattern")
     @patch("purchase.views.purchase_settings.ensure_series")
     @patch("purchase.views.purchase_settings.PurchaseSettingsService.upsert_settings")
@@ -3818,6 +3823,7 @@ class PurchaseApiSmokeTests(APITestCase):
         mock_upsert_settings,
         mock_ensure_series,
         mock_validate_unique_series_pattern,
+        mock_drop_generated_series,
         mock_payload,
     ):
         settings_obj = SimpleNamespace(
@@ -3856,6 +3862,7 @@ class PurchaseApiSmokeTests(APITestCase):
         self.assertEqual(resp.status_code, 200)
         mock_ensure_series.assert_not_called()
         mock_validate_unique_series_pattern.assert_not_called()
+        mock_drop_generated_series.assert_called_once()
         settings_obj.save.assert_called_once()
         mock_payload.assert_called_once()
 
@@ -4599,7 +4606,7 @@ class PurchasePostingAdapterTests(SimpleTestCase):
                     is_service=False,
                     purchase_behavior=ProductPurchaseBehavior.INVENTORY,
                     qty=Decimal("2.0000"),
-                    free_qty=Decimal("0.0000"),
+                    free_qty=Decimal("1.0000"),
                     taxable_value=Decimal("500.00"),
                     uom_id=2,
                 )
@@ -4610,11 +4617,90 @@ class PurchasePostingAdapterTests(SimpleTestCase):
 
         kwargs = posting_instance.post.call_args.kwargs
         move = kwargs["im_inputs"][0]
-        self.assertEqual(move.qty, Decimal("2.0000"))
+        self.assertEqual(move.qty, Decimal("3.0000"))
         self.assertEqual(move.uom_factor, Decimal("1000.0000"))
-        self.assertEqual(move.base_qty, Decimal("2000.0000"))
+        self.assertEqual(move.base_qty, Decimal("3000.0000"))
         self.assertEqual(move.base_uom_id, 1)
+        self.assertEqual(move.unit_cost, Decimal("0.1667"))
+        self.assertEqual(move.cost_meta["qty"], "2.0000")
+        self.assertEqual(move.cost_meta["free_qty"], "1.0000")
+        self.assertTrue(move.cost_meta["spread_cost_across_free_qty"])
         self.assertTrue(mocked_resolve_location.called)
+
+    @patch(
+        "posting.adapters.purchase_invoice.original_purchase_receipt_unit_cost",
+        return_value=Decimal("75.0000"),
+    )
+    @patch("posting.adapters.purchase_invoice.resolve_posting_location_id", return_value=5)
+    @patch("posting.adapters.purchase_invoice.PostingService")
+    @patch("posting.adapters.purchase_invoice.Product.objects")
+    @patch("posting.adapters.purchase_invoice.ProductAccountResolver")
+    @patch("posting.adapters.purchase_invoice.StaticAccountResolver")
+    def test_credit_note_inventory_return_reuses_original_purchase_cost(
+        self,
+        mock_static_resolver_cls,
+        mock_product_resolver_cls,
+        mock_product_objects,
+        mock_posting_service_cls,
+        _mocked_resolve_location,
+        mocked_original_cost,
+    ):
+        code_map = {
+            StaticAccountCodes.PURCHASE_MISC_EXPENSE: 8100,
+            StaticAccountCodes.ROUND_OFF_INCOME: 8101,
+            StaticAccountCodes.ROUND_OFF_EXPENSE: 8102,
+            StaticAccountCodes.INPUT_CGST: 8103,
+            StaticAccountCodes.INPUT_SGST: 8104,
+            StaticAccountCodes.INPUT_IGST: 8105,
+            StaticAccountCodes.INPUT_CESS: 8106,
+            StaticAccountCodes.PURCHASE_DEFAULT: 8107,
+        }
+        resolver = mock_static_resolver_cls.return_value
+        resolver.get_account_id.side_effect = lambda code, required=False: code_map.get(code)
+        mock_product_resolver_cls.return_value.purchase_account_id.return_value = 5000
+        product = SimpleNamespace(
+            id=99,
+            base_uom_id=1,
+            base_uom=SimpleNamespace(id=1, code="PCS"),
+            uom_conversions=[],
+            is_batch_managed=False,
+            is_expiry_tracked=False,
+        )
+        mock_product_objects.filter.return_value.select_related.return_value.prefetch_related.return_value = [product]
+        mock_posting_service_cls.return_value.post.return_value = SimpleNamespace(id=1005)
+
+        header = self._base_header(
+            doc_type=2,
+            ref_document_id=77,
+            grand_total=Decimal("50.00"),
+            affects_inventory=True,
+        )
+        PurchaseInvoicePostingAdapter.post_purchase_invoice.__wrapped__(
+            header=header,
+            lines=[
+                self._line(
+                    product_id=99,
+                    is_service=False,
+                    purchase_behavior=ProductPurchaseBehavior.INVENTORY,
+                    qty=Decimal("1.0000"),
+                    taxable_value=Decimal("50.00"),
+                    uom_id=1,
+                )
+            ],
+            user_id=1,
+            config=PurchaseInvoicePostingConfig(),
+        )
+
+        move = mock_posting_service_cls.return_value.post.call_args.kwargs["im_inputs"][0]
+        self.assertEqual(move.move_type, InventoryMove.MoveType.OUT)
+        self.assertEqual(move.unit_cost, Decimal("75.0000"))
+        self.assertNotEqual(move.unit_cost, Decimal("50.0000"))
+        self.assertEqual(move.cost_meta["valuation_source"], "original_purchase_receipt")
+        mocked_original_cost.assert_called_once_with(
+            original_invoice_id=77,
+            product_id=99,
+            batch_number="",
+        )
 
     @patch("posting.adapters.purchase_invoice.resolve_posting_location_id", return_value=5)
     @patch("posting.adapters.purchase_invoice.PostingService")
@@ -4929,7 +5015,7 @@ class PurchasePhase1ClassificationTests(SimpleTestCase):
 
     @patch("purchase.services.purchase_invoice_service.Product.objects")
     def test_validate_lines_structural_requires_account_for_expense_product(self, mock_product_objects):
-        mock_product_objects.filter.return_value.only.return_value.first.return_value = SimpleNamespace(
+        product = SimpleNamespace(
             id=10,
             is_batch_managed=False,
             is_expiry_tracked=False,
@@ -4937,6 +5023,7 @@ class PurchasePhase1ClassificationTests(SimpleTestCase):
             purchase_behavior=ProductPurchaseBehavior.EXPENSE,
             purchase_account_id=None,
         )
+        mock_product_objects.filter.return_value.only.return_value = [product]
         attrs = {
             "default_taxability": PurchaseInvoiceHeader.Taxability.TAXABLE,
             "is_reverse_charge": False,
@@ -4958,7 +5045,7 @@ class PurchasePhase1ClassificationTests(SimpleTestCase):
 
     @patch("purchase.services.purchase_invoice_service.Product.objects")
     def test_validate_lines_structural_requires_default_asset_category_for_asset_product(self, mock_product_objects):
-        mock_product_objects.filter.return_value.only.return_value.first.return_value = SimpleNamespace(
+        product = SimpleNamespace(
             id=10,
             is_batch_managed=False,
             is_expiry_tracked=False,
@@ -4967,6 +5054,7 @@ class PurchasePhase1ClassificationTests(SimpleTestCase):
             purchase_account_id=5000,
             default_asset_category_id=None,
         )
+        mock_product_objects.filter.return_value.only.return_value = [product]
         attrs = {
             "default_taxability": PurchaseInvoiceHeader.Taxability.TAXABLE,
             "is_reverse_charge": False,
@@ -5156,6 +5244,37 @@ class PurchaseInventoryReturnSafetyTests(TestCase):
             }
         ]
 
+    def _seed_prior_return(self, *, qty: str, status=PurchaseInvoiceHeader.Status.CONFIRMED):
+        note = PurchaseInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            location=self.location,
+            doc_type=PurchaseInvoiceHeader.DocType.CREDIT_NOTE,
+            status=status,
+            ref_document=self.header,
+            note_reason=PurchaseInvoiceHeader.NoteReason.QUANTITY_RETURN,
+            affects_inventory=True,
+            bill_date=date(2026, 4, 15),
+            posting_date=date(2026, 4, 15),
+            default_taxability=PurchaseInvoiceHeader.Taxability.TAXABLE,
+            supply_category=PurchaseInvoiceHeader.SupplyCategory.DOMESTIC,
+            tax_regime=PurchaseInvoiceHeader.TaxRegime.INTRA,
+        )
+        PurchaseInvoiceLine.objects.create(
+            header=note,
+            line_no=1,
+            product=self.product,
+            uom=self.uom,
+            qty=Decimal(qty),
+            rate=Decimal("100.00"),
+            product_desc="Prior quantity return",
+            is_service=False,
+            purchase_behavior=ProductPurchaseBehavior.INVENTORY,
+            taxability=PurchaseInvoiceHeader.Taxability.TAXABLE,
+        )
+        return note
+
     def test_validate_lines_structural_allows_quantity_return_before_downstream_consumption(self):
         self._seed_inventory_move(
             txn_type=TxnType.PURCHASE,
@@ -5192,6 +5311,63 @@ class PurchaseInventoryReturnSafetyTests(TestCase):
                 self._return_attrs(),
                 self._return_lines("5.0000"),
                 SimpleNamespace(tax_regime=PurchaseInvoiceHeader.TaxRegime.INTRA),
+            )
+
+    def test_quantity_returns_apply_cumulative_cap_and_allow_exact_remaining_quantity(self):
+        self._seed_inventory_move(
+            txn_type=TxnType.PURCHASE,
+            txn_id=self.header.id,
+            move_type=InventoryMove.MoveType.IN_,
+            qty="10.0000",
+            posting_day=date(2026, 4, 10),
+        )
+        self._seed_prior_return(qty="4.0000")
+
+        PurchaseInvoiceService.validate_lines_structural(
+            self._return_attrs(),
+            self._return_lines("6.0000"),
+            SimpleNamespace(tax_regime=PurchaseInvoiceHeader.TaxRegime.INTRA),
+        )
+        with self.assertRaisesMessage(ValueError, "exceeds available returnable quantity 6.0000"):
+            PurchaseInvoiceService.validate_lines_structural(
+                self._return_attrs(),
+                self._return_lines("6.0001"),
+                SimpleNamespace(tax_regime=PurchaseInvoiceHeader.TaxRegime.INTRA),
+            )
+
+    def test_cancelled_quantity_return_does_not_consume_returnable_balance(self):
+        self._seed_inventory_move(
+            txn_type=TxnType.PURCHASE,
+            txn_id=self.header.id,
+            move_type=InventoryMove.MoveType.IN_,
+            qty="10.0000",
+            posting_day=date(2026, 4, 10),
+        )
+        self._seed_prior_return(qty="10.0000", status=PurchaseInvoiceHeader.Status.CANCELLED)
+
+        PurchaseInvoiceService.validate_lines_structural(
+            self._return_attrs(),
+            self._return_lines("10.0000"),
+            SimpleNamespace(tax_regime=PurchaseInvoiceHeader.TaxRegime.INTRA),
+        )
+
+    def test_note_correction_date_respects_inventory_lock_and_financial_year_end(self):
+        self.entityfin.inventory_locked_until = date(2026, 4, 30)
+        self.entityfin.save(update_fields=["inventory_locked_until"])
+
+        with self.assertRaisesMessage(ValueError, "after 2026-04-30"):
+            PurchaseInvoiceService.assert_note_correction_date_open(
+                ref_document=self.header,
+                correction_date=date(2026, 4, 30),
+            )
+        PurchaseInvoiceService.assert_note_correction_date_open(
+            ref_document=self.header,
+            correction_date=date(2026, 5, 1),
+        )
+        with self.assertRaisesMessage(ValueError, "on or before 2027-03-31"):
+            PurchaseInvoiceService.assert_note_correction_date_open(
+                ref_document=self.header,
+                correction_date=date(2027, 4, 1),
             )
 
 
@@ -7341,8 +7517,14 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
         self.assertIn("lines", serializer.errors)
         self.assertIn("note", serializer.errors["lines"][0])
 
+    @patch("purchase.views.purchase_ap.require_purchase_request_permission")
+    @patch("purchase.views.purchase_ap.VendorSettlement.objects")
     @patch("purchase.views.purchase_ap.PurchaseApService.cancel_settlement")
-    def test_ap_settlement_cancel_endpoint_returns_200(self, mock_cancel):
+    def test_ap_settlement_cancel_endpoint_returns_200(self, mock_cancel, mock_settlement_objects, mock_permission):
+        mock_settlement_objects.filter.return_value.only.return_value.first.return_value = SimpleNamespace(
+            id=1,
+            entity_id=self.entity.id,
+        )
         mock_cancel.return_value = SimpleNamespace(
             message="Settlement cancelled with reversal.",
             settlement=SimpleNamespace(
@@ -7372,6 +7554,7 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
             resp = self.client.post("/api/purchase/ap/settlements/1/cancel/")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.data["message"], "Settlement cancelled with reversal.")
+        mock_permission.assert_called_once()
 
     @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
     @patch("purchase.views.purchase_statutory.PurchaseStatutoryService.reconciliation_summary")
@@ -7591,17 +7774,17 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
         mock_action,
         mock_serializer,
     ):
-        mock_entity_for_user.return_value = SimpleNamespace(id=1)
+        mock_entity_for_user.return_value = SimpleNamespace(id=self.entity.id)
         mock_codes.return_value = {"purchase.invoice.update"}
         _mock_scope.return_value = SimpleNamespace(
             id=9,
-            entity_id=1,
+            entity_id=self.entity.id,
             doc_type=int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
         )
         mock_action.return_value = SimpleNamespace(message="ok", header=SimpleNamespace(id=9))
         mock_serializer.return_value.data = {"id": 9}
         resp = self.client.post(
-            "/api/purchase/purchase-service-invoices/9/itc/claim/?entity=1&entityfinid=1",
+            f"/api/purchase/purchase-service-invoices/9/itc/claim/?entity={self.entity.id}&entityfinid={self.entityfin.id}",
             {"period": "2026-04"},
             format="json",
         )
@@ -7621,17 +7804,17 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
         mock_action,
         mock_serializer,
     ):
-        mock_entity_for_user.return_value = SimpleNamespace(id=1)
+        mock_entity_for_user.return_value = SimpleNamespace(id=self.entity.id)
         mock_codes.return_value = {"purchase.invoice.update"}
         _mock_scope.return_value = SimpleNamespace(
             id=9,
-            entity_id=1,
+            entity_id=self.entity.id,
             doc_type=int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
         )
         mock_action.return_value = SimpleNamespace(message="unblocked", header=SimpleNamespace(id=9))
         mock_serializer.return_value.data = {"id": 9}
         resp = self.client.post(
-            "/api/purchase/purchase-service-invoices/9/itc/unblock/?entity=1&entityfinid=1",
+            f"/api/purchase/purchase-service-invoices/9/itc/unblock/?entity={self.entity.id}&entityfinid={self.entityfin.id}",
             {"reason": "GSTR-2B updated"},
             format="json",
         )
@@ -7651,17 +7834,17 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
         mock_action,
         mock_serializer,
     ):
-        mock_entity_for_user.return_value = SimpleNamespace(id=1)
+        mock_entity_for_user.return_value = SimpleNamespace(id=self.entity.id)
         mock_codes.return_value = {"purchase.invoice.update"}
         _mock_scope.return_value = SimpleNamespace(
             id=10,
-            entity_id=1,
+            entity_id=self.entity.id,
             doc_type=int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
         )
         mock_action.return_value = SimpleNamespace(message="ok", header=SimpleNamespace(id=10))
         mock_serializer.return_value.data = {"id": 10, "gstr2b_match_status": 2}
         resp = self.client.post(
-            "/api/purchase/purchase-service-invoices/10/gstr2b/status/?entity=1&entityfinid=1",
+            f"/api/purchase/purchase-service-invoices/10/gstr2b/status/?entity={self.entity.id}&entityfinid={self.entityfin.id}",
             {"match_status": 2},
             format="json",
         )
@@ -9551,14 +9734,14 @@ class PurchaseApiPermissionTests(APITestCase):
     @patch("purchase.views.rbac.EffectivePermissionService.permission_codes_for_user")
     @patch("purchase.views.rbac.EffectivePermissionService.entity_for_user")
     def test_credit_note_create_requires_credit_note_create_permission(self, mock_entity_for_user, mock_codes):
-        mock_entity_for_user.return_value = SimpleNamespace(id=1)
+        mock_entity_for_user.return_value = SimpleNamespace(id=self.allowed_entity.id)
         mock_codes.return_value = {"purchase.credit_note.view"}
 
         response = self.client.post(
             "/api/purchase/purchase-invoices/",
             {
-                "entity": 1,
-                "entityfinid": 1,
+                "entity": self.allowed_entity.id,
+                "entityfinid": self.allowed_fy.id,
                 "doc_type": int(PurchaseInvoiceHeader.DocType.CREDIT_NOTE),
             },
             format="json",
@@ -9578,17 +9761,19 @@ class PurchaseApiPermissionTests(APITestCase):
         mock_get_object,
         mock_super_update,
     ):
-        mock_entity_for_user.return_value = SimpleNamespace(id=1)
+        mock_entity_for_user.return_value = SimpleNamespace(id=self.allowed_entity.id)
         mock_codes.return_value = {"purchase.debit_note.view"}
         mock_get_object.return_value = SimpleNamespace(
             id=9,
-            entity_id=1,
+            pk=9,
+            entity_id=self.allowed_entity.id,
+            subentity_id=None,
             doc_type=int(PurchaseInvoiceHeader.DocType.DEBIT_NOTE),
         )
         mock_super_update.return_value = Response({"ok": True})
 
         response = self.client.put(
-            "/api/purchase/purchase-invoices/9/?entity=1&entityfinid=1",
+            f"/api/purchase/purchase-invoices/9/?entity={self.allowed_entity.id}&entityfinid={self.allowed_fy.id}",
             {"vendor_name": "Updated"},
             format="json",
         )
@@ -9607,17 +9792,19 @@ class PurchaseApiPermissionTests(APITestCase):
         mock_get_object,
         mock_super_update,
     ):
-        mock_entity_for_user.return_value = SimpleNamespace(id=1)
+        mock_entity_for_user.return_value = SimpleNamespace(id=self.allowed_entity.id)
         mock_codes.return_value = {"purchase.debit_note.update"}
         mock_get_object.return_value = SimpleNamespace(
             id=9,
-            entity_id=1,
+            pk=9,
+            entity_id=self.allowed_entity.id,
+            subentity_id=None,
             doc_type=int(PurchaseInvoiceHeader.DocType.DEBIT_NOTE),
         )
         mock_super_update.return_value = Response({"ok": True})
 
         response = self.client.put(
-            "/api/purchase/purchase-invoices/9/?entity=1&entityfinid=1",
+            f"/api/purchase/purchase-invoices/9/?entity={self.allowed_entity.id}&entityfinid={self.allowed_fy.id}",
             {"vendor_name": "Updated"},
             format="json",
         )
@@ -9636,16 +9823,16 @@ class PurchaseApiPermissionTests(APITestCase):
         mock_scope,
         mock_post,
     ):
-        mock_entity_for_user.return_value = SimpleNamespace(id=1)
+        mock_entity_for_user.return_value = SimpleNamespace(id=self.allowed_entity.id)
         mock_codes.return_value = {"purchase.credit_note.view"}
         mock_scope.return_value = SimpleNamespace(
             id=11,
-            entity_id=1,
+            entity_id=self.allowed_entity.id,
             doc_type=int(PurchaseInvoiceHeader.DocType.CREDIT_NOTE),
         )
 
         response = self.client.post(
-            "/api/purchase/purchase-invoices/11/post/?entity=1&entityfinid=1",
+            f"/api/purchase/purchase-invoices/11/post/?entity={self.allowed_entity.id}&entityfinid={self.allowed_fy.id}",
             {},
             format="json",
         )
@@ -9666,18 +9853,18 @@ class PurchaseApiPermissionTests(APITestCase):
         mock_cancel,
         mock_serializer,
     ):
-        mock_entity_for_user.return_value = SimpleNamespace(id=1)
+        mock_entity_for_user.return_value = SimpleNamespace(id=self.allowed_entity.id)
         mock_codes.return_value = {"purchase.credit_note.update"}
         mock_scope.return_value = SimpleNamespace(
             id=12,
-            entity_id=1,
+            entity_id=self.allowed_entity.id,
             doc_type=int(PurchaseInvoiceHeader.DocType.CREDIT_NOTE),
         )
         mock_cancel.return_value = SimpleNamespace(message="cancelled", header=SimpleNamespace(id=12))
         mock_serializer.return_value.data = {"id": 12}
 
         response = self.client.post(
-            "/api/purchase/purchase-invoices/12/cancel/?entity=1&entityfinid=1",
+            f"/api/purchase/purchase-invoices/12/cancel/?entity={self.allowed_entity.id}&entityfinid={self.allowed_fy.id}",
             {"reason": "test"},
             format="json",
         )
@@ -9696,16 +9883,16 @@ class PurchaseApiPermissionTests(APITestCase):
         mock_scope,
         mock_factory,
     ):
-        mock_entity_for_user.return_value = SimpleNamespace(id=1)
+        mock_entity_for_user.return_value = SimpleNamespace(id=self.allowed_entity.id)
         mock_codes.return_value = {"purchase.invoice.post"}
         mock_scope.return_value = SimpleNamespace(
             id=13,
-            entity_id=1,
+            entity_id=self.allowed_entity.id,
             doc_type=int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
         )
 
         response = self.client.post(
-            "/api/purchase/purchase-invoices/13/create-credit-note/?entity=1&entityfinid=1",
+            f"/api/purchase/purchase-invoices/13/create-credit-note/?entity={self.allowed_entity.id}&entityfinid={self.allowed_fy.id}",
             {},
             format="json",
         )
@@ -9726,18 +9913,18 @@ class PurchaseApiPermissionTests(APITestCase):
         mock_cancel,
         mock_amendment_window,
     ):
-        mock_entity_for_user.return_value = SimpleNamespace(id=1)
+        mock_entity_for_user.return_value = SimpleNamespace(id=self.allowed_entity.id)
         mock_codes.return_value = {"purchase.invoice.cancel"}
         mock_scope.return_value = SimpleNamespace(
             id=14,
-            entity_id=1,
+            entity_id=self.allowed_entity.id,
             doc_type=int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
             status=int(PurchaseInvoiceHeader.Status.POSTED),
         )
         mock_amendment_window.return_value = SimpleNamespace(amendment_required=True)
 
         response = self.client.post(
-            "/api/purchase/purchase-invoices/14/cancel/?entity=1&entityfinid=1",
+            f"/api/purchase/purchase-invoices/14/cancel/?entity={self.allowed_entity.id}&entityfinid={self.allowed_fy.id}",
             {"reason": "locked"},
             format="json",
         )

@@ -8,6 +8,7 @@ from typing import Any, Iterable, List, Optional
 from django.db import transaction
 
 from posting.common.location_resolver import resolve_posting_location_id
+from posting.common.inventory_valuation import fifo_issue_unit_cost, original_sales_issue_unit_cost
 from posting.common.journal_descriptions import (
     sales_charge_description,
     sales_document_prefix,
@@ -432,12 +433,6 @@ class SalesInvoicePostingAdapter:
         # =========================
         im: List[IMInput] = []
 
-        # NOTE:
-        # For Sales, true unit_cost should come from valuation engine (FIFO/WA),
-        # but you're explicitly asking to keep it same style as purchase.
-        # So we compute unit_cost from taxable_value/qty_for_cost (like purchase).
-        # We can later replace with valuation-derived cost without changing PostingService contract.
-
         if post_inventory:
             for ln in lines_list:
                 if bool(getattr(ln, "is_service", False)):
@@ -462,7 +457,6 @@ class SalesInvoicePostingAdapter:
                 base_qty = q4(qty_for_cost * factor_to_base)
 
                 base = q2(getattr(ln, "taxable_value", None) or ZERO2)
-                unit_cost = q4(base / base_qty) if base_qty != ZERO4 else ZERO4
                 location_id = resolve_posting_location_id(
                     entity_id=entity_id,
                     subentity_id=int(subentity_id) if subentity_id else None,
@@ -475,6 +469,23 @@ class SalesInvoicePostingAdapter:
                     batch_number=getattr(ln, "batch_number", ""),
                     expiry_date=getattr(ln, "expiry_date", None),
                 )
+                if inventory_move_type == InventoryMove.MoveType.OUT:
+                    unit_cost = fifo_issue_unit_cost(
+                        entity_id=entity_id,
+                        product_id=product.id,
+                        location_id=location_id,
+                        posting_date=posting_date,
+                        required_qty=base_qty,
+                        batch_number=resolved_lot_number,
+                    )
+                    valuation_source = "fifo"
+                else:
+                    unit_cost = original_sales_issue_unit_cost(
+                        original_invoice_id=getattr(header, "original_invoice_id", None),
+                        product_id=product.id,
+                        batch_number=resolved_lot_number,
+                    )
+                    valuation_source = "original_sales_issue"
                 im.append(IMInput(
                     product_id=int(getattr(ln, "product_id")),
                     qty=qty_for_cost,  # qty positive; move_type controls IN vs OUT
@@ -484,7 +495,7 @@ class SalesInvoicePostingAdapter:
                     base_qty=base_qty,
                     unit_cost=unit_cost,
                     move_type=inventory_move_type,  # OUT for invoice, IN for CN return
-                    cost_source="SALES",
+                    cost_source=InventoryMove.CostSource.FIFO,
                     movement_nature=InventoryMove.MovementNature.SALE if inventory_move_type == InventoryMove.MoveType.OUT else InventoryMove.MovementNature.RETURN,
                     movement_reason=str(doc_type or "sale"),
                     batch_number=resolved_lot_number,
@@ -501,6 +512,7 @@ class SalesInvoicePostingAdapter:
                         "taxable_value": str(base),
                         "selected_uom_unit_cost": str(q4(base / qty_for_cost)) if qty_for_cost != ZERO4 else "0.0000",
                         "base_uom_unit_cost": str(unit_cost),
+                        "valuation_source": valuation_source,
                         "spread_cost_across_free_qty": cfg.spread_cost_across_free_qty,
                         "affects_inventory": affects_inventory,
                         "batch_number": resolved_lot_number,

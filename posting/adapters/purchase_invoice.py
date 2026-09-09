@@ -15,6 +15,7 @@ from posting.common.journal_descriptions import (
 )
 from posting.services.posting_service import PostingService, JLInput, IMInput
 from posting.models import InventoryMove, TxnType
+from posting.common.inventory_valuation import original_purchase_receipt_unit_cost
 from posting.common.static_accounts import StaticAccountCodes, StaticAccountResolver
 from posting.common.product_accounts import ProductAccountResolver
 from catalog.models import Product, ProductPurchaseBehavior
@@ -734,8 +735,6 @@ class PurchaseInvoicePostingAdapter:
                 if extra_cap > ZERO2 and total_goods_taxable > ZERO2 and base > ZERO2:
                     cap_share = q2(extra_cap * (base / total_goods_taxable))
 
-                unit_cost = q4((base + cap_share) / base_qty) if base_qty != ZERO4 else ZERO4
-
                 location_id = resolve_posting_location_id(
                     entity_id=entity_id,
                     subentity_id=int(subentity_id) if subentity_id else None,
@@ -747,6 +746,16 @@ class PurchaseInvoicePostingAdapter:
                     batch_number=getattr(ln, "batch_number", ""),
                     expiry_date=getattr(ln, "expiry_date", None),
                 )
+                if inventory_move_type == InventoryMove.MoveType.OUT:
+                    unit_cost = original_purchase_receipt_unit_cost(
+                        original_invoice_id=getattr(header, "ref_document_id", None),
+                        product_id=product.id,
+                        batch_number=resolved_lot_number,
+                    )
+                    valuation_source = "original_purchase_receipt"
+                else:
+                    unit_cost = q4((base + cap_share) / base_qty) if base_qty != ZERO4 else ZERO4
+                    valuation_source = "purchase_document"
                 im.append(IMInput(
                     product_id=int(getattr(ln, "product_id")),
                     qty=qty_for_cost,  # qty positive; move_type controls IN vs OUT
@@ -774,6 +783,7 @@ class PurchaseInvoicePostingAdapter:
                         "cap_share": str(cap_share),
                         "selected_uom_unit_cost": str(q4((base + cap_share) / qty_for_cost)) if qty_for_cost != ZERO4 else "0.0000",
                         "base_uom_unit_cost": str(unit_cost),
+                        "valuation_source": valuation_source,
                         "spread_cost_across_free_qty": cfg.spread_cost_across_free_qty,
                         "affects_inventory": affects_inventory,
                         "batch_number": resolved_lot_number,

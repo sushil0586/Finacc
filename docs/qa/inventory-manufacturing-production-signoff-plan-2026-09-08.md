@@ -279,13 +279,16 @@ Evidence:
 - The linked API chain finishes at source `5.0000`, destination `3.0000`, and entity `8.0000`. It asserts exact purchase, sale, and sales-credit-note inventory movement identity; the return additionally carries movement nature `RETURN`. All three document entries are `POSTED`, contain non-zero journals, and have exactly equal debit and credit totals.
 - This closes the shared posting -> inventory operations -> inventory reports arithmetic path for both non-batch and batch-managed products. It does not yet prove that real purchase and sales invoice/note API state machines emit every endpoint movement in the same chain; that linkage remains open under `GAP-INV-001`.
 - `InventoryOpsConcurrencyTests` now retains separate-connection PostgreSQL races as repeatable integration gates. Simultaneous posts plus a normal retry converge on one posting entry and one active posting batch; duplicate unpost creates one reversal; duplicate cancel is idempotent; and update-versus-post leaves one complete posting from either valid lock order. Transfer and adjustment movement cardinality and quantities remain exact.
-- The earlier teardown failure was isolated to a stale retained test schema. Rebuilding the test database through the complete migration graph removed the orphan payroll foreign-key condition, and both concurrency tests plus the complete `42/42` inventory suite passed.
+- The earlier teardown failure was isolated to a stale retained test schema. Rebuilding the test database through the complete migration graph removed the orphan payroll foreign-key condition, and all five concurrency tests plus the complete `45/45` inventory suite passed.
+- Post-deployment staging CRUD rerun against `https://accerio.in` and `Manav-T` passed authentication plus transfer and adjustment create/post/unpost/cancel/browser workflows (`3 passed`) in 1.6 minutes with no skips.
+- Post-deployment staging inventory reconciliation initially returned `6 passed, 2 failed`: Stock Summary remained on its loading spinner beyond the 20-second assertion budget and Stock Day Book navigation exceeded the 30-second page-load budget. Both targeted cases passed on immediate rerun with a 90-second diagnostic budget (`3 passed`, including authentication) in 36.9 seconds. This is classified as staging latency evidence for Phase 8, not a functional reconciliation failure.
+- The deployed-host `InventoryOpsConcurrencyTests` command was attempted against the isolated Django test database but could not start because the staging application database role lacks permission to create the test database. Tests were not redirected to the live database. Staging concurrency certification therefore remains blocked pending a dedicated test database or a test-only role with `CREATEDB`.
 - Remaining Phase 2 gates: certify the linked and concurrency chains on staging and close the remaining long-chain UOM boundary rows recorded in the coverage register. Serialized inventory remains an explicitly gated future capability.
 - Interim confidence increased from `82%` to `94%`; Phase 2 is not yet complete.
 
 ### Phase 3: Valuation And Inventory Accounting
 
-Status: Pending
+Status: In progress from 9 September 2026
 
 Goal: independently verify stock cost and accounting impact.
 
@@ -309,7 +312,40 @@ Exit criteria:
 - Quantity and value agree across operational reports, valuation output, posting detail, GL, and trial balance.
 - Every rounding difference is within an explicitly approved tolerance.
 
-Evidence: Pending.
+Evidence:
+
+- Phase 3 baseline command: `./venv/bin/python manage.py test reports.tests_inventory financial.tests --keepdb --verbosity=1`.
+- Baseline result: `115 passed`, zero failures and zero system-check issues in 54.593 seconds. Existing coverage proves FIFO/LIFO report divergence for mixed-cost layers, stock-ledger/summary arithmetic, financial report valuation selection, and broad financial posting/report behavior.
+- Architecture audit found that inventory reports and Trading Account independently value issues from historical inventory layers using FIFO/LIFO/MWA/WAC/latest strategies. This is consistent with periodic inventory accounting, where COGS is calculated as opening stock plus purchases minus closing stock rather than journaled on every sale.
+- The architecture audit found that the sales posting adapter does not create COGS/inventory-control journal lines and stored sales inventory-movement `unit_cost` from taxable sales value, with an inline note identifying it as a placeholder for a future valuation engine. FIFO/LIFO/MWA/WAC report calculations did not trust that outbound rate, but the persisted movement cost and any downstream consumer reading it directly could misstate issue cost.
+- Phase 3 must first make the accounting policy explicit: periodic mode must suppress perpetual COGS journals and store valuation-derived issue metadata; perpetual mode must atomically post valuation-derived COGS against inventory control. Implementing COGS journals without this policy boundary risks double counting.
+- Corrected the sales movement defect without changing the periodic-accounting journal policy. Sales issues now persist a location- and batch-scoped FIFO acquisition cost; selling price/taxable value is no longer used as inventory cost. Quantity-return credit notes restore the weighted issue cost recorded by the referenced original sales invoice.
+- The FIFO resolver consumes prior receipt layers and prior issues in posting-date/id order, preserves signed adjustment/reversal quantities, supports base-UOM issue quantities, and records `FIFO` plus a valuation-source marker in movement metadata.
+- Added a changing-cost assertion for two receipt layers (`10 @ 100` and `10 @ 200`) followed by a 15-unit issue. The independently calculated FIFO issue rate is `133.3333`, proving that the first complete layer and half of the second layer are consumed.
+- Adapter coverage proves that a sale of one alternate UOM converted to `1000` base units receives the resolver cost (`1.0000`) and not the selling-derived rate (`0.2500`). The real linked purchase -> transfer -> adjustment -> sale -> return API workflow also passes with the production valuation resolver.
+- Transaction/API regression command: `./venv/bin/python manage.py test sales.tests sales.tests_e2e_api purchase.tests_e2e_api --noinput --keepdb --verbosity=1`.
+- Transaction/API regression result: `408 passed`, zero failures in 111.528 seconds. An initial run exposed an invalid enum-member reference in the new helper; the exact integrated stock-chain test caught it, it was corrected, and the complete suite was rerun cleanly.
+- Inventory-report/financial regression command: `./venv/bin/python manage.py test reports.tests_inventory financial.tests --noinput --keepdb --verbosity=1`.
+- Inventory-report/financial regression result after the correction: `115 passed`, zero failures and zero system-check issues in 74.424 seconds.
+- Historical sales movements retain their previously persisted cost metadata. A production migration/backfill must not be run until its cutoff, recomputation method, audit trail, and effect on finalized reports are approved.
+- Purchase quantity-return credit notes previously derived outbound stock cost from the credit-note taxable amount. They now restore the weighted receipt cost recorded by the referenced purchase invoice, scoped by product and batch. A focused adapter test proves that an original cost of `75.0000` is retained even when the credit-note amount implies `50.0000`.
+- Purchase acquisition-cost coverage now proves that free quantity participates in the configured cost spread after base-UOM conversion: `2` paid plus `1` free selected units at taxable value `500`, with a `1000` base-unit conversion factor, posts `3000` base units at `0.1667` each.
+- Date-cutoff coverage proves that a `2025-04-10` issue sees the `2025-04-05` layer at `100.0000` and excludes the future `2025-04-15` layer. Original-reference lookup returns `200.0000` for the second purchase and zero for a missing reference.
+- Negative-stock valuation is now conservative when warning-mode policy allows an issue beyond available layers. The uncovered quantity receives zero acquisition value rather than extending the available average across nonexistent stock; `20` units valued at `3000` issued as `30` units therefore persist a weighted issue rate of `100.0000`, not `150.0000`.
+- Consolidated valuation-safe transaction command: `./venv/bin/python manage.py test purchase.tests.PurchasePostingAdapterTests purchase.tests_e2e_api sales.tests sales.tests_e2e_api --noinput --keepdb --verbosity=1`.
+- Consolidated transaction result: `420 passed`, zero failures in 82.435 seconds. Inventory-report/financial rerun remained `115 passed`, zero failures in 37.450 seconds.
+- A wider `807`-test combined invocation exposed `16` failures and `2` teardown errors in legacy `purchase.tests`. The failures are order-dependent test isolation defects involving hard-coded entity IDs, persisted purchase settings, leaked setup state, and mocks; the valuation-focused class and all purchase/sales E2E suites pass together. This debt remains visible and must be repaired before treating a monolithic full-suite run as a launch gate.
+- Current additional-charge policy remains periodic-expense treatment because `PurchaseInvoiceActions` explicitly sets `capitalize_header_expenses_to_inventory=False`. The dormant capitalization switch is not exposed as a supported entity policy and is not counted as certified landed-cost functionality.
+- Added persisted return-safety tests proving that an active prior return of `4.0000` against an original `10.0000` receipt allows exactly `6.0000` more and rejects `6.0001`. A cancelled `10.0000` return does not consume the available return balance.
+- Added correction-period boundaries proving that a quantity-return note is rejected on an inventory-lock cutoff (`2026-04-30`), accepted on the next open day, and rejected after the selected FY end (`2027-03-31`). Existing document validation also requires the referenced purchase to belong to the same entity, FY, branch scope, and vendor.
+- Return safety focused result: `5 passed`, zero failures. It covers available stock, downstream consumption, cumulative returns, cancelled-return exclusion, inventory locks, and FY end.
+- Final business-critical consolidated command: `./venv/bin/python manage.py test purchase.tests.PurchasePostingAdapterTests purchase.tests.PurchaseInventoryReturnSafetyTests purchase.tests_e2e_api sales.tests sales.tests_e2e_api reports.tests_inventory financial.tests --noinput --keepdb --verbosity=1`.
+- Final consolidated result: `540 passed`, zero failures and zero system-check issues in 156.523 seconds.
+- Reproduction of the legacy purchase test debt identified exact fixture defects: hard-coded `entity=1`/FY IDs no longer matched database-generated fixtures, vendor-validation mocks omitted the now-required ledger, product-query mocks targeted a former query shape, an allowed update mock omitted fields used by audit logging, and settlement cancellation did not arrange its newer object-scope authorization prerequisite.
+- Repaired those fixtures without weakening production validation. The five formerly failing purchase classes now pass together (`93 passed`) with deferred database constraints enabled.
+- Monolithic command: `./venv/bin/python manage.py test sales.tests sales.tests_e2e_api purchase.tests purchase.tests_e2e_api reports.tests_inventory financial.tests --noinput --keepdb --verbosity=1`.
+- Monolithic result after fixture repairs and return-boundary additions: `810 passed`, zero failures, zero deferred-constraint errors, and zero system-check issues in 224.937 seconds. This replaces the earlier `16` failures and `2` errors and closes the local order-isolation blocker for this scope.
+- Next gate: decide whether landed-cost capitalization becomes a supported entity setting and execute the complete valuation chain on staging. Then enumerate every direct consumer of outbound `unit_cost`/`ext_cost` before deciding whether historical backfill is required.
 
 ### Phase 4: Manufacturing Execution And Traceability
 
@@ -480,6 +516,8 @@ Confidence above 95% requires all critical invariants to pass locally and on sta
 | 9 Sep 2026 | Phase 2 | In progress | Real purchase API -> transfer -> adjustment -> sales API -> return API chain reconciled to location/entity stock and balanced journals; expanded lifecycle lane passed 177/177 | 91% |
 | 9 Sep 2026 | Phase 2 | In progress | Repeatable PostgreSQL concurrency tests prove simultaneous transfer/adjustment post plus retry produce one entry, one active batch, and exact movement cardinality; full inventory suite passed 42/42 | 93% |
 | 9 Sep 2026 | Phase 2 | In progress | Concurrency matrix expanded to update-versus-post, duplicate unpost, and duplicate cancel for transfer and adjustment; exact final states and posting/movement cardinality passed in the full 45/45 inventory suite | 94% |
+| 9 Sep 2026 | Phase 2 | Staging partially certified | Deployed transfer/adjustment browser lifecycles passed 3/3; inventory reconciliation passed 6/8 initially and both latency failures passed targeted rerun. Staging-host concurrency test DB creation is blocked by database-role privileges | 94% |
+| 9 Sep 2026 | Phase 3 | In progress | Valuation/financial baseline passed 115/115; audit identified periodic-versus-perpetual accounting policy ambiguity and selling-price-derived outbound movement cost metadata requiring correction before valuation sign-off | 94% |
 
 ## Final Launch Matrix
 

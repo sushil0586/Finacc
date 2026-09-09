@@ -1439,6 +1439,12 @@ class SalesPostingAdapterUnitTests(SimpleTestCase):
         patcher = patch("posting.adapters.sales_invoice._sales_account_has_report_head", return_value=True)
         self.addCleanup(patcher.stop)
         self.mock_sales_account_has_report_head = patcher.start()
+        fifo_patcher = patch("posting.adapters.sales_invoice.fifo_issue_unit_cost", return_value=Decimal("1.0000"))
+        self.addCleanup(fifo_patcher.stop)
+        self.mock_fifo_issue_unit_cost = fifo_patcher.start()
+        return_patcher = patch("posting.adapters.sales_invoice.original_sales_issue_unit_cost", return_value=Decimal("1.0000"))
+        self.addCleanup(return_patcher.stop)
+        self.mock_original_sales_issue_unit_cost = return_patcher.start()
 
     def _base_header(self, **overrides):
         defaults = {
@@ -1761,6 +1767,16 @@ class SalesPostingAdapterUnitTests(SimpleTestCase):
         self.assertEqual(move.uom_factor, Decimal("1000.0000"))
         self.assertEqual(move.base_qty, Decimal("1000.0000"))
         self.assertEqual(move.base_uom_id, 1)
+        self.assertEqual(move.unit_cost, Decimal("1.0000"))
+        self.assertNotEqual(move.unit_cost, Decimal("0.2500"))
+        self.mock_fifo_issue_unit_cost.assert_called_once_with(
+            entity_id=1,
+            product_id=1,
+            location_id=5,
+            posting_date=date(2026, 3, 3),
+            required_qty=Decimal("1000.0000"),
+            batch_number="",
+        )
         self.assertTrue(mocked_resolve_location.called)
 
     @patch("posting.adapters.sales_invoice.resolve_posting_location_id", return_value=5)

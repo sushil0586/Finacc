@@ -14,6 +14,11 @@ from catalog.models import HsnSac, Product, ProductCategory, ProductGstRate, Pro
 from entity.models import Entity, EntityFinancialYear, GstRegistrationType, Godown, SubEntity
 from rbac.models import Permission, Role, RolePermission, UserRoleAssignment
 from posting.models import Entry, EntryStatus, InventoryMove, PostingBatch, TxnType
+from posting.common.inventory_valuation import (
+    fifo_issue_unit_cost,
+    original_purchase_receipt_unit_cost,
+    original_sales_issue_unit_cost,
+)
 from reports.services.inventory.stock_summary import build_inventory_stock_summary
 from reports.api.inventory_views import _format_scope_date
 
@@ -952,6 +957,57 @@ class InventoryReportAPITests(APITestCase):
         self.assertEqual(lifo['rows'][0]['closing_qty'], '15.0000')
         self.assertNotEqual(fifo['rows'][0]['closing_value'], lifo['rows'][0]['closing_value'])
         self.assertNotEqual(fifo['rows'][0]['rate'], lifo['rows'][0]['rate'])
+        self.assertEqual(
+            fifo_issue_unit_cost(
+                entity_id=self.entity.id,
+                product_id=valuation_product.id,
+                location_id=self.godown.id,
+                posting_date='2025-04-19',
+                required_qty=Decimal('15.0000'),
+            ),
+            Decimal('133.3333'),
+        )
+        self.assertEqual(
+            fifo_issue_unit_cost(
+                entity_id=self.entity.id,
+                product_id=valuation_product.id,
+                location_id=self.godown.id,
+                posting_date='2025-04-19',
+                required_qty=Decimal('30.0000'),
+            ),
+            Decimal('100.0000'),
+        )
+        self.assertEqual(
+            fifo_issue_unit_cost(
+                entity_id=self.entity.id,
+                product_id=valuation_product.id,
+                location_id=self.godown.id,
+                posting_date='2025-04-10',
+                required_qty=Decimal('5.0000'),
+            ),
+            Decimal('100.0000'),
+        )
+        self.assertEqual(
+            original_purchase_receipt_unit_cost(
+                original_invoice_id=2002,
+                product_id=valuation_product.id,
+            ),
+            Decimal('200.0000'),
+        )
+        self.assertEqual(
+            original_purchase_receipt_unit_cost(
+                original_invoice_id=999999,
+                product_id=valuation_product.id,
+            ),
+            Decimal('0'),
+        )
+        self.assertEqual(
+            original_sales_issue_unit_cost(
+                original_invoice_id=2003,
+                product_id=valuation_product.id,
+            ),
+            Decimal('0.0000'),
+        )
 
     def test_inventory_non_moving_stock_returns_rows_and_exports(self):
         response = self.client.get(
