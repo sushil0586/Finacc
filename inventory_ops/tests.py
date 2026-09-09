@@ -1,21 +1,28 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from decimal import Decimal
+from threading import Barrier
+from unittest import skipUnless
 from uuid import uuid4
 
+from django.db import close_old_connections, connection
 from django.test import override_settings
 from django.urls import reverse
 from django.utils import timezone
-from rest_framework.test import APIClient, APITestCase
+from rest_framework.test import APIClient, APITestCase, APITransactionTestCase
 
 from Authentication.models import User
 from catalog.models import Product, ProductCategory, ProductUomConversion, UnitOfMeasure
 from entity.models import Entity, EntityFinancialYear, GstRegistrationType, Godown, SubEntity
 from numbering.models import DocumentNumberSeries, DocumentType
-from posting.models import InventoryMove
+from posting.models import Entry, EntryStatus, InventoryMove, JournalLine, PostingBatch
+from posting.models import TxnType
+from posting.services.posting_service import IMInput, PostingService
 from rbac.models import Permission, Role, RolePermission, UserRoleAssignment
-from inventory_ops.services import InventoryAdjustmentService
+from inventory_ops.models import InventoryAdjustment, InventoryTransfer
+from inventory_ops.services import InventoryAdjustmentService, InventoryTransferService
 
 
 @override_settings(ROOT_URLCONF='FA.urls', AUTH_PASSWORD_VALIDATORS=[])
@@ -280,6 +287,270 @@ class InventoryOpsTests(APITestCase):
             ],
         }
 
+    def _stock_qty(
+        self,
+        *,
+        location_id: int | None = None,
+        product: Product | None = None,
+        batch_number: str | None = None,
+    ) -> Decimal:
+        moves = InventoryMove.objects.filter(entity=self.entity, product=product or self.product)
+        if location_id is not None:
+            moves = moves.filter(location_id=location_id)
+        if batch_number is not None:
+            moves = moves.filter(batch_number=batch_number)
+        total = Decimal('0.0000')
+        for move_type, base_qty in moves.values_list('move_type', 'base_qty'):
+            qty = Decimal(base_qty or 0)
+            total += -abs(qty) if move_type == InventoryMove.MoveType.OUT else abs(qty)
+        return total.quantize(Decimal('0.0001'))
+
+    def _post_inventory_event(
+        self,
+        *,
+        txn_type: str,
+        txn_id: int,
+        voucher_no: str,
+        posting_date: str,
+        location_id: int,
+        qty: str,
+        move_type: str,
+        movement_nature: str,
+        product: Product | None = None,
+        batch_number: str = '',
+    ) -> Entry:
+        target_product = product or self.product
+        return PostingService(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            user_id=self.user.id,
+        ).post(
+            txn_type=txn_type,
+            txn_id=txn_id,
+            voucher_no=voucher_no,
+            voucher_date=posting_date,
+            posting_date=posting_date,
+            narration=f'Deterministic chain event {voucher_no}',
+            jl_inputs=[],
+            im_inputs=[
+                IMInput(
+                    product_id=target_product.id,
+                    qty=Decimal(qty),
+                    base_qty=Decimal(qty),
+                    uom_id=target_product.base_uom_id,
+                    base_uom_id=target_product.base_uom_id,
+                    unit_cost=Decimal('25000.0000'),
+                    move_type=move_type,
+                    cost_source=InventoryMove.CostSource.PURCHASE,
+                    location_id=location_id,
+                    source_location_id=location_id if move_type == InventoryMove.MoveType.OUT else None,
+                    destination_location_id=location_id if move_type == InventoryMove.MoveType.IN_ else None,
+                    movement_nature=movement_nature,
+                    movement_reason=voucher_no,
+                    batch_number=batch_number,
+                )
+            ],
+        )
+
+    def test_deterministic_cross_module_stock_chain_reconciles_locations_and_reports(self):
+        self._grant_inventory_permission('reports.inventory.stock_summary.view')
+        self._grant_inventory_permission('reports.inventory.location_stock.view')
+        baseline = (self._stock_qty(location_id=self.source.id), self._stock_qty(location_id=self.destination.id))
+        self.assertEqual(baseline, (Decimal('20.0000'), Decimal('0.0000')))
+
+        purchase_entry = self._post_inventory_event(
+            txn_type=TxnType.PURCHASE,
+            txn_id=91001,
+            voucher_no='CHAIN-PUR-001',
+            posting_date='2025-04-11',
+            location_id=self.source.id,
+            qty='10.0000',
+            move_type=InventoryMove.MoveType.IN_,
+            movement_nature=InventoryMove.MovementNature.PURCHASE,
+        )
+        self.assertEqual(self._stock_qty(location_id=self.source.id), Decimal('30.0000'))
+
+        transfer = InventoryTransferService.create_transfer(
+            payload={**self._transfer_payload(), 'reference_no': 'CHAIN-TRN-001'},
+            user_id=self.user.id,
+        )
+        InventoryTransferService.post_transfer(transfer_id=transfer.transfer.id, user_id=self.user.id)
+        self.assertEqual(
+            (self._stock_qty(location_id=self.source.id), self._stock_qty(location_id=self.destination.id)),
+            (Decimal('25.0000'), Decimal('5.0000')),
+        )
+
+        adjustment = InventoryAdjustmentService.create_adjustment(
+            payload={
+                **self._adjustment_payload(),
+                'location': self.destination.id,
+                'reference_no': 'CHAIN-ADJ-001',
+                'lines': [{
+                    'product': self.product.id,
+                    'direction': 'DECREASE',
+                    'qty': '1.0000',
+                    'unit_cost': '25000.0000',
+                    'note': 'Deterministic shrinkage',
+                }],
+            },
+            user_id=self.user.id,
+        )
+        InventoryAdjustmentService.post_adjustment(adjustment_id=adjustment.adjustment.id, user_id=self.user.id)
+        self.assertEqual(self._stock_qty(location_id=self.destination.id), Decimal('4.0000'))
+
+        sales_entry = self._post_inventory_event(
+            txn_type=TxnType.SALES,
+            txn_id=91002,
+            voucher_no='CHAIN-SAL-001',
+            posting_date='2025-04-13',
+            location_id=self.destination.id,
+            qty='2.0000',
+            move_type=InventoryMove.MoveType.OUT,
+            movement_nature=InventoryMove.MovementNature.SALE,
+        )
+        self.assertEqual(self._stock_qty(location_id=self.destination.id), Decimal('2.0000'))
+
+        return_entry = self._post_inventory_event(
+            txn_type=TxnType.SALES_RETURN,
+            txn_id=91003,
+            voucher_no='CHAIN-RET-001',
+            posting_date='2025-04-14',
+            location_id=self.destination.id,
+            qty='1.0000',
+            move_type=InventoryMove.MoveType.IN_,
+            movement_nature=InventoryMove.MovementNature.RETURN,
+        )
+        self.assertEqual(
+            (self._stock_qty(location_id=self.source.id), self._stock_qty(location_id=self.destination.id), self._stock_qty()),
+            (Decimal('25.0000'), Decimal('3.0000'), Decimal('28.0000')),
+        )
+
+        for entry in (purchase_entry, sales_entry, return_entry):
+            self.assertEqual(entry.status, EntryStatus.POSTED)
+            self.assertEqual(entry.posting_inventory_moves.count(), 1)
+
+        report_scope = {
+            'entity': self.entity.id,
+            'entityfinid': self.entityfin.id,
+            'subentity': self.subentity.id,
+            'as_of_date': '2025-04-30',
+            'search': self.product.sku,
+        }
+        summary = self.client.get(reverse('reports_api:inventory-stock-summary'), report_scope)
+        self.assertEqual(summary.status_code, 200, summary.json())
+        summary_row = next(row for row in summary.json()['rows'] if row['product_id'] == self.product.id)
+        self.assertEqual(summary_row['closing_qty'], '28.0000')
+
+        location_report = self.client.get(reverse('reports_api:inventory-location-stock'), report_scope)
+        self.assertEqual(location_report.status_code, 200, location_report.json())
+        location_rows = {
+            row['location_id']: row
+            for row in location_report.json()['rows']
+        }
+        self.assertEqual(location_rows[self.source.id]['closing_qty'], '25.0000')
+        self.assertEqual(location_rows[self.destination.id]['closing_qty'], '3.0000')
+
+    def test_batch_managed_cross_module_stock_chain_preserves_lot_and_location(self):
+        batch = 'B-1'
+        self.assertEqual(
+            self._stock_qty(location_id=self.source.id, product=self.batch_product, batch_number=batch),
+            Decimal('5.0000'),
+        )
+        self._post_inventory_event(
+            txn_type=TxnType.PURCHASE,
+            txn_id=92001,
+            voucher_no='CHAIN-BATCH-PUR-001',
+            posting_date='2025-04-11',
+            location_id=self.source.id,
+            qty='10.0000',
+            move_type=InventoryMove.MoveType.IN_,
+            movement_nature=InventoryMove.MovementNature.PURCHASE,
+            product=self.batch_product,
+            batch_number=batch,
+        )
+
+        transfer_payload = self._transfer_payload()
+        transfer_payload.update({'reference_no': 'CHAIN-BATCH-TRN-001'})
+        transfer_payload['lines'] = [{
+            'product': self.batch_product.id,
+            'qty': '2.0000',
+            'unit_cost': '15.0000',
+            'batch_number': batch,
+            'expiry_date': '2026-05-01',
+            'note': 'Batch transfer',
+        }]
+        transfer = InventoryTransferService.create_transfer(payload=transfer_payload, user_id=self.user.id)
+        InventoryTransferService.post_transfer(transfer_id=transfer.transfer.id, user_id=self.user.id)
+
+        adjustment_payload = self._adjustment_payload()
+        adjustment_payload.update({'location': self.destination.id, 'reference_no': 'CHAIN-BATCH-ADJ-001'})
+        adjustment_payload['lines'] = [{
+            'product': self.batch_product.id,
+            'direction': 'DECREASE',
+            'qty': '1.0000',
+            'unit_cost': '15.0000',
+            'batch_number': batch,
+            'expiry_date': '2026-05-01',
+            'note': 'Batch shrinkage',
+        }]
+        adjustment = InventoryAdjustmentService.create_adjustment(payload=adjustment_payload, user_id=self.user.id)
+        InventoryAdjustmentService.post_adjustment(adjustment_id=adjustment.adjustment.id, user_id=self.user.id)
+
+        self._post_inventory_event(
+            txn_type=TxnType.SALES,
+            txn_id=92002,
+            voucher_no='CHAIN-BATCH-SAL-001',
+            posting_date='2025-04-13',
+            location_id=self.destination.id,
+            qty='1.0000',
+            move_type=InventoryMove.MoveType.OUT,
+            movement_nature=InventoryMove.MovementNature.SALE,
+            product=self.batch_product,
+            batch_number=batch,
+        )
+        self._post_inventory_event(
+            txn_type=TxnType.SALES_RETURN,
+            txn_id=92003,
+            voucher_no='CHAIN-BATCH-RET-001',
+            posting_date='2025-04-14',
+            location_id=self.destination.id,
+            qty='0.5000',
+            move_type=InventoryMove.MoveType.IN_,
+            movement_nature=InventoryMove.MovementNature.RETURN,
+            product=self.batch_product,
+            batch_number=batch,
+        )
+
+        source_qty = self._stock_qty(location_id=self.source.id, product=self.batch_product, batch_number=batch)
+        destination_qty = self._stock_qty(location_id=self.destination.id, product=self.batch_product, batch_number=batch)
+        entity_qty = self._stock_qty(product=self.batch_product, batch_number=batch)
+        self.assertEqual((source_qty, destination_qty, entity_qty), (
+            Decimal('13.0000'),
+            Decimal('0.5000'),
+            Decimal('13.5000'),
+        ))
+
+        movement_locators = (
+            (TxnType.PURCHASE, 92001, 1),
+            (TxnType.INVENTORY_TRANSFER, transfer.transfer.id, 2),
+            (TxnType.INVENTORY_ADJUSTMENT, adjustment.adjustment.id, 1),
+            (TxnType.SALES, 92002, 1),
+            (TxnType.SALES_RETURN, 92003, 1),
+        )
+        located_moves = []
+        for txn_type, txn_id, expected_count in movement_locators:
+            moves = list(InventoryMove.objects.filter(
+                entity=self.entity,
+                product=self.batch_product,
+                txn_type=txn_type,
+                txn_id=txn_id,
+            ))
+            self.assertEqual(len(moves), expected_count)
+            located_moves.extend(moves)
+        self.assertEqual(len(located_moves), 6)
+        self.assertTrue(all(move.batch_number == batch for move in located_moves))
+
     def test_godown_list_returns_rows(self):
         response = self.client.get(reverse('inventory_ops:inventory-godowns'), {'entity': self.entity.id})
         self.assertEqual(response.status_code, 200)
@@ -405,6 +676,33 @@ class InventoryOpsTests(APITestCase):
         self.assertEqual(missing_destination.status_code, 400)
         self.assertEqual(missing_destination.json()['destination_location'][0], 'Destination location is required.')
 
+    def test_create_transfer_rejects_same_source_and_destination_without_partial_header(self):
+        payload = self._transfer_payload()
+        payload['reference_no'] = f'REF-SAME-{uuid4().hex[:8]}'
+        payload['destination_location'] = payload['source_location']
+
+        response = self.client.post(reverse('inventory_ops:inventory-transfers'), payload, format='json')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('must be different', str(response.json()))
+        self.assertFalse(InventoryTransfer.objects.filter(reference_no=payload['reference_no']).exists())
+
+    def test_create_transfer_rolls_back_header_when_later_line_fails_service_validation(self):
+        payload = self._transfer_payload()
+        payload['reference_no'] = 'REF-ROLLBACK'
+        payload['lines'].append({
+            'product': self.batch_product.id,
+            'qty': '1.0000',
+            'unit_cost': '15.0000',
+            'batch_number': '',
+        })
+
+        response = self.client.post(reverse('inventory_ops:inventory-transfers'), payload, format='json')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('Batch number is required', str(response.json()))
+        self.assertFalse(InventoryTransfer.objects.filter(reference_no='REF-ROLLBACK').exists())
+
     def test_transfer_post_unpost_and_cancel_flow(self):
         created = self.client.post(reverse('inventory_ops:inventory-transfers'), self._transfer_payload(), format='json')
         self.assertEqual(created.status_code, 201)
@@ -425,14 +723,27 @@ class InventoryOpsTests(APITestCase):
         self.assertEqual(moves[1].source_location_id, self.source.id)
         self.assertEqual(moves[1].destination_location_id, self.destination.id)
 
+        repeated_post = self.client.post(reverse('inventory_ops:inventory-transfer-post', kwargs={'pk': transfer_id}), {}, format='json')
+        self.assertEqual(repeated_post.status_code, 200)
+        self.assertEqual(repeated_post.json()['transfer']['posting_entry_id'], post_resp.json()['transfer']['posting_entry_id'])
+        self.assertEqual(InventoryMove.objects.filter(txn_id=transfer_id, txn_type='IT').count(), 2)
+
         unpost_resp = self.client.post(reverse('inventory_ops:inventory-transfer-unpost', kwargs={'pk': transfer_id}), {}, format='json')
         self.assertEqual(unpost_resp.status_code, 200)
         self.assertEqual(unpost_resp.json()['transfer']['status'], 'DRAFT')
         self.assertEqual(InventoryMove.objects.filter(txn_id=transfer_id, txn_type='IT').count(), 0)
+        reversal_entry_id = unpost_resp.json()['transfer']['posting_entry_id']
+        reversal_entry = Entry.objects.get(pk=reversal_entry_id)
+        self.assertEqual(reversal_entry.status, EntryStatus.REVERSED)
+        self.assertEqual(JournalLine.objects.filter(entry_id=reversal_entry_id).count(), 0)
+        self.assertTrue(PostingBatch.objects.get(pk=reversal_entry.posting_batch_id).is_active)
 
         cancel_resp = self.client.post(reverse('inventory_ops:inventory-transfer-cancel', kwargs={'pk': transfer_id}), {}, format='json')
         self.assertEqual(cancel_resp.status_code, 200)
         self.assertEqual(cancel_resp.json()['transfer']['status'], 'CANCELLED')
+        repeated_cancel = self.client.post(reverse('inventory_ops:inventory-transfer-cancel', kwargs={'pk': transfer_id}), {}, format='json')
+        self.assertEqual(repeated_cancel.status_code, 200)
+        self.assertEqual(repeated_cancel.json()['transfer']['status'], 'CANCELLED')
 
     def test_transfer_update_replaces_lines_for_draft(self):
         created = self.client.post(reverse('inventory_ops:inventory-transfers'), self._transfer_payload(), format='json')
@@ -476,6 +787,68 @@ class InventoryOpsTests(APITestCase):
         self.assertEqual(str(moves[0].base_qty), '20.0000')
         self.assertEqual(str(moves[0].uom_factor), '10.00000000')
         self.assertEqual(str(moves[0].unit_cost), '25000.0000')
+
+    def test_fractional_alternate_uom_post_and_unpost_has_no_quantity_rounding_residue(self):
+        source_before = self._stock_qty(location_id=self.source.id)
+        destination_before = self._stock_qty(location_id=self.destination.id)
+
+        transfer_payload = self._transfer_payload()
+        transfer_payload['reference_no'] = 'TRN-UOM-PRECISION-1'
+        transfer_payload['lines'][0].update({
+            'uom_id': self.box_uom.id,
+            'qty': '0.3333',
+            'unit_cost': '250000.0000',
+        })
+        created = self.client.post(reverse('inventory_ops:inventory-transfers'), transfer_payload, format='json')
+        self.assertEqual(created.status_code, 201, created.json())
+        transfer_id = created.json()['transfer']['id']
+
+        posted = self.client.post(
+            reverse('inventory_ops:inventory-transfer-post', kwargs={'pk': transfer_id}), {}, format='json'
+        )
+        self.assertEqual(posted.status_code, 200, posted.json())
+        transfer_moves = list(InventoryMove.objects.filter(txn_id=transfer_id, txn_type='IT').order_by('id'))
+        self.assertEqual([move.base_qty for move in transfer_moves], [Decimal('3.3330'), Decimal('3.3330')])
+        self.assertEqual(self._stock_qty(location_id=self.source.id), source_before - Decimal('3.3330'))
+        self.assertEqual(self._stock_qty(location_id=self.destination.id), destination_before + Decimal('3.3330'))
+
+        unposted = self.client.post(
+            reverse('inventory_ops:inventory-transfer-unpost', kwargs={'pk': transfer_id}), {}, format='json'
+        )
+        self.assertEqual(unposted.status_code, 200, unposted.json())
+        self.assertFalse(InventoryMove.objects.filter(txn_id=transfer_id, txn_type='IT').exists())
+        self.assertEqual(self._stock_qty(location_id=self.source.id), source_before)
+        self.assertEqual(self._stock_qty(location_id=self.destination.id), destination_before)
+
+        adjustment_payload = self._adjustment_payload()
+        adjustment_payload.update({
+            'location': self.destination.id,
+            'reference_no': 'ADJ-UOM-PRECISION-1',
+        })
+        adjustment_payload['lines'][0].update({
+            'uom_id': self.box_uom.id,
+            'qty': '0.1667',
+            'unit_cost': '250000.0000',
+        })
+        adjustment = self.client.post(
+            reverse('inventory_ops:inventory-adjustments'), adjustment_payload, format='json'
+        )
+        self.assertEqual(adjustment.status_code, 201, adjustment.json())
+        adjustment_id = adjustment.json()['adjustment']['id']
+        adjustment_posted = self.client.post(
+            reverse('inventory_ops:inventory-adjustment-post', kwargs={'pk': adjustment_id}), {}, format='json'
+        )
+        self.assertEqual(adjustment_posted.status_code, 200, adjustment_posted.json())
+        adjustment_move = InventoryMove.objects.get(txn_id=adjustment_id, txn_type='IA')
+        self.assertEqual(adjustment_move.base_qty, Decimal('1.6670'))
+        self.assertEqual(self._stock_qty(location_id=self.destination.id), destination_before + Decimal('1.6670'))
+
+        adjustment_unposted = self.client.post(
+            reverse('inventory_ops:inventory-adjustment-unpost', kwargs={'pk': adjustment_id}), {}, format='json'
+        )
+        self.assertEqual(adjustment_unposted.status_code, 200, adjustment_unposted.json())
+        self.assertFalse(InventoryMove.objects.filter(txn_id=adjustment_id, txn_type='IA').exists())
+        self.assertEqual(self._stock_qty(location_id=self.destination.id), destination_before)
 
     def test_transfer_requires_batch_for_batch_managed_items(self):
         payload = self._transfer_payload()
@@ -590,6 +963,23 @@ class InventoryOpsTests(APITestCase):
         adjustment_id = body['adjustment']['id']
         self.assertEqual(InventoryMove.objects.filter(txn_id=adjustment_id, txn_type='IA').count(), 0)
 
+    def test_create_adjustment_rolls_back_header_when_later_line_fails_service_validation(self):
+        payload = self._adjustment_payload()
+        payload['reference_no'] = 'ADJ-ROLLBACK'
+        payload['lines'].append({
+            'product': self.batch_product.id,
+            'direction': 'DECREASE',
+            'qty': '1.0000',
+            'unit_cost': '15.0000',
+            'batch_number': '',
+        })
+
+        response = self.client.post(reverse('inventory_ops:inventory-adjustments'), payload, format='json')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('Batch number is required', str(response.json()))
+        self.assertFalse(InventoryAdjustment.objects.filter(reference_no='ADJ-ROLLBACK').exists())
+
     def test_create_adjustment_rejects_oversized_fields(self):
         payload = self._adjustment_payload()
         payload['reference_no'] = 'R' * 101
@@ -624,14 +1014,27 @@ class InventoryOpsTests(APITestCase):
         self.assertTrue(post_resp.json()['adjustment']['action_flags']['is_read_only'])
         self.assertEqual(InventoryMove.objects.filter(txn_id=adjustment_id, txn_type='IA').count(), 1)
 
+        repeated_post = self.client.post(reverse('inventory_ops:inventory-adjustment-post', kwargs={'pk': adjustment_id}), {}, format='json')
+        self.assertEqual(repeated_post.status_code, 200)
+        self.assertEqual(repeated_post.json()['adjustment']['posting_entry_id'], post_resp.json()['adjustment']['posting_entry_id'])
+        self.assertEqual(InventoryMove.objects.filter(txn_id=adjustment_id, txn_type='IA').count(), 1)
+
         unpost_resp = self.client.post(reverse('inventory_ops:inventory-adjustment-unpost', kwargs={'pk': adjustment_id}), {}, format='json')
         self.assertEqual(unpost_resp.status_code, 200)
         self.assertEqual(unpost_resp.json()['adjustment']['status'], 'DRAFT')
         self.assertEqual(InventoryMove.objects.filter(txn_id=adjustment_id, txn_type='IA').count(), 0)
+        reversal_entry_id = unpost_resp.json()['adjustment']['posting_entry_id']
+        reversal_entry = Entry.objects.get(pk=reversal_entry_id)
+        self.assertEqual(reversal_entry.status, EntryStatus.REVERSED)
+        self.assertEqual(JournalLine.objects.filter(entry_id=reversal_entry_id).count(), 0)
+        self.assertTrue(PostingBatch.objects.get(pk=reversal_entry.posting_batch_id).is_active)
 
         cancel_resp = self.client.post(reverse('inventory_ops:inventory-adjustment-cancel', kwargs={'pk': adjustment_id}), {}, format='json')
         self.assertEqual(cancel_resp.status_code, 200)
         self.assertEqual(cancel_resp.json()['adjustment']['status'], 'CANCELLED')
+        repeated_cancel = self.client.post(reverse('inventory_ops:inventory-adjustment-cancel', kwargs={'pk': adjustment_id}), {}, format='json')
+        self.assertEqual(repeated_cancel.status_code, 200)
+        self.assertEqual(repeated_cancel.json()['adjustment']['status'], 'CANCELLED')
 
     def test_adjustment_update_replaces_lines_for_draft(self):
         created = self.client.post(reverse('inventory_ops:inventory-adjustments'), self._adjustment_payload(), format='json')
@@ -998,3 +1401,274 @@ class InventoryOpsTests(APITestCase):
         )
         self.assertEqual(transfer_series.prefix, 'TRF')
         self.assertEqual(transfer_series.current_number, 12)
+
+
+@skipUnless(connection.vendor == 'postgresql', 'Concurrent posting requires PostgreSQL row locking.')
+@override_settings(ROOT_URLCONF='FA.urls', AUTH_PASSWORD_VALIDATORS=[])
+class InventoryOpsConcurrencyTests(APITransactionTestCase):
+    setUp = InventoryOpsTests.setUp
+    _grant_inventory_permission = InventoryOpsTests._grant_inventory_permission
+    _seed_source_stock = InventoryOpsTests._seed_source_stock
+    _transfer_payload = InventoryOpsTests._transfer_payload
+    _adjustment_payload = InventoryOpsTests._adjustment_payload
+
+    def _post_concurrently(self, callback):
+        barrier = Barrier(2)
+
+        def worker():
+            close_old_connections()
+            try:
+                barrier.wait(timeout=10)
+                return callback()
+            finally:
+                close_old_connections()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(lambda _: worker(), range(2)))
+        return results
+
+    def _capture_callbacks_concurrently(self, *callbacks):
+        barrier = Barrier(len(callbacks))
+
+        def worker(callback):
+            close_old_connections()
+            try:
+                barrier.wait(timeout=10)
+                return callback()
+            except Exception as exc:  # The losing transition is part of the asserted outcome.
+                return exc
+            finally:
+                close_old_connections()
+
+        with ThreadPoolExecutor(max_workers=len(callbacks)) as executor:
+            return list(executor.map(worker, callbacks))
+
+    def test_simultaneous_transfer_post_and_retry_create_one_posting(self):
+        transfer = InventoryTransferService.create_transfer(
+            payload=self._transfer_payload(),
+            user_id=self.user.id,
+        ).transfer
+
+        results = self._post_concurrently(
+            lambda: InventoryTransferService.post_transfer(
+                transfer_id=transfer.id,
+                user_id=self.user.id,
+            )
+        )
+        retry = InventoryTransferService.post_transfer(
+            transfer_id=transfer.id,
+            user_id=self.user.id,
+        )
+
+        entry_ids = {result.entry_id for result in results}
+        entry_ids.add(retry.entry_id)
+        self.assertEqual(len(entry_ids), 1)
+        self.assertEqual(
+            Entry.objects.filter(txn_type=TxnType.INVENTORY_TRANSFER, txn_id=transfer.id).count(),
+            1,
+        )
+        self.assertEqual(
+            PostingBatch.objects.filter(
+                txn_type=TxnType.INVENTORY_TRANSFER,
+                txn_id=transfer.id,
+                is_active=True,
+            ).count(),
+            1,
+        )
+        moves = InventoryMove.objects.filter(txn_type=TxnType.INVENTORY_TRANSFER, txn_id=transfer.id)
+        self.assertEqual(moves.count(), 2)
+        self.assertEqual(set(moves.values_list('move_type', flat=True)), {'IN', 'OUT'})
+
+    def test_simultaneous_adjustment_post_and_retry_create_one_posting(self):
+        adjustment = InventoryAdjustmentService.create_adjustment(
+            payload={
+                'entity': self.entity.id,
+                'entityfinid': self.entityfin.id,
+                'subentity': self.subentity.id,
+                'adjustment_date': '2025-04-13',
+                'location': self.destination.id,
+                'reference_no': 'ADJ-CONCURRENT-1',
+                'narration': 'Concurrent posting regression',
+                'lines': [
+                    {
+                        'product': self.product.id,
+                        'direction': 'INCREASE',
+                        'qty': '2.5000',
+                        'unit_cost': '25000.0000',
+                        'note': 'Concurrent increase',
+                    }
+                ],
+            },
+            user_id=self.user.id,
+            auto_post=False,
+        ).adjustment
+
+        results = self._post_concurrently(
+            lambda: InventoryAdjustmentService.post_adjustment(
+                adjustment_id=adjustment.id,
+                user_id=self.user.id,
+            )
+        )
+        retry = InventoryAdjustmentService.post_adjustment(
+            adjustment_id=adjustment.id,
+            user_id=self.user.id,
+        )
+
+        entry_ids = {result.entry_id for result in results}
+        entry_ids.add(retry.entry_id)
+        self.assertEqual(len(entry_ids), 1)
+        self.assertEqual(
+            Entry.objects.filter(txn_type=TxnType.INVENTORY_ADJUSTMENT, txn_id=adjustment.id).count(),
+            1,
+        )
+        self.assertEqual(
+            PostingBatch.objects.filter(
+                txn_type=TxnType.INVENTORY_ADJUSTMENT,
+                txn_id=adjustment.id,
+                is_active=True,
+            ).count(),
+            1,
+        )
+        moves = InventoryMove.objects.filter(txn_type=TxnType.INVENTORY_ADJUSTMENT, txn_id=adjustment.id)
+        self.assertEqual(moves.count(), 1)
+        self.assertEqual(moves.get().base_qty, Decimal('2.5000'))
+
+    def test_simultaneous_unpost_creates_one_reversal_for_each_document_type(self):
+        transfer = InventoryTransferService.create_transfer(
+            payload=self._transfer_payload(),
+            user_id=self.user.id,
+        ).transfer
+        InventoryTransferService.post_transfer(transfer_id=transfer.id, user_id=self.user.id)
+
+        transfer_results = self._capture_callbacks_concurrently(
+            lambda: InventoryTransferService.unpost_transfer(transfer_id=transfer.id, user_id=self.user.id),
+            lambda: InventoryTransferService.unpost_transfer(transfer_id=transfer.id, user_id=self.user.id),
+        )
+        transfer.refresh_from_db()
+        self.assertEqual(sum(not isinstance(result, Exception) for result in transfer_results), 1)
+        self.assertEqual(transfer.status, 'DRAFT')
+        self.assertEqual(
+            Entry.objects.filter(txn_type=TxnType.INVENTORY_TRANSFER, txn_id=transfer.id).count(),
+            1,
+        )
+        self.assertEqual(
+            InventoryMove.objects.filter(txn_type=TxnType.INVENTORY_TRANSFER, txn_id=transfer.id).count(),
+            0,
+        )
+        self.assertEqual(Entry.objects.get(pk=transfer.posting_entry_id).status, EntryStatus.REVERSED)
+
+        adjustment_payload = self._adjustment_payload()
+        adjustment_payload['reference_no'] = 'ADJ-CONCURRENT-UNPOST'
+        adjustment = InventoryAdjustmentService.create_adjustment(
+            payload=adjustment_payload,
+            user_id=self.user.id,
+            auto_post=False,
+        ).adjustment
+        InventoryAdjustmentService.post_adjustment(adjustment_id=adjustment.id, user_id=self.user.id)
+
+        adjustment_results = self._capture_callbacks_concurrently(
+            lambda: InventoryAdjustmentService.unpost_adjustment(adjustment_id=adjustment.id, user_id=self.user.id),
+            lambda: InventoryAdjustmentService.unpost_adjustment(adjustment_id=adjustment.id, user_id=self.user.id),
+        )
+        adjustment.refresh_from_db()
+        self.assertEqual(sum(not isinstance(result, Exception) for result in adjustment_results), 1)
+        self.assertEqual(adjustment.status, 'DRAFT')
+        self.assertEqual(
+            Entry.objects.filter(txn_type=TxnType.INVENTORY_ADJUSTMENT, txn_id=adjustment.id).count(),
+            1,
+        )
+        self.assertEqual(
+            InventoryMove.objects.filter(txn_type=TxnType.INVENTORY_ADJUSTMENT, txn_id=adjustment.id).count(),
+            0,
+        )
+        self.assertEqual(Entry.objects.get(pk=adjustment.posting_entry_id).status, EntryStatus.REVERSED)
+
+    def test_simultaneous_cancel_is_idempotent_for_each_document_type(self):
+        transfer = InventoryTransferService.create_transfer(
+            payload=self._transfer_payload(),
+            user_id=self.user.id,
+        ).transfer
+        transfer_results = self._post_concurrently(
+            lambda: InventoryTransferService.cancel_transfer(transfer_id=transfer.id, user_id=self.user.id)
+        )
+        transfer.refresh_from_db()
+        self.assertEqual({result.transfer.status for result in transfer_results}, {'CANCELLED'})
+        self.assertEqual(transfer.status, 'CANCELLED')
+        self.assertFalse(Entry.objects.filter(txn_type=TxnType.INVENTORY_TRANSFER, txn_id=transfer.id).exists())
+
+        adjustment_payload = self._adjustment_payload()
+        adjustment_payload['reference_no'] = 'ADJ-CONCURRENT-CANCEL'
+        adjustment = InventoryAdjustmentService.create_adjustment(
+            payload=adjustment_payload,
+            user_id=self.user.id,
+            auto_post=False,
+        ).adjustment
+        adjustment_results = self._post_concurrently(
+            lambda: InventoryAdjustmentService.cancel_adjustment(adjustment_id=adjustment.id, user_id=self.user.id)
+        )
+        adjustment.refresh_from_db()
+        self.assertEqual({result.adjustment.status for result in adjustment_results}, {'CANCELLED'})
+        self.assertEqual(adjustment.status, 'CANCELLED')
+        self.assertFalse(Entry.objects.filter(txn_type=TxnType.INVENTORY_ADJUSTMENT, txn_id=adjustment.id).exists())
+
+    def test_simultaneous_update_and_post_leave_one_complete_posting(self):
+        transfer = InventoryTransferService.create_transfer(
+            payload=self._transfer_payload(),
+            user_id=self.user.id,
+        ).transfer
+        updated_payload = self._transfer_payload()
+        updated_payload['reference_no'] = 'REF-CONCURRENT-UPDATE'
+        updated_payload['lines'][0]['qty'] = '3.0000'
+
+        results = self._capture_callbacks_concurrently(
+            lambda: InventoryTransferService.update_transfer(
+                transfer_id=transfer.id,
+                payload=updated_payload,
+                user_id=self.user.id,
+            ),
+            lambda: InventoryTransferService.post_transfer(transfer_id=transfer.id, user_id=self.user.id),
+        )
+        transfer.refresh_from_db()
+        self.assertGreaterEqual(sum(not isinstance(result, Exception) for result in results), 1)
+        self.assertEqual(transfer.status, 'POSTED')
+        self.assertEqual(
+            Entry.objects.filter(txn_type=TxnType.INVENTORY_TRANSFER, txn_id=transfer.id).count(),
+            1,
+        )
+        moves = InventoryMove.objects.filter(txn_type=TxnType.INVENTORY_TRANSFER, txn_id=transfer.id)
+        self.assertEqual(moves.count(), 2)
+        outbound_qty = abs(moves.get(move_type=InventoryMove.MoveType.OUT).base_qty)
+        self.assertIn(outbound_qty, {Decimal('3.0000'), Decimal('5.0000')})
+
+        adjustment_payload = self._adjustment_payload()
+        adjustment_payload['reference_no'] = 'ADJ-CONCURRENT-UPDATE-POST'
+        adjustment = InventoryAdjustmentService.create_adjustment(
+            payload=adjustment_payload,
+            user_id=self.user.id,
+            auto_post=False,
+        ).adjustment
+        updated_adjustment_payload = self._adjustment_payload()
+        updated_adjustment_payload['reference_no'] = 'ADJ-CONCURRENT-UPDATED'
+        updated_adjustment_payload['lines'][0]['qty'] = '1.2500'
+
+        results = self._capture_callbacks_concurrently(
+            lambda: InventoryAdjustmentService.update_adjustment(
+                adjustment_id=adjustment.id,
+                payload=updated_adjustment_payload,
+                user_id=self.user.id,
+            ),
+            lambda: InventoryAdjustmentService.post_adjustment(
+                adjustment_id=adjustment.id,
+                user_id=self.user.id,
+            ),
+        )
+        adjustment.refresh_from_db()
+        self.assertGreaterEqual(sum(not isinstance(result, Exception) for result in results), 1)
+        self.assertEqual(adjustment.status, 'POSTED')
+        self.assertEqual(
+            Entry.objects.filter(txn_type=TxnType.INVENTORY_ADJUSTMENT, txn_id=adjustment.id).count(),
+            1,
+        )
+        moves = InventoryMove.objects.filter(txn_type=TxnType.INVENTORY_ADJUSTMENT, txn_id=adjustment.id)
+        self.assertEqual(moves.count(), 1)
+        self.assertIn(abs(moves.get().base_qty), {Decimal('1.2500'), Decimal('2.0000')})

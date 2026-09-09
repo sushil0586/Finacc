@@ -13,7 +13,7 @@ from rest_framework.test import APIClient, APITestCase
 
 from Authentication.models import User
 from assets.models import AssetCategory
-from catalog.models import HsnSac, Product, ProductCategory, ProductGstRate, ProductPurchaseBehavior, UnitOfMeasure
+from catalog.models import HsnSac, Product, ProductCategory, ProductGstRate, ProductPurchaseBehavior, ProductUomConversion, UnitOfMeasure
 from entity.models import Entity, EntityAddress, EntityFinancialYear, EntityGstRegistration, Godown, GstRegistrationType, SubEntity
 from financial.models import (
     AccountCommercialProfile,
@@ -25,15 +25,19 @@ from financial.models import (
     accounttype,
 )
 from financial.services import create_account_with_synced_ledger
+from financial.seeding import FinancialSeedService
 from geography.models import City, Country, District, State
+from inventory_ops.services import InventoryAdjustmentService, InventoryTransferService
 from numbering.models import DocumentNumberSeries, DocumentType
 from payments.models import PaymentMode, PaymentVoucherAdjustment, PaymentVoucherHeader
-from posting.models import Entry, EntryStatus, InventoryMove, JournalLine, PostingBatch, TxnType
+from posting.models import EntityStaticAccountMap, Entry, EntryStatus, InventoryMove, JournalLine, PostingBatch, StaticAccount, TxnType
+from posting.services.static_accounts import StaticAccountService
 from purchase.models.gstr2b_models import Gstr2bImportBatch, Gstr2bImportRow
 from purchase.models.purchase_ap import VendorAdvanceBalance, VendorBillOpenItem, VendorSettlement
 from purchase.models import PurchaseLockPeriod
 from purchase.models.purchase_core import PurchaseInvoiceHeader, PurchaseInvoiceLine, PurchaseTaxSummary
 from purchase.services.purchase_settings_service import PurchaseSettingsService
+from sales.models import SalesInvoiceHeader
 from withholding.models import WithholdingBaseRule, WithholdingSection, WithholdingTaxType
 
 
@@ -454,6 +458,7 @@ class PurchaseApiEndToEndTests(APITestCase):
             "rate": rate,
             "product_desc": "Test goods",
             "is_service": False,
+            "hsn_sac": "1001",
             "taxability": int(PurchaseInvoiceHeader.Taxability.TAXABLE),
             "gst_rate": "18.00",
             "cgst_percent": "0.00",
@@ -481,6 +486,7 @@ class PurchaseApiEndToEndTests(APITestCase):
             "rate": "500.00",
             "product_desc": product_desc,
             "is_service": True,
+            "hsn_sac": "998311",
             "taxability": int(PurchaseInvoiceHeader.Taxability.TAXABLE),
             "gst_rate": "18.00",
             "cgst_percent": "0.00",
@@ -509,6 +515,7 @@ class PurchaseApiEndToEndTests(APITestCase):
             "rate": rate,
             "product_desc": "Capital Asset",
             "is_service": False,
+            "hsn_sac": "8471",
             "taxability": int(PurchaseInvoiceHeader.Taxability.TAXABLE),
             "gst_rate": "18.00",
             "cgst_percent": "0.00",
@@ -531,8 +538,8 @@ class PurchaseApiEndToEndTests(APITestCase):
         row["itc_block_reason"] = "Blocked ITC"
         return row
 
-    def _invoice_payload(self, *, lines: list[dict], supplier_invoice_number: str = "INV-001"):
-        return {
+    def _invoice_payload(self, *, lines: list[dict], supplier_invoice_number: str = "INV-001", **overrides):
+        payload = {
             "doc_type": int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
             "bill_date": "2026-04-10",
             "posting_date": "2026-04-10",
@@ -563,6 +570,8 @@ class PurchaseApiEndToEndTests(APITestCase):
             "vendor_gst_tds_declared": False,
             "vendor_tds_declared": False,
         }
+        payload.update(overrides)
+        return payload
 
     def _rcm_service_line_payload(self, *, product_desc: str = "Consulting"):
         line = self._service_line_payload(product_desc=product_desc)
@@ -1118,6 +1127,13 @@ class PurchaseApiEndToEndTests(APITestCase):
         self.assertFalse(lines[1].is_itc_eligible)
         self.assertEqual(lines[1].itc_block_reason, "Blocked ITC")
 
+        confirm_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{invoice_id}/confirm/{self._scope_qs()}",
+            {},
+            format="json",
+        )
+        self.assertEqual(confirm_resp.status_code, status.HTTP_200_OK, confirm_resp.json())
+
         summary = PurchaseTaxSummary.objects.get(header_id=invoice_id)
         self.assertEqual(summary.itc_eligible_tax, Decimal("180.00"))
         self.assertEqual(summary.itc_ineligible_tax, Decimal("90.00"))
@@ -1244,7 +1260,7 @@ class PurchaseApiEndToEndTests(APITestCase):
         self.assertEqual(create_resp.status_code, status.HTTP_201_CREATED, create_resp.json())
         body = create_resp.json()
         self.assertEqual(body["status"], int(PurchaseInvoiceHeader.Status.DRAFT))
-        self.assertEqual(body["grand_total"], "0.00")
+        self.assertEqual(Decimal(str(body["grand_total"])), Decimal("0.00"))
         self.assertEqual(len(body.get("lines", [])), 0)
 
     def test_purchase_invoice_create_rejects_mixed_taxability_when_setting_disabled(self):
@@ -1442,14 +1458,7 @@ class PurchaseApiEndToEndTests(APITestCase):
                 self.assertEqual(int(header.default_taxability), scenario["expected_summary_taxability"])
                 self.assertEqual(PurchaseInvoiceLine.objects.filter(header=header).count(), 2)
 
-                summary_rows = list(PurchaseTaxSummary.objects.filter(header=header))
-                self.assertEqual(len(summary_rows), 1)
-                self.assertEqual(int(summary_rows[0].taxability), scenario["expected_summary_taxability"])
-                self.assertEqual(summary_rows[0].taxable_value, scenario["expected_taxable"])
-                self.assertEqual(summary_rows[0].cgst_amount, Decimal("0.00"))
-                self.assertEqual(summary_rows[0].sgst_amount, Decimal("0.00"))
-                self.assertEqual(summary_rows[0].igst_amount, scenario["expected_igst"])
-                self.assertEqual(summary_rows[0].cess_amount, Decimal("0.00"))
+                self.assertFalse(PurchaseTaxSummary.objects.filter(header=header).exists())
 
     def test_purchase_invoice_create_rejects_line_amount_mismatch_when_policy_is_hard(self):
         PurchaseSettingsService.upsert_settings(
@@ -1702,7 +1711,7 @@ class PurchaseApiEndToEndTests(APITestCase):
             f"/api/purchase/purchase-invoices/search/{self._scope_qs()}&search={purchase_number}"
         )
         self.assertEqual(search_resp.status_code, status.HTTP_200_OK, search_resp.json())
-        rows = search_resp.json()
+        rows = search_resp.json()["results"]
         self.assertTrue(any(row["purchase_number"] == purchase_number for row in rows), search_resp.json())
 
     def test_confirm_allocates_number_and_delete_policy_allows_only_draft_delete(self):
@@ -4198,14 +4207,14 @@ class PurchaseApiEndToEndTests(APITestCase):
         self.assertEqual(voucher_resp.json()["status"], int(PaymentVoucherHeader.Status.DRAFT))
 
         confirm_voucher_resp = self.client.post(
-            f"/api/payments/payment-vouchers/{voucher_id}/confirm/",
+            f"/api/payments/payment-vouchers/{voucher_id}/confirm/{self._scope_qs()}",
             {},
             format="json",
         )
         self.assertEqual(confirm_voucher_resp.status_code, status.HTTP_200_OK, confirm_voucher_resp.json())
 
         post_voucher_resp = self.client.post(
-            f"/api/payments/payment-vouchers/{voucher_id}/post/",
+            f"/api/payments/payment-vouchers/{voucher_id}/post/{self._scope_qs()}",
             {},
             format="json",
         )
@@ -4329,14 +4338,14 @@ class PurchaseApiEndToEndTests(APITestCase):
         self.assertEqual(runtime["amount"], "10.00")
 
         confirm_voucher_resp = self.client.post(
-            f"/api/payments/payment-vouchers/{voucher_id}/confirm/",
+            f"/api/payments/payment-vouchers/{voucher_id}/confirm/{self._scope_qs()}",
             {},
             format="json",
         )
         self.assertEqual(confirm_voucher_resp.status_code, status.HTTP_200_OK, confirm_voucher_resp.json())
 
         post_voucher_resp = self.client.post(
-            f"/api/payments/payment-vouchers/{voucher_id}/post/",
+            f"/api/payments/payment-vouchers/{voucher_id}/post/{self._scope_qs()}",
             {},
             format="json",
         )
@@ -4453,13 +4462,13 @@ class PurchaseApiEndToEndTests(APITestCase):
         self.assertEqual(Decimal(str(voucher_resp.json()["total_adjustment_amount"])), Decimal("10.00"))
 
         confirm_voucher_resp = self.client.post(
-            f"/api/payments/payment-vouchers/{voucher_id}/confirm/",
+            f"/api/payments/payment-vouchers/{voucher_id}/confirm/{self._scope_qs()}",
             {},
             format="json",
         )
         self.assertEqual(confirm_voucher_resp.status_code, status.HTTP_200_OK, confirm_voucher_resp.json())
         post_voucher_resp = self.client.post(
-            f"/api/payments/payment-vouchers/{voucher_id}/post/",
+            f"/api/payments/payment-vouchers/{voucher_id}/post/{self._scope_qs()}",
             {},
             format="json",
         )
@@ -4532,13 +4541,13 @@ class PurchaseApiEndToEndTests(APITestCase):
         self.assertEqual(voucher_resp.json()["workflow_payload"]["withholding_runtime_result"]["section_code"], "194A")
 
         confirm_voucher_resp = self.client.post(
-            f"/api/payments/payment-vouchers/{voucher_id}/confirm/",
+            f"/api/payments/payment-vouchers/{voucher_id}/confirm/{self._scope_qs()}",
             {},
             format="json",
         )
         self.assertEqual(confirm_voucher_resp.status_code, status.HTTP_200_OK, confirm_voucher_resp.json())
         post_voucher_resp = self.client.post(
-            f"/api/payments/payment-vouchers/{voucher_id}/post/",
+            f"/api/payments/payment-vouchers/{voucher_id}/post/{self._scope_qs()}",
             {},
             format="json",
         )
@@ -4875,14 +4884,14 @@ class PurchaseApiEndToEndTests(APITestCase):
         voucher_id = voucher_resp.json()["id"]
 
         confirm_voucher_resp = self.client.post(
-            f"/api/payments/payment-vouchers/{voucher_id}/confirm/",
+            f"/api/payments/payment-vouchers/{voucher_id}/confirm/{self._scope_qs()}",
             {},
             format="json",
         )
         self.assertEqual(confirm_voucher_resp.status_code, status.HTTP_200_OK, confirm_voucher_resp.json())
 
         post_voucher_resp = self.client.post(
-            f"/api/payments/payment-vouchers/{voucher_id}/post/",
+            f"/api/payments/payment-vouchers/{voucher_id}/post/{self._scope_qs()}",
             {},
             format="json",
         )
@@ -5076,3 +5085,233 @@ class PurchaseApiEndToEndTests(APITestCase):
         self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.json())
         self.assertIn("summary", resp.json())
         self.assertIn("totals", resp.json()["summary"])
+
+    def test_real_document_api_stock_chain_reconciles_purchase_transfer_adjustment_sale_and_return(self):
+        FinancialSeedService.seed_entity(entity=self.entity, actor=self.user, template_code="indian_accounting_final")
+        StaticAccountService.seed_static_account_master()
+        static_ledger_codes = {
+            "PURCHASE_DEFAULT": 1001,
+            "PURCHASE_MISC_EXPENSE": 8351,
+            "ROUND_OFF_INCOME": 7081,
+            "ROUND_OFF_EXPENSE": 8403,
+            "INPUT_CGST": 6501,
+            "INPUT_SGST": 6502,
+            "INPUT_IGST": 6503,
+            "INPUT_CESS": 6504,
+            "OUTPUT_CGST": 6601,
+            "OUTPUT_SGST": 6602,
+            "OUTPUT_IGST": 6603,
+            "OUTPUT_CESS": 6604,
+            "SALES_DEFAULT": 3001,
+            "SALES_REVENUE": 3002,
+        }
+        for static_code, ledger_code in static_ledger_codes.items():
+            static_account = StaticAccount.objects.get(code=static_code)
+            ledger = Ledger.objects.get(entity=self.entity, ledger_code=ledger_code)
+            EntityStaticAccountMap.objects.update_or_create(
+                entity=self.entity,
+                sub_entity=None,
+                static_account=static_account,
+                defaults={"account": ledger.account_profile, "ledger": ledger, "createdby": self.user},
+            )
+        StaticAccountService.invalidate(self.entity.id)
+
+        destination = Godown.objects.create(
+            entity=self.entity,
+            subentity=self.subentity,
+            name="Secondary Warehouse",
+            code="WH2",
+            address="Secondary Warehouse Address",
+            city="Mumbai",
+            state="MH",
+            pincode="400002",
+            is_active=True,
+        )
+        box_uom = UnitOfMeasure.objects.create(entity=self.entity, code="BOX", description="Box")
+        ProductUomConversion.objects.create(
+            product=self.goods_product,
+            from_uom=self.uom,
+            to_uom=box_uom,
+            factor=Decimal("0.1000"),
+        )
+        purchase_line = self._goods_line_payload(qty="1.0000", rate="1000.00")
+        purchase_line["uom"] = box_uom.id
+        purchase = self._create_invoice(
+            supplier_invoice_number="CHAIN-PURCHASE-001",
+            lines=[purchase_line],
+            location=self.location.id,
+        )
+        purchase_id = purchase["id"]
+        confirm_purchase = self.client.post(
+            f"/api/purchase/purchase-invoices/{purchase_id}/confirm/{self._scope_qs()}", {}, format="json"
+        )
+        self.assertEqual(confirm_purchase.status_code, status.HTTP_200_OK, confirm_purchase.json())
+        post_purchase = self.client.post(
+            f"/api/purchase/purchase-invoices/{purchase_id}/post/{self._scope_qs()}", {}, format="json"
+        )
+        self.assertEqual(post_purchase.status_code, status.HTTP_200_OK, post_purchase.json())
+
+        transfer = InventoryTransferService.create_transfer(
+            payload={
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "transfer_date": "2026-04-11",
+                "source_location": self.location.id,
+                "destination_location": destination.id,
+                "reference_no": "CHAIN-TRANSFER-001",
+                "lines": [{"product": self.goods_product.id, "qty": "5.0000", "unit_cost": "100.0000"}],
+            },
+            user_id=self.user.id,
+        )
+        InventoryTransferService.post_transfer(transfer_id=transfer.transfer.id, user_id=self.user.id)
+        adjustment = InventoryAdjustmentService.create_adjustment(
+            payload={
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "adjustment_date": "2026-04-12",
+                "location": destination.id,
+                "reference_no": "CHAIN-ADJUSTMENT-001",
+                "narration": "Deterministic stock variance",
+                "lines": [{
+                    "product": self.goods_product.id,
+                    "direction": "DECREASE",
+                    "qty": "1.0000",
+                    "unit_cost": "100.0000",
+                }],
+            },
+            user_id=self.user.id,
+        )
+        InventoryAdjustmentService.post_adjustment(adjustment_id=adjustment.adjustment.id, user_id=self.user.id)
+
+        for doc_key, name, code in (
+            ("sales_invoice", "Sales Tax Invoice", "SINV"),
+            ("sales_credit_note", "Sales Credit Note", "SCN"),
+        ):
+            doc_type, _ = DocumentType.objects.get_or_create(
+                module="sales", doc_key=doc_key, defaults={"name": name, "default_code": code, "is_active": True}
+            )
+            DocumentNumberSeries.objects.get_or_create(
+                entity=self.entity,
+                entityfinid=self.entityfin,
+                subentity=self.subentity,
+                doc_type=doc_type,
+                defaults={"doc_code": code, "prefix": code, "starting_number": 1, "current_number": 1, "is_active": True},
+            )
+
+        sales_scope = f"?entity_id={self.entity.id}&entityfinid={self.entityfin.id}&subentity_id={self.subentity.id}"
+        sales_permissions = patch(
+            "sales.views.sales_invoice_views.EffectivePermissionService.permission_codes_for_user",
+            return_value={
+                "sales.invoice.create", "sales.invoice.confirm", "sales.invoice.post",
+                "sales.credit_note.create", "sales.credit_note.confirm", "sales.credit_note.post",
+            },
+        )
+        sales_entity = patch(
+            "sales.views.sales_invoice_views.EffectivePermissionService.entity_for_user",
+            side_effect=lambda _user, entity_id: SimpleNamespace(id=int(entity_id)),
+        )
+        sales_line = {
+            "id": None,
+            "line_no": 1,
+            "product": self.goods_product.id,
+            "uom": box_uom.id,
+            "hsn_sac_code": "8471",
+            "qty": "0.200",
+            "free_qty": "0.000",
+            "rate": "1000.0000",
+            "productDesc": "Chain goods",
+            "is_service": False,
+            "discount_type": 0,
+            "discount_percent": "0.0000",
+            "discount_amount": "0.00",
+            "gst_rate": "18.00",
+            "cess_percent": "0.00",
+            "cess_amount": "0.00",
+        }
+        sales_payload = {
+            "doc_type": int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+            "bill_date": "2026-04-13",
+            "doc_code": "SINV",
+            "customer": self.vendor.id,
+            "customer_name": self.vendor.accountname,
+            "customer_gstin": "27ABCDE1234F1Z5",
+            "customer_state_code": "27",
+            "seller_gstin": "27AAAAA1234A1Z5",
+            "seller_state_code": "27",
+            "place_of_supply_state_code": "29",
+            "supply_category": int(SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B),
+            "taxability": int(SalesInvoiceHeader.Taxability.TAXABLE),
+            "reference": "CHAIN-SALE-001",
+            "entity": self.entity.id,
+            "entityfinid": self.entityfin.id,
+            "subentity": self.subentity.id,
+            "location": destination.id,
+            "affects_inventory": True,
+            "lines": [sales_line],
+            "charges": [],
+            "custom_fields": {},
+            "withholding_enabled": False,
+        }
+        with sales_permissions, sales_entity:
+            create_sale = self.client.post("/api/sales/invoices/", sales_payload, format="json")
+            self.assertEqual(create_sale.status_code, status.HTTP_201_CREATED, create_sale.json())
+            sale_id = create_sale.json()["id"]
+            confirm_sale = self.client.post(f"/api/sales/invoices/{sale_id}/confirm/{sales_scope}", {}, format="json")
+            self.assertEqual(confirm_sale.status_code, status.HTTP_200_OK, confirm_sale.json())
+            post_sale = self.client.post(f"/api/sales/invoices/{sale_id}/post/{sales_scope}", {}, format="json")
+            self.assertEqual(post_sale.status_code, status.HTTP_200_OK, post_sale.json())
+
+            return_payload = {
+                **sales_payload,
+                "doc_type": int(SalesInvoiceHeader.DocType.CREDIT_NOTE),
+                "doc_code": "SCN",
+                "reference": "CHAIN-RETURN-001",
+                "original_invoice": sale_id,
+                "note_reason": SalesInvoiceHeader.NoteReason.QUANTITY_RETURN,
+                "lines": [{**sales_line, "qty": "0.100"}],
+            }
+            create_return = self.client.post("/api/sales/invoices/", return_payload, format="json")
+            self.assertEqual(create_return.status_code, status.HTTP_201_CREATED, create_return.json())
+            return_id = create_return.json()["id"]
+            confirm_return = self.client.post(f"/api/sales/invoices/{return_id}/confirm/{sales_scope}", {}, format="json")
+            self.assertEqual(confirm_return.status_code, status.HTTP_200_OK, confirm_return.json())
+            post_return = self.client.post(f"/api/sales/invoices/{return_id}/post/{sales_scope}", {}, format="json")
+            self.assertEqual(post_return.status_code, status.HTTP_200_OK, post_return.json())
+
+        moves = InventoryMove.objects.filter(entity=self.entity, product=self.goods_product)
+        signed = lambda location_id: sum(
+            (-Decimal(qty) if move_type == InventoryMove.MoveType.OUT else Decimal(qty))
+            for move_type, qty in moves.filter(location_id=location_id).values_list("move_type", "base_qty")
+        )
+        self.assertEqual(signed(self.location.id), Decimal("5.0000"))
+        self.assertEqual(signed(destination.id), Decimal("3.0000"))
+        self.assertEqual(signed(self.location.id) + signed(destination.id), Decimal("8.0000"))
+        purchase_move = moves.get(txn_type=TxnType.PURCHASE, txn_id=purchase_id)
+        sale_move = moves.get(txn_type=TxnType.SALES, txn_id=sale_id)
+        return_move = moves.get(
+            txn_type=TxnType.SALES_CREDIT_NOTE,
+            txn_id=return_id,
+            movement_nature=InventoryMove.MovementNature.RETURN,
+        )
+        for move, entered_qty, base_qty in (
+            (purchase_move, Decimal("1.0000"), Decimal("10.0000")),
+            (sale_move, Decimal("0.2000"), Decimal("2.0000")),
+            (return_move, Decimal("0.1000"), Decimal("1.0000")),
+        ):
+            self.assertEqual(move.uom_id, box_uom.id)
+            self.assertEqual(move.qty, entered_qty)
+            self.assertEqual(move.uom_factor, Decimal("10.00000000"))
+            self.assertEqual(move.base_qty, base_qty)
+        for txn_type, txn_id in (
+            (TxnType.PURCHASE, purchase_id),
+            (TxnType.SALES, sale_id),
+            (TxnType.SALES_CREDIT_NOTE, return_id),
+        ):
+            entry = Entry.objects.get(entity=self.entity, txn_type=txn_type, txn_id=txn_id)
+            self.assertEqual(entry.status, EntryStatus.POSTED)
+            debits = sum(line.amount for line in entry.posting_journal_lines.filter(drcr=True))
+            credits = sum(line.amount for line in entry.posting_journal_lines.filter(drcr=False))
+            self.assertGreater(debits, Decimal("0.00"))
+            self.assertEqual(debits, credits)

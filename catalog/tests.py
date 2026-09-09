@@ -381,6 +381,16 @@ class CatalogPhase1Tests(TestCase):
         self.assertIsNone(product.shelf_life_days)
         self.assertEqual(product.expiry_warning_days, 0)
 
+    def test_goods_product_cannot_enable_unimplemented_serial_tracking(self):
+        serializer = ProductSerializer(
+            data=self._valid_payload(sku="SERIAL-001", is_serialized=True),
+            context={"entity": self.entity},
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("is_serialized", serializer.errors)
+        self.assertIn("not available yet", str(serializer.errors["is_serialized"]))
+
     def test_goods_product_can_be_marked_as_asset_purchase_behavior(self):
         serializer = ProductSerializer(
             data=self._valid_payload(

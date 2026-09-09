@@ -392,13 +392,14 @@ class PurchaseInvoiceConcurrencyHardeningTests(SimpleTestCase):
             id=41,
             status=int(PurchaseInvoiceHeader.Status.CANCELLED),
         )
-        mock_header_objects.select_for_update.return_value.get.return_value = locked_instance
+        locked_queryset = mock_header_objects.select_for_update.return_value.select_related.return_value
+        locked_queryset.get.return_value = locked_instance
 
         with self.assertRaisesMessage(ValueError, "Cancelled purchase invoices cannot be edited."):
             PurchaseInvoiceService.update_with_lines.__wrapped__(stale_instance, {})
 
-        mock_header_objects.select_for_update.assert_called_once_with()
-        mock_header_objects.select_for_update.return_value.get.assert_called_once_with(pk=41)
+        mock_header_objects.select_for_update.assert_called_once_with(of=("self",))
+        locked_queryset.get.assert_called_once_with(pk=41)
 
     @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService.rebuild_tax_summary")
     @patch("purchase.services.purchase_invoice_service.PurchaseInvoiceService._apply_vendor_withholding_variance_policy")
@@ -467,7 +468,7 @@ class PurchaseInvoiceConcurrencyHardeningTests(SimpleTestCase):
         instance.lines.values.return_value = []
         instance.charges.values.return_value = []
         instance.save = MagicMock()
-        mock_header_objects.select_for_update.return_value.get.return_value = instance
+        mock_header_objects.select_for_update.return_value.select_related.return_value.get.return_value = instance
 
         updated = PurchaseInvoiceService.update_with_lines.__wrapped__(
             instance,

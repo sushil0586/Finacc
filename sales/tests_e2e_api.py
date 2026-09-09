@@ -311,7 +311,7 @@ class SalesApiEndToEndTests(APITestCase):
             "product": None,
             "sales_account": self.service_sales_account.id,
             "uom": None,
-            "hsn_sac_code": "9983",
+            "hsn_sac_code": "998311",
             "qty": "1.000",
             "free_qty": "0.000",
             "rate": "500.0000",

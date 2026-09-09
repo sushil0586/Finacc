@@ -547,6 +547,9 @@ def validate_payload(payload: dict[str, list[dict[str, Any]]], entity: Entity) -
 
     seen_sku: set[str] = set()
     existing_skus = set(Product.objects.filter(entity=entity).values_list("sku", flat=True))
+    existing_serialized_skus = set(
+        Product.objects.filter(entity=entity, is_serialized=True).values_list("sku", flat=True)
+    )
     existing_categories = {_norm_text(c) for c in ProductCategory.objects.filter(entity=entity).values_list("pcategoryname", flat=True) if _norm_text(c)}
     existing_uoms = {_norm_text(c) for c in UnitOfMeasure.objects.filter(entity=entity).values_list("code", flat=True) if _norm_text(c)}
     existing_asset_categories = {_norm_text(c) for c in AssetCategory.objects.filter(entity=entity).values_list("code", flat=True) if _norm_text(c)}
@@ -604,6 +607,18 @@ def validate_payload(payload: dict[str, list[dict[str, Any]]], entity: Entity) -
         category = (row.get("category") or "").strip().lower()
         base_uom = (row.get("base_uom_code") or "").strip().lower()
         purchase_behavior = (row.get("purchase_behavior") or "").strip() or "inventory"
+        if _to_bool(row.get("is_serialized")) and sku not in existing_serialized_skus:
+            errors.append(
+                {
+                    "sheet": "products_basic",
+                    "row": idx,
+                    "field": "is_serialized",
+                    "message": (
+                        "Serialized inventory tracking is not available yet. "
+                        "Use batch-managed tracking until serial allocation is enabled."
+                    ),
+                }
+            )
         try:
             _to_product_taxability(row.get("default_taxability"))
         except Exception as exc:
@@ -970,7 +985,13 @@ def commit_payload(
                 )
                 obj.default_asset_category = asset_category_map.get((row.get("default_asset_category_code") or "").strip().lower())
                 obj.is_batch_managed = _to_bool(row.get("is_batch_managed"))
-                obj.is_serialized = _to_bool(row.get("is_serialized"))
+                requested_serialized = _to_bool(row.get("is_serialized"))
+                if requested_serialized and not bool(getattr(existing, "is_serialized", False)):
+                    raise ValueError(
+                        "Serialized inventory tracking is not available yet. "
+                        "Use batch-managed tracking until serial allocation is enabled."
+                    )
+                obj.is_serialized = requested_serialized
                 obj.is_expiry_tracked = _to_bool(row.get("is_expiry_tracked"))
                 obj.shelf_life_days = _to_int(row.get("shelf_life_days"), default=None)
                 obj.expiry_warning_days = _to_int(row.get("expiry_warning_days"), default=30)

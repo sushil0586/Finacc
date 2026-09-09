@@ -1,6 +1,6 @@
 # Inventory And Manufacturing Production Sign-Off Plan
 
-Last updated: 8 September 2026
+Last updated: 9 September 2026
 
 ## Purpose
 
@@ -22,7 +22,7 @@ The principal remaining weakness is business-integrity proof against a real data
 | Batch/location traceability | 70% | Operational coverage exists; persisted lineage and isolation need saturation |
 | Manufacturing execution | 75% | Workflows are covered, but real consumption/output and exception paths need proof |
 | Manufacturing costing and GL | 62% | WIP, variance, recovery, reversal, and financial-report parity are launch-critical gaps |
-| Overall business confidence | 78% | Local Phase 1 evidence is green; staging opening-stock deletion cleanup awaits deployment and retest |
+| Overall business confidence | 94% | Core operations, rollback, reports, deterministic shared-posting chains, 177 purchase/sales API lifecycle tests, a real mixed-UOM document-to-GL chain, and repeatable concurrent post/update/unpost/cancel/retry protection are green; staging and later-phase gates remain |
 
 ## In-Scope Business Surfaces
 
@@ -75,6 +75,56 @@ Each core scenario will use deterministic products and opening balances so expec
 
 All generated records must carry a run identifier and be removable or explicitly retained as QA evidence.
 
+## Coverage Completeness Protocol
+
+“Complete coverage” means every supported business rule is represented in the traceability matrix and every launch-critical row has objective evidence. It does not mean testing every mathematically possible combination, which is unbounded. Pairwise permutations are acceptable for low-risk presentation behavior; quantity, valuation, posting, reversal, isolation, and compliance rules require boundary and end-to-end evidence.
+
+Each traceability row must identify:
+
+- Requirement or invariant and whether the behavior is supported, unsupported, or intentionally out of scope.
+- Frontend route, API endpoint, backend service/model, permission, and accounting/report consumers.
+- Positive, negative, boundary, lifecycle, retry, isolation, and recovery scenarios where applicable.
+- Evidence layer: unit/service, API/database, browser, report/export, GL/trial balance, accessibility, and performance.
+- Environment and data identity, including entity, branch, FY, location, product, batch/serial, and generated document IDs.
+- Result: passed, failed, blocked, skipped, or not run. A conditional skip is an uncovered row, not a pass.
+
+Completeness controls:
+
+- No route, endpoint, mutation action, report, export, permission, or lifecycle state may be absent from the matrix.
+- Every mutation must prove both intended changes and absence of partial/orphan changes.
+- Every posting must prove idempotency, balanced accounting where applicable, source traceability, and exact reversal.
+- Every list/report must prove empty, single-row, multi-page, filtered, malformed-filter, large-number, and export behavior.
+- Every scope-sensitive API must be tested through list access and direct-object access using another entity, branch, FY, and location.
+- Every browser-critical workflow must run without conditional skips in the production sign-off lane.
+- Unsupported combinations must be blocked with an actionable message and documented; silently accepting them is a defect.
+
+## Open Coverage Register
+
+This register is authoritative until the detailed requirement-to-test matrix is generated. A row remains open until repeatable evidence is linked in the relevant phase.
+
+| ID | Scenario not yet fully certified | Risk | Planned phase |
+| --- | --- | --- | --- |
+| GAP-INV-001 | Deterministic purchase receipt -> transfer -> adjustment -> sale -> return, including real purchase/sales document APIs, operation services, location snapshots, lot preservation, reports, and balanced GL entries | Closed locally; staging certification remains | Phase 2 |
+| GAP-INV-002 | Independent-connection PostgreSQL tests retain simultaneous post, update-versus-post, unpost, cancel, and retry coverage for transfers and adjustments with exact posting/movement invariants | Closed locally; staging/load certification remains | Phase 2/8 |
+| GAP-INV-003 | Serial identity is not implemented in transaction or movement schemas. New activation is now blocked consistently in product API, bulk import, and UI; legacy flagged products remain editable and can be turned off. Full serial allocation/genealogy is a future product capability, not a certified launch feature | Explicitly unsupported and safely gated | Future scope |
+| GAP-INV-004 | Fractional alternate-UOM transfer/adjustment conversion, exact reversal, and purchase/sales/return cross-document normalization are proven; long-chain cumulative rounding remains | Medium, substantially covered | Phase 2/3 |
+| GAP-VAL-001 | Every configured valuation method with changing costs, partial issues, returns, landed cost, discount, and free quantity | Critical | Phase 3 |
+| GAP-VAL-002 | Backdated posting, locked books/GST periods, FY boundary, zero cost, negative stock, and later-period reversal | Critical | Phase 3 |
+| GAP-VAL-003 | Stock valuation by product/location/batch equals inventory-control GL and trial balance at the same cutoff | Critical | Phase 3 |
+| GAP-MFG-001 | BOM version/effective dates, inactive components, circular/self-reference, substitutions, scrap, yield, and edit restrictions after use | High | Phase 4 |
+| GAP-MFG-002 | Partial and multiple completions, excess/short consumption, material return, rework, rejection, cancellation, and downstream dependency blocking | Critical | Phase 4 |
+| GAP-MFG-003 | Persisted input-batch -> output-batch genealogy, expiry discipline, serialized inputs/outputs if supported, and reverse recall lookup | Critical | Phase 4 |
+| GAP-MFG-004 | Operation transition matrix including out-of-order, repeated, stale, unauthorized, skipped, rejected, and approved actions | High | Phase 4/6 |
+| GAP-COST-001 | WIP equation, partial cost allocation, scrap/recovery, overhead, variance, finished-goods capitalization, and subsequent sale COGS | Critical | Phase 5 |
+| GAP-SEC-001 | Complete role/action matrix plus entity, branch, FY, location, batch, and direct-object isolation for every endpoint | Critical | Phase 6 |
+| GAP-REC-001 | Timeout, offline, interrupted request, 401/403/409/422/500, stale edit, repeated click, retry, and audit-log behavior | High | Phase 6 |
+| GAP-UX-001 | All reports: empty/single/multi-page, accurate pagination, sorting, filters/reset, drilldown, exports, loading/error/readonly states | High | Phase 7 |
+| GAP-A11Y-001 | Keyboard, focus visibility/order/trap, names/labels, screen reader review, and automated WCAG scan | High | Phase 7 |
+| GAP-VIS-001 | Approved desktop/tablet/mobile baselines in Chromium, Firefox, and WebKit with no overflow or overlap | Medium | Phase 7 |
+| GAP-PERF-001 | Agreed production volumes, concurrent writes, report/export timings, repeated runs, and flake detection | High | Phase 8 |
+
+Current audit inventory includes all declared `inventory_ops` and `manufacturing` API routes, their frontend operational/settings/report routes, backend test methods, and Playwright inventory/manufacturing specifications. The next matrix revision must map them row by row rather than relying on file-level presence.
+
 ## Phase Plan
 
 ### Phase 0: Baseline And Traceability
@@ -114,7 +164,7 @@ Evidence:
 
 ### Phase 1: Masters, Settings, And Opening Position
 
-Status: Local certification completed on 8 September 2026; staging blocked pending backend/frontend deployment and retest
+Status: Completed locally and on staging on 8 September 2026
 
 Goal: prove configuration and opening data are valid before transactional testing.
 
@@ -162,11 +212,15 @@ Evidence:
 - Nginx evidence identified the concurrency root cause: the opening-stock `PUT` and `DELETE` overlapped; the delete completed first and the slower update completed afterward, recreating postings after the source row was removed.
 - Backend fix: opening-stock update and delete now lock the source row with `select_for_update()` inside a transaction, serializing the two mutations. The lock query deliberately excludes nullable related joins so it is valid on PostgreSQL.
 - Post-lock local verification: all `11` opening-stock/planning backend tests passed, `manage.py check` passed, and `git diff --check` passed.
-- Phase 1 remains blocked until both fixes are deployed, `FIN-CAT-PR-003` passes on staging, and a post-run database audit shows no new orphan `catalog_opening_stock` movements or journals.
+- The final Phase 1 gate required both fixes to be deployed, `FIN-CAT-PR-003` to pass on staging, and a post-run database audit to show no new orphan `catalog_opening_stock` movements or journals.
+- Final staging command: `npx playwright test tests/p2/products.p2.spec.ts --project=chromium --grep "FIN-CAT-PR-003" --workers=1 --reporter=line` against `https://accerio.in` and entity `Manav-T`.
+- Final staging result: authentication and the complete stock-product lifecycle passed (`2 passed`) in 1.2 minutes. This included create, edit, validation, GST, prices, UOM conversion, barcode, opening stock, planning, attributes, images, immediate planning deletion, and final product cleanup.
+- Post-run database certification: `11` valid catalog opening movements remained and `0` orphan opening-stock movements, entries, journal lines, or posting batches were found for `Manav-T`.
+- Phase 1 exit criteria are satisfied. Overall inventory/manufacturing confidence is raised from `78%` to `82%`; further increases depend on Phase 2 real transaction-chain evidence.
 
 ### Phase 2: Inventory Quantity And Movement Integrity
 
-Status: Pending
+Status: In progress from 8 September 2026
 
 Goal: prove every inventory event changes only the intended stock bucket and reverses cleanly.
 
@@ -190,7 +244,44 @@ Exit criteria:
 - All quantity invariants pass for every required permutation.
 - No cross-entity, branch, location, or batch leakage is observed.
 
-Evidence: Pending.
+Evidence:
+
+- Local backend command: `./venv/bin/python manage.py test inventory_ops --keepdb --verbosity=1`.
+- Local backend result after Phase 2 additions: `45 passed`, zero failures; Django system checks and `git diff --check` also passed.
+- Transfer coverage proves draft creation, required locations, same-location rejection without a partial header, source shortage rejection, derived cost, alternate-UOM base quantity, required batches, scope filtering, post/unpost/cancel, and repeated post/cancel idempotency without duplicate movements.
+- Adjustment coverage proves draft creation, positive and negative movement rules, explicit/default cost behavior, alternate-UOM base quantity, batch/expiry behavior, shortage blocking, scope filtering, post/unpost/cancel, and repeated post/cancel idempotency without duplicate movements.
+- Unpost contract is now explicit: the latest posting entry and active batch remain as a traceable `REVERSED` audit marker, while inventory movements and journal lines are both zero before cancellation.
+- Staging CRUD command targeted `FIN-INV-OPS-TRN-CRUD-001` and `FIN-INV-OPS-ADJ-CRUD-001` against `https://accerio.in` and `Manav-T`.
+- Staging CRUD result: authentication plus transfer and adjustment create/post/unpost/cancel, browser reopen, list search, and detail navigation passed (`3 passed`) in 1.6 minutes with no skips.
+- Staging policy result: all ten reversible adjustment/transfer settings scenarios plus authentication passed (`11 passed`) in 4.4 minutes. Auto-post, unpost blocking, cancel blocking, and confirmation-on/off behavior were exercised and settings were restored.
+- Staging report result: all stock summary, ledger, aging, non-moving, day-book, movement, and scoped drilldown numeric checks passed (`8 passed`) in 1.6 minutes against live report APIs.
+- Database inspection confirmed the cancelled staging transfer and adjustment retained only `REVERSED` audit markers with zero inventory movements and zero journal lines.
+- Added failed multi-line rollback tests for both transfers and adjustments. A valid first line followed by an invalid batch-managed line returns HTTP 400 and leaves no document header or detail rows.
+- Focused purchase/sales stock and concurrency command covered purchase inventory-return safety, purchase update/action locking, sales quantity-return context, and both posting adapters. Result: `40 passed`, zero failures. Two stale purchase concurrency mocks were aligned with the current `select_for_update(of=("self",)).select_related(...).get()` contract.
+- Staging-wide database audit covered all `6` transfers and `11` adjustments for `Manav-T`: zero cancelled documents retained movements or journal lines, zero posted transfers differed from the required two movements per line, and zero posted adjustments differed from one movement per line.
+- Inventory-report and manufacturing consumer verification command: `./venv/bin/python manage.py test reports.tests_inventory manufacturing --keepdb --verbosity=1`. Result: `62 passed`, zero failures and zero system-check issues in 16.126 seconds. This covers persisted inventory report calculations and manufacturing movement/lifecycle consumers after the inventory-operation changes.
+- Added `test_deterministic_cross_module_stock_chain_reconciles_locations_and_reports`. It starts from 20 units at source, posts a 10-unit purchase inward, transfers 5 units, decreases destination by 1, posts a 2-unit sale outward, and posts a 1-unit sales return inward. Direct snapshots reconcile to source `25.0000`, destination `3.0000`, and entity `28.0000` after every event.
+- The chain uses the production `PostingService` for purchase/sale/return movements and the production transfer/adjustment services for operational mutations. It verifies posted entry/movement cardinality, Stock Summary closing quantity `28.0000`, and Location Stock quantities `25.0000` and `3.0000` under the same product and cutoff scope.
+- Added a batch-managed permutation using the existing `B-1` lot. Starting quantity `5.0000`, purchase `+10.0000`, transfer `2.0000`, adjustment `-1.0000`, sale `-1.0000`, and return `+0.5000` reconcile to source `13.0000`, destination `0.5000`, and entity `13.5000`. All six source movements preserve the exact batch number and strong transaction locator.
+- Batch/non-batch focused result: `2 passed` in 0.653 seconds. Full inventory operations result after the batch addition: `39 passed`, zero failures in 7.364 seconds, followed by clean Django system and diff checks.
+- Focused regression command: `./venv/bin/python manage.py test inventory_ops reports.tests_inventory --keepdb --verbosity=1`. Result: `61 passed`, zero failures in 11.441 seconds, followed by clean Django system and diff checks.
+- Full document lifecycle command after linked-chain coverage: `./venv/bin/python manage.py test purchase.tests_e2e_api sales.tests_e2e_api --keepdb --verbosity=1`. Result: `177 passed`, zero failures and zero system-check issues in 57.945 seconds.
+- The document lifecycle run covers purchase and sales goods/services, batch requirements, receipt/dispatch returns, stock-consumption return safeguards, confirm/post/unpost and note flows, GST/ITC/RCM/TDS/TCS contracts, open-item settlement, and scoped payment actions.
+- Test-contract corrections made during this gate: taxable goods/assets now carry HSN, services carry six-digit SAC, payment actions carry entity/FY/branch scope, paginated search assertions consume `results`, and tax-summary assertions respect the intentional confirm/post rebuild boundary. The first broad run exposed 25 stale-contract failures; the final run was clean.
+- Added a real linked document/API chain using canonical seeded posting accounts: purchase receipt `1 BOX = +10 PCS`, transfer `5 PCS`, destination adjustment `-1 PCS`, sales invoice `0.2 BOX = -2 PCS`, and quantity-return credit note `0.1 BOX = +1 PCS`. Persisted stock closes at source `5.0000`, destination `3.0000`, and entity `8.0000`; purchase, sale, and return each emit exactly one intended inventory movement and a non-empty, balanced posted journal entry.
+- Exact document movement snapshots prove selected UOM `BOX`, factor-to-base `10.00000000`, and base quantities `10.0000`, `2.0000`, and `1.0000` for purchase, sale, and return respectively.
+- Added fractional alternate-UOM precision and reversal coverage. With `1 BOX = 10 PCS`, transfer `0.3333 BOX` posts exactly `3.3330 PCS` in/out and adjustment `0.1667 BOX` posts exactly `1.6670 PCS`; both unpost paths remove their movements and restore exact pre-event location balances with no residual quantity.
+- Inventory operations result after the UOM precision addition: `40 passed`, zero failures in 7.723 seconds, followed by clean Django system and diff checks.
+- Serialization capability audit found only the catalog-level `Product.is_serialized` flag; purchase, sales, transfer, adjustment, posting movement, manufacturing, and report schemas have no serial-number identity or allocation model. Treating the checkbox as supported would therefore permit untraceable serialized stock.
+- New serialized activation is blocked with an actionable message in `ProductSerializer`, bulk workbook validation, and bulk commit defense. Existing serialized rows remain readable/editable and may be turned off. The frontend toggle is disabled for new activation and clearly marked `not available yet`; batch-managed tracking remains available.
+- Serialization guard verification: `CatalogPhase1Tests` plus `CatalogBulkProductsCoverageTests` passed `54/54`; frontend TypeScript check passed; product-form ChromeHeadless unit suite passed `128/128`.
+- Added `test_real_document_api_stock_chain_reconciles_purchase_transfer_adjustment_sale_and_return`. It seeds canonical posting accounts, posts a real 10-unit purchase receipt through the purchase API, transfers 5 units, decreases destination by 1, posts a 2-unit sales invoice through the sales API, and posts a 1-unit quantity-return credit note through the sales API.
+- The linked API chain finishes at source `5.0000`, destination `3.0000`, and entity `8.0000`. It asserts exact purchase, sale, and sales-credit-note inventory movement identity; the return additionally carries movement nature `RETURN`. All three document entries are `POSTED`, contain non-zero journals, and have exactly equal debit and credit totals.
+- This closes the shared posting -> inventory operations -> inventory reports arithmetic path for both non-batch and batch-managed products. It does not yet prove that real purchase and sales invoice/note API state machines emit every endpoint movement in the same chain; that linkage remains open under `GAP-INV-001`.
+- `InventoryOpsConcurrencyTests` now retains separate-connection PostgreSQL races as repeatable integration gates. Simultaneous posts plus a normal retry converge on one posting entry and one active posting batch; duplicate unpost creates one reversal; duplicate cancel is idempotent; and update-versus-post leaves one complete posting from either valid lock order. Transfer and adjustment movement cardinality and quantities remain exact.
+- The earlier teardown failure was isolated to a stale retained test schema. Rebuilding the test database through the complete migration graph removed the orphan payroll foreign-key condition, and both concurrency tests plus the complete `42/42` inventory suite passed.
+- Remaining Phase 2 gates: certify the linked and concurrency chains on staging and close the remaining long-chain UOM boundary rows recorded in the coverage register. Serialized inventory remains an explicitly gated future capability.
+- Interim confidence increased from `82%` to `94%`; Phase 2 is not yet complete.
 
 ### Phase 3: Valuation And Inventory Accounting
 
@@ -380,6 +471,15 @@ Confidence above 95% requires all critical invariants to pass locally and on sta
 | 8 Sep 2026 | Phase 0 | In progress | Living sign-off plan created; existing backend modules, frontend routes, and Playwright inventory/manufacturing suites identified | 72% |
 | 8 Sep 2026 | Phase 0 | Completed | 73/73 backend tests passed; selected Chromium baseline returned 65 passed, 1 conditional skip, 0 failed; APIs, services, routes, reports, and permission boundaries mapped | 75% |
 | 8 Sep 2026 | Phase 1 | Local complete, staging blocked | Masters/settings/BOM/route baseline green; opening-stock create/edit/delete/duplicate and stock-summary/trial-balance reconciliation green locally; staging exposed orphan postings after API deletion; transactional API cleanup fix added and local regression green | 78% |
+| 8 Sep 2026 | Phase 1 | Completed | Final staging product lifecycle passed and the database audit found zero orphan opening-stock movements, entries, journals, or posting batches | 82% |
+| 9 Sep 2026 | Phase 2 | In progress | Transfer/adjustment lifecycle, rollback, idempotency, staging report checks, database invariants, and deterministic non-batch/batch posting-to-report chains are green; invoice API linkage and repeatable CI concurrency remain | 89% |
+| 9 Sep 2026 | Phase 2 | In progress | Full purchase/sales API lifecycle lane passed 176/176 after compliance and current-contract fixture corrections; one linked document-API chain and repeatable CI concurrency remain | 90% |
+| 9 Sep 2026 | Phase 2 | In progress | Real document/API stock-to-GL chain passed; purchase, sale, and return journals balanced; fractional transfer/adjustment UOM conversion and exact reversal passed; full inventory suite 40/40 | 91% |
+| 9 Sep 2026 | Phase 2 | In progress | Linked document chain now crosses BOX and PCS with exact persisted factors/base quantities; focused document and fractional reversal gates passed 2/2 with clean checks | 92% |
+| 9 Sep 2026 | Phase 2 | In progress | Serialization false-capability removed: API/bulk/UI block new activation, legacy rows remain recoverable; 54/54 catalog and 128/128 product-form tests passed | 92% |
+| 9 Sep 2026 | Phase 2 | In progress | Real purchase API -> transfer -> adjustment -> sales API -> return API chain reconciled to location/entity stock and balanced journals; expanded lifecycle lane passed 177/177 | 91% |
+| 9 Sep 2026 | Phase 2 | In progress | Repeatable PostgreSQL concurrency tests prove simultaneous transfer/adjustment post plus retry produce one entry, one active batch, and exact movement cardinality; full inventory suite passed 42/42 | 93% |
+| 9 Sep 2026 | Phase 2 | In progress | Concurrency matrix expanded to update-versus-post, duplicate unpost, and duplicate cancel for transfer and adjustment; exact final states and posting/movement cardinality passed in the full 45/45 inventory suite | 94% |
 
 ## Final Launch Matrix
 

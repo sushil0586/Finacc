@@ -1072,6 +1072,17 @@ class ProductSerializer(EntityScopedValidationMixin, serializers.ModelSerializer
             attrs["is_expiry_tracked"] = False
             attrs["shelf_life_days"] = None
             attrs["expiry_warning_days"] = 0
+        elif bool(attrs.get("is_serialized", getattr(self.instance, "is_serialized", False))):
+            existing_serialized = bool(getattr(self.instance, "is_serialized", False))
+            if not existing_serialized:
+                raise serializers.ValidationError(
+                    {
+                        "is_serialized": (
+                            "Serialized inventory tracking is not available yet. "
+                            "Use batch-managed tracking until serial allocation is enabled."
+                        )
+                    }
+                )
 
         if entity is not None:
             for idx, row in enumerate(self.initial_data.get("gst_rates", []) or [], start=1):
