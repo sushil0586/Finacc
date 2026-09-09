@@ -473,7 +473,7 @@ Evidence:
 
 ### Phase 7: Reports, UX, Accessibility, And Cross-Browser Certification
 
-Status: Pending
+Status: In progress
 
 Goal: certify operational usability and reporting accuracy for daily users.
 
@@ -490,11 +490,20 @@ Exit criteria:
 - No critical visual/accessibility issue blocks entry, review, posting, or reconciliation.
 - Exported and on-screen totals agree with source records.
 
-Evidence: Pending.
+Evidence:
+
+- Chromium visual baselines for the manufacturing hub and all five manufacturing report surfaces were reviewed, refreshed, and then replayed without snapshot updates. The clean staging run passed `7/7`.
+- Live Axe scans found no serious or critical violations on representative Stock Ledger and Manufacturing Summary surfaces. Chromium desktop accessibility plus mobile/tablet overflow checks passed `7/7`; the equivalent Firefox and WebKit checks passed, with three staging navigation timeouts green on immediate isolated rerun.
+- Manufacturing Summary smart filters now expose a semantic modal dialog, accessible close name, Escape dismissal, and Tab/Shift+Tab focus wrapping. Focused Angular tests passed `9/9`, TypeScript checking passed, and the deployed Chromium focus-containment test passed `2/2`.
+- Inventory report actions and manufacturing workspaces passed `20/21` in one staging run; the sole Stock Day Book navigation timeout passed its isolated rerun (`2/2`). Coverage includes shared Excel/PDF/CSV/print/reset actions, report switching, staged filters, apply/cancel behavior, and drilldowns.
+- Live inventory context, pagination, browser history, and manufacturing reconciliation/drilldown coverage passed `21/22` in one staging run. The only stock-aging pagination timeout passed its isolated rerun (`2/2`).
+- Mobile review found that the shared workspace sidebar was always translated off-screen below 992px even when its toggle state was open. The shell now uses an accessible mobile drawer with backdrop, Escape dismissal, route-close behavior, and accurate `aria-expanded`/open/close names. The complete focused shell unit suite passed `54/54`; real local Chromium navigation passed `2/2` at mobile `390x844` and tablet `820x1180`.
+- Physical-phone review then exposed the multi-row shell header covering report actions. Phone layout is now a single `3.7rem` row; entity and financial-year selectors move into the mobile drawer, while notifications and profile access remain in the header. Application content uses the same responsive offset as the fixed header. Local browser geometry proves a header no taller than 60px, report content beginning below it, no page-level horizontal overflow, and working drawer navigation at phone and tablet widths.
+- Remaining Phase 7 gates are direct downloaded-file content validation, manual screen-reader review, and exhaustive desktop/tablet/mobile execution across every report in all three browser engines.
 
 ### Phase 8: Scale, Repeatability, And Launch Gate
 
-Status: Pending
+Status: In progress
 
 Goal: establish production-like capacity and a repeatable release gate.
 
@@ -513,13 +522,33 @@ Suggested volumes:
 - Work orders with 10, 100, and 500 material lines.
 - Concurrent writes against the same and different product/location buckets.
 
+Initial launch thresholds:
+
+- Read-only operational/report pages: p95 response or interactive load below 5 seconds, with no individual navigation above 15 seconds under the agreed baseline load.
+- Save/post/unpost actions: p95 below 5 seconds and no duplicate movements, posting batches, or ledger rows.
+- Exports: p95 below 30 seconds for the agreed standard dataset; larger-volume thresholds are recorded separately by row/document count.
+- Concurrency: zero lost updates, negative-stock bypasses, duplicate commits, or cross-entity/branch leakage.
+- Repeatability: three consecutive critical-suite repetitions with zero functional failures, zero unexpected skips, and no state leakage.
+
 Exit criteria:
 
 - Agreed performance thresholds pass without integrity failures.
 - Critical suites pass repeatedly from a clean deterministic baseline.
 - No open severity-1 or severity-2 defect remains.
 
-Evidence: Pending.
+Evidence:
+
+- The first non-destructive Chromium staging baseline repeated inventory cross-report reconciliation, numeric reconciliation, and manufacturing hub/report behavior three times against `Manav-T`.
+- Result: `51 passed, 1 failed` across 52 executions in 8.6 minutes. All accounting, numeric, filter-scope, and drilldown assertions passed.
+- `FIN-MFG-REPORT-SWITCHER-SCOPE` exceeded the 30-second Playwright test budget during its first repetition while navigating to Material Consumption; the same case passed in repetitions two and three. This is classified as a Phase 8 performance/reliability finding rather than a functional reconciliation defect.
+- The failed case passed an immediate isolated rerun (`2/2` including authentication) in 31.7 seconds. Functional behavior is therefore confirmed, but repeatability remains below the zero-failure launch threshold until a clean three-pass lane completes.
+- Direct authenticated endpoint timing then exercised each manufacturing report API five times. Material Consumption recorded p50 `298 ms`, p95/max `408 ms`; Output Yield p50 `283 ms`, p95/max `287 ms`; Posting Audit p50 `277 ms`, p95/max `280 ms`; and WIP/Cost Summary p50 `279 ms`, p95/max `283 ms`. The `2/2` run passed all 5-second p95 and 15-second maximum thresholds, isolating the earlier delay to full-page navigation/bootstrap or staging delivery rather than report computation.
+- Local transactional concurrency passed `5/5` tests in 6.108 seconds on PostgreSQL. Simultaneous transfer/adjustment post-and-retry, unpost, cancel, and update-versus-post operations produced one complete posting/reversal and preserved idempotency without partial mutation.
+- Controlled staging write contention passed twice (`2/2` per run including authentication). Two simultaneous posts of one uniquely tagged inventory increase adjustment returned the same posting entry, the list exposed exactly one source document, detail state remained `POSTED`, and cleanup was independently verified at final state `CANCELLED` after unpost. The probe used quantity `0.0100` and did not consume existing stock.
+- Controlled transfer contention passed its focused `2/2` run and the combined adjustment/transfer launch command passed `3/3` in 40.7 seconds. Two simultaneous posts returned one transfer posting entry and one source document. The transfer was unposted and cancelled before its temporary stock-seed adjustment was also unposted and cancelled, restoring the original net stock position.
+- Controlled sales stock contention passed its focused `2/2` run and the expanded staging concurrency gate passed `4/4` in 1.1 minutes. Two independent server POST requests against the same confirmed goods invoice both returned the same posted invoice identity. The persisted invoice retained one line, and Stock Ledger exposed exactly one outbound movement for the immutable invoice/product keys. Cleanup unposted the invoice and restored its confirmed state.
+- Controlled manufacturing contention passed its focused `2/2` run, and the final adjustment/transfer/manufacturing/sales staging gate passed `5/5` in 1.3 minutes. Two independent posts of one completed work order converged on one entry ID and `POSTED` state. Stock Ledger contained exactly one material issue and one finished-goods receipt for the work-order transaction. The work order was unposted/cancelled before its temporary stock adjustment was unposted/cancelled, restoring net stock.
+- Reproducible commands are available as `npm run test:inventory-manufacturing:repeatability` and `npm run test:inventory-manufacturing:launch` in the Playwright project.
 
 ## Evidence Rules
 
@@ -591,6 +620,19 @@ Confidence above 95% requires all critical invariants to pass locally and on sta
 | 9 Sep 2026 | Phase 6 | Interrupted-request recovery locally certified | A browser-level connection failure preserves the transfer draft, restores the Save action, and commits once after reconnect retry. The focused case passed 1/1 and the complete Chromium operational suite passed 88/88 in 1.6 minutes. | 97% |
 | 9 Sep 2026 | Phase 6 | Batch document isolation locally certified; report propagation open | Added exact batch-number RBAC policy support across transfer, adjustment, and work-order mutations, direct actions, and lists. Focused isolation passed 2/2 and full affected suites passed 99/99. Movement-backed inventory reports/exports still require batch filtering before full closure. | 97% |
 | 9 Sep 2026 | Phase 6 | Batch report and export isolation locally certified | All movement-backed inventory report families now recalculate using blank batches plus permitted named batches. Stock summary, ledger JSON, and CSV proof passed 1/1; the complete affected backend regression passed 124/124. Local batch-policy enforcement is closed. | 97% |
+| 9 Sep 2026 | Phase 6 | Staging restricted-role matrix certified; one report UX fix awaits deployment | Deployed revision bb5f11ba has RBAC migration 0143 applied and passes Django checks. Disposable-user Chromium coverage passed 6/6 across tenant isolation, denied routes, view-only import/print controls, branch isolation, and role-separated operations. Inventory/report filter coverage passed 13/14; the only failure was a Manufacturing Summary initialization race that committed a dialog selection before Apply. The frontend now keeps URL, loading, and report links on committed scope; focused Angular regression passed 9/9. Final staging rerun requires frontend deployment. | 97% |
+| 9 Sep 2026 | Phase 6 | Supported scope staging complete | The deployed Manufacturing Summary keeps display-unit and subentity selections staged until Apply; its focused staging check passed 2/2. All 14 inventory/manufacturing filter cases passed on this deployment: 11 in the consolidated run and three latency-sensitive cases on immediate isolated reruns. Together with the 6/6 disposable restricted-user matrix, tenant, route, branch, FY, warehouse, batch, report/export, stale-write, and recovery coverage is green for the supported scope. | 98% |
+| 9 Sep 2026 | Phase 7 | Accessibility, responsive, and visual certification in progress | Approved Chromium baselines replayed cleanly 7/7. Live Axe and responsive coverage is green in Chromium, Firefox, and WebKit on representative inventory/manufacturing reports. The deployed Manufacturing Summary dialog focus fix passed 2/2. Report actions/workspaces passed 20/21 plus a successful isolated rerun; context, pagination, history, and reconciliation passed 21/22 plus a successful isolated rerun. Remaining gates are export-content inspection, manual screen-reader review, and exhaustive three-browser viewport coverage. | 98% |
+| 9 Sep 2026 | Phase 7 | Shared mobile navigation fixed locally | Corrected the shell sidebar that remained off-screen below 992px. Added an accessible drawer, backdrop, Escape and post-navigation closing, and responsive labels/state. Shell unit coverage passed 54/54; local Chromium mobile and tablet menu-to-report navigation passed 2/2. Staging retest remains after deployment. | 98% |
+| 9 Sep 2026 | Phase 7 | Phone header obstruction fixed locally | Replaced the oversized multi-row phone header with a single 3.7rem row and moved entity/FY controls into the drawer. Content and header now share one responsive offset. Type checking and 54/54 shell tests passed; local phone/tablet geometry and navigation passed 2/2 with no overlap or horizontal page overflow. Physical Safari staging retest remains after deployment. | 98% |
+| 9 Sep 2026 | Phase 7 | Mobile shell deployment certified across browser engines | Deployed Manufacturing Summary passed focused phone and tablet checks in Chromium (`2/2` per viewport, including authentication), WebKit (`3/3` including setup), and Firefox (`3/3` including setup). At 390x844 the header remains at or below 60px; report content starts below it, action controls remain visible, and no page-level horizontal overflow occurs. The drawer exposes the permitted Manufacturing Reports menu plus mobile entity/FY selectors and closes reliably with Escape. Tablet geometry and drawer navigation also pass. Physical iOS Safari confirmation remains. | 98% |
+| 9 Sep 2026 | Phase 8 | Repeatability baseline started | A three-pass read-only staging lane completed 51/52 checks in 8.6 minutes. Numeric and scope reconciliation remained correct; one first-pass Material Consumption navigation exceeded 30 seconds, then passed in repetitions two and three and in an isolated 2/2 rerun. Named repeatability and launch commands were added. Endpoint timing, controlled volume, concurrency, and a clean zero-failure repeat remain open. | 98% |
+| 9 Sep 2026 | Phase 8 | Manufacturing report API timing passed | Twenty direct authenticated staging requests passed. All four report endpoints remained below 0.5 seconds at p95/max; Material Consumption was slowest at 408 ms. The intermittent browser timeout is therefore outside report computation and remains tracked under navigation/bootstrap delivery. | 98% |
+| 9 Sep 2026 | Phase 8 | Local inventory write concurrency passed | PostgreSQL transaction coverage passed 5/5 in 6.108 seconds. Concurrent transfer/adjustment posting, retries, unposting, cancellation, and update-versus-post preserved one coherent posting outcome. Controlled staging concurrency and manufacturing work-order contention remain open. | 98% |
+| 9 Sep 2026 | Phase 8 | First controlled staging write contention passed | Simultaneous adjustment posts converged on one entry ID and one source document in two independent runs. Both probes unposted and finished `CANCELLED`; no customer stock was consumed. Transfer, sales-consumption, and work-order contention remain open. | 98% |
+| 9 Sep 2026 | Phase 8 | Staging transfer contention passed | The focused transfer probe passed 2/2, then the combined adjustment/transfer gate passed 3/3 in 40.7 seconds. Concurrent transfer posts converged on one entry and source document; transfer and seed cleanup both finished `CANCELLED`, restoring net stock. Sales-consumption and work-order contention remain open. | 98% |
+| 9 Sep 2026 | Phase 8 | Staging sales stock contention passed | A focused real goods-invoice probe passed 2/2, and the expanded adjustment/transfer/sales concurrency gate passed 4/4 in 1.1 minutes. Two simultaneous backend posts converged on one posted invoice; the invoice retained one line and Stock Ledger contained exactly one outbound movement for its invoice/product keys. Cleanup unposted the probe. Manufacturing work-order contention and controlled-volume scale remain open. | 98% |
+| 9 Sep 2026 | Phase 8 | Supported staging write concurrency complete | The manufacturing work-order probe passed 2/2 and the final combined gate passed 5/5 in 1.3 minutes. Concurrent adjustment, transfer, manufacturing, and sales post requests all converged without duplicate source documents or movement sets. Manufacturing produced exactly one material OUT and one finished-goods IN; all temporary writes were reversed/cancelled in dependency order. Controlled-volume scale and a clean three-pass repeatability run remain open. | 98% |
 
 Phase 4 capability boundary identified during certification:
 
@@ -632,8 +674,8 @@ To be completed after Phase 8.
 | Inventory valuation and GL | Pending | Not assessed | Not assessed |
 | Manufacturing execution | Pending | Not assessed | Not assessed |
 | Manufacturing costing and GL | Passed for supported single-final-post workflow | None in supported scope | Incremental partial completions remain unsupported; staging navigation latency is tracked for Phase 8 |
-| RBAC and isolation | In progress | No local direct-object defect remains | Branch-restricted and staging role matrices remain |
+| RBAC and isolation | Passed for supported scope | None | Cross-browser restricted-role execution remains release hardening; Chromium staging and backend policy matrices are green |
 | Failure and recovery | Pending | Not assessed | Not assessed |
-| Reports and usability | Pending | Not assessed | Not assessed |
-| Performance and repeatability | Pending | Not assessed | Not assessed |
+| Reports and usability | In progress; Chromium visual and representative three-browser accessibility/responsive gates pass | None found in executed scope | Export-content inspection, manual screen-reader review, and exhaustive three-browser viewport coverage remain |
+| Performance and repeatability | In progress | One intermittent manufacturing report navigation exceeded 30 seconds | Endpoint-level timing, controlled scale/concurrency tests, and a clean three-pass repeat remain |
 | Release recommendation | Pending | Not assessed | Not assessed |

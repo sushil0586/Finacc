@@ -2345,7 +2345,7 @@ class FinancialReportsMetaAPIView(ScopedEntitlementMixin, APIView):
     subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
     subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
 
-    def _get_cached_meta(self, *, entity_id: int, loader):
+    def _get_cached_meta(self, *, entity_id: int, subentity_id: int | None, loader):
         namespace = REPORTS_META_NAMESPACES[0]
         if not getattr(settings, "META_CACHE_ENABLED", True):
             emit_meta_cache_event(
@@ -2353,7 +2353,7 @@ class FinancialReportsMetaAPIView(ScopedEntitlementMixin, APIView):
                 namespace=namespace,
                 entity_id=entity_id,
                 entityfinid_id=None,
-                subentity_id=None,
+                subentity_id=subentity_id,
             )
             return loader()
 
@@ -2366,7 +2366,7 @@ class FinancialReportsMetaAPIView(ScopedEntitlementMixin, APIView):
             versioned_namespace,
             entity_id=entity_id,
             entityfinid_id=None,
-            subentity_id=None,
+            subentity_id=subentity_id,
             extra={},
         )
         return get_or_set_meta_cache(
@@ -2380,9 +2380,12 @@ class FinancialReportsMetaAPIView(ScopedEntitlementMixin, APIView):
         if not entity_id:
             return Response({"detail": "entity is required."}, status=400)
         entity_id = int(entity_id)
-        self.enforce_scope(request, entity_id=entity_id)
+        subentity_id = request.query_params.get("subentity")
+        subentity_id = int(subentity_id) if subentity_id else None
+        self.enforce_scope(request, entity_id=entity_id, subentity_id=subentity_id)
         payload = self._get_cached_meta(
             entity_id=entity_id,
+            subentity_id=subentity_id,
             loader=lambda: build_financial_report_meta(entity_id),
         )
         payload["reporting_policy"] = resolve_financial_reporting_policy(entity_id)

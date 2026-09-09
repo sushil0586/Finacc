@@ -460,6 +460,16 @@ class BookReportAPITests(APITestCase):
         self.assertIn(self.bank_account.id, bank_ids)
         self.assertNotIn(self.other_cash_account.id, all_ids)
 
+    def test_financial_meta_authorizes_the_requested_branch_scope(self):
+        with patch("core.entitlements.EffectivePermissionService.has_scope_access", return_value=True) as scope_access:
+            response = self.client.get(
+                reverse("reports_api:financial-meta"),
+                {"entity": self.entity.id, "subentity": self.subentity.id},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        scope_access.assert_called_once_with(self.user, self.entity.id, self.subentity.id)
+
     @override_settings(META_CACHE_ENABLED=True, META_CACHE_TTL_SECONDS=300)
     def test_financial_meta_uses_cache_for_repeated_entity_requests(self):
         url = reverse("reports_api:financial-meta")
@@ -472,6 +482,19 @@ class BookReportAPITests(APITestCase):
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 200)
         self.assertEqual(mocked_builder.call_count, 1)
+
+    @override_settings(META_CACHE_ENABLED=True, META_CACHE_TTL_SECONDS=300)
+    def test_financial_meta_cache_is_partitioned_by_branch(self):
+        url = reverse("reports_api:financial-meta")
+        with patch("reports.api.financial.views.build_financial_report_meta") as mocked_builder:
+            mocked_builder.return_value = {"entity_id": self.entity.id, "all_accounts": []}
+
+            first = self.client.get(url, {"entity": self.entity.id, "subentity": self.subentity.id})
+            second = self.client.get(url, {"entity": self.entity.id, "subentity": self.other_subentity.id})
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(mocked_builder.call_count, 2)
 
     def test_daybook_filters_voucher_type_status_posted_and_search(self):
         response = self.client.get(reverse("reports_api:financial-daybook"), {"entity": self.entity.id, "voucher_type": f"{TxnType.JOURNAL_BANK},{TxnType.PAYMENT}", "status": "posted", "posted": True, "search": "REF-BANK-001"})
