@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db.models import Q
 from rest_framework import permissions, status
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
@@ -92,27 +93,51 @@ class CapitalDistributionAccessMixin(ScopedEntitlementMixin):
         self.require_permission(request, entity_id=entity.id, codes=codes)
         return entity
 
-    def scoped_policy(self, request, *, policy_id, entity_id, codes=VIEW_PERMISSIONS):
-        entity = self.scoped_entity(request, entity_id=entity_id, codes=codes)
+    def scoped_policy(
+        self,
+        request,
+        *,
+        policy_id,
+        entity_id,
+        codes=VIEW_PERMISSIONS,
+        requested_subentity_id=None,
+        allow_global_for_branch=False,
+    ):
         policy = (
-            DistributionPolicyVersion.objects.filter(id=policy_id, entity=entity, isactive=True)
+            DistributionPolicyVersion.objects.filter(id=policy_id, entity_id=entity_id, isactive=True)
             .select_related("formation_profile", "entityfin", "subentity")
             .first()
         )
         if not policy:
             raise ValidationError({"policy": "Policy was not found for this entity."})
+        scope_subentity_id = policy.subentity_id
+        if allow_global_for_branch and scope_subentity_id is None:
+            scope_subentity_id = requested_subentity_id
+        self.scoped_entity(
+            request,
+            entity_id=entity_id,
+            entityfinid_id=policy.entityfin_id,
+            subentity_id=scope_subentity_id,
+            codes=codes,
+        )
         return policy
 
     def scoped_run(self, request, *, run_id, entity_id, codes=RUN_VIEW_PERMISSIONS):
-        entity = self.scoped_entity(request, entity_id=entity_id, codes=codes)
         run = (
-            CapitalDistributionRun.objects.filter(id=run_id, entity=entity, isactive=True)
+            CapitalDistributionRun.objects.filter(id=run_id, entity_id=entity_id, isactive=True)
             .select_related("formation_profile", "policy", "entityfin", "subentity")
             .prefetch_related("segments__policy", "segments__lines__stakeholder")
             .first()
         )
         if not run:
             raise ValidationError({"run": "Calculation run was not found for this entity."})
+        self.scoped_entity(
+            request,
+            entity_id=entity_id,
+            entityfinid_id=run.entityfin_id,
+            subentity_id=run.subentity_id,
+            codes=codes,
+        )
         return run
 
 
@@ -123,7 +148,12 @@ class FormationProfileAPIView(CapitalDistributionAccessMixin, APIView):
         serializer = EntityScopeSerializer(data=request.query_params)
         serializer.is_valid(raise_exception=True)
         scope = serializer.validated_data
-        entity = self.scoped_entity(request, entity_id=scope["entity"])
+        entity = self.scoped_entity(
+            request,
+            entity_id=scope["entity"],
+            entityfinid_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
+        )
         resolution = resolve_entity_formation(entity)
         saved = EntityFormationProfile.objects.filter(entity=entity, isactive=True).order_by("-version_number", "-id").first()
         return Response(
@@ -177,7 +207,7 @@ class DistributionPolicyListCreateAPIView(CapitalDistributionAccessMixin, APIVie
         if scope.get("entityfinid"):
             policies = policies.filter(entityfin_id=scope["entityfinid"])
         if scope.get("subentity"):
-            policies = policies.filter(subentity_id=scope["subentity"])
+            policies = policies.filter(Q(subentity_id=scope["subentity"]) | Q(subentity__isnull=True))
         return Response({"count": policies.count(), "results": [serialize_policy(row) for row in policies[:100]]})
 
     def post(self, request):
@@ -263,7 +293,14 @@ class DistributionPolicyDetailAPIView(CapitalDistributionAccessMixin, APIView):
     def get(self, request, policy_id):
         serializer = EntityScopeSerializer(data=request.query_params)
         serializer.is_valid(raise_exception=True)
-        policy = self.scoped_policy(request, policy_id=policy_id, entity_id=serializer.validated_data["entity"])
+        scope = serializer.validated_data
+        policy = self.scoped_policy(
+            request,
+            policy_id=policy_id,
+            entity_id=scope["entity"],
+            requested_subentity_id=scope.get("subentity"),
+            allow_global_for_branch=True,
+        )
         return Response(serialize_policy(policy))
 
     def patch(self, request, policy_id):
@@ -359,9 +396,22 @@ class DistributionPolicyCompareAPIView(CapitalDistributionAccessMixin, APIView):
     def get(self, request, policy_id, other_policy_id):
         serializer = EntityScopeSerializer(data=request.query_params)
         serializer.is_valid(raise_exception=True)
-        entity_id = serializer.validated_data["entity"]
-        policy = self.scoped_policy(request, policy_id=policy_id, entity_id=entity_id)
-        other = self.scoped_policy(request, policy_id=other_policy_id, entity_id=entity_id)
+        scope = serializer.validated_data
+        entity_id = scope["entity"]
+        policy = self.scoped_policy(
+            request,
+            policy_id=policy_id,
+            entity_id=entity_id,
+            requested_subentity_id=scope.get("subentity"),
+            allow_global_for_branch=True,
+        )
+        other = self.scoped_policy(
+            request,
+            policy_id=other_policy_id,
+            entity_id=entity_id,
+            requested_subentity_id=scope.get("subentity"),
+            allow_global_for_branch=True,
+        )
         left = serialize_policy(policy)
         right = serialize_policy(other)
         compared_fields = (
@@ -473,7 +523,13 @@ class CapitalDistributionAccountMappingAPIView(CapitalDistributionAccessMixin, A
     def get(self, request):
         serializer = EntityScopeSerializer(data=request.query_params)
         serializer.is_valid(raise_exception=True)
-        entity = self.scoped_entity(request, entity_id=serializer.validated_data["entity"])
+        scope = serializer.validated_data
+        entity = self.scoped_entity(
+            request,
+            entity_id=scope["entity"],
+            entityfinid_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
+        )
         mappings = CapitalDistributionAccountMapping.objects.filter(entity=entity, isactive=True).select_related(
             "ownership", "capital_account__ledger", "current_account__ledger", "drawings_account__ledger"
         )

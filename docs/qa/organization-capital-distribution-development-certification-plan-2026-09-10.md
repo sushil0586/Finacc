@@ -763,7 +763,7 @@ Implementation checkpoint (2026-09-10):
 
 ### Phase 5: Financial Reports And Reconciliation
 
-Status: Local implementation complete; staging accounting certification pending
+Status: Staging accounting, deployed UI, report, export, and reversal lifecycle certified; isolation and year-end gates pending
 
 Development:
 
@@ -836,6 +836,76 @@ Implementation checkpoint (2026-09-10):
   reconcile it independently to journals, Trial Balance, P&L, Balance Sheet, partner
   Ledger Book, year-end controls, and downloaded artifacts. Staging must also confirm
   permission/branch isolation and browser-export equality using production-like data.
+
+Staging certification checkpoint (2026-09-10):
+
+- Configured a controlled Manav-T partnership scope with two QA partners at 60/40,
+  separate current ledgers, an approved policy, and a mapped P&L appropriation ledger.
+- The real API lifecycle calculated INR 1,000.00 as INR 600.00 and INR 400.00,
+  rejected maker self-approval, accepted approval by a separate checker, and posted
+  one four-line journal batch with INR 1,000.00 debit and credit.
+- The appropriation statement reported one reconciled run and zero exceptions. Trial
+  Balance and the three scoped Ledger Books agreed exactly with the posted journal.
+  P&L retained zero operating-profit impact; P&L and Balance Sheet disclosed the
+  posted partner movement independently.
+- Real CSV, XLSX, PDF, and inline-print downloads succeeded for both P&L and Balance
+  Sheet. Content types, attachment/inline disposition, entity/date filenames,
+  appropriation labels, and Balanced reconciliation text were verified from the
+  generated files.
+- Reversal was completed after certification. The run remains as a reconciled audit
+  record with zero effective movement; all three QA ledgers close at zero and both
+  financial reports show zero posted capital-distribution impact.
+- A live browser pass found a production-path defect before certification could be
+  signed off: `AccountBindApi` referenced the retired `/api/financial/accountbind`
+  route, so nginx returned 404 and the workspace's combined load aborted. The client
+  now requests the canonical `/api/financial/accounts/simple-v2` endpoint, with a
+  config regression assertion and updated deterministic Playwright route.
+- Local verification for that correction: 15 focused Angular tests pass. The
+  desktop baseline change was visually reviewed and approved because it contained
+  only the intentional Statement tab. All nine deterministic Chromium checks now
+  pass against the approved baseline.
+- Manav-T's pre-existing Balance Sheet is materially out of balance before the QA
+  run as well as on its posting date. This is an independent source-data/reporting
+  investigation item; the controlled journal itself balanced and reversed to zero.
+- The canonical account-endpoint correction was deployed and verified against
+  `/api/financial/accounts/simple-v2?entity=2`, which returned the complete scoped
+  account list without aborting the workspace load.
+- A second controlled INR 1,000.00 run (`stage-cert-20260910-v2`) repeated the
+  calculate, submit, independent approve, post, report, export, and reversal lifecycle.
+  The posted allocation was INR 600.00 and INR 400.00 with a balanced four-line
+  journal. The reversal was also four lines and balanced at INR 1,000.00 debit and
+  credit.
+- The deployed Chromium suite passes all four live scenarios: formation and mapping
+  readiness, appropriation-statement effective movements and reconciliation, P&L and
+  Balance Sheet partner schedules, partner Ledger Book drilldown, 390x844 responsive
+  layout, and no serious or critical axe findings in the operational workspace.
+- All eight real generated artifacts pass content inspection: CSV, XLSX, PDF, and
+  inline print for P&L and Balance Sheet contain their expected appropriation labels,
+  the Appropriation Reconciliation section, and Balanced status.
+- Post-reversal checks report zero effective debit/credit, zero financial-report
+  capital-distribution impact, and zero debit, credit, and closing balance on both
+  partner ledgers and the appropriation ledger. Both retained runs reconcile with
+  zero exceptions and remain available as immutable audit history.
+- A branch-role audit found that the workspace did not forward the active subentity
+  on formation, policy, mapping, run, and statement reads. This caused the combined
+  workspace load to fail for a correctly restricted branch user. The client now
+  forwards the active branch consistently, while the API validates direct run and
+  policy access against each object's persisted branch instead of trusting only
+  request query parameters. Global policies remain readable as inherited setup in
+  an explicitly allowed branch context; global formation and mapping mutations stay
+  restricted to entity-wide operators.
+- Local branch-isolation evidence: all 36 backend capital-distribution tests pass,
+  including own-branch list/detail/action access, foreign-branch denial, unscoped
+  branch denial, and inherited global-policy reads. The five focused Angular tests
+  verify branch forwarding on every workspace read and mutation. TypeScript passes,
+  and all nine deterministic Chromium scenarios pass, covering lifecycle, mobile,
+  view-only behavior, stale-session recovery, accessibility, errors, and visual
+  baseline stability.
+- Remaining before Phase 5 exit: certify year-end/opening carry-forward and staging
+  branch and permission isolation after deploying the branch-scope correction;
+  complete staging Firefox/WebKit and manual
+  assistive-technology review; and resolve or formally disposition the pre-existing
+  Manav-T Balance Sheet imbalance.
 
 ### Phase 6: Tax Working And Policy Governance
 
@@ -1089,11 +1159,11 @@ Confidence is evidence-based and updated only after each exit gate:
 | Formation resolution and strategy isolation | 35% | 76% | 99% |
 | Ownership and ratio history | 70% | 86% | 97% |
 | Calculation correctness | 25% | 88% | 98% |
-| Posting and reversal | 45% | 90% | 98% |
-| P&L and Balance Sheet presentation | 40% | 91% | 97% |
+| Posting and reversal | 45% | 94% | 98% |
+| P&L and Balance Sheet presentation | 40% | 95% | 97% |
 | Permissions and isolation | 40% | 82% | 98% |
-| UX and accessibility | 20% | 78% | 95% |
-| Wave 1 partnership/LLP appropriation | 30% | 92% | 96%+ |
+| UX and accessibility | 20% | 88% | 95% |
+| Wave 1 partnership/LLP appropriation | 30% | 95% | 96%+ |
 | Wave 1 proprietorship appropriation | 30% | 45% | 96%+ |
 | Later-wave formation engines | 0% | 0% | 96%+ each |
 

@@ -548,6 +548,45 @@ class CapitalDistributionAPITests(CapitalDistributionFixtureMixin, APITestCase):
 
         self.assertEqual(response.status_code, 403)
 
+    def test_branch_view_can_read_shared_setup_only_with_an_allowed_branch_context(self):
+        branch = SubEntity.objects.create(entity=self.entity, subentityname="Branch A")
+        profile = materialize_formation_profile(entity=self.entity, actor=self.maker)
+        policy = create_policy(
+            entity=self.entity,
+            formation_profile=profile,
+            payload=self.policy_payload(self.first, self.second, entityfin=self.entityfin),
+            actor=self.maker,
+        )
+
+        with patch(
+            "capital_distribution.views.EffectivePermissionService.has_scope_access",
+            side_effect=lambda _user, _entity_id, subentity_id=None: subentity_id == branch.id,
+        ):
+            formation = self.client.get(
+                reverse("capital_distribution_api:formation-profile"),
+                {"entity": self.entity.id, "entityfinid": self.entityfin.id, "subentity": branch.id},
+            )
+            self.assertEqual(formation.status_code, 200, formation.data)
+
+            policies = self.client.get(
+                reverse("capital_distribution_api:policy-list"),
+                {"entity": self.entity.id, "entityfinid": self.entityfin.id, "subentity": branch.id},
+            )
+            self.assertEqual(policies.status_code, 200, policies.data)
+            self.assertEqual([row["id"] for row in policies.data["results"]], [policy.id])
+
+            detail = self.client.get(
+                reverse("capital_distribution_api:policy-detail", kwargs={"policy_id": policy.id}),
+                {"entity": self.entity.id, "subentity": branch.id},
+            )
+            self.assertEqual(detail.status_code, 200, detail.data)
+
+            unscoped = self.client.get(
+                reverse("capital_distribution_api:formation-profile"),
+                {"entity": self.entity.id, "entityfinid": self.entityfin.id},
+            )
+            self.assertEqual(unscoped.status_code, 403, unscoped.data)
+
 
 class PartnershipCalculationTests(CapitalDistributionFixtureMixin, TestCase):
     def setUp(self):
@@ -1316,6 +1355,58 @@ class CapitalDistributionPostingLifecycleTests(CapitalDistributionFixtureMixin, 
                 effective_to=None,
                 actor=self.maker,
             )
+
+    @override_settings(ROOT_URLCONF="FA.urls")
+    def test_run_direct_objects_enforce_the_persisted_branch_scope(self):
+        allowed_branch = SubEntity.objects.create(entity=self.entity, subentityname="Allowed Branch")
+        foreign_branch = SubEntity.objects.create(entity=self.entity, subentityname="Foreign Branch")
+        allowed_run = self.calculate(key="allowed-branch-run", subentity=allowed_branch)
+        foreign_run = self.calculate(key="foreign-branch-run", subentity=foreign_branch)
+        client = APIClient()
+        client.force_authenticate(self.maker)
+
+        with (
+            patch("capital_distribution.views.SubscriptionService.assert_entity_access", return_value=None),
+            patch(
+                "capital_distribution.views.EffectivePermissionService.permission_codes_for_user",
+                return_value={"capital_distribution.run.view", "capital_distribution.run.submit"},
+            ),
+            patch(
+                "capital_distribution.views.EffectivePermissionService.has_scope_access",
+                side_effect=lambda _user, _entity_id, subentity_id=None: subentity_id == allowed_branch.id,
+            ),
+        ):
+            listed = client.get(
+                reverse("capital_distribution_api:run-list-calculate"),
+                {"entity": self.entity.id, "entityfinid": self.entityfin.id, "subentity": allowed_branch.id},
+            )
+            self.assertEqual(listed.status_code, 200, listed.data)
+            self.assertEqual([row["id"] for row in listed.data["results"]], [allowed_run.id])
+
+            detail = client.get(
+                reverse("capital_distribution_api:run-detail", kwargs={"run_id": allowed_run.id}),
+                {"entity": self.entity.id},
+            )
+            self.assertEqual(detail.status_code, 200, detail.data)
+
+            submitted = client.post(
+                reverse("capital_distribution_api:run-submit", kwargs={"run_id": allowed_run.id}),
+                {"entity": self.entity.id, "expected_updated_at": allowed_run.updated_at.isoformat()},
+                format="json",
+            )
+            self.assertEqual(submitted.status_code, 200, submitted.data)
+
+            foreign_detail = client.get(
+                reverse("capital_distribution_api:run-detail", kwargs={"run_id": foreign_run.id}),
+                {"entity": self.entity.id},
+            )
+            self.assertEqual(foreign_detail.status_code, 403, foreign_detail.data)
+
+            aggregate = client.get(
+                reverse("capital_distribution_api:run-list-calculate"),
+                {"entity": self.entity.id, "entityfinid": self.entityfin.id},
+            )
+            self.assertEqual(aggregate.status_code, 403, aggregate.data)
 
     @override_settings(ROOT_URLCONF="FA.urls")
     def test_scoped_api_completes_run_lifecycle_and_requires_separate_approver(self):
