@@ -232,6 +232,7 @@ INSTALLED_APPS = [
     "platform_ops.apps.PlatformOpsConfig",
     "bank_reconciliation.apps.BankReconciliationConfig",
     "bank_reco.apps.BankRecoConfig",
+    "capital_distribution.apps.CapitalDistributionConfig",
 ]
 
 INSTALLED_APPS += ['auditlogger']

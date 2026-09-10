@@ -17,6 +17,7 @@ ZERO4 = Decimal("0.0000")
 
 
 class TxnType(models.TextChoices):
+    CAPITAL_DISTRIBUTION = "CAPDIST", "Capital Distribution"
     MANUFACTURING_WORK_ORDER = "MWO", "Manufacturing Work Order"
     SALES = "S", "Sales"
     SALES_CREDIT_NOTE = "SCN", "Sales Credit Note"

@@ -945,6 +945,21 @@ def _profit_loss_export_meta(scope_names, scope, report, settings=None):
     ]
     if scope.get("search"):
         meta_items.append(("Search", scope.get("search")))
+    posted_appropriation = (report.get("capital_distribution") or {}).get("posted_accounting") or {}
+    if posted_appropriation.get("run_count"):
+        meta_items.extend([
+            (
+                "Posted Appropriation",
+                format_financial_hub_amount(
+                    posted_appropriation.get("net_equity_movement") or "0.00",
+                    settings=settings or {},
+                ),
+            ),
+            (
+                "Appropriation Reconciliation",
+                "Balanced" if posted_appropriation.get("balanced") else "Review required",
+            ),
+        ])
     return meta_items
 
 
@@ -3567,6 +3582,21 @@ def _balance_sheet_export_meta(scope_names, scope, report, settings=None):
     ]
     if scope.get("search"):
         meta_items.append(("Search", scope.get("search")))
+    posted_appropriation = (report.get("capital_distribution") or {}).get("posted_accounting") or {}
+    if posted_appropriation.get("run_count"):
+        meta_items.extend([
+            (
+                "Partner Equity Movement",
+                format_financial_hub_amount(
+                    posted_appropriation.get("net_equity_movement") or "0.00",
+                    settings=settings or {},
+                ),
+            ),
+            (
+                "Appropriation Reconciliation",
+                "Balanced" if posted_appropriation.get("balanced") else "Review required",
+            ),
+        ])
     return meta_items
 
 

@@ -194,9 +194,9 @@ class OnboardingFinancialYearSerializer(serializers.ModelSerializer):
         if finstartyear and finendyear:
             start_year = finstartyear.year
             end_year = finendyear.year
-            attrs["desc"] = f"FY {start_year}-{str(end_year)[-2:]}"
-            attrs["year_code"] = f"FY{start_year}-{str(end_year)[-2:]}"
-            attrs["assessment_year_label"] = f"AY{end_year}-{str(end_year + 1)[-2:]}"
+            attrs.setdefault("desc", f"FY {start_year}-{str(end_year)[-2:]}")
+            attrs.setdefault("year_code", f"FY{start_year}-{str(end_year)[-2:]}")
+            attrs.setdefault("assessment_year_label", f"AY{end_year}-{str(end_year + 1)[-2:]}")
         fy_end_date = finendyear.date() if finendyear else None
         is_open_year = (
             attrs.get("period_status", EntityFinancialYear.PeriodStatus.OPEN)
@@ -226,9 +226,9 @@ def _validate_financial_year_rows(value, *, entity=None):
 
         if code in seen_codes:
             first_row = seen_codes[code] + 1
-            row_errors[index]["year_code"] = (
+            row_errors[index]["year_code"] = [
                 f"Financial year {code} duplicates row {first_row}. Use a different date range."
-            )
+            ]
         else:
             seen_codes[code] = index
 
@@ -238,9 +238,9 @@ def _validate_financial_year_rows(value, *, entity=None):
             if row_id:
                 conflict = conflict.exclude(pk=row_id)
             if conflict.exists():
-                row_errors[index]["year_code"] = (
+                row_errors[index]["year_code"] = [
                     f"Financial year {code} already exists for this entity. Use a different date range."
-                )
+                ]
 
     if any(row_errors):
         raise serializers.ValidationError(row_errors)

@@ -29,6 +29,18 @@ STOCK_VALUATION_METHODS = {"fifo", "lifo", "mwa", "wac", "latest"}
 INVENTORY_LABEL = "Inventory (Closing Stock)"
 
 
+def _capital_distribution_disclosure(*, entity_id, entityfin_id, subentity_id, from_date, to_date):
+    from capital_distribution.reporting import build_financial_statement_disclosure
+
+    return build_financial_statement_disclosure(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        period_from=from_date,
+        period_to=to_date,
+    )
+
+
 def _normalize_balance_side(value):
     if value is None:
         return ""
@@ -1021,6 +1033,14 @@ def build_profit_and_loss(
             "accounting_only_notes_included_in_net_profit": True,
         },
     }
+    if include_disclosures:
+        response["capital_distribution"] = _capital_distribution_disclosure(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            from_date=from_date,
+            to_date=to_date,
+        )
 
     if period_by == "year":
         previous_fy = _previous_financial_year(entity_id, entityfin_id, from_date)
@@ -2071,6 +2091,13 @@ def build_balance_sheet(
             "net_profit_source": "profit_loss.book_profit",
         },
     }
+    response["capital_distribution"] = _capital_distribution_disclosure(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        from_date=from_date,
+        to_date=to_date,
+    )
 
     if period_by == "year":
         previous_fy = _previous_financial_year(entity_id, entityfin_id, from_date)

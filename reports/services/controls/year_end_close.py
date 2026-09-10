@@ -199,7 +199,41 @@ def _build_carry_forward_buckets(*, assets_rows: list[dict], liabilities_rows: l
     ]
 
 
-def _build_close_journal_lines(*, snapshot: dict, entity_id: int, opening_policy: dict | None) -> tuple[list[JLInput], list[dict[str, object]], dict[str, object]]:
+def _posted_appropriation_coverage(*, entity_id, entityfin_id, subentity_id, period_from, period_to):
+    from capital_distribution.models import CapitalDistributionLine, CapitalDistributionRun
+
+    runs = list(CapitalDistributionRun.objects.filter(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        status=CapitalDistributionRun.Status.POSTED,
+        isactive=True,
+        period_from__lte=period_to,
+        period_to__gte=period_from,
+    ).prefetch_related("lines").order_by("period_from", "period_to", "id"))
+    if not runs:
+        return None
+    cursor = period_from
+    net_allocation = Decimal("0.00")
+    for run in runs:
+        if run.period_from != cursor or run.period_to > period_to:
+            raise ValidationError({
+                "detail": "Posted capital-distribution runs do not provide complete, non-overlapping financial-year coverage. Correct or reverse the runs before closing the year."
+            })
+        for line in run.lines.all():
+            if line.side == CapitalDistributionLine.Side.CREDIT:
+                net_allocation += line.amount
+            else:
+                net_allocation -= line.amount
+        cursor = run.period_to + date.resolution
+    if cursor <= period_to:
+        raise ValidationError({
+            "detail": "Posted capital-distribution runs do not cover the full financial year. Complete the remaining period before closing the year."
+        })
+    return {"runs": runs, "net_allocation": net_allocation}
+
+
+def _build_close_journal_lines(*, snapshot: dict, entity_id: int, entityfin_id: int, subentity_id: int | None, opening_policy: dict | None) -> tuple[list[JLInput], list[dict[str, object]], dict[str, object]]:
     pnl = snapshot.get("pnl") or {}
     summary = snapshot.get("summary") or {}
     net_profit = Decimal(str(summary.get("net_profit") or 0))
@@ -266,6 +300,15 @@ def _build_close_journal_lines(*, snapshot: dict, entity_id: int, opening_policy
     close_credit_total = sum((line.amount for line in journal_lines if not line.drcr), Decimal("0.00"))
     effective_net_profit = close_debit_total - close_credit_total
 
+    financial_year = snapshot.get("financial_year")
+    appropriation = _posted_appropriation_coverage(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        period_from=_as_date(financial_year.finstartyear),
+        period_to=_as_date(financial_year.finendyear),
+    )
+
     context = opening_adapter.build_context(net_profit=effective_net_profit)
     validation_issues = context.get("validation_issues") or []
     if any(issue.get("severity") == "error" for issue in validation_issues):
@@ -278,6 +321,38 @@ def _build_close_journal_lines(*, snapshot: dict, entity_id: int, opening_policy
 
     equity_targets = context.get("equity_targets") or []
     missing_equity_codes = context.get("missing_equity_codes") or []
+    if appropriation:
+        if appropriation["net_allocation"].quantize(Decimal("0.01")) != effective_net_profit.quantize(Decimal("0.01")):
+            raise ValidationError({
+                "detail": (
+                    "Posted capital-distribution total does not match the closeable book result. "
+                    "Recalculate or reverse the appropriation runs before closing the year."
+                )
+            })
+        code = "PROFIT_LOSS_APPROPRIATION"
+        from posting.models import EntityStaticAccountMap
+        appropriation_mapping = EntityStaticAccountMap.objects.filter(
+            entity_id=entity_id,
+            sub_entity__isnull=True,
+            static_account__code=code,
+            static_account__is_active=True,
+            is_active=True,
+            account__isactive=True,
+            account__ledger__isactive=True,
+            ledger__isactive=True,
+        ).select_related("account__ledger").first()
+        if not appropriation_mapping or not appropriation_mapping.account_id or not appropriation_mapping.ledger_id:
+            raise ValidationError({"detail": "Profit and Loss Appropriation must be mapped before year-end close."})
+        equity_targets = [{
+            "static_account_code": code,
+            "static_account_name": "Profit and Loss Appropriation",
+            "account_id": appropriation_mapping.account_id,
+            "ledger_id": appropriation_mapping.ledger_id,
+            "amount": f"{abs(effective_net_profit):.2f}",
+            "drcr": "credit" if effective_net_profit > 0 else "debit",
+        }]
+        missing_equity_codes = []
+        context["equity_allocation_mode"] = "posted_appropriation_clearance"
     if missing_equity_codes:
         raise ValidationError(
             {
@@ -296,7 +371,7 @@ def _build_close_journal_lines(*, snapshot: dict, entity_id: int, opening_policy
                     continue
                 code = str(target.get("static_account_code") or "").upper()
                 ledger_id = target.get("ledger_id")
-                account_id = StaticAccountService.get_account_id(entity_id, code, required=False) if code else None
+                account_id = target.get("account_id") or (StaticAccountService.get_account_id(entity_id, code, required=False) if code else None)
                 if not account_id and not ledger_id:
                     raise ValidationError({"detail": f"Year-end close could not resolve mapped account for {code or 'equity target'}."})
                 journal_lines.append(
@@ -952,6 +1027,8 @@ def build_year_end_close_execution(
     journal_lines, line_meta, diagnostics = _build_close_journal_lines(
         snapshot=snapshot,
         entity_id=entity_id,
+        entityfin_id=fy.id,
+        subentity_id=subentity_id,
         opening_policy=opening_policy,
     )
 
