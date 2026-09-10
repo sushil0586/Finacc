@@ -248,11 +248,13 @@ class AccountOpeningPostingAdapterTests(TestCase):
             finendyear=timezone.make_aware(datetime(2027, 3, 31, 0, 0, 0)),
             isactive=True,
         )
-        cls.offset_static = StaticAccount.objects.create(
+        cls.offset_static, _ = StaticAccount.objects.update_or_create(
             code=StaticAccountCodes.OPENING_BALANCE_OFFSET,
-            name="Opening Balance Offset",
-            group=StaticAccountGroup.EQUITY,
-            is_active=True,
+            defaults={
+                "name": "Opening Balance Offset",
+                "group": StaticAccountGroup.EQUITY,
+                "is_active": True,
+            },
         )
         cls.offset_head = accountHead.objects.create(
             entity=cls.entity,

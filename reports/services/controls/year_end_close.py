@@ -627,7 +627,7 @@ def _build_close_metadata(*, entity_id: int, fy: EntityFinancialYear, subentity_
 
 
 def _apply_close_stamp(fy: EntityFinancialYear, close_metadata: dict[str, object]) -> None:
-    close_date = datetime.fromisoformat(close_metadata["closed_at"]).date()
+    close_date = _as_date(close_metadata.get("closed_on")) or datetime.fromisoformat(close_metadata["closed_at"]).date()
     metadata = dict(getattr(fy, "metadata", None) or {})
     metadata["year_end_close"] = close_metadata
     fy.metadata = metadata

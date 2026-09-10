@@ -61,6 +61,8 @@ class YearEndCloseExecuteAPIView(YearEndClosePermissionMixin, ScopedEntitlementM
     serializer_class = YearEndCloseScopeSerializer
     subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
     subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
+    required_permission_codes = ("reports.financial_hub.year_end_close.execute",)
+    permission_denied_message = "You do not have permission to execute year-end close."
 
     def post(self, request):
         serializer = self.serializer_class(data=request.data)
@@ -88,6 +90,8 @@ class YearEndCloseRollbackAPIView(YearEndClosePermissionMixin, ScopedEntitlement
     serializer_class = YearEndCloseScopeSerializer
     subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
     subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
+    required_permission_codes = ("reports.financial_hub.year_end_close.rollback",)
+    permission_denied_message = "You do not have permission to roll back year-end close."
 
     def post(self, request):
         serializer = self.serializer_class(data=request.data)

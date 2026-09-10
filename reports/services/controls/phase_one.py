@@ -4,8 +4,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 
+from django.db.models import Count, Q
+
 from entity.models import Entity, EntityFinancialYear, SubEntity
 from financial.profile_access import account_pan
+from gst_reconciliation.models import GstReconciliationItem, GstReconciliationRun
 from payments.models.payment_core import PaymentVoucherHeader
 from reports.gstr1.services.report import Gstr1ReportService
 from reports.gstr3b.services import Gstr3bSummaryService
@@ -424,6 +427,129 @@ def _build_gst_compliance_snapshot(*, entity_id: int, entityfin_id: int | None, 
         }
 
 
+def _build_control_compliance_snapshot(*, entity_id: int, entityfin_id: int | None, subentity_id: int | None) -> dict:
+    """Return a bounded, persisted compliance snapshot for the controls landing page."""
+    base_params = {
+        "entityfinid": entityfin_id,
+        "subentity": subentity_id,
+    }
+    actions = [
+        {
+            "label": "Open GST Reconciliation",
+            "route": "/reports/compliance/gst-exception-dashboard",
+            "params": {**base_params, "tab": 3, "focus": "reconciliation"},
+        },
+        {
+            "label": "Open GST Blockers",
+            "route": "/reports/compliance/gst-exception-dashboard",
+            "params": {**base_params, "tab": 1, "focus": "blockers"},
+        },
+        {
+            "label": "Open Purchase TDS",
+            "route": "/purchasestatutory",
+            "params": {**base_params, "workspace": "overview", "tax_type": "IT_TDS"},
+        },
+        {
+            "label": "Open TCS Workspace",
+            "route": "/tcsstatutory",
+            "params": base_params,
+        },
+    ]
+    if not entityfin_id:
+        return {
+            "status": "review",
+            "status_label": "Review",
+            "summary_cards": [
+                {"label": "GST Reconciliation", "value": "Scope required", "note": "Select a financial year", "tone": "warning"},
+                {"label": "GST Exceptions", "value": "-", "note": "Open the GST workspace for live detail", "tone": "neutral"},
+                {"label": "TDS / TCS", "value": "Open reports", "note": "Use the statutory workspaces for current totals", "tone": "neutral"},
+            ],
+            "actions": actions,
+            "snapshot_source": "persisted_reconciliation",
+        }
+
+    try:
+        runs = GstReconciliationRun.objects.filter(entity_id=entity_id, entityfinid_id=entityfin_id, is_active=True)
+        if subentity_id:
+            runs = runs.filter(subentity_id=subentity_id)
+        latest_run = runs.only("id", "status", "return_period", "updated_at").order_by("-updated_at", "-id").first()
+        if latest_run is None:
+            return {
+                "status": "review",
+                "status_label": "Review",
+                "summary_cards": [
+                    {"label": "GST Reconciliation", "value": "Not run", "note": "Run reconciliation to create a certified snapshot", "tone": "warning"},
+                    {"label": "GST Exceptions", "value": "-", "note": "No persisted reconciliation result", "tone": "neutral"},
+                    {"label": "TDS / TCS", "value": "Open reports", "note": "Use the statutory workspaces for current totals", "tone": "neutral"},
+                ],
+                "actions": actions,
+                "snapshot_source": "persisted_reconciliation",
+            }
+
+        counts = latest_run.items.aggregate(
+            mismatch_count=Count(
+                "id",
+                filter=Q(
+                    match_status__in=[
+                        GstReconciliationItem.MatchStatus.PARTIAL,
+                        GstReconciliationItem.MatchStatus.MISMATCHED,
+                        GstReconciliationItem.MatchStatus.DUPLICATE,
+                    ]
+                ),
+            ),
+            unmatched_count=Count(
+                "id",
+                filter=Q(
+                    match_status__in=[
+                        GstReconciliationItem.MatchStatus.MISSING_IN_BOOKS,
+                        GstReconciliationItem.MatchStatus.MISSING_IN_RETURN,
+                    ]
+                ),
+            ),
+            pending_review_count=Count(
+                "id",
+                filter=Q(
+                    resolution_status__in=[
+                        GstReconciliationItem.ResolutionStatus.PENDING_REVIEW,
+                        GstReconciliationItem.ResolutionStatus.ASSIGNED,
+                        GstReconciliationItem.ResolutionStatus.REOPENED,
+                    ]
+                ),
+            ),
+        )
+        exceptions = int(counts["mismatch_count"] or 0) + int(counts["unmatched_count"] or 0)
+        pending_review = int(counts["pending_review_count"] or 0)
+        is_failed = latest_run.status in {GstReconciliationRun.Status.FAILED, GstReconciliationRun.Status.REJECTED}
+        status = "blocked" if is_failed or exceptions else "review" if pending_review else "ready_to_file"
+        status_label = "Blocked" if status == "blocked" else "Review" if status == "review" else "Ready to File"
+        period = str(latest_run.return_period or "latest period")
+        return {
+            "status": status,
+            "status_label": status_label,
+            "summary_cards": [
+                {"label": "GST Reconciliation", "value": status_label, "note": f"Latest saved run: {period}", "tone": "warning" if status != "ready_to_file" else "neutral"},
+                {"label": "GST Exceptions", "value": exceptions, "note": f"{pending_review} item(s) pending review", "tone": "warning" if exceptions else "neutral"},
+                {"label": "TDS / TCS", "value": "Open reports", "note": "Use the statutory workspaces for current totals", "tone": "neutral"},
+            ],
+            "actions": actions,
+            "snapshot_source": "persisted_reconciliation",
+            "snapshot_run_id": latest_run.id,
+            "snapshot_updated_at": latest_run.updated_at.isoformat() if latest_run.updated_at else None,
+        }
+    except Exception:
+        return {
+            "status": "review",
+            "status_label": "Review",
+            "summary_cards": [
+                {"label": "GST Reconciliation", "value": "Unavailable", "note": "Open the GST workspace to retry", "tone": "warning"},
+                {"label": "GST Exceptions", "value": "-", "note": "Persisted snapshot unavailable", "tone": "neutral"},
+                {"label": "TDS / TCS", "value": "Open reports", "note": "Use the statutory workspaces for current totals", "tone": "neutral"},
+            ],
+            "actions": actions,
+            "snapshot_source": "persisted_reconciliation",
+        }
+
+
 def _control_sections() -> list[dict[str, object]]:
     return [
         {
@@ -625,7 +751,7 @@ def build_phase_one_controls_hub(*, entity_id: int, entityfin_id: int | None = N
     scope_names = _resolve_scope(entity_id, entityfin_id, subentity_id)
     sections = _control_sections()
     opening_policy = resolve_opening_policy(entity_id)
-    gst_compliance = _build_gst_compliance_snapshot(
+    gst_compliance = _build_control_compliance_snapshot(
         entity_id=entity_id,
         entityfin_id=entityfin_id,
         subentity_id=subentity_id,

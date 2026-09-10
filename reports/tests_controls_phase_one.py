@@ -2,7 +2,11 @@ from unittest.mock import patch
 
 from django.test import SimpleTestCase
 
-from reports.services.controls.phase_one import _build_gst_compliance_snapshot, build_phase_one_controls_hub
+from reports.services.controls.phase_one import (
+    _build_control_compliance_snapshot,
+    _build_gst_compliance_snapshot,
+    build_phase_one_controls_hub,
+)
 
 
 class PhaseOneControlsManifestTests(SimpleTestCase):
@@ -77,7 +81,7 @@ class PhaseOneControlsManifestTests(SimpleTestCase):
         self.assertEqual(payload["opening_policy"]["batch_materialization"], "single_batch")
         self.assertGreaterEqual(len(payload["opening_policy_summary"]), 4)
 
-    @patch("reports.services.controls.phase_one._build_gst_compliance_snapshot")
+    @patch("reports.services.controls.phase_one._build_control_compliance_snapshot")
     @patch("reports.services.controls.phase_one._resolve_scope")
     @patch("reports.services.controls.phase_one.resolve_opening_policy")
     def test_compliance_readiness_actions_contract(self, mock_opening_policy, mock_resolve, mock_gst_snapshot):
@@ -127,6 +131,31 @@ class PhaseOneControlsManifestTests(SimpleTestCase):
         self.assertEqual(actions[0]["params"]["focus"], "blockers")
         self.assertEqual(actions[1]["params"]["workspace_status"], "COMPUTED_PENDING_COLLECTION")
         self.assertEqual(actions[2]["params"]["readiness_status"], "blocked")
+
+    @patch("reports.services.controls.phase_one.GstReconciliationRun.objects.filter")
+    def test_control_compliance_snapshot_uses_bounded_persisted_run(self, mock_run_filter):
+        run = type(
+            "Run",
+            (),
+            {
+                "id": 91,
+                "status": "IN_REVIEW",
+                "return_period": "032027",
+                "updated_at": None,
+                "items": type(
+                    "Items",
+                    (),
+                    {"aggregate": lambda self, **kwargs: {"mismatch_count": 2, "unmatched_count": 1, "pending_review_count": 4}},
+                )(),
+            },
+        )()
+        mock_run_filter.return_value.only.return_value.order_by.return_value.first.return_value = run
+
+        payload = _build_control_compliance_snapshot(entity_id=58, entityfin_id=51, subentity_id=None)
+
+        self.assertEqual(payload["status"], "blocked")
+        self.assertEqual(payload["summary_cards"][1]["value"], 3)
+        self.assertEqual(payload["snapshot_run_id"], 91)
 
     @patch("reports.services.controls.phase_one._tcs_counts")
     @patch("reports.services.controls.phase_one._tds_counts")

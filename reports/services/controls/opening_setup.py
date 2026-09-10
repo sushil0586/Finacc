@@ -581,7 +581,9 @@ def apply_posting_setup(*, entity_id: int, entityfin_id: int | None = None, sube
             }
         )
     proposals = _merge_user_targets(proposals, target_overrides)
-    if not any(row.get("enabled", True) for row in proposals):
+    enabled_proposals = [row for row in proposals if row.get("enabled", True)]
+    skipped_codes = sorted(_safe_text(row.get("code")) for row in proposals if not row.get("enabled", True))
+    if not enabled_proposals:
         raise ValidationError({"targets": "At least one provisioning target must remain enabled."})
     applied: list[dict[str, Any]] = []
     created_static_accounts = 0
@@ -591,7 +593,7 @@ def apply_posting_setup(*, entity_id: int, entityfin_id: int | None = None, sube
     touched_codes: set[str] = set()
 
     ownership_index = {row.get("id"): row for row in constitution.get("ownership_rows") or []}
-    for proposal in proposals:
+    for proposal in enabled_proposals:
         row = ownership_index.get(proposal.get("ownership_id"))
         outcome = _apply_target(
             entity=entity,
@@ -624,6 +626,7 @@ def apply_posting_setup(*, entity_id: int, entityfin_id: int | None = None, sube
             "created_mappings": created_mappings,
             "updated_mappings": updated_mappings,
             "touched_codes": sorted(touched_codes),
+            "skipped_codes": skipped_codes,
             "provisioned": applied,
             "constitution": constitution,
             "validation_issues": validation_issues,

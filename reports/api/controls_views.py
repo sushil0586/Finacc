@@ -19,12 +19,12 @@ class ControlsPermissionMixin:
     required_permission_codes: tuple[str, ...] = ()
     permission_denied_message = "You do not have permission to access this controls workspace."
 
-    def enforce_report_permission(self, request, *, entity_id: int):
+    def enforce_report_permission(self, request, *, entity_id: int, required_permissions=None, message=None):
         assert_any_report_permission(
             user=request.user,
             entity_id=entity_id,
-            required_permissions=self.required_permission_codes,
-            message=self.permission_denied_message,
+            required_permissions=required_permissions or self.required_permission_codes,
+            message=message or self.permission_denied_message,
         )
 
 
@@ -99,6 +99,32 @@ class PhaseOneOpeningPolicyAPIView(ControlsPermissionMixin, ScopedEntitlementMix
             }
         )
 
+    def patch(self, request):
+        serializer = self.serializer_class(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        entity_id = serializer.validated_data["entity"]
+        self.enforce_scope(request, entity_id=entity_id)
+        self.enforce_report_permission(
+            request,
+            entity_id=entity_id,
+            required_permissions=("reports.financial_hub.controls_phase_one.update_policy",),
+            message="You do not have permission to update opening policy controls.",
+        )
+
+        updates = {key: value for key, value in serializer.validated_data.items() if key != "entity"}
+        opening_policy = update_opening_policy(
+            entity_id=entity_id,
+            updates=updates,
+            created_by=getattr(request, "user", None),
+        )
+        return Response(
+            {
+                "entity": entity_id,
+                "opening_policy": opening_policy,
+                "summary": summarize_opening_policy(opening_policy),
+            }
+        )
+
 
 class OpeningPreviewScopeSerializer(serializers.Serializer):
     entity = serializers.IntegerField()
@@ -133,28 +159,6 @@ class PhaseOneOpeningPreviewAPIView(ControlsPermissionMixin, ScopedEntitlementMi
             )
         )
 
-    def patch(self, request):
-        serializer = self.serializer_class(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        entity_id = serializer.validated_data["entity"]
-        self.enforce_scope(request, entity_id=entity_id)
-        self.enforce_report_permission(request, entity_id=entity_id)
-
-        updates = {key: value for key, value in serializer.validated_data.items() if key != "entity"}
-        opening_policy = update_opening_policy(
-            entity_id=entity_id,
-            updates=updates,
-            created_by=getattr(request, "user", None),
-        )
-        return Response(
-            {
-                "entity": entity_id,
-                "opening_policy": opening_policy,
-                "summary": summarize_opening_policy(opening_policy),
-            }
-        )
-
-
 class OpeningGenerationSerializer(serializers.Serializer):
     entity = serializers.IntegerField()
     entityfinid = serializers.IntegerField(required=False, allow_null=True)
@@ -166,7 +170,7 @@ class PhaseOneOpeningGenerateAPIView(ControlsPermissionMixin, ScopedEntitlementM
     serializer_class = OpeningGenerationSerializer
     subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
     subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
-    required_permission_codes = ("reports.financial_hub.controls_phase_one.view",)
+    required_permission_codes = ("reports.financial_hub.controls_phase_one.generate_opening",)
     permission_denied_message = "You do not have permission to generate opening balances."
 
     def post(self, request):
@@ -195,7 +199,7 @@ class PhaseOneOpeningRollbackAPIView(ControlsPermissionMixin, ScopedEntitlementM
     serializer_class = OpeningGenerationSerializer
     subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
     subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
-    required_permission_codes = ("reports.financial_hub.controls_phase_one.view",)
+    required_permission_codes = ("reports.financial_hub.controls_phase_one.rollback_opening",)
     permission_denied_message = "You do not have permission to roll back opening balances."
 
     def post(self, request):
@@ -271,7 +275,7 @@ class PhaseOnePostingSetupApplyAPIView(ControlsPermissionMixin, ScopedEntitlemen
     serializer_class = PostingSetupApplySerializer
     subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
     subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
-    required_permission_codes = ("reports.financial_hub.posting_setup.view",)
+    required_permission_codes = ("reports.financial_hub.posting_setup.apply",)
     permission_denied_message = "You do not have permission to apply posting setup."
 
     def post(self, request):

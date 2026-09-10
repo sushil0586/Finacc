@@ -76,6 +76,50 @@ class ControlsApiPermissionTests(APITestCase):
         response = self.client.post(reverse("reports_api:controls-phase-one-opening-rollback"), self.scope_params, format="json")
         self.assertEqual(response.status_code, 403)
 
+    def test_view_only_permissions_deny_every_control_mutation(self):
+        mutation_requests = (
+            ("patch", "reports_api:controls-phase-one-opening-policy", {"entity": self.entity.id, "opening_mode": "hybrid"}),
+            ("post", "reports_api:controls-phase-one-opening-generate", self.scope_params),
+            ("post", "reports_api:controls-phase-one-opening-rollback", self.scope_params),
+            ("post", "reports_api:controls-posting-setup-apply", self.scope_params),
+            ("post", "reports_api:controls-year-end-close-execute", self.scope_params),
+            ("post", "reports_api:controls-year-end-close-rollback", self.scope_params),
+        )
+
+        for method, route_name, payload in mutation_requests:
+            with self.subTest(route=route_name):
+                response = getattr(self.client, method)(reverse(route_name), payload, format="json")
+                self.assertEqual(response.status_code, 403)
+
+    @patch("reports.api.controls_views.update_opening_policy")
+    def test_opening_policy_patch_uses_action_permission_and_updates_policy(self, mock_update):
+        mock_update.return_value = {
+            "opening_mode": "hybrid",
+            "batch_materialization": "hybrid",
+            "opening_posting_date_strategy": "first_day_of_new_year",
+            "require_closed_source_year": True,
+            "allow_partial_opening": False,
+            "carry_forward": {},
+            "reset": {},
+            "grouped_sections": [],
+        }
+        with patch(
+            "reports.api.report_permissions.EffectivePermissionService.permission_codes_for_user",
+            return_value=["reports.financial_hub.controls_phase_one.update_policy"],
+        ):
+            response = self.client.patch(
+                reverse("reports_api:controls-phase-one-opening-policy"),
+                {"entity": self.entity.id, "opening_mode": "hybrid"},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        mock_update.assert_called_once_with(
+            entity_id=self.entity.id,
+            updates={"opening_mode": "hybrid"},
+            created_by=self.user,
+        )
+
     @patch("reports.api.controls_views.build_phase_one_controls_hub")
     def test_phase_one_hub_exposes_compliance_readiness_actions(self, mock_build_hub):
         mock_build_hub.return_value = {
