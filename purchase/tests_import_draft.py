@@ -34,6 +34,13 @@ class PurchaseInvoiceImportDraftTests(APITestCase):
         self.client.force_authenticate(user=self.user)
         cache.clear()
 
+        permission_patch = patch(
+            "purchase.views.purchase_invoice_import.require_purchase_request_permission",
+            return_value=None,
+        )
+        permission_patch.start()
+        self.addCleanup(permission_patch.stop)
+
         self.country = Country.objects.create(countryname="India", countrycode="IN")
         self.state = State.objects.create(statename="Maharashtra", statecode="27", country=self.country)
         self.district = District.objects.create(districtname="District", districtcode="DT", state=self.state)
@@ -126,6 +133,12 @@ class PurchaseInvoiceImportDraftTests(APITestCase):
             purchase_behavior=ProductPurchaseBehavior.INVENTORY,
             purchase_account=self.vendor,
         )
+        self.permission_patch = patch(
+            "purchase.views.purchase_invoice_import.require_purchase_request_permission",
+            return_value=None,
+        )
+        self.permission_patch.start()
+        self.addCleanup(self.permission_patch.stop)
 
     def _scope(self) -> dict[str, object]:
         return {

@@ -246,7 +246,7 @@ class GstReconciliationPhaseOneTests(TestCase):
             entityfinid=self.entityfin,
             subentity=self.subentity,
             vendor_name="Import Vendor",
-            vendor_gstin="99IMPORT1234Z9Z9",
+            vendor_gstin="99ABCDE1234F1Z5",
             supply_category=PurchaseInvoiceHeader.SupplyCategory.IMPORT_GOODS,
             supplier_invoice_number="PINV-IMP-1",
             supplier_invoice_date=datetime(2025, 4, 13).date(),

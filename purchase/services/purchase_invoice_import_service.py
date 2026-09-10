@@ -187,10 +187,23 @@ class PurchaseInvoiceImportService:
         parsed_lines: list[dict[str, Any]] = []
         candidate_lines = [line.strip() for line in extracted_text.splitlines() if line.strip()]
         for raw_line in candidate_lines:
+            if cls._is_labeled_header_line(raw_line):
+                continue
             parsed = cls._parse_candidate_line(raw_line, len(parsed_lines) + 1)
             if parsed:
                 parsed_lines.append(parsed)
         return parsed_lines[:25]
+
+    @classmethod
+    def _is_labeled_header_line(cls, raw_line: str) -> bool:
+        return bool(
+            re.match(
+                r"^\s*(?:vendor|supplier|party|gstin|invoice\s+(?:no|number|date|total)|"
+                r"bill\s+(?:no|number|date)|date|grand\s+total|net\s+amount|total\s+amount)\s*[:\-]",
+                raw_line,
+                flags=re.IGNORECASE,
+            )
+        )
 
     @classmethod
     def _parse_candidate_line(cls, raw_line: str, line_no: int) -> dict[str, Any] | None:
