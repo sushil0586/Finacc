@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
+from io import BytesIO
+from threading import Barrier
+from unittest import skipUnless
 from unittest.mock import patch
 
 from django.core.exceptions import ValidationError
-from django.test import TestCase, override_settings
+from django.db import close_old_connections, connection, connections
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.test import APIClient, APITestCase
+from openpyxl import load_workbook
 
 from Authentication.models import User
 from entity.models import (
@@ -24,15 +30,18 @@ from financial.models import Ledger, account
 from posting.models import EntityStaticAccountMap, JournalLine, StaticAccount, StaticAccountGroup, TxnType
 from reports.services.controls.opening_generation import _build_opening_lines
 from reports.services.controls.year_end_close import _build_close_journal_lines, _posted_appropriation_coverage
+from core.concurrency import StaleObjectConflict
 
 from .models import (
     CapitalDistributionAuditEvent,
     CapitalDistributionAccountMapping,
     CapitalDistributionLine,
     CapitalDistributionRun,
+    CapitalDistributionTaxWorking,
     DistributionPolicyVersion,
     EntityFormationProfile,
     FormationType,
+    TaxPolicyVersion,
 )
 from .calculations import calculate_segment
 from .reporting import build_appropriation_statement
@@ -49,6 +58,29 @@ from .services import (
     reverse_distribution_run,
     submit_distribution_run,
     upsert_account_mapping,
+)
+from .tax_services import (
+    approve_tax_policy,
+    create_tax_policy,
+    reject_tax_policy,
+    submit_tax_policy,
+    supersede_tax_policy,
+    update_draft_tax_policy,
+)
+from .tax_formulas import (
+    CAPITAL_INTEREST_FORMULA,
+    REMUNERATION_FORMULA,
+    allocate_pro_rata,
+    evaluate_statutory_formula,
+    partnership_remuneration_ceiling,
+)
+from .tax_working_services import (
+    approve_tax_working,
+    calculate_tax_working,
+    override_tax_working_line,
+    reproduce_tax_working,
+    reverse_tax_working,
+    submit_tax_working,
 )
 
 
@@ -1684,3 +1716,1105 @@ class CapitalDistributionPostingLifecycleTests(CapitalDistributionFixtureMixin, 
             self.assertEqual(reversed_run.status_code, 200, reversed_run.data)
             self.assertEqual(reversed_run.data["status"], CapitalDistributionRun.Status.REVERSED)
             self.assertIsNotNone(reversed_run.data["reversal_batch"])
+
+
+class TaxPolicyGovernanceTests(CapitalDistributionFixtureMixin, TestCase):
+    def setUp(self):
+        self.maker = self.make_user("tax-policy-maker")
+        self.approver = self.make_user("tax-policy-approver")
+        self.entity, self.first, self.second = self.make_partnership(
+            name="Tax Policy Partnership",
+            owner=self.maker,
+        )
+        self.entityfin = EntityFinancialYear.objects.create(
+            entity=self.entity,
+            desc="FY 2026-27",
+            year_code="FY2026-27",
+            finstartyear=aware(2026, 4, 1),
+            finendyear=aware(2027, 3, 31),
+            createdby=self.maker,
+        )
+        self.profile = materialize_formation_profile(entity=self.entity, actor=self.maker)
+
+    def payload(self, **overrides):
+        payload = {
+            "entityfin": self.entityfin,
+            "tax_type": "income_tax",
+            "policy_code": "IN_PARTNERSHIP_APPROPRIATION",
+            "jurisdiction_country": "in",
+            "jurisdiction_state": "",
+            "effective_from": date(2026, 4, 1),
+            "effective_to": date(2027, 3, 31),
+            "statutory_reference": "Income-tax Act, section 40(b)",
+            "source_url": "https://incometax.gov.in/",
+            "source_published_on": date(2026, 4, 1),
+            "configuration": {
+                "currency": "INR",
+                "rounding": "half_up",
+                "rules": [
+                    {
+                        "component": "remuneration",
+                        "treatment": "capped",
+                        "formula_code": "india_partnership_remuneration_v1",
+                        "conditions": {"deed_authorized": True, "working_partners_only": True},
+                    },
+                    {
+                        "component": "capital_interest",
+                        "treatment": "capped",
+                        "formula_code": "india_partnership_interest_v1",
+                        "conditions": {"deed_authorized": True},
+                    },
+                    {
+                        "component": "drawing_interest",
+                        "treatment": "informational",
+                    },
+                ],
+            },
+            "notes": "Entity tax working policy",
+        }
+        payload.update(overrides)
+        return payload
+
+    def create(self, **overrides):
+        return create_tax_policy(
+            entity=self.entity,
+            formation_profile=self.profile,
+            payload=self.payload(**overrides),
+            actor=self.maker,
+        )
+
+    def test_lifecycle_normalizes_scope_and_keeps_complete_audit_snapshots(self):
+        policy = self.create()
+        self.assertEqual(policy.policy_code, "in_partnership_appropriation")
+        self.assertEqual(policy.jurisdiction_country, "IN")
+
+        policy = submit_tax_policy(policy=policy, actor=self.maker)
+        policy = approve_tax_policy(policy=policy, actor=self.approver)
+
+        self.assertEqual(policy.status, TaxPolicyVersion.Status.APPROVED)
+        events = list(policy.audit_events.order_by("created_at", "id"))
+        self.assertEqual(
+            [event.action for event in events],
+            ["tax_policy_created", "tax_policy_submitted", "tax_policy_approved"],
+        )
+        self.assertEqual(events[-1].after_state["configuration"], policy.configuration)
+        self.assertEqual(events[-1].after_state["statutory_reference"], policy.statutory_reference)
+
+    def test_maker_cannot_approve_and_approved_policy_cannot_be_edited(self):
+        policy = submit_tax_policy(policy=self.create(), actor=self.maker)
+        with self.assertRaises(ValidationError):
+            approve_tax_policy(policy=policy, actor=self.maker)
+        policy = approve_tax_policy(policy=policy, actor=self.approver)
+        with self.assertRaises(ValidationError):
+            update_draft_tax_policy(
+                policy=policy,
+                payload={"notes": "Attempted mutation"},
+                actor=self.maker,
+            )
+
+    def test_invalid_and_duplicate_component_rules_are_rejected(self):
+        with self.assertRaises(ValidationError):
+            self.create(configuration={
+                "currency": "INR",
+                "rules": [
+                    {"component": "capital_interest", "treatment": "capped", "max_rate": "12"},
+                    {"component": "capital_interest", "treatment": "allowed"},
+                ],
+            })
+        with self.assertRaises(ValidationError):
+            self.create(configuration={
+                "currency": "INR",
+                "rules": [{"component": "remuneration", "treatment": "capped"}],
+            })
+
+    def test_incomplete_policy_cannot_be_submitted(self):
+        policy = self.create(configuration={"currency": "INR", "rules": []})
+        with self.assertRaises(ValidationError):
+            submit_tax_policy(policy=policy, actor=self.maker)
+
+    def test_statutory_formula_policy_requires_explicit_eligibility_confirmations(self):
+        configuration = self.payload()["configuration"]
+        configuration["rules"][0]["conditions"] = {"deed_authorized": True}
+        policy = self.create(configuration=configuration)
+
+        with self.assertRaises(ValidationError) as raised:
+            submit_tax_policy(policy=policy, actor=self.maker)
+
+        self.assertIn("rules[0].conditions", raised.exception.message_dict)
+
+    def test_replacement_requires_prior_policy_to_be_superseded(self):
+        original = approve_tax_policy(
+            policy=submit_tax_policy(policy=self.create(), actor=self.maker),
+            actor=self.approver,
+        )
+        replacement = self.create(notes="Replacement policy")
+        replacement = submit_tax_policy(policy=replacement, actor=self.maker)
+        with self.assertRaises(ValidationError):
+            approve_tax_policy(policy=replacement, actor=self.approver)
+
+        original = supersede_tax_policy(
+            policy=original,
+            actor=self.approver,
+            reason="Replaced by amended statutory policy",
+        )
+        replacement = approve_tax_policy(policy=replacement, actor=self.approver)
+        self.assertEqual(original.status, TaxPolicyVersion.Status.SUPERSEDED)
+        self.assertEqual(replacement.status, TaxPolicyVersion.Status.APPROVED)
+        self.assertEqual(replacement.version_number, 2)
+
+    def test_rejection_requires_reason_and_preserves_frozen_submission(self):
+        policy = submit_tax_policy(policy=self.create(), actor=self.maker)
+        submitted_configuration = policy.configuration.copy()
+        with self.assertRaises(ValidationError):
+            reject_tax_policy(policy=policy, actor=self.approver, reason="")
+        policy = reject_tax_policy(policy=policy, actor=self.approver, reason="Source superseded")
+        self.assertEqual(policy.status, TaxPolicyVersion.Status.REJECTED)
+        self.assertEqual(policy.configuration, submitted_configuration)
+
+    def test_stale_draft_update_is_rejected(self):
+        policy = self.create()
+        stale_timestamp = policy.updated_at
+        policy = update_draft_tax_policy(
+            policy=policy,
+            payload={"notes": "First editor"},
+            actor=self.maker,
+            expected_updated_at=stale_timestamp,
+        )
+        with self.assertRaises(StaleObjectConflict):
+            update_draft_tax_policy(
+                policy=policy,
+                payload={"notes": "Stale editor"},
+                actor=self.maker,
+                expected_updated_at=stale_timestamp,
+            )
+
+
+@override_settings(ROOT_URLCONF="FA.urls", AUTH_PASSWORD_VALIDATORS=[])
+class TaxPolicyGovernanceAPITests(CapitalDistributionFixtureMixin, APITestCase):
+    def setUp(self):
+        self.maker = self.make_user("tax-policy-api-maker")
+        self.approver = self.make_user("tax-policy-api-approver")
+        self.entity, _, _ = self.make_partnership(name="Tax Policy API Partnership", owner=self.maker)
+        self.entityfin = EntityFinancialYear.objects.create(
+            entity=self.entity,
+            desc="FY 2026-27",
+            year_code="FY2026-27",
+            finstartyear=aware(2026, 4, 1),
+            finendyear=aware(2027, 3, 31),
+            createdby=self.maker,
+        )
+        self.profile = materialize_formation_profile(entity=self.entity, actor=self.maker)
+        self.client.force_authenticate(self.maker)
+        self.subscription_patch = patch(
+            "capital_distribution.views.SubscriptionService.assert_entity_access",
+            return_value=None,
+        )
+        self.permission_patch = patch(
+            "capital_distribution.views.EffectivePermissionService.permission_codes_for_user",
+            return_value={
+                "capital_distribution.tax_policy.view",
+                "capital_distribution.tax_policy.manage",
+                "capital_distribution.tax_policy.submit",
+                "capital_distribution.tax_policy.approve",
+            },
+        )
+        self.subscription_patch.start()
+        self.permission_patch.start()
+        self.addCleanup(self.subscription_patch.stop)
+        self.addCleanup(self.permission_patch.stop)
+
+    def request_payload(self):
+        return {
+            "entity": self.entity.id,
+            "entityfinid": self.entityfin.id,
+            "formation_profile": self.profile.id,
+            "tax_type": "income_tax",
+            "policy_code": "in_partnership_appropriation",
+            "jurisdiction_country": "IN",
+            "jurisdiction_state": "",
+            "effective_from": "2026-04-01",
+            "effective_to": "2027-03-31",
+            "statutory_reference": "Income-tax Act, section 40(b)",
+            "source_url": "https://incometax.gov.in/",
+            "configuration": {
+                "currency": "INR",
+                "rounding": "half_up",
+                "rules": [{
+                    "component": "capital_interest",
+                    "treatment": "capped",
+                    "max_rate": "12",
+                }],
+            },
+        }
+
+    def test_api_create_list_detail_and_maker_checker_lifecycle(self):
+        created = self.client.post(
+            reverse("capital_distribution_api:tax-policy-list"),
+            self.request_payload(),
+            format="json",
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+
+        listed = self.client.get(
+            reverse("capital_distribution_api:tax-policy-list"),
+            {"entity": self.entity.id, "entityfinid": self.entityfin.id},
+        )
+        self.assertEqual(listed.status_code, 200, listed.data)
+        self.assertEqual(listed.data["count"], 1)
+
+        detail = self.client.get(
+            reverse("capital_distribution_api:tax-policy-detail", kwargs={"tax_policy_id": created.data["id"]}),
+            {"entity": self.entity.id},
+        )
+        self.assertEqual(detail.status_code, 200, detail.data)
+
+        submitted = self.client.post(
+            reverse("capital_distribution_api:tax-policy-submit", kwargs={"tax_policy_id": created.data["id"]}),
+            {"entity": self.entity.id, "expected_updated_at": created.data["updated_at"]},
+            format="json",
+        )
+        self.assertEqual(submitted.status_code, 200, submitted.data)
+
+        self_approval = self.client.post(
+            reverse("capital_distribution_api:tax-policy-approve", kwargs={"tax_policy_id": created.data["id"]}),
+            {"entity": self.entity.id, "expected_updated_at": submitted.data["updated_at"]},
+            format="json",
+        )
+        self.assertEqual(self_approval.status_code, 400, self_approval.data)
+
+        self.client.force_authenticate(self.approver)
+        approved = self.client.post(
+            reverse("capital_distribution_api:tax-policy-approve", kwargs={"tax_policy_id": created.data["id"]}),
+            {"entity": self.entity.id, "expected_updated_at": submitted.data["updated_at"]},
+            format="json",
+        )
+        self.assertEqual(approved.status_code, 200, approved.data)
+        self.assertEqual(approved.data["status"], TaxPolicyVersion.Status.APPROVED)
+
+    def test_api_rejects_branch_scope_and_missing_permission(self):
+        branch = SubEntity.objects.create(
+            entity=self.entity,
+            subentityname="Branch A",
+        )
+        branch_response = self.client.get(
+            reverse("capital_distribution_api:tax-policy-list"),
+            {"entity": self.entity.id, "subentity": branch.id},
+        )
+        self.assertEqual(branch_response.status_code, 400, branch_response.data)
+
+        with patch(
+            "capital_distribution.views.EffectivePermissionService.permission_codes_for_user",
+            return_value=set(),
+        ):
+            denied = self.client.get(
+                reverse("capital_distribution_api:tax-policy-list"),
+                {"entity": self.entity.id},
+            )
+        self.assertEqual(denied.status_code, 403, denied.data)
+
+
+class PartnershipStatutoryFormulaTests(TestCase):
+    remuneration_rule = {
+        "component": "remuneration",
+        "treatment": "capped",
+        "formula_code": REMUNERATION_FORMULA,
+        "conditions": {"deed_authorized": True, "working_partners_only": True},
+    }
+
+    def test_remuneration_ceiling_golden_boundaries(self):
+        cases = (
+            ("-1", "300000"),
+            ("0", "300000"),
+            ("333333.33", "300000"),
+            ("600000", "540000"),
+            ("600000.01", "540000.006"),
+            ("1000000", "780000"),
+        )
+        for book_profit, expected in cases:
+            with self.subTest(book_profit=book_profit):
+                self.assertEqual(partnership_remuneration_ceiling(Decimal(book_profit)), Decimal(expected))
+
+    def test_aggregate_remuneration_is_allocated_exactly_and_deterministically(self):
+        rows = [
+            {"source_line": 20, "book_amount": "100.00"},
+            {"source_line": 10, "book_amount": "100.00"},
+            {"source_line": 30, "book_amount": "100.00"},
+        ]
+        allocation = allocate_pro_rata(Decimal("100.00"), rows, Decimal("0.01"), ROUND_HALF_UP)
+        self.assertEqual(allocation, {10: Decimal("33.34"), 20: Decimal("33.33"), 30: Decimal("33.33")})
+        self.assertEqual(sum(allocation.values()), Decimal("100.00"))
+
+        boundary_context = {
+            "statutory_book_profit": "600000.01",
+            "aggregate_book_remuneration": "999999",
+            "remuneration_lines": [{"source_line": 1, "book_amount": "999999"}],
+        }
+        self.assertEqual(
+            evaluate_statutory_formula(
+                source={"source_line": 1, "component_type": "remuneration", "formula_context": boundary_context},
+                rule=self.remuneration_rule,
+                quantum=Decimal("0.01"),
+                rounding_mode=ROUND_HALF_UP,
+            ),
+            Decimal("540000.01"),
+        )
+
+    def test_remuneration_uses_aggregate_actual_and_requires_eligibility(self):
+        context = {
+            "statutory_book_profit": "600000",
+            "aggregate_book_remuneration": "600000",
+            "remuneration_lines": [
+                {"source_line": 1, "book_amount": "400000"},
+                {"source_line": 2, "book_amount": "200000"},
+            ],
+        }
+        first = evaluate_statutory_formula(
+            source={"source_line": 1, "component_type": "remuneration", "formula_context": context},
+            rule=self.remuneration_rule,
+            quantum=Decimal("0.01"),
+            rounding_mode=ROUND_HALF_UP,
+        )
+        second = evaluate_statutory_formula(
+            source={"source_line": 2, "component_type": "remuneration", "formula_context": context},
+            rule=self.remuneration_rule,
+            quantum=Decimal("0.01"),
+            rounding_mode=ROUND_HALF_UP,
+        )
+        self.assertEqual((first, second), (Decimal("360000.00"), Decimal("180000.00")))
+        with self.assertRaises(ValidationError):
+            evaluate_statutory_formula(
+                source={"source_line": 1, "component_type": "remuneration", "formula_context": context},
+                rule={**self.remuneration_rule, "conditions": {"deed_authorized": True}},
+                quantum=Decimal("0.01"),
+                rounding_mode=ROUND_HALF_UP,
+            )
+
+    def test_interest_cap_is_twelve_percent_and_prorated_from_frozen_fraction(self):
+        rule = {
+            "component": "capital_interest",
+            "treatment": "capped",
+            "formula_code": CAPITAL_INTEREST_FORMULA,
+            "conditions": {"deed_authorized": True},
+        }
+        source = {
+            "source_line": 1,
+            "component_type": "capital_interest",
+            "basis_amount": "100000",
+            "explanation": {"year_fraction": "0.5"},
+        }
+        self.assertEqual(
+            evaluate_statutory_formula(
+                source=source,
+                rule=rule,
+                quantum=Decimal("0.01"),
+                rounding_mode=ROUND_HALF_UP,
+            ),
+            Decimal("6000.000"),
+        )
+        with self.assertRaises(ValidationError):
+            evaluate_statutory_formula(
+                source=source,
+                rule={**rule, "conditions": {}},
+                quantum=Decimal("0.01"),
+                rounding_mode=ROUND_HALF_UP,
+            )
+
+
+class TaxWorkingLifecycleTests(CapitalDistributionFixtureMixin, TestCase):
+    make_account = CapitalDistributionPostingLifecycleTests.make_account
+    calculate = CapitalDistributionPostingLifecycleTests.calculate
+    post_run = CapitalDistributionPostingLifecycleTests.post_run
+
+    def setUp(self):
+        CapitalDistributionPostingLifecycleTests.setUp(self)
+
+    def make_tax_policy(
+        self, run, *, actor=None, approver=None, rule_overrides=None, effective_from=None, policy_code=None
+    ):
+        actor = actor or self.maker
+        approver = approver or self.approver
+        rule_overrides = rule_overrides or {}
+        components = sorted(set(run.lines.values_list("component_type", flat=True)))
+        rules = []
+        for component in components:
+            rule = {"component": component, "treatment": "allowed"}
+            rule.update(rule_overrides.get(component, {}))
+            rules.append(rule)
+        policy = create_tax_policy(
+            entity=self.entity,
+            formation_profile=self.profile,
+            payload={
+                "entityfin": self.entityfin,
+                "tax_type": "income_tax",
+                "policy_code": policy_code or f"tax-working-certification-{run.id}",
+                "jurisdiction_country": "IN",
+                "effective_from": effective_from or run.period_from,
+                "effective_to": run.period_to,
+                "statutory_reference": "Governed test policy",
+                "configuration": {"currency": "INR", "rounding": "half_up", "rules": rules},
+            },
+            actor=actor,
+        )
+        policy = submit_tax_policy(policy=policy, actor=actor)
+        return approve_tax_policy(policy=policy, actor=approver)
+
+    def test_calculation_freezes_sources_reconciles_and_never_posts(self):
+        run = self.post_run(key="tax-working-book-run")
+        first_component = run.lines.order_by("id").values_list("component_type", flat=True).first()
+        policy = self.make_tax_policy(run, rule_overrides={first_component: {"treatment": "disallowed"}})
+        journals_before = JournalLine.objects.count()
+
+        working = calculate_tax_working(
+            run=run,
+            tax_policy=policy,
+            idempotency_key="tax-working-1",
+            actor=self.maker,
+        )
+
+        self.assertEqual(working.book_amount, working.allowable_amount + working.disallowed_amount)
+        self.assertGreater(working.disallowed_amount, Decimal("0"))
+        self.assertEqual(working.source_snapshot["run_calculation_hash"], run.calculation_hash)
+        self.assertEqual(working.policy_snapshot["version_number"], policy.version_number)
+        self.assertTrue(reproduce_tax_working(working)["matches"])
+        self.assertEqual(JournalLine.objects.count(), journals_before)
+        duplicate = calculate_tax_working(
+            run=run,
+            tax_policy=policy,
+            idempotency_key="tax-working-1",
+            actor=self.maker,
+        )
+        self.assertEqual(duplicate.id, working.id)
+
+    def test_rate_cap_uses_frozen_line_basis_and_honours_boundary(self):
+        run = self.post_run(key="tax-working-cap-run")
+        line = run.lines.filter(basis_amount__gt=0).order_by("id").first()
+        self.assertIsNotNone(line)
+        policy = self.make_tax_policy(
+            run,
+            rule_overrides={line.component_type: {"treatment": "capped", "max_rate": "0"}},
+        )
+        working = calculate_tax_working(
+            run=run,
+            tax_policy=policy,
+            idempotency_key="tax-working-cap",
+            actor=self.maker,
+        )
+        result = working.lines.get(source_line=line)
+        self.assertEqual(result.allowable_amount, Decimal("0.00"))
+        self.assertEqual(result.disallowed_amount, result.book_amount)
+
+    def test_statutory_formulas_allocate_aggregate_remuneration_and_prorate_interest(self):
+        stakeholder_rows = list(self.policy.stakeholders.order_by("sort_order"))
+        stakeholder_rows[0].configuration = {
+            "remuneration": {"enabled": True, "method": "fixed", "amount": "500000", "prorate": False},
+            "capital_interest": {"enabled": True, "rate": "15"},
+        }
+        stakeholder_rows[1].configuration = {
+            "remuneration": {"enabled": True, "method": "fixed", "amount": "250000", "prorate": False},
+        }
+        for row in stakeholder_rows:
+            row.save(update_fields=("configuration", "updated_at"))
+
+        run = self.post_run(
+            key="tax-working-statutory-formulas",
+            supplied_profit=Decimal("1000000"),
+            period_from=date(2026, 4, 1),
+            period_to=date(2026, 9, 30),
+            cadence="custom",
+        )
+        policy = self.make_tax_policy(
+            run,
+            rule_overrides={
+                "remuneration": {
+                    "treatment": "capped",
+                    "formula_code": REMUNERATION_FORMULA,
+                    "conditions": {"deed_authorized": True, "working_partners_only": True},
+                },
+                "capital_interest": {
+                    "treatment": "capped",
+                    "formula_code": CAPITAL_INTEREST_FORMULA,
+                    "conditions": {"deed_authorized": True},
+                },
+            },
+        )
+        journals_before = JournalLine.objects.count()
+        working = calculate_tax_working(
+            run=run,
+            tax_policy=policy,
+            idempotency_key="tax-working-statutory-formulas-v1",
+            actor=self.maker,
+        )
+
+        remuneration = working.lines.filter(component_type="remuneration").order_by("source_line_id")
+        self.assertEqual(sum((line.allowable_amount for line in remuneration), Decimal("0")), Decimal("750000.00"))
+        self.assertEqual(
+            remuneration.first().source_snapshot["formula_context"]["statutory_book_profit"],
+            "1000000.00",
+        )
+        interest = working.lines.get(component_type="capital_interest")
+        self.assertLess(interest.allowable_amount, interest.book_amount)
+        self.assertTrue(reproduce_tax_working(working)["matches"])
+        self.assertEqual(JournalLine.objects.count(), journals_before)
+
+    def test_override_requires_reason_evidence_and_is_frozen_after_submit(self):
+        run = self.post_run(key="tax-working-override-run")
+        policy = self.make_tax_policy(run)
+        working = calculate_tax_working(
+            run=run,
+            tax_policy=policy,
+            idempotency_key="tax-working-override",
+            actor=self.maker,
+        )
+        line = working.lines.order_by("id").first()
+        with self.assertRaises(ValidationError):
+            override_tax_working_line(
+                line=line,
+                allowable_amount="0",
+                reason="",
+                evidence_references=[],
+                actor=self.maker,
+            )
+        working = override_tax_working_line(
+            line=line,
+            allowable_amount="0",
+            reason="Professional tax opinion",
+            evidence_references=[{"reference": "DOC-TAX-001", "kind": "tax_opinion"}],
+            actor=self.maker,
+            expected_updated_at=working.updated_at,
+        )
+        self.assertTrue(reproduce_tax_working(working)["matches"])
+        working = submit_tax_working(
+            working=working,
+            actor=self.maker,
+            expected_updated_at=working.updated_at,
+        )
+        with self.assertRaises(ValidationError):
+            override_tax_working_line(
+                line=line,
+                allowable_amount="1",
+                reason="Late change",
+                evidence_references=["DOC-2"],
+                actor=self.maker,
+            )
+        with self.assertRaises(ValidationError):
+            approve_tax_working(working=working, actor=self.maker, expected_updated_at=working.updated_at)
+
+    def test_approval_and_reversal_are_maker_checker_and_book_neutral(self):
+        run = self.post_run(key="tax-working-lifecycle-run")
+        policy = self.make_tax_policy(run)
+        journal_count = JournalLine.objects.count()
+        working = calculate_tax_working(
+            run=run,
+            tax_policy=policy,
+            idempotency_key="tax-working-lifecycle",
+            actor=self.maker,
+        )
+        working = submit_tax_working(working=working, actor=self.maker, expected_updated_at=working.updated_at)
+        working = approve_tax_working(working=working, actor=self.approver, expected_updated_at=working.updated_at)
+        with self.assertRaises(ValidationError):
+            reverse_tax_working(working=working, actor=self.approver, reason="")
+        working = reverse_tax_working(
+            working=working,
+            actor=self.approver,
+            reason="Tax opinion withdrawn",
+            expected_updated_at=working.updated_at,
+        )
+        self.assertEqual(working.status, CapitalDistributionTaxWorking.Status.REVERSED)
+        self.assertEqual(JournalLine.objects.count(), journal_count)
+        self.assertEqual(
+            list(working.audit_events.order_by("created_at", "id").values_list("action", flat=True)),
+            ["tax_working_calculated", "tax_working_submitted", "tax_working_approved", "tax_working_reversed"],
+        )
+
+    def test_invalid_source_policy_and_unsupported_formula_are_blocked(self):
+        unposted = self.calculate(key="tax-working-unposted")
+        posted = self.post_run(
+            key="tax-working-policy-source",
+            period_from=date(2026, 4, 2),
+            period_to=date(2027, 3, 31),
+        )
+        draft_policy = self.make_tax_policy(posted)
+        with self.assertRaises(ValidationError):
+            calculate_tax_working(
+                run=unposted,
+                tax_policy=draft_policy,
+                idempotency_key="tax-working-unposted-key",
+                actor=self.maker,
+            )
+
+        run = posted
+        component = run.lines.order_by("id").values_list("component_type", flat=True).first()
+        formula_policy = self.make_tax_policy(
+            run,
+            rule_overrides={component: {"treatment": "capped", "formula_code": "not-enabled"}},
+            policy_code=f"tax-working-formula-{run.id}",
+        )
+        with self.assertRaises(ValidationError):
+            calculate_tax_working(
+                run=run,
+                tax_policy=formula_policy,
+                idempotency_key="tax-working-formula",
+                actor=self.maker,
+            )
+
+    def test_missing_and_part_period_policies_are_blocked(self):
+        run = self.post_run(key="tax-working-policy-coverage")
+        components = sorted(set(run.lines.values_list("component_type", flat=True)))
+        missing_policy = self.make_tax_policy(
+            run,
+            rule_overrides={components[0]: {"treatment": "allowed"}},
+            policy_code=f"tax-working-missing-{run.id}",
+        )
+        missing_policy.configuration["rules"] = [
+            rule for rule in missing_policy.configuration["rules"] if rule["component"] != components[0]
+        ]
+        TaxPolicyVersion.objects.filter(pk=missing_policy.pk).update(configuration=missing_policy.configuration)
+        missing_policy.refresh_from_db()
+        with self.assertRaises(ValidationError):
+            calculate_tax_working(
+                run=run,
+                tax_policy=missing_policy,
+                idempotency_key="tax-working-missing-rule",
+                actor=self.maker,
+            )
+
+        part_period = self.make_tax_policy(
+            run,
+            effective_from=date(2026, 4, 2),
+            policy_code=f"tax-working-part-period-{run.id}",
+        )
+        with self.assertRaises(ValidationError):
+            calculate_tax_working(
+                run=run,
+                tax_policy=part_period,
+                idempotency_key="tax-working-part-period",
+                actor=self.maker,
+            )
+
+    def test_historical_working_reproduces_after_policy_supersession(self):
+        run = self.post_run(key="tax-working-history-run")
+        policy = self.make_tax_policy(run)
+        working = calculate_tax_working(
+            run=run,
+            tax_policy=policy,
+            idempotency_key="tax-working-history",
+            actor=self.maker,
+        )
+        supersede_tax_policy(policy=policy, actor=self.approver, reason="Annual policy amendment")
+        replacement = self.make_tax_policy(run, policy_code=policy.policy_code)
+
+        working.refresh_from_db()
+        self.assertEqual(replacement.version_number, 2)
+        self.assertEqual(working.policy_snapshot["version_number"], 1)
+        self.assertTrue(reproduce_tax_working(working)["matches"])
+
+    def test_api_lifecycle_reproduction_scope_and_permission(self):
+        run = self.post_run(key="tax-working-api-run")
+        policy = self.make_tax_policy(run)
+        client = APIClient()
+        client.force_authenticate(self.maker)
+        all_permissions = {
+            "capital_distribution.tax_working.view",
+            "capital_distribution.tax_working.calculate",
+            "capital_distribution.tax_working.override",
+            "capital_distribution.tax_working.submit",
+            "capital_distribution.tax_working.approve",
+            "capital_distribution.tax_working.reverse",
+        }
+        with (
+            patch("capital_distribution.views.SubscriptionService.assert_entity_access", return_value=None),
+            patch(
+                "capital_distribution.views.EffectivePermissionService.permission_codes_for_user",
+                return_value=all_permissions,
+            ),
+        ):
+            created = client.post(
+                reverse("capital_distribution_api:tax-working-list-calculate"),
+                {
+                    "entity": self.entity.id,
+                    "run": run.id,
+                    "tax_policy": policy.id,
+                    "idempotency_key": "tax-working-api",
+                },
+                format="json",
+            )
+            self.assertEqual(created.status_code, 201, created.data)
+            reproduced = client.get(
+                reverse(
+                    "capital_distribution_api:tax-working-reproduce",
+                    kwargs={"tax_working_id": created.data["id"]},
+                ),
+                {"entity": self.entity.id},
+            )
+            self.assertEqual(reproduced.status_code, 200, reproduced.data)
+            self.assertTrue(reproduced.data["matches"])
+            source_line = created.data["lines"][0]
+            overridden = client.patch(
+                reverse(
+                    "capital_distribution_api:tax-working-line-override",
+                    kwargs={"tax_working_id": created.data["id"], "line_id": source_line["id"]},
+                ),
+                {
+                    "entity": self.entity.id,
+                    "expected_updated_at": created.data["updated_at"],
+                    "allowable_amount": source_line["allowable_amount"],
+                    "reason": "API evidence certification",
+                    "evidence_references": [{"reference": "DOC-API-001"}],
+                },
+                format="json",
+            )
+            self.assertEqual(overridden.status_code, 200, overridden.data)
+            submitted = client.post(
+                reverse(
+                    "capital_distribution_api:tax-working-submit",
+                    kwargs={"tax_working_id": created.data["id"]},
+                ),
+                {"entity": self.entity.id, "expected_updated_at": overridden.data["updated_at"]},
+                format="json",
+            )
+            self.assertEqual(submitted.status_code, 200, submitted.data)
+            client.force_authenticate(self.approver)
+            approved = client.post(
+                reverse(
+                    "capital_distribution_api:tax-working-approve",
+                    kwargs={"tax_working_id": created.data["id"]},
+                ),
+                {"entity": self.entity.id, "expected_updated_at": submitted.data["updated_at"]},
+                format="json",
+            )
+            self.assertEqual(approved.status_code, 200, approved.data)
+
+        with (
+            patch("capital_distribution.views.SubscriptionService.assert_entity_access", return_value=None),
+            patch("capital_distribution.views.EffectivePermissionService.permission_codes_for_user", return_value=set()),
+        ):
+            denied = client.get(
+                reverse(
+                    "capital_distribution_api:tax-working-detail",
+                    kwargs={"tax_working_id": created.data["id"]},
+                ),
+                {"entity": self.entity.id},
+            )
+        self.assertEqual(denied.status_code, 403, denied.data)
+
+    def test_two_clients_share_one_idempotent_calculation(self):
+        run = self.post_run(key="tax-working-two-client-calculation")
+        policy = self.make_tax_policy(run)
+        clients = [APIClient(), APIClient()]
+        for client in clients:
+            client.force_authenticate(self.maker)
+        payload = {
+            "entity": self.entity.id,
+            "run": run.id,
+            "tax_policy": policy.id,
+            "idempotency_key": "tax-working-two-client-retry",
+        }
+        permissions = {"capital_distribution.tax_working.calculate"}
+
+        with (
+            patch("capital_distribution.views.SubscriptionService.assert_entity_access", return_value=None),
+            patch(
+                "capital_distribution.views.EffectivePermissionService.permission_codes_for_user",
+                return_value=permissions,
+            ),
+        ):
+            responses = [
+                client.post(
+                    reverse("capital_distribution_api:tax-working-list-calculate"),
+                    payload,
+                    format="json",
+                )
+                for client in clients
+            ]
+
+        self.assertEqual([response.status_code for response in responses], [201, 201])
+        self.assertEqual(responses[0].data["id"], responses[1].data["id"])
+        self.assertEqual(
+            CapitalDistributionTaxWorking.objects.filter(run=run, tax_policy=policy).count(),
+            1,
+        )
+        self.assertEqual(
+            CapitalDistributionAuditEvent.objects.filter(
+                tax_working_id=responses[0].data["id"],
+                action="tax_working_calculated",
+            ).count(),
+            1,
+        )
+
+    def test_two_clients_cannot_repeat_tax_working_transitions_with_stale_versions(self):
+        run = self.post_run(key="tax-working-two-client-lifecycle")
+        policy = self.make_tax_policy(run)
+        working = calculate_tax_working(
+            run=run,
+            tax_policy=policy,
+            idempotency_key="tax-working-two-client-lifecycle",
+            actor=self.maker,
+        )
+        journal_count = JournalLine.objects.count()
+        permissions = {
+            "capital_distribution.tax_working.submit",
+            "capital_distribution.tax_working.approve",
+            "capital_distribution.tax_working.reverse",
+        }
+        maker_clients = [APIClient(), APIClient()]
+        approver_clients = [APIClient(), APIClient()]
+        for client in maker_clients:
+            client.force_authenticate(self.maker)
+        for client in approver_clients:
+            client.force_authenticate(self.approver)
+
+        def action(client, name, expected_updated_at, reason=""):
+            return client.post(
+                reverse(
+                    f"capital_distribution_api:tax-working-{name}",
+                    kwargs={"tax_working_id": working.id},
+                ),
+                {
+                    "entity": self.entity.id,
+                    "expected_updated_at": expected_updated_at,
+                    "reason": reason,
+                },
+                format="json",
+            )
+
+        with (
+            patch("capital_distribution.views.SubscriptionService.assert_entity_access", return_value=None),
+            patch(
+                "capital_distribution.views.EffectivePermissionService.permission_codes_for_user",
+                return_value=permissions,
+            ),
+        ):
+            calculated_version = working.updated_at.isoformat()
+            submitted = action(maker_clients[0], "submit", calculated_version)
+            stale_submit = action(maker_clients[1], "submit", calculated_version)
+            approved = action(approver_clients[0], "approve", submitted.data["updated_at"])
+            stale_approve = action(approver_clients[1], "approve", submitted.data["updated_at"])
+            reversed_working = action(
+                approver_clients[0],
+                "reverse",
+                approved.data["updated_at"],
+                "Approved tax opinion withdrawn",
+            )
+            stale_reverse = action(
+                approver_clients[1],
+                "reverse",
+                approved.data["updated_at"],
+                "Duplicate reversal attempt",
+            )
+
+        self.assertEqual(submitted.status_code, 200, submitted.data)
+        self.assertEqual(stale_submit.status_code, 409, stale_submit.data)
+        self.assertEqual(approved.status_code, 200, approved.data)
+        self.assertEqual(stale_approve.status_code, 409, stale_approve.data)
+        self.assertEqual(reversed_working.status_code, 200, reversed_working.data)
+        self.assertEqual(stale_reverse.status_code, 409, stale_reverse.data)
+        working.refresh_from_db()
+        self.assertEqual(working.status, CapitalDistributionTaxWorking.Status.REVERSED)
+        self.assertEqual(JournalLine.objects.count(), journal_count)
+        for audit_action in (
+            "tax_working_submitted",
+            "tax_working_approved",
+            "tax_working_reversed",
+        ):
+            self.assertEqual(
+                CapitalDistributionAuditEvent.objects.filter(
+                    tax_working=working,
+                    action=audit_action,
+                ).count(),
+                1,
+            )
+
+    def test_calculation_and_submission_roll_back_after_mid_transaction_failure(self):
+        run = self.post_run(key="tax-working-rollback")
+        policy = self.make_tax_policy(run)
+        journal_count = JournalLine.objects.count()
+
+        with patch(
+            "capital_distribution.tax_working_services._audit",
+            side_effect=RuntimeError("simulated audit storage failure"),
+        ):
+            with self.assertRaises(RuntimeError):
+                calculate_tax_working(
+                    run=run,
+                    tax_policy=policy,
+                    idempotency_key="tax-working-rollback",
+                    actor=self.maker,
+                )
+
+        self.assertFalse(
+            CapitalDistributionTaxWorking.objects.filter(run=run, tax_policy=policy).exists()
+        )
+        working = calculate_tax_working(
+            run=run,
+            tax_policy=policy,
+            idempotency_key="tax-working-rollback",
+            actor=self.maker,
+        )
+        calculated_version = working.updated_at
+
+        with patch(
+            "capital_distribution.tax_working_services._audit",
+            side_effect=RuntimeError("simulated submit audit failure"),
+        ):
+            with self.assertRaises(RuntimeError):
+                submit_tax_working(
+                    working=working,
+                    actor=self.maker,
+                    expected_updated_at=calculated_version,
+                )
+
+        working.refresh_from_db()
+        self.assertEqual(working.status, CapitalDistributionTaxWorking.Status.CALCULATED)
+        self.assertEqual(working.updated_at, calculated_version)
+        self.assertFalse(
+            working.audit_events.filter(action="tax_working_submitted").exists()
+        )
+        retried = submit_tax_working(
+            working=working,
+            actor=self.maker,
+            expected_updated_at=calculated_version,
+        )
+        self.assertEqual(retried.status, CapitalDistributionTaxWorking.Status.SUBMITTED)
+        self.assertEqual(JournalLine.objects.count(), journal_count)
+
+    def test_tax_working_exports_reconcile_are_scoped_and_leave_books_unchanged(self):
+        run = self.post_run(key="tax-working-export-run")
+        policy = self.make_tax_policy(run)
+        working = calculate_tax_working(
+            run=run,
+            tax_policy=policy,
+            idempotency_key="tax-working-export",
+            actor=self.maker,
+        )
+        line = working.lines.order_by("id").first()
+        working = override_tax_working_line(
+            line=line,
+            allowable_amount=line.allowable_amount,
+            reason="Certified export evidence",
+            evidence_references=[{"reference": "DOC-EXPORT-001", "kind": "tax_opinion"}],
+            actor=self.maker,
+            expected_updated_at=working.updated_at,
+        )
+        journals_before = JournalLine.objects.count()
+        client = APIClient()
+        client.force_authenticate(self.maker)
+        export_url = reverse(
+            "capital_distribution_api:tax-working-export",
+            kwargs={"tax_working_id": working.id},
+        )
+        with (
+            patch("capital_distribution.views.SubscriptionService.assert_entity_access", return_value=None),
+            patch(
+                "capital_distribution.views.EffectivePermissionService.permission_codes_for_user",
+                return_value={"capital_distribution.tax_working.export"},
+            ),
+        ):
+            csv_response = client.get(export_url, {"entity": self.entity.id, "format": "csv"})
+            xlsx_response = client.get(export_url, {"entity": self.entity.id, "format": "xlsx"})
+            pdf_response = client.get(export_url, {"entity": self.entity.id, "format": "pdf"})
+            invalid_response = client.get(export_url, {"entity": self.entity.id, "format": "json"})
+            foreign_scope = client.get(export_url, {"entity": self.entity.id + 99999, "format": "csv"})
+
+        self.assertEqual(csv_response.status_code, 200)
+        self.assertEqual(csv_response["Content-Type"], "text/csv")
+        self.assertIn(f"tax_working_{working.id}_", csv_response["Content-Disposition"])
+        csv_text = csv_response.content.decode("utf-8-sig")
+        self.assertIn("DOC-EXPORT-001", csv_text)
+        self.assertIn(working.calculation_hash, csv_text)
+        self.assertIn(str(working.book_amount), csv_text)
+
+        self.assertEqual(xlsx_response.status_code, 200)
+        workbook = load_workbook(BytesIO(xlsx_response.content), data_only=True)
+        self.assertEqual(workbook.sheetnames, ["Summary", "Lines"])
+        summary_values = [cell.value for row in workbook["Summary"].iter_rows() for cell in row]
+        self.assertIn(working.calculation_hash, summary_values)
+        self.assertEqual(workbook["Lines"].max_row, working.lines.count() + 1)
+        self.assertEqual(workbook["Lines"]["F2"].value, float(working.lines.order_by("id").first().book_amount))
+
+        self.assertEqual(pdf_response.status_code, 200)
+        self.assertEqual(pdf_response["Content-Type"], "application/pdf")
+        self.assertTrue(pdf_response.content.startswith(b"%PDF"))
+        self.assertGreater(len(pdf_response.content), 1000)
+        self.assertEqual(invalid_response.status_code, 400)
+        self.assertEqual(foreign_scope.status_code, 400)
+        self.assertEqual(JournalLine.objects.count(), journals_before)
+
+        with (
+            patch("capital_distribution.views.SubscriptionService.assert_entity_access", return_value=None),
+            patch("capital_distribution.views.EffectivePermissionService.permission_codes_for_user", return_value=set()),
+        ):
+            denied = client.get(export_url, {"entity": self.entity.id, "format": "csv"})
+        self.assertEqual(denied.status_code, 403)
+
+
+@skipUnless(connection.vendor == "postgresql", "Requires PostgreSQL row-level locking.")
+class TaxWorkingPostgreSQLConcurrencyTests(CapitalDistributionFixtureMixin, TransactionTestCase):
+    make_account = CapitalDistributionPostingLifecycleTests.make_account
+    calculate = CapitalDistributionPostingLifecycleTests.calculate
+    post_run = CapitalDistributionPostingLifecycleTests.post_run
+    make_tax_policy = TaxWorkingLifecycleTests.make_tax_policy
+
+    def setUp(self):
+        CapitalDistributionPostingLifecycleTests.setUp(self)
+
+    def test_simultaneous_calculation_and_submission_serialize_without_duplicates(self):
+        run = self.post_run(key="tax-working-simultaneous")
+        policy = self.make_tax_policy(run)
+        journal_count = JournalLine.objects.count()
+        calculation_barrier = Barrier(2)
+
+        def calculate_in_transaction():
+            close_old_connections()
+            try:
+                local_run = CapitalDistributionRun.objects.get(pk=run.pk)
+                local_policy = TaxPolicyVersion.objects.get(pk=policy.pk)
+                local_actor = User.objects.get(pk=self.maker.pk)
+                calculation_barrier.wait(timeout=10)
+                working = calculate_tax_working(
+                    run=local_run,
+                    tax_policy=local_policy,
+                    idempotency_key="tax-working-simultaneous",
+                    actor=local_actor,
+                )
+                return "created", working.pk
+            finally:
+                connections.close_all()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            calculation_results = list(executor.map(lambda _: calculate_in_transaction(), range(2)))
+
+        self.assertEqual({result[0] for result in calculation_results}, {"created"})
+        self.assertEqual(len({result[1] for result in calculation_results}), 1)
+        working = CapitalDistributionTaxWorking.objects.get(pk=calculation_results[0][1])
+        self.assertEqual(CapitalDistributionTaxWorking.objects.filter(run=run, tax_policy=policy).count(), 1)
+        self.assertEqual(working.audit_events.filter(action="tax_working_calculated").count(), 1)
+
+        submission_barrier = Barrier(2)
+        expected_updated_at = working.updated_at
+
+        def submit_in_transaction():
+            close_old_connections()
+            try:
+                local_working = CapitalDistributionTaxWorking.objects.get(pk=working.pk)
+                local_actor = User.objects.get(pk=self.maker.pk)
+                submission_barrier.wait(timeout=10)
+                try:
+                    submitted = submit_tax_working(
+                        working=local_working,
+                        actor=local_actor,
+                        expected_updated_at=expected_updated_at,
+                    )
+                    return "submitted", submitted.pk
+                except StaleObjectConflict:
+                    return "stale", local_working.pk
+            finally:
+                connections.close_all()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            submission_results = list(executor.map(lambda _: submit_in_transaction(), range(2)))
+
+        self.assertEqual(sorted(result[0] for result in submission_results), ["stale", "submitted"])
+        working.refresh_from_db()
+        self.assertEqual(working.status, CapitalDistributionTaxWorking.Status.SUBMITTED)
+        self.assertEqual(working.audit_events.filter(action="tax_working_submitted").count(), 1)
+        self.assertEqual(JournalLine.objects.count(), journal_count)

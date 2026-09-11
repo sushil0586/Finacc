@@ -763,7 +763,7 @@ Implementation checkpoint (2026-09-10):
 
 ### Phase 5: Financial Reports And Reconciliation
 
-Status: Staging accounting, UI, reports, exports, reversal, branch isolation, controlled year-end/opening integration, and Firefox/WebKit certification complete; Manav-T custom-range fix awaits deployment verification and manual assistive-technology review remains pending
+Status: Staging accounting, UI, reports, exports, reversal, branch isolation, controlled year-end/opening integration, custom-range Balance Sheet reconciliation, and three-browser automation complete; manual assistive-technology review remains pending
 
 Development:
 
@@ -832,8 +832,7 @@ Implementation checkpoint (2026-09-10):
   therefore labels the original journal as reconstructed from immutable frozen run
   lines and validates the live reversal against them. Preserving journal rows for all
   posting revisions requires a separately tested posting-engine migration.
-- Remaining before Phase 5 exit: deploy and verify the Manav-T custom-range Balance
-  Sheet correction and complete manual assistive-technology review.
+- Remaining before Phase 5 exit: complete manual assistive-technology review.
 
 Staging certification checkpoint (2026-09-10):
 
@@ -971,13 +970,27 @@ Staging certification checkpoint (2026-09-10):
   custom range remains balanced and exposes the applied profit accumulation date.
   The expanded regression passed 129 tests across book reports, capital distribution,
   year-end close, opening generation, and destructive rollback workflows.
-- Remaining before Phase 5 exit: deploy the custom-range correction, verify Manav-T
-  returns a zero Balance Sheet difference for the same one-day scope, and complete
-  manual assistive-technology review.
+- Deployed custom-range verification (2026-09-11): Manav-T's Balance Sheet for the
+  original one-day scope, 10 September 2026, now reports INR 3,162,687.72 for both
+  total assets and total liabilities and equity, with a zero balance difference.
+  It brings INR 2,638,433.72 of current-year profit into equity and reports
+  `profit_accumulation_from` as 1 April 2026. The full FY remains unchanged and
+  balanced at the same totals.
+- Staging generated-file verification downloaded CSV, XLSX, PDF, and inline-print
+  output for that one-day scope. All responses returned the expected content type,
+  file signature, date-scoped filename, and attachment or inline disposition; the
+  CSV and PDF content identified the report as Balance Sheet.
+- The reusable live Playwright certificate now carries the custom-date regression,
+  full-FY control, generated-file checks, and rendered Balanced state. It passed
+  5/5 in Chromium, 5/5 in Firefox, and 5/5 in WebKit; the narrow 390x844 check also
+  retained zero serious or critical axe findings.
+- Remaining before Phase 5 exit: complete manual VoiceOver or equivalent
+  assistive-technology review of the setup, statement, P&L, Balance Sheet, and
+  partner-ledger drilldown flow.
 
 ### Phase 6: Tax Working And Policy Governance
 
-Status: Planned
+Status: In progress; tax-policy governance, frozen tax-working engine, statutory partnership evaluators, operational Angular workspace, and audit exports complete locally
 
 Development:
 
@@ -996,6 +1009,158 @@ Exit gate:
 
 - Every tax adjustment identifies its policy version or approved manual basis.
 - Historical runs reproduce from their stored snapshot.
+
+Implementation checkpoint (2026-09-11):
+
+- Added entity-scoped `TaxPolicyVersion` records with stable policy code, formation,
+  tax type, country/state jurisdiction, effective dates, statutory and source
+  references, schema version, configuration, and complete maker-checker metadata.
+- Tax policy configuration is controlled but extensible. It supports currency,
+  rounding, metadata, and one treatment rule per appropriation component. Rules can
+  be allowed, disallowed, capped, or informational, with rate, amount, formula, and
+  structured condition inputs.
+- Draft, submit, approve, reject, and supersede transitions use row locking and
+  optimistic concurrency. Approved versions are immutable, makers cannot approve
+  their own submission, rejection/supersession requires a reason, and overlapping
+  approved policies for the same entity, jurisdiction, formation, tax type, and code
+  are blocked.
+- Every transition writes a complete policy snapshot to the existing capital and
+  distribution audit stream with a correlation ID. Historical versions are retained
+  instead of edited in place.
+- Added entity-level REST endpoints for policy list/create, detail/update, submit,
+  approve, reject, and supersede. Branch-scoped requests are rejected because this
+  tax governance is entity-wide. Dedicated view/manage/submit/approve permissions
+  are granted to entity administration roles through RBAC migration 0149.
+- Added `CapitalDistributionTaxWorking` and immutable source-line working records.
+  Calculation is allowed only from a posted appropriation run and an approved policy
+  that matches entity, financial year, formation, and the complete run period. Every
+  source component must resolve to an explicit policy rule.
+- Each working freezes the book-run hash, posting-batch reference, source line inputs,
+  complete tax-policy snapshot, rule used for each line, and a calculation hash. Each
+  line and the working total enforce `book amount = allowable amount + disallowed
+  amount`; allowed, disallowed, informational, fixed-cap, rate-cap, and governed
+  externally evaluated-cap treatments are supported.
+- Formula identifiers are never silently guessed. The governed
+  `india_partnership_remuneration_v1` evaluator applies the current aggregate section
+  40(b) slab to frozen statutory book profit, limits the result to actual book
+  remuneration, and allocates allowable paise pro rata across partner lines using a
+  deterministic largest-remainder rule. The governed
+  `india_partnership_interest_v1` evaluator caps partner interest at 12% simple annual
+  interest and uses the frozen run year fraction for partial periods.
+- The remuneration evaluator treats `source_profit + book_adjustments` as statutory
+  book profit because the run captures profit before appropriation. This mapping and
+  the policy's statutory source must be independently approved for each deployment;
+  the evaluator never reclassifies or mutates the posted books.
+- Formula assumptions were checked against the Income Tax Department's current
+  [section 40 text](https://www.incometaxindia.gov.in/documents/20117/42998/Section-40_2026-05-05_11-48-27_06f241_en.pdf/6374c1e3-46ae-d0c0-31d4-9219c6635baf?t=1779519449631&version=2.0):
+  the remuneration first band is INR 600,000, the loss/first-band minimum is INR
+  300,000, the first-band percentage is 90%, the balance percentage is 60%, and
+  partner interest is limited to 12% simple interest per annum.
+- Statutory remuneration policies cannot be submitted until users explicitly confirm
+  deed authorization and working-partner-only eligibility. Partner-interest policies
+  require explicit deed authorization. Unsupported formulas still fail visibly unless
+  a governed external evaluated cap is supplied.
+- Added controlled line override behavior. Override amounts must remain between zero
+  and the frozen book amount and require a reason plus at least one structured evidence
+  reference. Overrides are available only in calculated status and are frozen at
+  submission.
+- Added calculated, submitted, approved, and reversed lifecycle states with optimistic
+  concurrency, row locking, maker-checker separation, mandatory reversal reason, and
+  complete before/after audit snapshots. Reproduction recalculates from frozen source
+  and rule snapshots and compares both line results and the stored hash.
+- Added scoped REST endpoints for working list/calculate, detail, line override,
+  reproduction, submit, approve, and reverse. Dedicated view/calculate/override/
+  submit/approve/reverse permissions are seeded through RBAC migration 0150.
+- Added a separately authorized tax-working export endpoint for CSV, XLSX, and PDF.
+  Every format carries entity/FY/branch scope, source run and posting batch, policy
+  version and statutory source, lifecycle actors/timestamps, calculation hash,
+  reconciled totals, calculated-versus-final line treatment, override reason, and
+  evidence references. Spreadsheet text is neutralized against formula injection.
+  Export permission is distinct from view permission and is seeded only to entity
+  administration roles through RBAC migration 0151.
+- Tax working has no posting-batch foreign key and calls no journal or posting service.
+  The source posting-batch identifier is copied only into its audit snapshot. Tests
+  prove calculation, override, approval, and reversal leave journal-line counts
+  unchanged.
+- Local evidence: governance tests cover normalization, valid lifecycle,
+  complete audit snapshots, maker-checker separation, approved immutability,
+  malformed and duplicate rules, incomplete policy submission, overlap and
+  replacement sequencing, mandatory reasons, stale edits, REST lifecycle, entity
+  scope, and permission denial. Ten tax-working tests cover reconciliation,
+  idempotency, zero-rate cap boundaries, missing and partial-period policies,
+  unsupported formulas, required override evidence, API override, maker-checker,
+  immutable submitted state, reversal, permission denial, journal neutrality, and
+  historical reproduction after policy supersession. Two authenticated API clients
+  now prove that a repeated calculation returns one working and one calculation audit,
+  while stale submit, approve, and reverse attempts return HTTP 409, create exactly one
+  audit event per successful transition, and leave journal counts unchanged. A true
+  PostgreSQL two-thread test additionally proves simultaneous calculations serialize
+  to one working/one audit and simultaneous submissions produce one success plus one
+  stale conflict. Forced audit-storage failures during calculation and submission roll
+  back the complete transaction; clean retries then succeed without duplicate records
+  or journal movement. New
+  statutory golden tests cover
+  loss, nil-profit, first-band, one-paise-above-band, and upper-band remuneration
+  boundaries; exact aggregate pro-rata allocation; actual-payment restriction;
+  missing eligibility; 12% interest; and partial-period proration. A persisted
+  half-year working proves aggregate partner allocation, frozen formula context,
+  excess-interest disallowance, reproduction, and journal neutrality.
+  A binary export contract test parses the workbook, verifies CSV evidence and hashes,
+  validates the PDF signature, checks invalid format, foreign scope, and missing
+  permission failures, and proves export leaves journal counts unchanged. The full
+  capital-distribution backend suite passes 67/67; the focused tax-working lifecycle
+  and PostgreSQL concurrency suites pass 14/14; Django system checks and
+  migration drift checks also pass.
+- Added `Tax Policies` and `Tax Working` views to the existing Capital & Distribution
+  workspace. Policy users can create a version from a fixed component matrix, maintain
+  jurisdiction/source/effective-date inputs, save drafts, and perform governed submit,
+  approve, reject, and supersede transitions. Raw policy JSON is not exposed as a user
+  editing surface.
+- The tax-working view restricts selection to posted appropriation runs and approved
+  policies, displays the frozen book/allowable/disallowed bridge and hash, supports
+  reason-and-evidence-backed line overrides, verifies historical reproduction, and
+  exposes only status-valid submit, approve, and reverse actions. Server calculations
+  remain authoritative; the browser does not calculate statutory outcomes.
+- The selected working now presents compact, permission-aware PDF, Excel, and CSV
+  actions with deterministic period-based filenames. The action group wraps below
+  the working title on narrow screens instead of widening the page.
+- The policy workspace now seeds both supported formulas and shows clear deed and
+  working-partner eligibility checkboxes for both new and existing draft versions.
+  These confirmations are visible workflow controls rather than hidden JSON settings.
+- Frontend evidence: the focused Angular component suite passes 11/11 in headless Chrome;
+  strict TypeScript, targeted component/service/template lint, and the development
+  build pass. Tax-working mutation, reproduction, and export methods now reject
+  programmatic re-entry while another request is active, supplementing disabled-button
+  protection against duplicate requests. The deterministic Chromium workspace suite
+  passes 17/17, covering policy
+  creation/approval, tax calculation, evidence override, reproduction, approval,
+  permissions, stale-state recovery, accessibility, and responsive layouts at 320,
+  390, and 768 pixels with no document-level horizontal overflow. The new statutory
+  confirmation grid is explicitly exercised at 390 pixels with contained table
+  scrolling. Browser tests exercise actual PDF/XLSX/CSV download events,
+  deterministic filenames, dedicated export-permission denial, and the export action
+  group at 390 pixels without document-level overflow. Browser recovery cases prove a
+  failed calculation preserves run/policy scope and can be retried, a stale tax-working
+  submit remains actionable after HTTP 409, and an interrupted export creates no file
+  before one successful retry. The approved desktop visual baseline remains green. The
+  same 17-scenario suite passes in Chromium, Firefox, and WebKit (51/51 total, snapshots
+  intentionally asserted only in Chromium), including automated serious/critical
+  accessibility checks.
+- The live staging certificate now contains seven non-destructive scenarios. Its new
+  Phase 6 coverage verifies scoped tax-policy/tax-working endpoint and workspace
+  readiness, reconciles every frozen working as book = allowable + disallowed, requires
+  a posted source run, reproduces each frozen hash, checks authorized CSV/XLSX/PDF
+  signatures and filenames, and confirms the appropriation statement is unchanged.
+  The reconciliation scenario reports a skip when no staged frozen working exists so
+  absent certification data cannot be mistaken for a pass. TypeScript compilation and
+  Playwright discovery of all seven live scenarios pass locally.
+- Remaining Phase 6 slices: independent accounting-owner approval of statutory golden
+  examples; binary evidence upload integration if required beyond document IDs/URLs;
+  manual assistive-technology review;
+  production-like concurrent load certification; and staging book-to-tax reconciliation
+  certification. Two-client optimistic concurrency, real simultaneous PostgreSQL row-lock
+  behavior, transactional rollback, idempotent retry, duplicate-action suppression, and
+  browser failure-recovery gates are complete locally.
 
 ### Phase 7: Wave 1 Migration And Proprietorship Engine
 

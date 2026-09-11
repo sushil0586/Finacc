@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Q
+from django.http import HttpResponse
 from rest_framework import permissions, status
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
@@ -12,7 +13,16 @@ from entity.models import EntityFinancialYear, SubEntity
 from rbac.services import EffectivePermissionService
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
-from .models import CapitalDistributionAccountMapping, CapitalDistributionRun, DistributionPolicyVersion, EntityFormationProfile, FormationType
+from .models import (
+    CapitalDistributionAccountMapping,
+    CapitalDistributionRun,
+    CapitalDistributionTaxWorking,
+    CapitalDistributionTaxWorkingLine,
+    DistributionPolicyVersion,
+    EntityFormationProfile,
+    FormationType,
+    TaxPolicyVersion,
+)
 from .serializers import (
     DistributionPolicyPatchSerializer,
     DistributionPolicySeedSerializer,
@@ -24,7 +34,14 @@ from .serializers import (
     EntityScopeSerializer,
     FormationResolveSerializer,
     PolicyActionSerializer,
+    TaxPolicyPatchSerializer,
+    TaxPolicyWriteSerializer,
+    TaxWorkingActionSerializer,
+    TaxWorkingCalculateSerializer,
+    TaxWorkingLineOverrideSerializer,
     serialize_policy,
+    serialize_tax_policy,
+    serialize_tax_working,
 )
 from .services import (
     approve_policy,
@@ -48,6 +65,29 @@ from .services import (
     reverse_distribution_run,
 )
 from .reporting import build_appropriation_statement
+from .tax_services import (
+    approve_tax_policy,
+    create_tax_policy,
+    reject_tax_policy,
+    submit_tax_policy,
+    supersede_tax_policy,
+    update_draft_tax_policy,
+)
+from .tax_working_services import (
+    approve_tax_working,
+    calculate_tax_working,
+    override_tax_working_line,
+    reproduce_tax_working,
+    reverse_tax_working,
+    submit_tax_working,
+)
+from .tax_exports import (
+    build_tax_working_export,
+    render_tax_working_csv,
+    render_tax_working_pdf,
+    render_tax_working_xlsx,
+    tax_working_filename,
+)
 
 
 VIEW_PERMISSIONS = (
@@ -65,6 +105,20 @@ RUN_SUBMIT_PERMISSIONS = ("capital_distribution.run.submit",)
 RUN_APPROVE_PERMISSIONS = ("capital_distribution.run.approve",)
 RUN_POST_PERMISSIONS = ("capital_distribution.run.post",)
 RUN_REVERSE_PERMISSIONS = ("capital_distribution.run.reverse",)
+TAX_POLICY_VIEW_PERMISSIONS = ("capital_distribution.tax_policy.view",)
+TAX_POLICY_MANAGE_PERMISSIONS = ("capital_distribution.tax_policy.manage",)
+TAX_POLICY_SUBMIT_PERMISSIONS = (
+    "capital_distribution.tax_policy.submit",
+    "capital_distribution.tax_policy.manage",
+)
+TAX_POLICY_APPROVE_PERMISSIONS = ("capital_distribution.tax_policy.approve",)
+TAX_WORKING_VIEW_PERMISSIONS = ("capital_distribution.tax_working.view",)
+TAX_WORKING_CALCULATE_PERMISSIONS = ("capital_distribution.tax_working.calculate",)
+TAX_WORKING_OVERRIDE_PERMISSIONS = ("capital_distribution.tax_working.override",)
+TAX_WORKING_SUBMIT_PERMISSIONS = ("capital_distribution.tax_working.submit",)
+TAX_WORKING_APPROVE_PERMISSIONS = ("capital_distribution.tax_working.approve",)
+TAX_WORKING_REVERSE_PERMISSIONS = ("capital_distribution.tax_working.reverse",)
+TAX_WORKING_EXPORT_PERMISSIONS = ("capital_distribution.tax_working.export",)
 
 
 def _as_api_validation_error(exc: DjangoValidationError) -> ValidationError:
@@ -139,6 +193,40 @@ class CapitalDistributionAccessMixin(ScopedEntitlementMixin):
             codes=codes,
         )
         return run
+
+    def scoped_tax_policy(self, request, *, tax_policy_id, entity_id, codes=TAX_POLICY_VIEW_PERMISSIONS):
+        policy = (
+            TaxPolicyVersion.objects.filter(id=tax_policy_id, entity_id=entity_id, isactive=True)
+            .select_related("formation_profile", "entityfin")
+            .first()
+        )
+        if not policy:
+            raise ValidationError({"tax_policy": "Tax policy was not found for this entity."})
+        self.scoped_entity(
+            request,
+            entity_id=entity_id,
+            entityfinid_id=policy.entityfin_id,
+            codes=codes,
+        )
+        return policy
+
+    def scoped_tax_working(self, request, *, tax_working_id, entity_id, codes=TAX_WORKING_VIEW_PERMISSIONS):
+        working = (
+            CapitalDistributionTaxWorking.objects.filter(id=tax_working_id, entity_id=entity_id, isactive=True)
+            .select_related("run", "tax_policy", "entityfin", "subentity")
+            .prefetch_related("lines")
+            .first()
+        )
+        if not working:
+            raise ValidationError({"tax_working": "Tax working was not found for this entity."})
+        self.scoped_entity(
+            request,
+            entity_id=entity_id,
+            entityfinid_id=working.entityfin_id,
+            subentity_id=working.subentity_id,
+            codes=codes,
+        )
+        return working
 
 
 class FormationProfileAPIView(CapitalDistributionAccessMixin, APIView):
@@ -443,6 +531,349 @@ class DistributionPolicyCompareAPIView(CapitalDistributionAccessMixin, APIView):
                 "to": right_stakeholders,
             }
         return Response({"from_policy": policy.id, "to_policy": other.id, "changes": changes})
+
+
+class TaxPolicyListCreateAPIView(CapitalDistributionAccessMixin, APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        serializer = EntityScopeSerializer(data=request.query_params)
+        serializer.is_valid(raise_exception=True)
+        scope = serializer.validated_data
+        if scope.get("subentity"):
+            raise ValidationError({"subentity": "Tax policy governance is maintained at entity level."})
+        entity = self.scoped_entity(
+            request,
+            entity_id=scope["entity"],
+            entityfinid_id=scope.get("entityfinid"),
+            codes=TAX_POLICY_VIEW_PERMISSIONS,
+        )
+        policies = TaxPolicyVersion.objects.filter(entity=entity, isactive=True).select_related(
+            "formation_profile", "entityfin"
+        )
+        if scope.get("entityfinid"):
+            policies = policies.filter(Q(entityfin_id=scope["entityfinid"]) | Q(entityfin__isnull=True))
+        return Response({"count": policies.count(), "results": [serialize_tax_policy(row) for row in policies[:100]]})
+
+    def post(self, request):
+        serializer = TaxPolicyWriteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = dict(serializer.validated_data)
+        entity = self.scoped_entity(
+            request,
+            entity_id=data.pop("entity"),
+            entityfinid_id=data.get("entityfinid"),
+            codes=TAX_POLICY_MANAGE_PERMISSIONS,
+        )
+        formation_profile = EntityFormationProfile.objects.filter(
+            id=data.pop("formation_profile"), entity=entity, isactive=True
+        ).first()
+        if not formation_profile:
+            raise ValidationError({"formation_profile": "Formation profile was not found for this entity."})
+        entityfin_id = data.pop("entityfinid", None)
+        data["entityfin"] = (
+            EntityFinancialYear.objects.filter(id=entityfin_id, entity=entity, isactive=True).first()
+            if entityfin_id
+            else None
+        )
+        if entityfin_id and not data["entityfin"]:
+            raise ValidationError({"entityfinid": "Active financial year was not found for this entity."})
+        try:
+            policy = create_tax_policy(
+                entity=entity,
+                formation_profile=formation_profile,
+                payload=data,
+                actor=request.user,
+            )
+        except DjangoValidationError as exc:
+            raise _as_api_validation_error(exc)
+        return Response(serialize_tax_policy(policy), status=status.HTTP_201_CREATED)
+
+
+class TaxPolicyDetailAPIView(CapitalDistributionAccessMixin, APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, tax_policy_id):
+        serializer = EntityScopeSerializer(data=request.query_params)
+        serializer.is_valid(raise_exception=True)
+        entity_id = serializer.validated_data["entity"]
+        policy = self.scoped_tax_policy(request, tax_policy_id=tax_policy_id, entity_id=entity_id)
+        return Response(serialize_tax_policy(policy))
+
+    def patch(self, request, tax_policy_id):
+        serializer = TaxPolicyPatchSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = dict(serializer.validated_data)
+        entity_id = data.pop("entity")
+        expected_updated_at = data.pop("expected_updated_at")
+        policy = self.scoped_tax_policy(
+            request,
+            tax_policy_id=tax_policy_id,
+            entity_id=entity_id,
+            codes=TAX_POLICY_MANAGE_PERMISSIONS,
+        )
+        if "entityfinid" in data:
+            entityfin_id = data.pop("entityfinid")
+            data["entityfin"] = (
+                EntityFinancialYear.objects.filter(id=entityfin_id, entity_id=entity_id, isactive=True).first()
+                if entityfin_id
+                else None
+            )
+            if entityfin_id and not data["entityfin"]:
+                raise ValidationError({"entityfinid": "Active financial year was not found for this entity."})
+        try:
+            policy = update_draft_tax_policy(
+                policy=policy,
+                payload=data,
+                actor=request.user,
+                expected_updated_at=expected_updated_at,
+            )
+        except DjangoValidationError as exc:
+            raise _as_api_validation_error(exc)
+        return Response(serialize_tax_policy(policy))
+
+
+class TaxPolicyActionAPIView(CapitalDistributionAccessMixin, APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    action = ""
+
+    def post(self, request, tax_policy_id):
+        serializer = PolicyActionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        permission_map = {
+            "submit": TAX_POLICY_SUBMIT_PERMISSIONS,
+            "approve": TAX_POLICY_APPROVE_PERMISSIONS,
+            "reject": TAX_POLICY_APPROVE_PERMISSIONS,
+            "supersede": TAX_POLICY_APPROVE_PERMISSIONS,
+        }
+        policy = self.scoped_tax_policy(
+            request,
+            tax_policy_id=tax_policy_id,
+            entity_id=data["entity"],
+            codes=permission_map[self.action],
+        )
+        action_map = {
+            "submit": submit_tax_policy,
+            "approve": approve_tax_policy,
+            "reject": reject_tax_policy,
+            "supersede": supersede_tax_policy,
+        }
+        try:
+            policy = action_map[self.action](
+                policy=policy,
+                actor=request.user,
+                expected_updated_at=data["expected_updated_at"],
+                reason=data.get("reason", ""),
+            )
+        except DjangoValidationError as exc:
+            raise _as_api_validation_error(exc)
+        return Response(serialize_tax_policy(policy))
+
+
+class TaxPolicySubmitAPIView(TaxPolicyActionAPIView):
+    action = "submit"
+
+
+class TaxPolicyApproveAPIView(TaxPolicyActionAPIView):
+    action = "approve"
+
+
+class TaxPolicyRejectAPIView(TaxPolicyActionAPIView):
+    action = "reject"
+
+
+class TaxPolicySupersedeAPIView(TaxPolicyActionAPIView):
+    action = "supersede"
+
+
+class TaxWorkingListCalculateAPIView(CapitalDistributionAccessMixin, APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        serializer = EntityScopeSerializer(data=request.query_params)
+        serializer.is_valid(raise_exception=True)
+        scope = serializer.validated_data
+        entity = self.scoped_entity(
+            request,
+            entity_id=scope["entity"],
+            entityfinid_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
+            codes=TAX_WORKING_VIEW_PERMISSIONS,
+        )
+        workings = (
+            CapitalDistributionTaxWorking.objects.filter(entity=entity, isactive=True)
+            .select_related("run", "tax_policy", "entityfin", "subentity")
+            .prefetch_related("lines")
+        )
+        if scope.get("entityfinid"):
+            workings = workings.filter(entityfin_id=scope["entityfinid"])
+        if scope.get("subentity"):
+            workings = workings.filter(subentity_id=scope["subentity"])
+        return Response({"count": workings.count(), "results": [serialize_tax_working(row) for row in workings[:100]]})
+
+    def post(self, request):
+        serializer = TaxWorkingCalculateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        run = self.scoped_run(
+            request,
+            run_id=data["run"],
+            entity_id=data["entity"],
+            codes=TAX_WORKING_CALCULATE_PERMISSIONS,
+        )
+        tax_policy = self.scoped_tax_policy(
+            request,
+            tax_policy_id=data["tax_policy"],
+            entity_id=data["entity"],
+            codes=TAX_WORKING_CALCULATE_PERMISSIONS,
+        )
+        try:
+            working = calculate_tax_working(
+                run=run,
+                tax_policy=tax_policy,
+                idempotency_key=data["idempotency_key"],
+                actor=request.user,
+            )
+        except DjangoValidationError as exc:
+            raise _as_api_validation_error(exc)
+        return Response(serialize_tax_working(working), status=status.HTTP_201_CREATED)
+
+
+class TaxWorkingDetailAPIView(CapitalDistributionAccessMixin, APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, tax_working_id):
+        serializer = EntityScopeSerializer(data=request.query_params)
+        serializer.is_valid(raise_exception=True)
+        working = self.scoped_tax_working(
+            request,
+            tax_working_id=tax_working_id,
+            entity_id=serializer.validated_data["entity"],
+        )
+        return Response(serialize_tax_working(working))
+
+
+class TaxWorkingExportAPIView(CapitalDistributionAccessMixin, APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, tax_working_id):
+        serializer = EntityScopeSerializer(data=request.query_params)
+        serializer.is_valid(raise_exception=True)
+        export_format = str(request.query_params.get("format", "")).strip().lower()
+        renderers = {
+            "csv": (render_tax_working_csv, "text/csv"),
+            "xlsx": (render_tax_working_xlsx, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+            "pdf": (render_tax_working_pdf, "application/pdf"),
+        }
+        if export_format not in renderers:
+            raise ValidationError({"format": "Choose one of csv, xlsx, or pdf."})
+        working = self.scoped_tax_working(
+            request,
+            tax_working_id=tax_working_id,
+            entity_id=serializer.validated_data["entity"],
+            codes=TAX_WORKING_EXPORT_PERMISSIONS,
+        )
+        renderer, content_type = renderers[export_format]
+        response = HttpResponse(renderer(build_tax_working_export(working)), content_type=content_type)
+        response["Content-Disposition"] = f'attachment; filename="{tax_working_filename(working, export_format)}"'
+        return response
+
+
+class TaxWorkingLineOverrideAPIView(CapitalDistributionAccessMixin, APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def patch(self, request, tax_working_id, line_id):
+        serializer = TaxWorkingLineOverrideSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        working = self.scoped_tax_working(
+            request,
+            tax_working_id=tax_working_id,
+            entity_id=data["entity"],
+            codes=TAX_WORKING_OVERRIDE_PERMISSIONS,
+        )
+        line = CapitalDistributionTaxWorkingLine.objects.filter(id=line_id, working=working, isactive=True).first()
+        if not line:
+            raise ValidationError({"line": "Tax working line was not found for this working."})
+        try:
+            working = override_tax_working_line(
+                line=line,
+                allowable_amount=data["allowable_amount"],
+                reason=data["reason"],
+                evidence_references=data["evidence_references"],
+                actor=request.user,
+                expected_updated_at=data["expected_updated_at"],
+            )
+        except DjangoValidationError as exc:
+            raise _as_api_validation_error(exc)
+        return Response(serialize_tax_working(working))
+
+
+class TaxWorkingReproduceAPIView(CapitalDistributionAccessMixin, APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, tax_working_id):
+        serializer = EntityScopeSerializer(data=request.query_params)
+        serializer.is_valid(raise_exception=True)
+        working = self.scoped_tax_working(
+            request,
+            tax_working_id=tax_working_id,
+            entity_id=serializer.validated_data["entity"],
+        )
+        try:
+            result = reproduce_tax_working(working)
+        except DjangoValidationError as exc:
+            raise _as_api_validation_error(exc)
+        return Response(result)
+
+
+class TaxWorkingActionAPIView(CapitalDistributionAccessMixin, APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    action = ""
+
+    def post(self, request, tax_working_id):
+        serializer = TaxWorkingActionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        permissions_by_action = {
+            "submit": TAX_WORKING_SUBMIT_PERMISSIONS,
+            "approve": TAX_WORKING_APPROVE_PERMISSIONS,
+            "reverse": TAX_WORKING_REVERSE_PERMISSIONS,
+        }
+        working = self.scoped_tax_working(
+            request,
+            tax_working_id=tax_working_id,
+            entity_id=data["entity"],
+            codes=permissions_by_action[self.action],
+        )
+        actions = {
+            "submit": submit_tax_working,
+            "approve": approve_tax_working,
+            "reverse": reverse_tax_working,
+        }
+        try:
+            working = actions[self.action](
+                working=working,
+                actor=request.user,
+                expected_updated_at=data["expected_updated_at"],
+                reason=data.get("reason", ""),
+            )
+        except DjangoValidationError as exc:
+            raise _as_api_validation_error(exc)
+        return Response(serialize_tax_working(working))
+
+
+class TaxWorkingSubmitAPIView(TaxWorkingActionAPIView):
+    action = "submit"
+
+
+class TaxWorkingApproveAPIView(TaxWorkingActionAPIView):
+    action = "approve"
+
+
+class TaxWorkingReverseAPIView(TaxWorkingActionAPIView):
+    action = "reverse"
 
 
 class CapitalDistributionRunListCalculateAPIView(CapitalDistributionAccessMixin, APIView):
