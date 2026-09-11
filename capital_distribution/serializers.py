@@ -24,6 +24,14 @@ class FormationResolveSerializer(EntityScopeSerializer):
     effective_from = serializers.DateField(required=False, allow_null=True)
 
 
+class WaveOneMigrationSerializer(EntityScopeSerializer):
+    entityfinid = serializers.IntegerField()
+
+
+class WaveOneActivationSerializer(WaveOneMigrationSerializer):
+    enabled = serializers.BooleanField()
+
+
 class PolicyStakeholderWriteSerializer(serializers.Serializer):
     ownership = serializers.PrimaryKeyRelatedField(queryset=EntityOwnershipV2.objects.all())
     target_type = serializers.ChoiceField(choices=DistributionPolicyStakeholder.TargetType.choices)

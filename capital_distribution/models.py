@@ -37,6 +37,46 @@ WAVE_ONE_FORMATIONS = {
 }
 
 
+class CapitalDistributionActivation(TrackingModel):
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending setup"
+        READY = "ready", "Ready to enable"
+        ENABLED = "enabled", "Enabled"
+        DISABLED = "disabled", "Disabled"
+
+    entity = models.OneToOneField(
+        Entity,
+        on_delete=models.CASCADE,
+        related_name="capital_distribution_activation",
+    )
+    wave_version = models.PositiveSmallIntegerField(default=1)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING, db_index=True)
+    readiness_hash = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    readiness_snapshot = models.JSONField(default=dict, blank=True)
+    assessed_at = models.DateTimeField(null=True, blank=True)
+    enabled_at = models.DateTimeField(null=True, blank=True)
+    enabled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="capital_distribution_activations_enabled",
+    )
+    createdby = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="capital_distribution_activations_created",
+    )
+
+    class Meta:
+        ordering = ("entity_id",)
+
+    def __str__(self):
+        return f"{self.entity_id}:wave-{self.wave_version}:{self.status}"
+
+
 class EntityFormationProfile(TrackingModel):
     class Status(models.TextChoices):
         DRAFT = "draft", "Draft"

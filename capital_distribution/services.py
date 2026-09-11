@@ -436,6 +436,8 @@ def validate_policy(policy: DistributionPolicyVersion) -> None:
             errors["stakeholders"] = "A proprietorship requires exactly one proprietor row."
         elif rows[0].profit_percentage != Decimal("100.0000"):
             errors["profit_percentage"] = "The proprietor share must be exactly 100%."
+        elif ((rows[0].configuration or {}).get("remuneration") or {}).get("enabled"):
+            errors["remuneration"] = "Proprietor remuneration is not an appropriation and cannot be enabled."
     elif policy.formation_type in {FormationType.PARTNERSHIP, FormationType.LLP}:
         if not rows or any(row.target_type != DistributionPolicyStakeholder.TargetType.PARTNER for row in rows):
             errors["stakeholders"] = "Partnership and LLP policies require partner rows only."
@@ -751,7 +753,7 @@ def _approved_policy_segments(*, entity, entityfin, subentity, period_from, peri
     policies = list(
         DistributionPolicyVersion.objects.filter(
             entity=entity,
-            formation_type__in=(FormationType.PARTNERSHIP, FormationType.LLP),
+            formation_type__in=WAVE_ONE_FORMATIONS,
             status=DistributionPolicyVersion.Status.APPROVED,
             isactive=True,
             effective_from__lte=period_to,
@@ -764,7 +766,12 @@ def _approved_policy_segments(*, entity, entityfin, subentity, period_from, peri
         .order_by("effective_from", "version_number", "id")
     )
     if not policies:
-        raise ValidationError({"policy": "No approved partnership or LLP policy covers this period."})
+        raise ValidationError({"policy": "No approved Wave 1 distribution policy covers this period."})
+    formation_types = {policy.formation_type for policy in policies}
+    if len(formation_types) != 1:
+        raise ValidationError({
+            "policy": "Approved policies from different organization formations cannot be combined in one run."
+        })
 
     segments = []
     cursor = period_from
@@ -1048,12 +1055,15 @@ def calculate_distribution_run(
     idempotency_key: str,
     actor,
 ) -> CapitalDistributionRun:
+    from .migration_services import assert_wave_one_activation
+
     fy_start = _as_date(entityfin.finstartyear)
     fy_end = _as_date(entityfin.finendyear)
     if period_from < fy_start or period_to > fy_end:
         raise ValidationError({"period": "Calculation period must be inside the selected financial year."})
     if entityfin.entity_id != entity.id or (subentity and subentity.entity_id != entity.id):
         raise ValidationError({"scope": "Financial year and branch must belong to the selected entity."})
+    assert_wave_one_activation(entity=entity)
 
     policy_segments = _approved_policy_segments(
         entity=entity,

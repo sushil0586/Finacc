@@ -1,6 +1,7 @@
 from django.contrib import admin
 
 from .models import (
+    CapitalDistributionActivation,
     CapitalDistributionAuditEvent,
     CapitalDistributionAccountMapping,
     CapitalDistributionLine,
@@ -14,6 +15,26 @@ from .models import (
     EntityFormationProfile,
     TaxPolicyVersion,
 )
+
+
+@admin.register(CapitalDistributionActivation)
+class CapitalDistributionActivationAdmin(admin.ModelAdmin):
+    list_display = ("entity", "wave_version", "status", "assessed_at", "enabled_at", "enabled_by")
+    list_filter = ("wave_version", "status", "isactive")
+    search_fields = ("entity__entityname", "readiness_hash")
+    readonly_fields = (
+        "entity", "wave_version", "status", "readiness_hash", "readiness_snapshot",
+        "assessed_at", "enabled_at", "enabled_by", "createdby", "created_at", "updated_at",
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(CapitalDistributionAccountMapping)

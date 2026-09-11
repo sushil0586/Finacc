@@ -10,6 +10,8 @@ from .views import (
     DistributionPolicySubmitAPIView,
     DistributionPolicySupersedeAPIView,
     FormationProfileAPIView,
+    WaveOneActivationAPIView,
+    WaveOneMigrationAPIView,
     CapitalDistributionRunDetailAPIView,
     CapitalDistributionRunListCalculateAPIView,
     CapitalDistributionAccountMappingAPIView,
@@ -39,6 +41,8 @@ app_name = "capital_distribution_api"
 
 urlpatterns = [
     path("formation/", FormationProfileAPIView.as_view(), name="formation-profile"),
+    path("migration/", WaveOneMigrationAPIView.as_view(), name="wave-one-migration"),
+    path("activation/", WaveOneActivationAPIView.as_view(), name="wave-one-activation"),
     path("policies/", DistributionPolicyListCreateAPIView.as_view(), name="policy-list"),
     path("policies/seed/", DistributionPolicySeedAPIView.as_view(), name="policy-seed"),
     path("policies/<int:policy_id>/", DistributionPolicyDetailAPIView.as_view(), name="policy-detail"),

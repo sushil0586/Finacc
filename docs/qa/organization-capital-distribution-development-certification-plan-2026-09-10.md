@@ -990,7 +990,7 @@ Staging certification checkpoint (2026-09-10):
 
 ### Phase 6: Tax Working And Policy Governance
 
-Status: In progress; tax-policy governance, frozen tax-working engine, statutory partnership evaluators, operational Angular workspace, and audit exports complete locally
+Status: Substantially complete; local implementation and staging service/browser certification complete, with independent accounting and manual assistive-technology gates pending
 
 Development:
 
@@ -1154,17 +1154,38 @@ Implementation checkpoint (2026-09-11):
   The reconciliation scenario reports a skip when no staged frozen working exists so
   absent certification data cannot be mistaken for a pass. TypeScript compilation and
   Playwright discovery of all seven live scenarios pass locally.
+- Staging certification checkpoint (2026-09-11): a rollback-only scenario on the
+  deployed PostgreSQL environment used Manav-T's verified partnership profile,
+  approved 60/40 distribution policy, and live account mappings. It calculated and
+  posted a one-day INR 12,345.67 appropriation run, created and independently approved
+  an effective tax policy, produced a frozen working with the full amount explicitly
+  disallowed, and reconciled book amount exactly to allowable plus disallowed amount.
+  Reproduction matched the stored calculation hash, a repeated calculation returned
+  the same working, and tax calculation left journal-line count unchanged. CSV, XLSX,
+  and PDF outputs passed content/signature checks. The tax working and posting were
+  reversed before the enclosing transaction was deliberately rolled back; follow-up
+  queries confirmed zero residual runs, policies, or workings.
+- The seven-scenario live browser certificate then ran against the deployed UI in
+  Chromium, Firefox, and WebKit. It passed 18/18 executable checks, including setup
+  and mapping readiness, appropriation statement reconciliation, P&L, Balance Sheet,
+  custom-date accumulation, generated-file contracts, tax workspace readiness, and
+  narrow-viewport accessibility with no serious findings. Three expected skips (one
+  per browser) recorded that Manav-T has no permanently persisted tax working. The
+  rollback-only staging service certificate above supplies the corresponding
+  book-to-tax lifecycle evidence without leaving certification records in customer
+  books.
 - Remaining Phase 6 slices: independent accounting-owner approval of statutory golden
   examples; binary evidence upload integration if required beyond document IDs/URLs;
   manual assistive-technology review;
-  production-like concurrent load certification; and staging book-to-tax reconciliation
-  certification. Two-client optimistic concurrency, real simultaneous PostgreSQL row-lock
+  and production-like concurrent load certification. Two-client optimistic concurrency,
+  real simultaneous PostgreSQL row-lock
   behavior, transactional rollback, idempotent retry, duplicate-action suppression, and
-  browser failure-recovery gates are complete locally.
+  browser failure-recovery gates are complete locally; the principal book-to-tax
+  lifecycle and three-browser operational path are also certified on staging.
 
 ### Phase 7: Wave 1 Migration And Proprietorship Engine
 
-Status: Planned
+Status: Implemented locally; staging migration, volume, recovery, and manual assistive-technology certification pending
 
 Development:
 
@@ -1187,6 +1208,43 @@ Exit gate:
 - Migration is repeatable, non-destructive, observable, and reversible.
 - No existing entity is activated with incomplete policies or ledger mappings.
 - Proprietor flows never expose partner ratio/remuneration controls.
+
+Implementation checkpoint (2026-09-11):
+
+- Added a one-per-entity Wave 1 activation gate with pending, ready, enabled, and
+  disabled states, frozen readiness evidence, timestamps, and actor attribution.
+  Entities without an activation record retain their existing behavior; once an
+  entity enters the migration flow, calculation is blocked until explicitly enabled.
+- Added read-only migration preview, idempotent preparation, and explicit
+  enable/disable APIs. Preparation locks the entity, materializes a verified formation
+  profile, creates an initial draft only when none exists, records an audit event, and
+  never enables posting. Enable is rejected until preparation has created the gate and
+  profile, approved policy, owner mappings, and appropriation mapping are all ready.
+- Readiness covers proprietorship, partnership, and LLP; full-FY owner coverage;
+  proprietor count and 100% share; partner share completeness and 100% totals; stale
+  profiles; approved policy coverage; PAN/reference warnings; and posting-account gaps.
+  Invalid source data aborts transactionally without partial profiles, policies, or
+  activation records.
+- Proprietorship now runs through the shared frozen calculation, approval, posting,
+  reporting, and reversal engine at 100%. Proprietor remuneration is rejected at the
+  domain boundary, and mixed approved policies from different formations cannot be
+  combined in one run.
+- Added an operator-facing Migration & Activation workspace with formation, owner,
+  evidence, policy, and posting readiness; named blockers; and explicit Prepare,
+  Enable, and Disable actions. Proprietor policy screens show a fixed 100% result and
+  suppress partner-only ratio and remuneration controls. Owner terminology is also
+  applied to mappings, balances, statements, and success messages.
+- Local evidence: all 71 capital-distribution backend tests pass, including migration
+  preview purity, idempotency, invalid-data rollback, activation gating, proprietor
+  calculation, balanced journals, exact reversal, tenant/FY scope, and API permission
+  behavior. The focused Angular suite passes 13/13, the full deterministic Chromium
+  browser suite passes 18/18, and migration/mobile/keyboard/axe checks pass 9/9 across
+  Chromium, Firefox, and WebKit with no serious or critical automated accessibility
+  findings.
+- Remaining Phase 7 gates: a rollback-only staging migration on representative
+  proprietorship and partnership entities; interrupted-request and production-like
+  volume certification; confirmation that untouched staging entities remain unchanged;
+  and manual VoiceOver or equivalent review.
 
 ### Phase 8: Wave 1 Production Certification
 
@@ -1397,7 +1455,7 @@ Confidence is evidence-based and updated only after each exit gate:
 | Permissions and isolation | 40% | 96% | 98% |
 | UX and accessibility | 20% | 92% | 95% |
 | Wave 1 partnership/LLP appropriation | 30% | 95% | 96%+ |
-| Wave 1 proprietorship appropriation | 30% | 45% | 96%+ |
+| Wave 1 proprietorship appropriation | 30% | 90% | 96%+ |
 | Later-wave formation engines | 0% | 0% | 96%+ each |
 
 Baseline reflects reusable foundations, not implemented formation engines. Confidence

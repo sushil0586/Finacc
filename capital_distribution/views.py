@@ -39,9 +39,16 @@ from .serializers import (
     TaxWorkingActionSerializer,
     TaxWorkingCalculateSerializer,
     TaxWorkingLineOverrideSerializer,
+    WaveOneActivationSerializer,
+    WaveOneMigrationSerializer,
     serialize_policy,
     serialize_tax_policy,
     serialize_tax_working,
+)
+from .migration_services import (
+    apply_wave_one_migration,
+    assess_wave_one_migration,
+    set_wave_one_activation,
 )
 from .services import (
     approve_policy,
@@ -119,6 +126,8 @@ TAX_WORKING_SUBMIT_PERMISSIONS = ("capital_distribution.tax_working.submit",)
 TAX_WORKING_APPROVE_PERMISSIONS = ("capital_distribution.tax_working.approve",)
 TAX_WORKING_REVERSE_PERMISSIONS = ("capital_distribution.tax_working.reverse",)
 TAX_WORKING_EXPORT_PERMISSIONS = ("capital_distribution.tax_working.export",)
+MIGRATION_VIEW_PERMISSIONS = ("capital_distribution.migration.view", "capital_distribution.setup.view")
+MIGRATION_MANAGE_PERMISSIONS = ("capital_distribution.migration.manage", "capital_distribution.setup.manage")
 
 
 def _as_api_validation_error(exc: DjangoValidationError) -> ValidationError:
@@ -271,6 +280,92 @@ class FormationProfileAPIView(CapitalDistributionAccessMixin, APIView):
         except DjangoValidationError as exc:
             raise _as_api_validation_error(exc)
         return Response(serialize_formation_profile(profile), status=status.HTTP_201_CREATED)
+
+
+class WaveOneMigrationAPIView(CapitalDistributionAccessMixin, APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        serializer = WaveOneMigrationSerializer(data=request.query_params)
+        serializer.is_valid(raise_exception=True)
+        scope = serializer.validated_data
+        entity = self.scoped_entity(
+            request,
+            entity_id=scope["entity"],
+            entityfinid_id=scope["entityfinid"],
+            codes=MIGRATION_VIEW_PERMISSIONS,
+        )
+        entityfin = EntityFinancialYear.objects.filter(pk=scope["entityfinid"], entity=entity).first()
+        if not entityfin:
+            raise ValidationError({"entityfinid": "Financial year was not found for this entity."})
+        try:
+            return Response(assess_wave_one_migration(entity=entity, entityfin=entityfin))
+        except DjangoValidationError as exc:
+            raise _as_api_validation_error(exc)
+
+    def post(self, request):
+        serializer = WaveOneMigrationSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        scope = serializer.validated_data
+        entity = self.scoped_entity(
+            request,
+            entity_id=scope["entity"],
+            entityfinid_id=scope["entityfinid"],
+            codes=MIGRATION_MANAGE_PERMISSIONS,
+        )
+        entityfin = EntityFinancialYear.objects.filter(pk=scope["entityfinid"], entity=entity).first()
+        if not entityfin:
+            raise ValidationError({"entityfinid": "Financial year was not found for this entity."})
+        try:
+            return Response(apply_wave_one_migration(
+                entity=entity,
+                entityfin=entityfin,
+                actor=request.user,
+            ))
+        except DjangoValidationError as exc:
+            raise _as_api_validation_error(exc)
+
+
+class WaveOneActivationAPIView(CapitalDistributionAccessMixin, APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        serializer = WaveOneMigrationSerializer(data=request.query_params)
+        serializer.is_valid(raise_exception=True)
+        scope = serializer.validated_data
+        entity = self.scoped_entity(
+            request,
+            entity_id=scope["entity"],
+            entityfinid_id=scope["entityfinid"],
+            codes=MIGRATION_VIEW_PERMISSIONS,
+        )
+        entityfin = EntityFinancialYear.objects.filter(pk=scope["entityfinid"], entity=entity).first()
+        if not entityfin:
+            raise ValidationError({"entityfinid": "Financial year was not found for this entity."})
+        return Response(assess_wave_one_migration(entity=entity, entityfin=entityfin))
+
+    def post(self, request):
+        serializer = WaveOneActivationSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        scope = serializer.validated_data
+        entity = self.scoped_entity(
+            request,
+            entity_id=scope["entity"],
+            entityfinid_id=scope["entityfinid"],
+            codes=MIGRATION_MANAGE_PERMISSIONS,
+        )
+        entityfin = EntityFinancialYear.objects.filter(pk=scope["entityfinid"], entity=entity).first()
+        if not entityfin:
+            raise ValidationError({"entityfinid": "Financial year was not found for this entity."})
+        try:
+            return Response(set_wave_one_activation(
+                entity=entity,
+                entityfin=entityfin,
+                enabled=scope["enabled"],
+                actor=request.user,
+            ))
+        except DjangoValidationError as exc:
+            raise _as_api_validation_error(exc)
 
 
 class DistributionPolicyListCreateAPIView(CapitalDistributionAccessMixin, APIView):

@@ -33,15 +33,22 @@ from reports.services.controls.year_end_close import _build_close_journal_lines,
 from core.concurrency import StaleObjectConflict
 
 from .models import (
+    CapitalDistributionActivation,
     CapitalDistributionAuditEvent,
     CapitalDistributionAccountMapping,
     CapitalDistributionLine,
     CapitalDistributionRun,
     CapitalDistributionTaxWorking,
+    DistributionPolicyStakeholder,
     DistributionPolicyVersion,
     EntityFormationProfile,
     FormationType,
     TaxPolicyVersion,
+)
+from .migration_services import (
+    apply_wave_one_migration,
+    assess_wave_one_migration,
+    set_wave_one_activation,
 )
 from .calculations import calculate_segment
 from .reporting import build_appropriation_statement
@@ -217,6 +224,234 @@ class FormationResolutionTests(CapitalDistributionFixtureMixin, TestCase):
         self.assertEqual(result.status, EntityFormationProfile.Status.UNSUPPORTED)
         self.assertFalse(result.supported)
         self.assertIn("strategy_not_enabled", {row["code"] for row in result.readiness_issues})
+
+
+class ProprietorshipWaveOneTests(CapitalDistributionFixtureMixin, TestCase):
+    def setUp(self):
+        self.maker = self.make_user("proprietor-maker")
+        self.approver = self.make_user("proprietor-approver")
+        self.entity = self.make_entity(name="Wave One Proprietorship", owner=self.maker)
+        self.owner = self.add_owner(
+            self.entity,
+            name="Sole Proprietor",
+            ownership_type=EntityOwnershipV2.OwnershipType.PROPRIETOR,
+            share="100.0000",
+        )
+        self.owner.pan_number = "ABCDE1234F"
+        self.owner.agreement_reference = "OWNERSHIP-2026-01"
+        self.owner.effective_from = date(2026, 4, 1)
+        self.owner.effective_to = date(2027, 3, 31)
+        self.owner.save()
+        self.entityfin = EntityFinancialYear.objects.create(
+            entity=self.entity,
+            desc="FY 2026-27",
+            year_code="FY2026-27",
+            finstartyear=aware(2026, 4, 1),
+            finendyear=aware(2027, 3, 31),
+            createdby=self.maker,
+        )
+
+    def make_account(self, name):
+        ledger = Ledger.objects.create(entity=self.entity, name=name, createdby=self.maker)
+        return account.objects.create(entity=self.entity, accountname=name, ledger=ledger, createdby=self.maker)
+
+    def configure_posting(self):
+        owner_current = self.make_account("Proprietor Current")
+        upsert_account_mapping(
+            entity=self.entity,
+            ownership=self.owner,
+            capital_account=None,
+            current_account=owner_current,
+            drawings_account=None,
+            effective_from=date(2026, 4, 1),
+            effective_to=None,
+            actor=self.maker,
+        )
+        appropriation = self.make_account("Profit and Loss Appropriation")
+        static, _ = StaticAccount.objects.update_or_create(
+            code="PROFIT_LOSS_APPROPRIATION",
+            defaults={"name": "Profit and Loss Appropriation", "group": StaticAccountGroup.EQUITY},
+        )
+        EntityStaticAccountMap.objects.create(
+            entity=self.entity,
+            static_account=static,
+            account=appropriation,
+            ledger=appropriation.ledger,
+            createdby=self.maker,
+        )
+
+    def test_migration_activation_and_proprietor_posting_are_guarded_and_idempotent(self):
+        preview = assess_wave_one_migration(entity=self.entity, entityfin=self.entityfin)
+        self.assertTrue(preview["migration_ready"])
+        self.assertFalse(preview["activation_ready"])
+        self.assertEqual(preview["formation_type"], FormationType.PROPRIETORSHIP)
+        self.assertIn("create_initial_draft_policy", preview["planned_actions"])
+        self.assertFalse(EntityFormationProfile.objects.filter(entity=self.entity).exists())
+
+        applied = apply_wave_one_migration(entity=self.entity, entityfin=self.entityfin, actor=self.maker)
+        self.assertFalse(applied["activation_ready"])
+        activation = CapitalDistributionActivation.objects.get(entity=self.entity)
+        self.assertEqual(activation.status, CapitalDistributionActivation.Status.PENDING)
+        policy = DistributionPolicyVersion.objects.get(entity=self.entity)
+        stakeholder = policy.stakeholders.get()
+        self.assertEqual(stakeholder.target_type, DistributionPolicyStakeholder.TargetType.PROPRIETOR)
+        self.assertEqual(stakeholder.profit_percentage, Decimal("100.0000"))
+        self.assertFalse(((stakeholder.configuration or {}).get("remuneration") or {}).get("enabled", False))
+
+        direct_report = apply_wave_one_migration(entity=self.entity, entityfin=self.entityfin, actor=self.maker)
+        self.assertEqual(EntityFormationProfile.objects.filter(entity=self.entity).count(), 1)
+        self.assertEqual(DistributionPolicyVersion.objects.filter(entity=self.entity).count(), 1)
+        self.assertEqual(CapitalDistributionActivation.objects.filter(entity=self.entity).count(), 1)
+
+        with self.assertRaisesMessage(ValidationError, "not enabled"):
+            calculate_distribution_run(
+                entity=self.entity,
+                entityfin=self.entityfin,
+                subentity=None,
+                period_from=date(2026, 4, 1),
+                period_to=date(2027, 3, 31),
+                cadence="annual",
+                profit_source="manual_approved",
+                supplied_profit=Decimal("75000.00"),
+                book_adjustments=Decimal("0.00"),
+                balance_inputs=[{"ownership": self.owner.id, "capital_balance": "50000.00"}],
+                idempotency_key="blocked-before-activation",
+                actor=self.maker,
+            )
+
+        policy = submit_policy(policy=policy, actor=self.maker, expected_updated_at=policy.updated_at)
+        policy = approve_policy(policy=policy, actor=self.approver, expected_updated_at=policy.updated_at)
+        self.configure_posting()
+        CapitalDistributionActivation.objects.filter(entity=self.entity).delete()
+        with self.assertRaisesMessage(ValidationError, "Prepare the Wave 1 migration"):
+            set_wave_one_activation(
+                entity=self.entity,
+                entityfin=self.entityfin,
+                enabled=True,
+                actor=self.approver,
+            )
+        prepared = apply_wave_one_migration(entity=self.entity, entityfin=self.entityfin, actor=self.maker)
+        self.assertTrue(prepared["activation_ready"])
+        self.assertEqual(prepared["activation"]["status"], CapitalDistributionActivation.Status.READY)
+        enabled = set_wave_one_activation(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            enabled=True,
+            actor=self.approver,
+        )
+        self.assertTrue(enabled["activation_ready"])
+        self.assertTrue(enabled["activation"]["enabled"])
+
+        run = calculate_distribution_run(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=None,
+            period_from=date(2026, 4, 1),
+            period_to=date(2027, 3, 31),
+            cadence="annual",
+            profit_source="manual_approved",
+            supplied_profit=Decimal("75000.00"),
+            book_adjustments=Decimal("0.00"),
+            balance_inputs=[{"ownership": self.owner.id, "capital_balance": "50000.00"}],
+            idempotency_key="enabled-proprietor-run",
+            actor=self.maker,
+        )
+        self.assertEqual(run.formation_profile.formation_type, FormationType.PROPRIETORSHIP)
+        self.assertEqual(run.distributable_result, Decimal("75000.00"))
+        self.assertEqual(run.lines.count(), 1)
+        line = run.lines.get()
+        self.assertEqual(line.component_type, CapitalDistributionLine.Component.RESIDUAL_PROFIT)
+        self.assertEqual(line.rate, Decimal("100.0000"))
+        self.assertEqual(line.amount, Decimal("75000.00"))
+
+        run = submit_distribution_run(run=run, actor=self.maker, expected_updated_at=run.updated_at)
+        run = approve_distribution_run(run=run, actor=self.approver, expected_updated_at=run.updated_at)
+        run = post_distribution_run(run=run, actor=self.approver, expected_updated_at=run.updated_at)
+        posted = list(JournalLine.objects.filter(
+            entity=self.entity,
+            txn_type=TxnType.CAPITAL_DISTRIBUTION,
+            txn_id=run.id,
+        ).values_list("ledger_id", "drcr", "amount", "detail_id"))
+        self.assertEqual(sum(row[2] for row in posted if row[1]), Decimal("75000.00"))
+        self.assertEqual(sum(row[2] for row in posted if not row[1]), Decimal("75000.00"))
+
+        run = reverse_distribution_run(
+            run=run,
+            actor=self.approver,
+            expected_updated_at=run.updated_at,
+            reason="Proprietor lifecycle certification",
+        )
+        reversed_rows = list(JournalLine.objects.filter(
+            entity=self.entity,
+            txn_type=TxnType.CAPITAL_DISTRIBUTION,
+            txn_id=run.id,
+        ).values_list("ledger_id", "drcr", "amount", "detail_id"))
+        self.assertEqual(
+            sorted((ledger, not side, amount, detail) for ledger, side, amount, detail in posted),
+            sorted(reversed_rows),
+        )
+
+        set_wave_one_activation(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            enabled=False,
+            actor=self.approver,
+        )
+        with self.assertRaisesMessage(ValidationError, "not enabled"):
+            calculate_distribution_run(
+                entity=self.entity,
+                entityfin=self.entityfin,
+                subentity=None,
+                period_from=date(2026, 4, 1),
+                period_to=date(2027, 3, 31),
+                cadence="annual",
+                profit_source="manual_approved",
+                supplied_profit=Decimal("1.00"),
+                book_adjustments=Decimal("0.00"),
+                balance_inputs=[],
+                idempotency_key="blocked-after-disable",
+                actor=self.maker,
+            )
+
+    def test_invalid_legacy_proprietor_data_does_not_partially_migrate(self):
+        self.owner.share_percentage = Decimal("75.00")
+        self.owner.save(update_fields=("share_percentage", "updated_at"))
+
+        preview = assess_wave_one_migration(entity=self.entity, entityfin=self.entityfin)
+        self.assertFalse(preview["migration_ready"])
+        self.assertIn("invalid_proprietor_share", {row["code"] for row in preview["issues"]})
+        with self.assertRaises(ValidationError):
+            apply_wave_one_migration(entity=self.entity, entityfin=self.entityfin, actor=self.maker)
+        self.assertFalse(EntityFormationProfile.objects.filter(entity=self.entity).exists())
+        self.assertFalse(DistributionPolicyVersion.objects.filter(entity=self.entity).exists())
+        self.assertFalse(CapitalDistributionActivation.objects.filter(entity=self.entity).exists())
+
+    def test_proprietor_policy_rejects_partner_style_remuneration(self):
+        profile = materialize_formation_profile(entity=self.entity, actor=self.maker)
+        with self.assertRaisesMessage(ValidationError, "Proprietor remuneration"):
+            create_policy(
+                entity=self.entity,
+                formation_profile=profile,
+                payload={
+                    "entityfin": self.entityfin,
+                    "effective_from": date(2026, 4, 1),
+                    "effective_to": date(2027, 3, 31),
+                    "stakeholders": [{
+                        "ownership": self.owner,
+                        "target_type": "proprietor",
+                        "target_name": self.owner.name,
+                        "profit_percentage": "100.0000",
+                        "loss_percentage": "100.0000",
+                        "configuration": {
+                            "remuneration": {"enabled": True, "method": "fixed", "amount": "1000", "prorate": False}
+                        },
+                    }],
+                },
+                actor=self.maker,
+            )
+
+
+class FormationResolutionContinuationTests(CapitalDistributionFixtureMixin, TestCase):
 
     def test_business_type_only_requires_verification_and_is_not_wave_one(self):
         entity = self.make_entity(name="NGO Entity", business_type=Entity.BusinessType.NGO)
@@ -418,6 +653,46 @@ class CapitalDistributionAPITests(CapitalDistributionFixtureMixin, APITestCase):
         self.permission_mock = self.permission_patch.start()
         self.addCleanup(self.subscription_patch.stop)
         self.addCleanup(self.permission_patch.stop)
+
+    def test_wave_one_preview_is_read_only_and_apply_is_idempotent(self):
+        preview = self.client.get(
+            reverse("capital_distribution_api:wave-one-migration"),
+            {"entity": self.entity.id, "entityfinid": self.entityfin.id},
+        )
+        self.assertEqual(preview.status_code, 200, preview.data)
+        self.assertTrue(preview.data["migration_ready"])
+        self.assertFalse(preview.data["activation_ready"])
+        self.assertFalse(EntityFormationProfile.objects.filter(entity=self.entity).exists())
+
+        first = self.client.post(
+            reverse("capital_distribution_api:wave-one-migration"),
+            {"entity": self.entity.id, "entityfinid": self.entityfin.id},
+            format="json",
+        )
+        self.assertEqual(first.status_code, 200, first.data)
+        second = self.client.post(
+            reverse("capital_distribution_api:wave-one-migration"),
+            {"entity": self.entity.id, "entityfinid": self.entityfin.id},
+            format="json",
+        )
+        self.assertEqual(second.status_code, 200, second.data)
+        self.assertEqual(EntityFormationProfile.objects.filter(entity=self.entity).count(), 1)
+        self.assertEqual(DistributionPolicyVersion.objects.filter(entity=self.entity).count(), 1)
+        self.assertEqual(CapitalDistributionActivation.objects.filter(entity=self.entity).count(), 1)
+
+        blocked = self.client.post(
+            reverse("capital_distribution_api:wave-one-activation"),
+            {"entity": self.entity.id, "entityfinid": self.entityfin.id, "enabled": True},
+            format="json",
+        )
+        self.assertEqual(blocked.status_code, 400, blocked.data)
+        self.assertIn("readiness", blocked.data)
+
+        foreign = self.client.get(
+            reverse("capital_distribution_api:wave-one-migration"),
+            {"entity": self.other_entity.id, "entityfinid": self.entityfin.id},
+        )
+        self.assertEqual(foreign.status_code, 400)
 
     def test_resolve_create_list_and_cross_entity_detail_isolation(self):
         formation_response = self.client.post(
