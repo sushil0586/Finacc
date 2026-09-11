@@ -3,10 +3,10 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from Authentication.models import User
-from entity.models import Entity, EntityGstRegistration, GstRegistrationType
+from entity.models import Entity, EntityGstRegistration, GstRegistrationType, SubEntity, UserEntityContext
 from geography.models import Country, State
 from rbac.models import Role, UserRoleAssignment
-from subscriptions.models import UserEntityAccess
+from subscriptions.models import CustomerAccount, UserEntityAccess
 
 
 @override_settings(RBAC_DEV_ALLOW_ALL_ACCESS=False)
@@ -38,6 +38,21 @@ class EntityContextAccessTests(TestCase):
         )
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
+
+    def grant_membership(self, role):
+        account = CustomerAccount.objects.create(
+            name=f"Context account {self.entity.id}",
+            slug=f"context-account-{self.entity.id}",
+            owner=self.owner,
+            status=CustomerAccount.Status.ACTIVE,
+        )
+        self.entity.customer_account = account
+        self.entity.save(update_fields=["customer_account"])
+        return UserEntityAccess.objects.create(
+            user=self.user,
+            customer_account=account,
+            role=role,
+        )
 
     def test_entities_list_ignores_future_assignments(self):
         role = Role.objects.create(entity=self.entity, name="Viewer", code="VIEWER")
@@ -112,3 +127,59 @@ class EntityContextAccessTests(TestCase):
         self.assertEqual(response.data[0]["gstno"], "03APXPB5894F1Z3")
         self.assertEqual(response.data[0]["seller_gstin"], "03APXPB5894F1Z3")
         self.assertEqual(response.data[0]["gst_selection_mode"], "entity_primary")
+
+    def test_branch_assignment_only_exposes_its_allowed_branch(self):
+        allowed = SubEntity.objects.create(entity=self.entity, subentityname="Allowed Branch", sort_order=1)
+        SubEntity.objects.create(entity=self.entity, subentityname="Foreign Branch", sort_order=2)
+        role = Role.objects.create(entity=self.entity, name="Branch Viewer", code="BRANCH_VIEWER")
+        self.grant_membership(UserEntityAccess.Role.VIEWER)
+        UserRoleAssignment.objects.create(
+            user=self.user,
+            entity=self.entity,
+            role=role,
+            subentity=allowed,
+        )
+
+        included = self.client.get("/api/entity/me/entities?include=subentities")
+        dedicated = self.client.get(f"/api/entity/me/entities/{self.entity.id}/subentities")
+
+        self.assertEqual(included.status_code, 200)
+        self.assertEqual([row["id"] for row in included.data[0]["subentities"]], [allowed.id])
+        self.assertEqual(dedicated.status_code, 200)
+        self.assertEqual([row["id"] for row in dedicated.data["subentities"]], [allowed.id])
+        self.assertEqual(included.data[0]["default_subentity_id"], allowed.id)
+        self.assertEqual(dedicated.data["default_subentity_id"], allowed.id)
+
+    def test_branch_assignment_rejects_foreign_and_unscoped_context(self):
+        allowed = SubEntity.objects.create(entity=self.entity, subentityname="Allowed Branch", sort_order=1)
+        foreign = SubEntity.objects.create(entity=self.entity, subentityname="Foreign Branch", sort_order=2)
+        role = Role.objects.create(entity=self.entity, name="Branch Operator", code="BRANCH_OPERATOR")
+        self.grant_membership(UserEntityAccess.Role.MEMBER)
+        UserRoleAssignment.objects.create(
+            user=self.user,
+            entity=self.entity,
+            role=role,
+            subentity=allowed,
+        )
+
+        allowed_response = self.client.patch(
+            f"/api/entity/me/entities/{self.entity.id}/context",
+            {"subentity": allowed.id},
+            format="json",
+        )
+        foreign_response = self.client.patch(
+            f"/api/entity/me/entities/{self.entity.id}/context",
+            {"subentity": foreign.id},
+            format="json",
+        )
+        unscoped_response = self.client.patch(
+            f"/api/entity/me/entities/{self.entity.id}/context",
+            {"subentity": None},
+            format="json",
+        )
+
+        self.assertEqual(allowed_response.status_code, 200)
+        self.assertEqual(foreign_response.status_code, 403)
+        self.assertEqual(unscoped_response.status_code, 403)
+        context = UserEntityContext.objects.get(user=self.user, entity=self.entity)
+        self.assertEqual(context.subentity_id, allowed.id)

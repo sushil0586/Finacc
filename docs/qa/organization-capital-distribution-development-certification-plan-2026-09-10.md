@@ -901,8 +901,23 @@ Staging certification checkpoint (2026-09-10):
   and all nine deterministic Chromium scenarios pass, covering lifecycle, mobile,
   view-only behavior, stale-session recovery, accessibility, errors, and visual
   baseline stability.
+- The deployed branch-scope correction was exercised with a disposable Head Office
+  viewer carrying only setup, policy, and run read permissions. Formation, policy,
+  run list, mapping, and statement reads returned 200 for the assigned branch;
+  unscoped formation, the foreign branch, and direct access to an entity-wide run
+  returned 403. The real restricted browser workspace passed at 390x844, exposed no
+  entity-wide runs or mutation controls, had no document overflow, and produced no
+  serious or critical axe findings. The reusable live Playwright gate passed 2/2.
+- That staging pass also exposed a shared-shell defect outside the capital API: the
+  entity-context endpoint listed both branches and accepted the foreign branch as
+  saved context, after which correctly scoped business APIs failed. The local fix
+  filters both branch-option endpoints, repairs stale defaults to an allowed branch,
+  and rejects foreign or unscoped context for branch-only users. All 43 focused
+  entity-context and capital-distribution backend tests pass. The disposable staging
+  user and role were removed after certification; deployment and rerun of the two
+  new header-context assertions remain pending.
 - Remaining before Phase 5 exit: certify year-end/opening carry-forward and staging
-  branch and permission isolation after deploying the branch-scope correction;
+  branch and permission isolation after deploying the shared context correction;
   complete staging Firefox/WebKit and manual
   assistive-technology review; and resolve or formally disposition the pre-existing
   Manav-T Balance Sheet imbalance.

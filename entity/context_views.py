@@ -2,7 +2,7 @@ from django.conf import settings
 from django.db.models import Q
 from django.utils import timezone
 from rest_framework import permissions, status
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -35,12 +35,15 @@ def _default_financial_year_id(entity):
     return fallback.id if fallback else None
 
 
-def _default_subentity_id(entity):
-    head_office = entity.subentity.filter(isactive=True, is_head_office=True).order_by("sort_order", "id").first()
-    if head_office:
-        return head_office.id
-    fallback = entity.subentity.filter(isactive=True).order_by("sort_order", "id").first()
-    return fallback.id if fallback else None
+def _accessible_subentities(user, entity):
+    rows = entity.subentity.filter(isactive=True)
+    if getattr(settings, "RBAC_DEV_ALLOW_ALL_ACCESS", False):
+        return rows
+
+    assignments = EffectivePermissionService.active_assignments_queryset(user, entity.id)
+    if not assignments.exists() or assignments.filter(subentity__isnull=True).exists():
+        return rows
+    return rows.filter(id__in=assignments.values_list("subentity_id", flat=True))
 
 
 def _can_access_entity(user, entity):
@@ -67,13 +70,16 @@ def _resolve_user_context(user, entity):
 
     if default_entityfinid and not EntityFinancialYear.objects.filter(id=default_entityfinid, entity=entity).exists():
         default_entityfinid = None
-    if default_subentity and not SubEntity.objects.filter(id=default_subentity, entity=entity).exists():
+    accessible_subentities = _accessible_subentities(user, entity)
+    if default_subentity and not accessible_subentities.filter(id=default_subentity).exists():
         default_subentity = None
 
     if default_entityfinid is None:
         default_entityfinid = _default_financial_year_id(entity)
     if default_subentity is None:
-        default_subentity = _default_subentity_id(entity)
+        head_office = accessible_subentities.filter(is_head_office=True).order_by("sort_order", "id").first()
+        fallback = head_office or accessible_subentities.order_by("sort_order", "id").first()
+        default_subentity = fallback.id if fallback else None
 
     return default_entityfinid, default_subentity
 
@@ -119,20 +125,28 @@ class UserEntitiesV2View(APIView):
                     )
 
             if include_subentities:
-                for row in (
-                    SubEntity.objects.filter(entity_id__in=entity_ids, isactive=True)
-                    .order_by("sort_order", "id")
-                    .values("entity_id", "id", "subentityname", "subentity_code", "is_head_office", "branch_type")
-                ):
-                    subentities_map.setdefault(row["entity_id"], []).append(
-                        {
-                            "id": row["id"],
-                            "subentityname": row["subentityname"],
-                            "subentity_code": row["subentity_code"],
-                            "is_head_office": row["is_head_office"],
-                            "branch_type": row["branch_type"],
-                        }
-                    )
+                entities_by_id = {
+                    entity.id: entity
+                    for entity in Entity.objects.filter(id__in=entity_ids)
+                }
+                for entity_id in entity_ids:
+                    entity = entities_by_id.get(entity_id)
+                    if not entity:
+                        continue
+                    for row in (
+                        _accessible_subentities(user, entity)
+                        .order_by("sort_order", "id")
+                        .values("entity_id", "id", "subentityname", "subentity_code", "is_head_office", "branch_type")
+                    ):
+                        subentities_map.setdefault(row["entity_id"], []).append(
+                            {
+                                "id": row["id"],
+                                "subentityname": row["subentityname"],
+                                "subentity_code": row["subentity_code"],
+                                "is_head_office": row["is_head_office"],
+                                "branch_type": row["branch_type"],
+                            }
+                        )
             return financial_years_map, subentities_map
 
         if getattr(settings, "RBAC_DEV_ALLOW_ALL_ACCESS", False):
@@ -288,7 +302,7 @@ class UserEntitySubentitiesView(APIView):
             return Response({"detail": "Entity not found or access denied."}, status=status.HTTP_404_NOT_FOUND)
 
         rows = list(
-            entity.subentity.filter(isactive=True)
+            _accessible_subentities(request.user, entity)
             .order_by("sort_order", "id")
             .values("id", "subentityname", "subentity_code", "is_head_office", "branch_type")
         )
@@ -324,6 +338,10 @@ class UserEntityContextPatchView(APIView):
             subentity_obj = SubEntity.objects.filter(id=subentity, entity=entity, isactive=True).first()
             if not subentity_obj:
                 raise ValidationError({"subentity": "Invalid subentity for this entity."})
+            if not EffectivePermissionService.has_scope_access(request.user, entity.id, subentity_obj.id):
+                raise PermissionDenied("You do not have access to the requested branch scope.")
+        elif not EffectivePermissionService.has_scope_access(request.user, entity.id, None):
+            raise PermissionDenied("You must select an assigned branch.")
 
         context, _ = UserEntityContext.objects.update_or_create(
             user=request.user,
