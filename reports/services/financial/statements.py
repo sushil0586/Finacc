@@ -182,6 +182,17 @@ def _resolve_balance_sheet_window(entityfin_id=None, from_date=None, to_date=Non
     return explicit_from, explicit_to
 
 
+def _balance_sheet_profit_start(entityfin_id, report_from):
+    """Return the FY start used to accumulate current profit into closing equity."""
+    if not entityfin_id:
+        return report_from
+    fy_start, _ = resolve_date_window(entityfin_id, None, None)
+    fy_start = _coerce_date(fy_start)
+    if fy_start and report_from and fy_start <= report_from:
+        return fy_start
+    return report_from or fy_start
+
+
 def _previous_financial_year(entity_id, current_financial_year_id=None, current_start=None):
     qs = EntityFinancialYear.objects.filter(entity_id=entity_id)
     if current_financial_year_id:
@@ -1500,11 +1511,13 @@ def _build_snapshot(
     raw_liability_total = liability_total
     from reports.services.trading_account import build_trading_account_summary
 
+    profit_from_date = _balance_sheet_profit_start(entityfin_id, from_date)
+
     trading_snapshot = build_trading_account_summary(
         entity_id=entity_id,
         entityfin_id=entityfin_id,
         subentity_id=subentity_id,
-        startdate=from_date.isoformat(),
+        startdate=profit_from_date.isoformat(),
         enddate=to_date.isoformat(),
         valuation_method=stock_valuation_method,
         posted_only=posted_only,
@@ -1516,7 +1529,7 @@ def _build_snapshot(
         entity_id=entity_id,
         entityfin_id=entityfin_id,
         subentity_id=subentity_id,
-        from_date=from_date,
+        from_date=profit_from_date,
         to_date=to_date,
         include_zero_balances=include_zero_balances,
         search=search,
@@ -1857,6 +1870,7 @@ def _build_snapshot(
             "opening_inventory_valuation": f"{stock_context['opening_inventory']:.2f}",
             "closing_inventory_valuation": f"{stock_context['closing_inventory']:.2f}",
             "balance_difference": f"{final_difference:.2f}",
+            "profit_accumulation_from": profit_from_date.isoformat(),
         },
         "stock_valuation": {
             "requested_mode": stock_context["requested_mode"],

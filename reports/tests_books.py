@@ -3070,6 +3070,127 @@ class BookReportAPITests(APITestCase):
         self.assertEqual(balance_sheet["summary"]["net_profit_brought_to_equity"], "-100.00")
         self.assertEqual(balance_sheet["summary"]["balance_difference"], "0.00")
 
+    def test_balance_sheet_custom_range_accumulates_fy_profit_into_equity(self):
+        from reports.services.financial.statements import build_balance_sheet
+
+        asset_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Certification Current Assets",
+            accounttypecode="CERT-ASSET",
+            balanceType=True,
+            createdby=self.user,
+        )
+        equity_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Certification Equity",
+            accounttypecode="CERT-EQUITY",
+            balanceType=False,
+            createdby=self.user,
+        )
+        income_type = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Certification Income",
+            accounttypecode="CERT-INCOME",
+            balanceType=False,
+            createdby=self.user,
+        )
+        asset_head = accountHead.objects.create(
+            entity=self.entity,
+            name="Certification Asset",
+            code=9030,
+            balanceType="Debit",
+            drcreffect="Debit",
+            accounttype=asset_type,
+            detailsingroup=3,
+            createdby=self.user,
+        )
+        equity_head = accountHead.objects.create(
+            entity=self.entity,
+            name="Certification Capital",
+            code=9031,
+            balanceType="Credit",
+            drcreffect="Credit",
+            accounttype=equity_type,
+            detailsingroup=3,
+            createdby=self.user,
+        )
+        income_head = accountHead.objects.create(
+            entity=self.entity,
+            name="Certification Revenue",
+            code=9032,
+            balanceType="Credit",
+            drcreffect="Credit",
+            accounttype=income_type,
+            detailsingroup=2,
+            createdby=self.user,
+        )
+        asset_ledger = Ledger.objects.create(
+            entity=self.entity, ledger_code=903001, name="Certification Asset",
+            accounthead=asset_head, accounttype=asset_type, createdby=self.user,
+        )
+        equity_ledger = Ledger.objects.create(
+            entity=self.entity, ledger_code=903101, name="Certification Capital",
+            accounthead=equity_head, accounttype=equity_type, createdby=self.user,
+        )
+        income_ledger = Ledger.objects.create(
+            entity=self.entity, ledger_code=903201, name="Certification Revenue",
+            accounthead=income_head, accounttype=income_type, createdby=self.user,
+        )
+        asset_account = account.objects.create(
+            entity=self.entity, ledger=asset_ledger, accountname="Certification Asset", createdby=self.user,
+        )
+        equity_account = account.objects.create(
+            entity=self.entity, ledger=equity_ledger, accountname="Certification Capital", createdby=self.user,
+        )
+        income_account = account.objects.create(
+            entity=self.entity, ledger=income_ledger, accountname="Certification Revenue", createdby=self.user,
+        )
+        self._create_entry(
+            txn_type=TxnType.OPENING_BALANCE,
+            txn_id=9031,
+            voucher_no="CERT-OPENING",
+            posting_date="2025-04-01",
+            voucher_date="2025-04-01",
+            status=EntryStatus.POSTED,
+            narration="Balanced opening capital",
+            subentity=self.subentity,
+            lines=[
+                (asset_account, asset_ledger, True, "1000.00", "Opening asset"),
+                (equity_account, equity_ledger, False, "1000.00", "Opening capital"),
+            ],
+        )
+        self._create_entry(
+            txn_type=TxnType.JOURNAL,
+            txn_id=9032,
+            voucher_no="CERT-PRIOR-PROFIT",
+            posting_date="2025-04-10",
+            voucher_date="2025-04-10",
+            status=EntryStatus.POSTED,
+            narration="Profit before selected custom range",
+            subentity=self.subentity,
+            lines=[
+                (asset_account, asset_ledger, True, "500.00", "Profit asset"),
+                (income_account, income_ledger, False, "500.00", "Prior revenue"),
+            ],
+        )
+
+        balance_sheet = build_balance_sheet(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            from_date="2025-05-01",
+            to_date="2025-05-31",
+            group_by="ledger",
+            ledger_ids=[asset_ledger.id, equity_ledger.id, income_ledger.id],
+            stock_valuation_mode="none",
+        )
+
+        self.assertEqual(balance_sheet["summary"]["net_profit_brought_to_equity"], "500.00")
+        self.assertEqual(balance_sheet["summary"]["profit_accumulation_from"], "2025-04-01")
+        self.assertEqual(balance_sheet["totals"]["assets"], "1500.00")
+        self.assertEqual(balance_sheet["totals"]["liabilities_and_equity"], "1500.00")
+        self.assertEqual(balance_sheet["summary"]["balance_difference"], "0.00")
+
     def test_trading_account_includes_unmapped_sales_document_lines(self):
         from reports.services.trading_account import build_trading_account_dynamic
 

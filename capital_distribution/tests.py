@@ -8,6 +8,7 @@ from django.core.exceptions import ValidationError
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.test import APIClient, APITestCase
 
 from Authentication.models import User
@@ -21,7 +22,8 @@ from entity.models import (
 )
 from financial.models import Ledger, account
 from posting.models import EntityStaticAccountMap, JournalLine, StaticAccount, StaticAccountGroup, TxnType
-from reports.services.controls.year_end_close import _posted_appropriation_coverage
+from reports.services.controls.opening_generation import _build_opening_lines
+from reports.services.controls.year_end_close import _build_close_journal_lines, _posted_appropriation_coverage
 
 from .models import (
     CapitalDistributionAuditEvent,
@@ -929,6 +931,219 @@ class CapitalDistributionPostingLifecycleTests(CapitalDistributionFixtureMixin, 
             idempotency_key=key,
             actor=self.maker,
         )
+
+    def post_run(self, **kwargs):
+        run = self.calculate(**kwargs)
+        run = submit_distribution_run(run=run, actor=self.maker, expected_updated_at=run.updated_at)
+        run = approve_distribution_run(run=run, actor=self.approver, expected_updated_at=run.updated_at)
+        return post_distribution_run(run=run, actor=self.approver, expected_updated_at=run.updated_at)
+
+    def test_posted_appropriation_closes_and_carries_partner_balances_once(self):
+        run = self.post_run(key="year-opening-certification")
+        close_snapshot = {
+            "financial_year": self.entityfin,
+            "pnl": {
+                "income": [{
+                    "label": "Certified operating profit",
+                    "accounthead_id": 990001,
+                    "debit": "0.00",
+                    "credit": "100000.00",
+                    "amount_decimal": "100000.00",
+                }],
+                "expenses": [],
+            },
+            "summary": {"net_profit": Decimal("100000.00")},
+        }
+        adapter_context = {
+            "validation_issues": [],
+            "equity_targets": [],
+            "missing_equity_codes": [],
+            "equity_allocation_mode": "ratio_split",
+            "constitution": {"constitution_mode": "partnership"},
+            "allocation_plan": [],
+        }
+
+        with patch(
+            "reports.services.controls.year_end_close.YearOpeningPostingAdapter.build_context",
+            return_value=adapter_context,
+        ):
+            close_lines, close_meta, diagnostics = _build_close_journal_lines(
+                snapshot=close_snapshot,
+                entity_id=self.entity.id,
+                entityfin_id=self.entityfin.id,
+                subentity_id=None,
+                opening_policy={},
+            )
+
+        appropriation_close_lines = [
+            line for line in close_lines if line.ledger_id == self.appropriation.ledger_id
+        ]
+        self.assertEqual(len(appropriation_close_lines), 1)
+        self.assertFalse(appropriation_close_lines[0].drcr)
+        self.assertEqual(appropriation_close_lines[0].amount, Decimal("100000.00"))
+        self.assertEqual(diagnostics["equity_allocation_mode"], "posted_appropriation_clearance")
+        self.assertEqual(
+            [row["source"] for row in close_meta if row["section"] == "equity"],
+            ["equity_target"],
+        )
+
+        posted_appropriation_debit = sum(
+            JournalLine.objects.filter(
+                entity=self.entity,
+                txn_type=TxnType.CAPITAL_DISTRIBUTION,
+                txn_id=run.id,
+                ledger=self.appropriation.ledger,
+                drcr=True,
+            ).values_list("amount", flat=True),
+            Decimal("0.00"),
+        )
+        self.assertEqual(posted_appropriation_debit, appropriation_close_lines[0].amount)
+
+        opening_snapshot = {
+            "bs": {
+                "assets": [{
+                    "ledger_id": 880001,
+                    "accounthead_id": 880001,
+                    "ledger_name": "Certified cash balance",
+                    "amount_decimal": "100000.00",
+                }],
+                "liabilities_and_equity": [
+                    {
+                        "ledger_id": self.partner_accounts[self.first.id].ledger_id,
+                        "accounthead_id": 880002,
+                        "ledger_name": self.partner_accounts[self.first.id].ledger.name,
+                        "amount_decimal": "60000.00",
+                    },
+                    {
+                        "ledger_id": self.partner_accounts[self.second.id].ledger_id,
+                        "accounthead_id": 880002,
+                        "ledger_name": self.partner_accounts[self.second.id].ledger.name,
+                        "amount_decimal": "40000.00",
+                    },
+                ],
+                "summary": {
+                    "net_profit_brought_to_equity": "0.00",
+                    "raw_net_profit": "0.00",
+                },
+                "stock_valuation": {},
+            }
+        }
+        opening_context = {
+            "destination_ledgers": {
+                "equity": {"static_account_code": "OPENING_EQUITY_TRANSFER", "ledger_id": None},
+                "inventory": {"static_account_code": "OPENING_INVENTORY_CARRY_FORWARD", "ledger_id": 880003},
+            },
+            "constitution": {"constitution_mode": "partnership"},
+            "allocation_plan": [],
+            "equity_targets": [],
+            "missing_equity_codes": [],
+            "equity_allocation_mode": "ratio_split",
+            "validation_issues": [],
+        }
+        with patch(
+            "reports.services.controls.opening_generation.YearOpeningPostingAdapter.build_context",
+            return_value=opening_context,
+        ):
+            opening_lines, opening_meta, opening_summary = _build_opening_lines(
+                opening_snapshot,
+                opening_policy={},
+                entity_id=self.entity.id,
+            )
+
+        partner_credits = {
+            line.ledger_id: line.amount
+            for line in opening_lines
+            if not line.drcr and line.ledger_id in {
+                self.partner_accounts[self.first.id].ledger_id,
+                self.partner_accounts[self.second.id].ledger_id,
+            }
+        }
+        self.assertEqual(partner_credits, {
+            self.partner_accounts[self.first.id].ledger_id: Decimal("60000.00"),
+            self.partner_accounts[self.second.id].ledger_id: Decimal("40000.00"),
+        })
+        self.assertEqual(sum(line.amount for line in opening_lines if line.drcr), Decimal("100000.00"))
+        self.assertEqual(sum(line.amount for line in opening_lines if not line.drcr), Decimal("100000.00"))
+        self.assertFalse(any(row["source"].startswith("synthetic_") for row in opening_meta))
+        self.assertEqual(opening_summary["diagnostics"]["synthetic_equity_adjustment"], "0.00")
+
+    def test_year_end_coverage_rejects_partial_and_ignores_reversed_runs(self):
+        partial = self.post_run(
+            key="partial-year-certification",
+            period_from=date(2026, 4, 1),
+            period_to=date(2026, 9, 30),
+            supplied_profit=Decimal("50000.00"),
+            cadence="custom",
+        )
+        with self.assertRaisesMessage(DRFValidationError, "do not cover the full financial year"):
+            _posted_appropriation_coverage(
+                entity_id=self.entity.id,
+                entityfin_id=self.entityfin.id,
+                subentity_id=None,
+                period_from=date(2026, 4, 1),
+                period_to=date(2027, 3, 31),
+            )
+
+        partial = reverse_distribution_run(
+            run=partial,
+            actor=self.approver,
+            expected_updated_at=partial.updated_at,
+            reason="Certification reversal",
+        )
+        self.assertEqual(partial.status, CapitalDistributionRun.Status.REVERSED)
+        self.assertIsNone(_posted_appropriation_coverage(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=None,
+            period_from=date(2026, 4, 1),
+            period_to=date(2027, 3, 31),
+        ))
+
+    def test_year_end_close_rejects_posted_appropriation_amount_mismatch(self):
+        self.post_run(
+            key="mismatched-year-certification",
+            supplied_profit=Decimal("90000.00"),
+        )
+        snapshot = {
+            "financial_year": self.entityfin,
+            "pnl": {
+                "income": [{
+                    "label": "Certified operating profit",
+                    "accounthead_id": 990001,
+                    "debit": "0.00",
+                    "credit": "100000.00",
+                    "amount_decimal": "100000.00",
+                }],
+                "expenses": [],
+            },
+            "summary": {"net_profit": Decimal("100000.00")},
+        }
+        adapter_context = {
+            "validation_issues": [],
+            "equity_targets": [],
+            "missing_equity_codes": [],
+            "equity_allocation_mode": "ratio_split",
+            "constitution": {"constitution_mode": "partnership"},
+            "allocation_plan": [],
+        }
+
+        with (
+            patch(
+                "reports.services.controls.year_end_close.YearOpeningPostingAdapter.build_context",
+                return_value=adapter_context,
+            ),
+            self.assertRaisesMessage(
+                DRFValidationError,
+                "Posted capital-distribution total does not match the closeable book result",
+            ),
+        ):
+            _build_close_journal_lines(
+                snapshot=snapshot,
+                entity_id=self.entity.id,
+                entityfin_id=self.entityfin.id,
+                subentity_id=None,
+                opening_policy={},
+            )
 
     def test_calculate_submit_approve_post_retry_and_exact_reverse(self):
         run = self.calculate()

@@ -1,6 +1,6 @@
 # Organization Capital, Appropriation, And Distribution Development Plan
 
-Last updated: 10 September 2026
+Last updated: 11 September 2026
 
 ## Purpose
 
@@ -763,7 +763,7 @@ Implementation checkpoint (2026-09-10):
 
 ### Phase 5: Financial Reports And Reconciliation
 
-Status: Staging accounting, deployed UI, report, export, and reversal lifecycle certified; isolation and year-end gates pending
+Status: Staging accounting, UI, reports, exports, reversal, branch isolation, controlled year-end/opening integration, and Firefox/WebKit certification complete; Manav-T custom-range fix awaits deployment verification and manual assistive-technology review remains pending
 
 Development:
 
@@ -832,10 +832,8 @@ Implementation checkpoint (2026-09-10):
   therefore labels the original journal as reconstructed from immutable frozen run
   lines and validates the live reversal against them. Preserving journal rows for all
   posting revisions requires a separately tested posting-engine migration.
-- Remaining before Phase 5 exit: post and reverse a controlled staging run and
-  reconcile it independently to journals, Trial Balance, P&L, Balance Sheet, partner
-  Ledger Book, year-end controls, and downloaded artifacts. Staging must also confirm
-  permission/branch isolation and browser-export equality using production-like data.
+- Remaining before Phase 5 exit: deploy and verify the Manav-T custom-range Balance
+  Sheet correction and complete manual assistive-technology review.
 
 Staging certification checkpoint (2026-09-10):
 
@@ -913,14 +911,69 @@ Staging certification checkpoint (2026-09-10):
   saved context, after which correctly scoped business APIs failed. The local fix
   filters both branch-option endpoints, repairs stale defaults to an allowed branch,
   and rejects foreign or unscoped context for branch-only users. All 43 focused
-  entity-context and capital-distribution backend tests pass. The disposable staging
-  user and role were removed after certification; deployment and rerun of the two
-  new header-context assertions remain pending.
-- Remaining before Phase 5 exit: certify year-end/opening carry-forward and staging
-  branch and permission isolation after deploying the shared context correction;
-  complete staging Firefox/WebKit and manual
-  assistive-technology review; and resolve or formally disposition the pre-existing
-  Manav-T Balance Sheet imbalance.
+  entity-context and capital-distribution backend tests pass.
+- Final staging isolation certification (2026-09-11): the shared context correction
+  was deployed and the reusable restricted-user Playwright gate passed 2/2. The
+  entity payload exposed only Head Office; assigned-branch formation, policies,
+  runs, mappings, and statement reads succeeded; and unscoped, foreign-branch,
+  foreign-context, and entity-wide run access returned 403. The read-only workspace
+  loaded at 390x844 with every capital API request carrying the assigned branch,
+  no leaked entity-wide run, no enabled mutation control, no horizontal overflow,
+  and no serious or critical axe finding. The disposable user and role were removed,
+  with zero temporary records remaining.
+- Local year-end/opening certification (2026-09-11): a real posted annual
+  partnership run allocated INR 100,000.00 as INR 60,000.00 and INR 40,000.00.
+  The generated year-end close lines credited Profit & Loss Appropriation by the
+  same INR 100,000.00 that the distribution posting debited, proving the temporary
+  appropriation balance clears to zero. A post-close opening snapshot carried the
+  two partner balances once, remained debit-credit balanced, and produced no
+  synthetic second 60/40 allocation.
+- The same gate proves incomplete annual coverage blocks year-end qualification, a
+  reversed partial run is excluded from active coverage, and full-date coverage is
+  still rejected when its posted allocation differs from closeable book profit.
+  Existing duplicate opening-generation and rollback tests also remain green. The
+  focused regression passed 50 tests across capital distribution, year-end close,
+  opening generation, and destructive close/opening workflows, with no production-
+  code change required.
+- Controlled staging year-end/opening certification (2026-09-11): a disposable,
+  balanced partnership entity on staging PostgreSQL posted INR 100,000.00 of book
+  profit and distributed it to two partner current accounts at 60/40. The CAPDIST
+  journal debited Profit & Loss Appropriation by INR 100,000.00, and the YEC journal
+  credited it by the same amount, leaving the appropriation account at zero.
+- The generated FY2027-28 opening journal debited cash by INR 100,000.00 and credited
+  the partner accounts by INR 60,000.00 and INR 40,000.00 exactly once. It contained
+  no appropriation line or duplicate synthetic allocation. The destination Balance
+  Sheet reported INR 100,000.00 on both sides with zero balance difference, while
+  destination P&L income, expense, and net profit were all zero.
+- Opening rollback, year-end rollback, and distribution reversal completed through
+  the production service layer. The disposable entity, user, runs, entries, and
+  posting batches were then removed, and all fixture residue checks returned zero.
+- Staging cross-browser certification (2026-09-11): the finalized live suite passed
+  4/4 in Firefox and 4/4 in WebKit. It validated verified formation and posting
+  mappings, API-to-UI appropriation totals, P&L and Balance Sheet treatment of
+  effective partner movements, 390x844 responsive behavior, and zero serious or
+  critical axe findings.
+- The live suite no longer assumes a permanently posted sample run. It derives
+  calculated and effective partner totals from the scoped reconciliation API and
+  proves the two existing reversed Manav-T runs remain reconciled while contributing
+  zero active P&L or Balance Sheet movement. Authentication and entity/FY scope are
+  established through the API before direct screen navigation, removing unrelated
+  dashboard-load instability from the report certificate.
+- Manav-T imbalance root-cause and local correction (2026-09-11): full-FY staging
+  Balance Sheet and Trial Balance were balanced at zero difference, but a one-day
+  custom-range Balance Sheet omitted INR 2,638,433.72 of profit earned earlier in
+  the same financial year. Asset and liability ledger balances correctly included
+  pre-range movements as effective opening balances, while the profit transferred
+  into equity was incorrectly calculated from only the selected day.
+- The Balance Sheet engine now accumulates current-year profit from the active FY
+  start through the selected as-of date, independent of the display range start.
+  A new isolated regression proves opening capital plus profit earned before a later
+  custom range remains balanced and exposes the applied profit accumulation date.
+  The expanded regression passed 129 tests across book reports, capital distribution,
+  year-end close, opening generation, and destructive rollback workflows.
+- Remaining before Phase 5 exit: deploy the custom-range correction, verify Manav-T
+  returns a zero Balance Sheet difference for the same one-day scope, and complete
+  manual assistive-technology review.
 
 ### Phase 6: Tax Working And Policy Governance
 
@@ -1176,8 +1229,8 @@ Confidence is evidence-based and updated only after each exit gate:
 | Calculation correctness | 25% | 88% | 98% |
 | Posting and reversal | 45% | 94% | 98% |
 | P&L and Balance Sheet presentation | 40% | 95% | 97% |
-| Permissions and isolation | 40% | 82% | 98% |
-| UX and accessibility | 20% | 88% | 95% |
+| Permissions and isolation | 40% | 96% | 98% |
+| UX and accessibility | 20% | 92% | 95% |
 | Wave 1 partnership/LLP appropriation | 30% | 95% | 96%+ |
 | Wave 1 proprietorship appropriation | 30% | 45% | 96%+ |
 | Later-wave formation engines | 0% | 0% | 96%+ each |

@@ -14,9 +14,9 @@ The review included API contracts, authorization, entity/FY/subentity scope prop
 
 ## Certification Result
 
-**Local release recommendation: Ready for staging validation with conditions.**
+**Release recommendation: Core accounting controls are staging-certified with conditions.**
 
-Confidence is **97% locally** for the reviewed surfaces. The core workflows, scope handling, action authorization, UI behavior, accessibility automation, cross-browser presentation, and disposable-database destructive cycles are covered. Final production sign-off remains conditional on repeating the destructive actions in staging and completing manual assistive-technology review.
+Confidence is **97%** for the reviewed surfaces. The core workflows, scope handling, action authorization, UI behavior, accessibility automation, cross-browser presentation, and disposable-database destructive cycles are covered locally. The close, opening generation, rollback, and financial-statement reconciliation path has also passed against a disposable staging entity. Final production sign-off remains conditional on manual assistive-technology review and the remaining operational gates below.
 
 ## Corrective Work
 
@@ -45,6 +45,7 @@ Confidence is **97% locally** for the reviewed surfaces. The core workflows, sco
 | Post-fix Playwright regression | 15 passed | Chromium rerun of the complete control certificate after destructive-path corrections |
 | Django system checks | Passed | `manage.py check` and migration drift check |
 | Diff integrity | Passed | No whitespace errors in backend or frontend changes |
+| Staging destructive accounting | Passed | Disposable PostgreSQL entity; appropriation, close, opening, Balance Sheet/P&L reconciliation, service rollback, and zero-residue cleanup |
 
 The initial full Playwright invocation reported 44 passed and one Firefox infrastructure failure while fetching workspace entities. The failed accessibility case passed immediately in isolation, with no accessibility assertion failure. This is classified as local transport noise, not a product defect.
 
@@ -65,7 +66,6 @@ The initial full Playwright invocation reported 44 passed and one Firefox infras
 
 ## Residual Gates
 
-- Repeat close, rollback, opening generation, opening rollback, and auto-provision against a disposable staging entity. Local database certification executes the posting and rollback services; browser certification deliberately verifies confirmation and request guards without changing shared developer books.
 - Run VoiceOver or NVDA manual review for announcements, reading order, and confirmation-dialog context. Automated WCAG checks are complete but do not replace this review.
 - Verify migration `0144_add_financial_control_action_permissions` is applied before testing administrator actions in staging.
 - Validate the persisted GST reconciliation card against a freshly completed staging reconciliation run. The card intentionally shows the latest saved run rather than rebuilding all compliance reports during page load.
