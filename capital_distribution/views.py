@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import logging
+from datetime import timedelta
+
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Q
 from django.http import HttpResponse
+from django.utils import timezone
 from rest_framework import permissions, status
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
@@ -15,6 +19,7 @@ from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 from .models import (
     CapitalDistributionAccountMapping,
+    CapitalDistributionAuditEvent,
     CapitalDistributionRun,
     CapitalDistributionTaxWorking,
     CapitalDistributionTaxWorkingLine,
@@ -22,6 +27,12 @@ from .models import (
     EntityFormationProfile,
     FormationType,
     TaxPolicyVersion,
+)
+from .observability import (
+    bind_operation_context,
+    current_correlation_id,
+    operation_metadata,
+    reset_operation_context,
 )
 from .serializers import (
     DistributionPolicyPatchSerializer,
@@ -130,6 +141,9 @@ MIGRATION_VIEW_PERMISSIONS = ("capital_distribution.migration.view", "capital_di
 MIGRATION_MANAGE_PERMISSIONS = ("capital_distribution.migration.manage", "capital_distribution.setup.manage")
 
 
+logger = logging.getLogger("finacc.capital_distribution")
+
+
 def _as_api_validation_error(exc: DjangoValidationError) -> ValidationError:
     if hasattr(exc, "message_dict"):
         return ValidationError(exc.message_dict)
@@ -139,6 +153,69 @@ def _as_api_validation_error(exc: DjangoValidationError) -> ValidationError:
 class CapitalDistributionAccessMixin(ScopedEntitlementMixin):
     subscription_feature_code = SubscriptionLimitCodes.FEATURE_FINANCIAL
     subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
+
+    def dispatch(self, request, *args, **kwargs):
+        self._operation_context_tokens = bind_operation_context(request.headers.get("X-Correlation-ID"))
+        self._operation_entity = None
+        try:
+            return super().dispatch(request, *args, **kwargs)
+        finally:
+            reset_operation_context(self._operation_context_tokens)
+
+    def finalize_response(self, request, response, *args, **kwargs):
+        response = super().finalize_response(request, response, *args, **kwargs)
+        response["X-Correlation-ID"] = current_correlation_id()
+        return response
+
+    def handle_exception(self, exc):
+        try:
+            response = super().handle_exception(exc)
+        except Exception:
+            self._record_operation_failure(exc, status.HTTP_500_INTERNAL_SERVER_ERROR)
+            logger.exception(
+                "capital_distribution_unexpected_error",
+                extra={"correlation_id": current_correlation_id()},
+            )
+            return Response({
+                "detail": "The operation could not be completed. Contact support with the correlation ID.",
+                "code": "internal_error",
+                "correlation_id": current_correlation_id(),
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        self._record_operation_failure(exc, response.status_code)
+        if isinstance(getattr(response, "data", None), dict):
+            response.data.setdefault("correlation_id", current_correlation_id())
+        return response
+
+    def _record_operation_failure(self, exc, status_code):
+        metadata = operation_metadata(
+            operation=self.__class__.__name__,
+            method=getattr(self.request, "method", ""),
+            path=getattr(self.request, "path", ""),
+            status_code=status_code,
+            error_code=getattr(exc, "default_code", exc.__class__.__name__),
+            entityfinid=getattr(self, "_operation_entityfinid_id", None),
+            subentity_id=getattr(self, "_operation_subentity_id", None),
+        )
+        logger.warning(
+            "capital_distribution_operation_failed",
+            extra={"correlation_id": current_correlation_id(), **metadata},
+        )
+        entity = getattr(self, "_operation_entity", None)
+        user = getattr(self.request, "user", None)
+        if entity is not None and getattr(user, "is_authenticated", False):
+            try:
+                CapitalDistributionAuditEvent.objects.create(
+                    entity=entity,
+                    actor=user,
+                    action="operation_failed",
+                    correlation_id=current_correlation_id(),
+                    metadata=metadata,
+                )
+            except Exception:
+                logger.exception(
+                    "capital_distribution_failure_audit_failed",
+                    extra={"correlation_id": current_correlation_id()},
+                )
 
     def require_permission(self, request, *, entity_id: int, codes: tuple[str, ...]) -> None:
         current = EffectivePermissionService.permission_codes_for_user(request.user, entity_id)
@@ -154,6 +231,9 @@ class CapitalDistributionAccessMixin(ScopedEntitlementMixin):
             subentity_id=subentity_id,
         )
         self.require_permission(request, entity_id=entity.id, codes=codes)
+        self._operation_entity = entity
+        self._operation_entityfinid_id = entityfinid_id
+        self._operation_subentity_id = subentity_id
         return entity
 
     def scoped_policy(
@@ -1041,6 +1121,113 @@ class CapitalDistributionRunDetailAPIView(CapitalDistributionAccessMixin, APIVie
         serializer.is_valid(raise_exception=True)
         run = self.scoped_run(request, run_id=run_id, entity_id=serializer.validated_data["entity"])
         return Response(serialize_distribution_run(run))
+
+
+class CapitalDistributionOperationalHealthAPIView(CapitalDistributionAccessMixin, APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        serializer = EntityScopeSerializer(data=request.query_params)
+        serializer.is_valid(raise_exception=True)
+        scope = serializer.validated_data
+        entity = self.scoped_entity(
+            request,
+            entity_id=scope["entity"],
+            entityfinid_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
+            codes=RUN_VIEW_PERMISSIONS,
+        )
+        now = timezone.now()
+        aging_cutoff = now - timedelta(hours=24)
+        recent_cutoff = now - timedelta(hours=24)
+        runs = CapitalDistributionRun.objects.filter(entity=entity, isactive=True)
+        if scope.get("entityfinid"):
+            runs = runs.filter(entityfin_id=scope["entityfinid"])
+        if scope.get("subentity"):
+            runs = runs.filter(subentity_id=scope["subentity"])
+
+        status_counts = {value: 0 for value, _ in CapitalDistributionRun.Status.choices}
+        for row in runs.values("status"):
+            status_counts[row["status"]] = status_counts.get(row["status"], 0) + 1
+        aging = runs.filter(
+            status__in=(
+                CapitalDistributionRun.Status.CALCULATED,
+                CapitalDistributionRun.Status.SUBMITTED,
+                CapitalDistributionRun.Status.APPROVED,
+            ),
+            updated_at__lt=aging_cutoff,
+        )
+        failures = CapitalDistributionAuditEvent.objects.filter(
+            entity=entity,
+            action="operation_failed",
+            created_at__gte=recent_cutoff,
+            isactive=True,
+        ).order_by("-created_at", "-id")
+        if scope.get("entityfinid"):
+            failures = failures.filter(metadata__entityfinid=scope["entityfinid"])
+        if scope.get("subentity"):
+            failures = failures.filter(metadata__subentity_id=scope["subentity"])
+        duration_events = CapitalDistributionAuditEvent.objects.filter(
+            entity=entity,
+            created_at__gte=recent_cutoff,
+            isactive=True,
+        ).order_by("-created_at", "-id")
+        if scope.get("entityfinid"):
+            duration_events = duration_events.filter(
+                Q(run__entityfin_id=scope["entityfinid"])
+                | Q(tax_working__entityfin_id=scope["entityfinid"])
+                | Q(policy__entityfin_id=scope["entityfinid"])
+                | Q(tax_policy__entityfin_id=scope["entityfinid"])
+                | Q(metadata__entityfinid=scope["entityfinid"])
+            )
+        if scope.get("subentity"):
+            duration_events = duration_events.filter(
+                Q(run__subentity_id=scope["subentity"])
+                | Q(tax_working__subentity_id=scope["subentity"])
+                | Q(metadata__subentity_id=scope["subentity"])
+            )
+        durations = [
+            float(row.metadata["duration_ms"])
+            for row in duration_events[:1000]
+            if isinstance(row.metadata, dict) and isinstance(row.metadata.get("duration_ms"), (int, float))
+        ]
+        stale_count = status_counts.get(CapitalDistributionRun.Status.STALE, 0)
+        aging_count = aging.count()
+        failure_count = failures.count()
+        return Response({
+            "scope": {
+                "entity": entity.id,
+                "entityfinid": scope.get("entityfinid"),
+                "subentity": scope.get("subentity"),
+            },
+            "generated_at": now.isoformat(),
+            "status": "attention" if stale_count or aging_count or failure_count else "healthy",
+            "runs": {
+                "total": runs.count(),
+                "by_status": status_counts,
+                "stale_count": stale_count,
+                "aging_action_count": aging_count,
+                "aging_threshold_hours": 24,
+            },
+            "failures": {
+                "last_24_hours": failure_count,
+                "recent": [
+                    {
+                        "correlation_id": row.correlation_id,
+                        "operation": (row.metadata or {}).get("operation", ""),
+                        "status_code": (row.metadata or {}).get("status_code"),
+                        "error_code": (row.metadata or {}).get("error_code", ""),
+                        "created_at": row.created_at.isoformat(),
+                    }
+                    for row in failures[:20]
+                ],
+            },
+            "latency_ms": {
+                "sample_count": len(durations),
+                "average": round(sum(durations) / len(durations), 3) if durations else None,
+                "maximum": round(max(durations), 3) if durations else None,
+            },
+        })
 
 
 class CapitalDistributionAccountMappingAPIView(CapitalDistributionAccessMixin, APIView):

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import uuid
 from datetime import date
 from decimal import Decimal
 
@@ -20,6 +19,7 @@ from .models import (
     FormationType,
     WAVE_ONE_FORMATIONS,
 )
+from .observability import current_correlation_id, operation_metadata
 from .services import (
     distribution_mapping_readiness,
     materialize_formation_profile,
@@ -305,13 +305,14 @@ def apply_wave_one_migration(*, entity: Entity, entityfin: EntityFinancialYear, 
         policy=created_policy,
         actor=actor,
         action="wave_one_migration_applied",
-        correlation_id=uuid.uuid4().hex,
+        correlation_id=current_correlation_id(),
         after_state={
             "activation": activation.status,
             "formation_profile": profile.id,
             "created_policy": created_policy.id if created_policy else None,
             "readiness_hash": refreshed["readiness_hash"],
         },
+        metadata=operation_metadata(operation="apply_wave_one_migration"),
     )
     return refreshed
 
@@ -349,9 +350,10 @@ def set_wave_one_activation(*, entity: Entity, entityfin: EntityFinancialYear, e
         entity=entity,
         actor=actor,
         action="wave_one_activation_enabled" if enabled else "wave_one_activation_disabled",
-        correlation_id=uuid.uuid4().hex,
+        correlation_id=current_correlation_id(),
         before_state=before,
         after_state={"status": activation.status, "readiness_hash": report["readiness_hash"]},
+        metadata=operation_metadata(operation="set_wave_one_activation"),
     )
     return report
 

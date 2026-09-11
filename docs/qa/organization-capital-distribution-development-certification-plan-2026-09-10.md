@@ -1185,7 +1185,7 @@ Implementation checkpoint (2026-09-11):
 
 ### Phase 7: Wave 1 Migration And Proprietorship Engine
 
-Status: Implemented locally; staging migration, volume, recovery, and manual assistive-technology certification pending
+Status: Automatable local and non-destructive staging certification complete; manual assistive-technology certification pending
 
 Development:
 
@@ -1241,14 +1241,55 @@ Implementation checkpoint (2026-09-11):
   browser suite passes 18/18, and migration/mobile/keyboard/axe checks pass 9/9 across
   Chromium, Firefox, and WebKit with no serious or critical automated accessibility
   findings.
-- Remaining Phase 7 gates: a rollback-only staging migration on representative
-  proprietorship and partnership entities; interrupted-request and production-like
-  volume certification; confirmation that untouched staging entities remain unchanged;
-  and manual VoiceOver or equivalent review.
+- Remaining Phase 7 gate: manual VoiceOver or equivalent review.
+
+Staging checkpoint (2026-09-11):
+
+- Confirmed the deployed application and API are healthy over HTTPS and the Wave 1
+  migration view/manage permissions are present for the certified entity scope.
+- Completed read-only migration assessments across five staging entities. Four
+  unconfigured entities were correctly blocked without creating activation records.
+  The configured Manav-T partnership was reported ready while retaining the
+  `not_created` activation state, proving that assessment is non-mutating and that an
+  untouched entity remains on the compatibility path. Its missing owner PAN was
+  surfaced as a warning rather than silently ignored.
+- Ran the live capital-distribution browser certification against Manav-T in Chromium,
+  Firefox, and WebKit: 18 tests passed and 3 tax-working reproduction tests were
+  explicitly skipped because no persisted frozen tax working exists in this staging
+  scope. Setup, mappings, statements, P&L, Balance Sheet, custom-date accumulation,
+  export, scoped tax workspace, narrow-mobile usability, and automated serious/critical
+  accessibility checks passed.
+- No migration preparation, activation, calculation, posting, reversal, or book data
+  mutation was performed during this checkpoint.
+- This browser checkpoint was deliberately read-only. The subsequent rollback-only
+  service certificates below cover the controlled migration and accounting lifecycle.
+
+Rollback-only staging migration checkpoint (2026-09-11):
+
+- Executed a complete proprietor lifecycle against deployed PostgreSQL inside a forced-
+  rollback transaction: preview, idempotent prepare, pre-enable rejection, policy
+  approval, posting mappings, enable, INR 75,000 calculation at fixed 100%, maker-
+  checker enforcement, balanced posting, idempotent posting retry, appropriation
+  statement, P&L, Balance Sheet, trial balance, proprietor ledger, exact reversal,
+  report zeroing, disable, and post-disable rejection all passed.
+- The proprietor posting produced INR 75,000 debit and credit, left operating profit
+  unchanged, appeared as a balanced equity movement in both financial statements, and
+  returned to zero after reversal. Before/after model counts matched and the temporary
+  entity, run, users, accounts, journals, policy, profile, and activation did not persist.
+- Executed 100 proprietor migration previews, 100 first prepares, and 100 idempotent
+  retries in a second forced-rollback transaction. Preview took 1.067 seconds, first
+  preparation 6.549 seconds, and retry 3.053 seconds on staging. An injected failure
+  during policy seeding and a separate invalid 75% proprietor source both left no
+  partial profile, policy, or activation. All 102 temporary entities were rolled back.
+- Executed a separate 60/40 partnership migration certificate covering preview,
+  preparation, seeded ownership percentages, policy approval, two owner mappings,
+  readiness, enable, disable, object-count idempotency, and full transaction rollback.
+  Manav-T and all other customer entities remained untouched.
+- Remaining Phase 7 gate is manual VoiceOver or equivalent assistive-technology review.
 
 ### Phase 8: Wave 1 Production Certification
 
-Status: Planned
+Status: In progress; backend operational observability Wave 1 complete
 
 Development:
 
@@ -1272,6 +1313,32 @@ Exit gate:
 - No conditional skips in the launch-critical browser lane.
 - Reconciliation, security, accessibility, recovery, and performance gates pass.
 - Product owner, accounting owner, engineering, and QA approve the Wave 1 launch matrix.
+
+Implementation checkpoint (2026-09-11):
+
+- Added a request-scoped correlation context for every capital-distribution API. A
+  caller-supplied safe `X-Correlation-ID` is preserved; invalid or absent values are
+  replaced with a generated ID. The response header, success audit events, structured
+  error response, failure audit event, and server log now use the same identifier.
+- Added duration metadata to migration, activation, calculation, run lifecycle, tax
+  policy, and tax-working audit events. Validation, conflict, permission, and unexpected
+  failures are logged without request bodies or credentials; failures after successful
+  entity scoping are also persisted for operator diagnosis. Unexpected failures retain
+  the application's support-safe structured error contract and expose no exception text.
+- Added scoped `GET /api/capital-distribution/operations/health/` visibility for run
+  totals by status, stale runs, calculated/submitted/approved actions older than 24
+  hours, recent failure summaries, and recent audit latency. The endpoint uses existing
+  subscription, entity/FY/branch, and run-view permission enforcement.
+- Added the production support, recovery, reconciliation, escalation, and retention
+  runbook at `docs/capital-distribution-production-runbook.md`.
+- Local evidence: all 73 capital-distribution tests pass. New API tests prove success
+  correlation and duration, persisted validation failure diagnostics, stale-run health,
+  24-hour failure visibility, safe HTTP 500 handling, and correlation propagation.
+  Django system checks and migration-drift checks pass with no schema changes.
+- Remaining Phase 8 work: frontend operator health presentation, full role matrix,
+  timeout/offline/401/403/409/422/500 browser recovery, concurrent lifecycle and flake
+  lanes, agreed report/export volume, removal of the persisted-tax-working conditional
+  skip, manual screen-reader review, visual baseline approval, and formal launch signoff.
 
 ### Phase 9: Company And OPC Equity/Dividend Engine
 
@@ -1455,7 +1522,7 @@ Confidence is evidence-based and updated only after each exit gate:
 | Permissions and isolation | 40% | 96% | 98% |
 | UX and accessibility | 20% | 92% | 95% |
 | Wave 1 partnership/LLP appropriation | 30% | 95% | 96%+ |
-| Wave 1 proprietorship appropriation | 30% | 90% | 96%+ |
+| Wave 1 proprietorship appropriation | 30% | 95% | 96%+ |
 | Later-wave formation engines | 0% | 0% | 96%+ each |
 
 Baseline reflects reusable foundations, not implemented formation engines. Confidence

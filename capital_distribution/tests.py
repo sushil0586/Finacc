@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from io import BytesIO
 from threading import Barrier
@@ -1116,6 +1116,7 @@ class CapitalDistributionRunAPITests(CapitalDistributionFixtureMixin, APITestCas
         self.addCleanup(self.permission_patch.stop)
 
     def test_calculate_list_and_detail_api(self):
+        correlation_id = "phase8-run-calculate-test"
         response = self.client.post(
             reverse("capital_distribution_api:run-list-calculate"),
             {
@@ -1131,10 +1132,15 @@ class CapitalDistributionRunAPITests(CapitalDistributionFixtureMixin, APITestCas
                 "idempotency_key": "api-annual-2026-v1",
             },
             format="json",
+            HTTP_X_CORRELATION_ID=correlation_id,
         )
         self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response["X-Correlation-ID"], correlation_id)
         self.assertEqual(response.data["distributable_result"], "79200.00")
         self.assertEqual(len(response.data["segments"]), 1)
+        audit = CapitalDistributionAuditEvent.objects.get(run_id=response.data["id"], action="run_calculated")
+        self.assertEqual(audit.correlation_id, correlation_id)
+        self.assertGreaterEqual(audit.metadata["duration_ms"], 0)
 
         listed = self.client.get(reverse("capital_distribution_api:run-list-calculate"), {
             "entity": self.entity.id, "entityfinid": self.entityfin.id
@@ -1148,6 +1154,96 @@ class CapitalDistributionRunAPITests(CapitalDistributionFixtureMixin, APITestCas
         )
         self.assertEqual(detail.status_code, 200, detail.data)
         self.assertEqual(detail.data["calculation_hash"], response.data["calculation_hash"])
+
+    def test_failed_operation_is_correlated_and_visible_in_operational_health(self):
+        payload = {
+            "entity": self.entity.id,
+            "entityfinid": self.entityfin.id,
+            "period_from": "2026-04-01",
+            "period_to": "2027-03-31",
+            "cadence": "annual",
+            "profit_source": "manual_approved",
+            "source_profit": "100000.00",
+            "book_adjustments": "0.00",
+            "balances": [{"ownership": self.first.id, "capital_balance": "100000.00"}],
+            "idempotency_key": "phase8-health-run",
+        }
+        created = self.client.post(
+            reverse("capital_distribution_api:run-list-calculate"),
+            payload,
+            format="json",
+            HTTP_X_CORRELATION_ID="phase8-health-success",
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+        CapitalDistributionRun.objects.filter(pk=created.data["id"]).update(
+            status=CapitalDistributionRun.Status.STALE,
+            updated_at=timezone.now() - timedelta(hours=25),
+        )
+
+        failed = self.client.post(
+            reverse("capital_distribution_api:run-list-calculate"),
+            {**payload, "source_profit": "100001.00"},
+            format="json",
+            HTTP_X_CORRELATION_ID="phase8-health-failure",
+        )
+        self.assertEqual(failed.status_code, 400, failed.data)
+        self.assertEqual(failed["X-Correlation-ID"], "phase8-health-failure")
+        failure = CapitalDistributionAuditEvent.objects.get(
+            entity=self.entity,
+            action="operation_failed",
+            correlation_id="phase8-health-failure",
+        )
+        self.assertEqual(failure.metadata["status_code"], 400)
+        self.assertEqual(failure.metadata["operation"], "CapitalDistributionRunListCalculateAPIView")
+
+        health = self.client.get(
+            reverse("capital_distribution_api:operational-health"),
+            {"entity": self.entity.id, "entityfinid": self.entityfin.id},
+            HTTP_X_CORRELATION_ID="phase8-health-read",
+        )
+        self.assertEqual(health.status_code, 200, health.data)
+        self.assertEqual(health["X-Correlation-ID"], "phase8-health-read")
+        self.assertEqual(health.data["status"], "attention")
+        self.assertEqual(health.data["runs"]["stale_count"], 1)
+        self.assertEqual(health.data["failures"]["last_24_hours"], 1)
+        self.assertEqual(health.data["failures"]["recent"][0]["correlation_id"], "phase8-health-failure")
+        self.assertGreaterEqual(health.data["latency_ms"]["sample_count"], 2)
+
+    def test_unexpected_failure_returns_support_safe_error_and_correlation(self):
+        with patch(
+            "capital_distribution.views.calculate_distribution_run",
+            side_effect=RuntimeError("sensitive internal failure"),
+        ):
+            response = self.client.post(
+                reverse("capital_distribution_api:run-list-calculate"),
+                {
+                    "entity": self.entity.id,
+                    "entityfinid": self.entityfin.id,
+                    "period_from": "2026-04-01",
+                    "period_to": "2027-03-31",
+                    "cadence": "annual",
+                    "profit_source": "manual_approved",
+                    "source_profit": "100000.00",
+                    "book_adjustments": "0.00",
+                    "balances": [],
+                    "idempotency_key": "phase8-unexpected-failure",
+                },
+                format="json",
+                HTTP_X_CORRELATION_ID="phase8-internal-error",
+            )
+
+        self.assertEqual(response.status_code, 500, response.data)
+        self.assertEqual(response["X-Correlation-ID"], "phase8-internal-error")
+        self.assertEqual(response.data["code"], "server_error")
+        self.assertEqual(response.data["correlation_id"], "phase8-internal-error")
+        self.assertNotIn("sensitive internal failure", str(response.data))
+        failure = CapitalDistributionAuditEvent.objects.get(
+            entity=self.entity,
+            action="operation_failed",
+            correlation_id="phase8-internal-error",
+        )
+        self.assertEqual(failure.metadata["status_code"], 500)
+        self.assertEqual(failure.metadata["error_code"], "RuntimeError")
 
 
 class CapitalDistributionPostingLifecycleTests(CapitalDistributionFixtureMixin, TestCase):

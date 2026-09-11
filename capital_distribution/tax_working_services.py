@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import uuid
 from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_EVEN, ROUND_HALF_UP
 
 from django.core.exceptions import ValidationError
@@ -17,6 +16,7 @@ from .models import (
     CapitalDistributionTaxWorkingLine,
     TaxPolicyVersion,
 )
+from .observability import current_correlation_id, operation_metadata
 from .tax_services import tax_policy_state
 from .tax_formulas import evaluate_statutory_formula
 
@@ -125,11 +125,11 @@ def _audit(working, actor, action, *, before=None, reason="", metadata=None) -> 
         tax_working=working,
         actor=actor,
         action=action,
-        correlation_id=uuid.uuid4().hex,
+        correlation_id=current_correlation_id(),
         reason=reason,
         before_state=before or {},
         after_state=tax_working_state(working),
-        metadata=metadata or {},
+        metadata=operation_metadata(operation=action, **(metadata or {})),
     )
 
 

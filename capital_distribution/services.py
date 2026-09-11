@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import uuid
 from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
@@ -39,6 +38,7 @@ from .models import (
     FormationType,
     WAVE_ONE_FORMATIONS,
 )
+from .observability import current_correlation_id, operation_metadata
 from .posting import CapitalDistributionPostingAdapter
 
 
@@ -340,7 +340,7 @@ def materialize_formation_profile(*, entity: Entity, actor, effective_from=None)
         entity=entity,
         actor=actor,
         action="formation_resolved",
-        correlation_id=uuid.uuid4().hex,
+        correlation_id=current_correlation_id(),
         after_state=serialize_formation_profile(profile),
     )
     return profile
@@ -496,7 +496,7 @@ def create_policy(*, entity: Entity, formation_profile: EntityFormationProfile, 
         policy=policy,
         actor=actor,
         action="policy_created",
-        correlation_id=uuid.uuid4().hex,
+        correlation_id=current_correlation_id(),
         after_state=_policy_state(policy),
     )
     return policy
@@ -583,7 +583,7 @@ def seed_policy_from_ownership(
         policy=policy,
         actor=actor,
         action="policy_seeded_from_ownership",
-        correlation_id=uuid.uuid4().hex,
+        correlation_id=current_correlation_id(),
         after_state=_policy_state(policy),
         metadata={"ownership_ids": [owner.id for owner in owners]},
     )
@@ -630,7 +630,7 @@ def update_draft_policy(
         policy=policy,
         actor=actor,
         action="policy_updated",
-        correlation_id=uuid.uuid4().hex,
+        correlation_id=current_correlation_id(),
         before_state=before,
         after_state=_policy_state(policy),
     )
@@ -656,7 +656,7 @@ def submit_policy(
         policy=policy,
         actor=actor,
         action="policy_submitted",
-        correlation_id=uuid.uuid4().hex,
+        correlation_id=current_correlation_id(),
         reason=reason,
         before_state=before,
         after_state=_policy_state(policy),
@@ -685,7 +685,7 @@ def approve_policy(
         policy=policy,
         actor=actor,
         action="policy_approved",
-        correlation_id=uuid.uuid4().hex,
+        correlation_id=current_correlation_id(),
         reason=reason,
         before_state=before,
         after_state=_policy_state(policy),
@@ -711,7 +711,7 @@ def reject_policy(
         policy=policy,
         actor=actor,
         action="policy_rejected",
-        correlation_id=uuid.uuid4().hex,
+        correlation_id=current_correlation_id(),
         reason=reason,
         before_state=before,
         after_state=_policy_state(policy),
@@ -737,7 +737,7 @@ def supersede_policy(
         policy=policy,
         actor=actor,
         action="policy_superseded",
-        correlation_id=uuid.uuid4().hex,
+        correlation_id=current_correlation_id(),
         reason=reason,
         before_state=before,
         after_state=_policy_state(policy),
@@ -1277,8 +1277,9 @@ def calculate_distribution_run(
         run=run,
         actor=actor,
         action="run_calculated",
-        correlation_id=uuid.uuid4().hex,
+        correlation_id=current_correlation_id(),
         after_state={"run": run.id, "calculation_hash": run.calculation_hash, "status": run.status},
+        metadata=operation_metadata(operation="run_calculated"),
     )
     return run
 
@@ -1328,7 +1329,7 @@ def upsert_account_mapping(*, entity, ownership, capital_account, current_accoun
         entity=entity,
         actor=actor,
         action="account_mapping_saved",
-        correlation_id=uuid.uuid4().hex,
+        correlation_id=current_correlation_id(),
         before_state=before,
         after_state=serialize_account_mapping(mapping),
     )
@@ -1386,10 +1387,11 @@ def _audit_run(run, actor, action, before, reason=""):
         run=run,
         actor=actor,
         action=action,
-        correlation_id=uuid.uuid4().hex,
+        correlation_id=current_correlation_id(),
         reason=reason,
         before_state=before,
         after_state=_run_state(run),
+        metadata=operation_metadata(operation=action),
     )
 
 

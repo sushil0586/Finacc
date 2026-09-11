@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import uuid
 from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError
@@ -18,6 +17,7 @@ from .models import (
     TaxPolicyVersion,
     WAVE_ONE_FORMATIONS,
 )
+from .observability import current_correlation_id, operation_metadata
 from .tax_formulas import CAPITAL_INTEREST_FORMULA, REMUNERATION_FORMULA
 
 
@@ -81,10 +81,11 @@ def _audit(policy, actor, action, *, before=None, reason="") -> None:
         tax_policy=policy,
         actor=actor,
         action=action,
-        correlation_id=uuid.uuid4().hex,
+        correlation_id=current_correlation_id(),
         reason=reason,
         before_state=before or {},
         after_state=tax_policy_state(policy),
+        metadata=operation_metadata(operation=action),
     )
 
 
