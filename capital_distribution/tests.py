@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from io import BytesIO
 from threading import Barrier
+from time import perf_counter
 from unittest import skipUnless
 from unittest.mock import patch
 
@@ -3123,6 +3124,215 @@ class TaxWorkingLifecycleTests(CapitalDistributionFixtureMixin, TestCase):
         ):
             denied = client.get(export_url, {"entity": self.entity.id, "format": "csv"})
         self.assertEqual(denied.status_code, 403)
+
+
+class CapitalDistributionVolumeCertificationTests(CapitalDistributionFixtureMixin, TestCase):
+    make_account = CapitalDistributionPostingLifecycleTests.make_account
+
+    @override_settings(ROOT_URLCONF="FA.urls")
+    def test_partner_movement_period_report_and_export_volume(self):
+        from pypdf import PdfReader
+
+        maker = self.make_user("volume-maker")
+        approver = self.make_user("volume-approver")
+        entity = self.make_entity(name="Capital Distribution Volume", owner=maker)
+        self.maker = maker
+        self.entity = entity
+        owners = [
+            self.add_owner(
+                entity,
+                name=f"Volume Partner {index:03d}",
+                ownership_type=EntityOwnershipV2.OwnershipType.PARTNER,
+                share="1.0000",
+            )
+            for index in range(1, 101)
+        ]
+        entityfin = EntityFinancialYear.objects.create(
+            entity=entity,
+            desc="FY 2026-27",
+            year_code="FY2026-27",
+            finstartyear=aware(2026, 4, 1),
+            finendyear=aware(2027, 3, 31),
+            createdby=maker,
+        )
+        profile = materialize_formation_profile(entity=entity, actor=maker)
+        policy = create_policy(
+            entity=entity,
+            formation_profile=profile,
+            payload={
+                "entityfin": entityfin,
+                "effective_from": date(2026, 4, 1),
+                "effective_to": date(2027, 3, 31),
+                "governing_document_reference": "VOLUME-DEED-2026",
+                "configuration": {"run_cadence": "monthly", "rounding": "half_up"},
+                "stakeholders": [
+                    {
+                        "ownership": owner,
+                        "target_type": "partner",
+                        "target_name": owner.name,
+                        "profit_percentage": "1.0000",
+                        "loss_percentage": "1.0000",
+                    }
+                    for owner in owners
+                ],
+            },
+            actor=maker,
+        )
+        submit_policy(policy=policy, actor=maker)
+        policy = approve_policy(policy=policy, actor=approver)
+
+        for owner in owners:
+            current_account = self.make_account(f"{owner.name} Current")
+            upsert_account_mapping(
+                entity=entity,
+                ownership=owner,
+                capital_account=None,
+                current_account=current_account,
+                drawings_account=None,
+                effective_from=date(2026, 4, 1),
+                effective_to=None,
+                actor=maker,
+            )
+        appropriation = self.make_account("Volume Profit and Loss Appropriation")
+        static, _ = StaticAccount.objects.update_or_create(
+            code="PROFIT_LOSS_APPROPRIATION",
+            defaults={"name": "Profit and Loss Appropriation", "group": StaticAccountGroup.EQUITY},
+        )
+        EntityStaticAccountMap.objects.create(
+            entity=entity,
+            static_account=static,
+            account=appropriation,
+            ledger=appropriation.ledger,
+            createdby=maker,
+        )
+
+        period_starts = [
+            date(2026, month, 1) for month in range(4, 13)
+        ] + [date(2027, month, 1) for month in range(1, 4)]
+        lifecycle_started = perf_counter()
+        for sequence, period_from in enumerate(period_starts, start=1):
+            next_month = (
+                date(period_from.year + 1, 1, 1)
+                if period_from.month == 12
+                else date(period_from.year, period_from.month + 1, 1)
+            )
+            balance_inputs = []
+            for owner_index, owner in enumerate(owners, start=1):
+                movements = []
+                if sequence == 1:
+                    movements = [
+                        {
+                            "date": period_from.isoformat(),
+                            "amount": str(owner_index * movement_index),
+                            "type": "capital_introduction",
+                            "reference": f"VOL-{owner_index:03d}-{movement_index:02d}",
+                        }
+                        for movement_index in range(1, 51)
+                    ]
+                balance_inputs.append({
+                    "ownership": owner.id,
+                    "capital_balance": str(owner_index * 1000),
+                    "drawing_balance": "0",
+                    "movements": movements,
+                })
+            run = calculate_distribution_run(
+                entity=entity,
+                entityfin=entityfin,
+                subentity=None,
+                period_from=period_from,
+                period_to=next_month - timedelta(days=1),
+                cadence="monthly",
+                profit_source="manual_approved",
+                supplied_profit=Decimal("10000.00"),
+                book_adjustments=Decimal("0.00"),
+                balance_inputs=balance_inputs,
+                idempotency_key=f"volume-month-{sequence:02d}",
+                actor=maker,
+            )
+            run = submit_distribution_run(run=run, actor=maker, expected_updated_at=run.updated_at)
+            run = approve_distribution_run(run=run, actor=approver, expected_updated_at=run.updated_at)
+            post_distribution_run(run=run, actor=approver, expected_updated_at=run.updated_at)
+        lifecycle_seconds = perf_counter() - lifecycle_started
+
+        self.assertEqual(CapitalDistributionRun.objects.filter(entity=entity).count(), 12)
+        self.assertEqual(CapitalDistributionLine.objects.filter(run__entity=entity).count(), 1200)
+        self.assertEqual(
+            sum(len(row.movements) for row in CapitalDistributionRun.objects.get(
+                entity=entity,
+                idempotency_key="volume-month-01",
+            ).balance_snapshots.all()),
+            5000,
+        )
+        journal_rows = JournalLine.objects.filter(
+            entity=entity,
+            txn_type=TxnType.CAPITAL_DISTRIBUTION,
+        )
+        self.assertEqual(journal_rows.count(), 2400)
+        self.assertEqual(
+            sum(journal_rows.filter(drcr=True).values_list("amount", flat=True), Decimal("0.00")),
+            sum(journal_rows.filter(drcr=False).values_list("amount", flat=True), Decimal("0.00")),
+        )
+
+        report_started = perf_counter()
+        statement = build_appropriation_statement(
+            entity=entity,
+            entityfin=entityfin,
+            period_from=date(2026, 4, 1),
+            period_to=date(2027, 3, 31),
+        )
+        report_seconds = perf_counter() - report_started
+        self.assertEqual(statement["summary"]["run_count"], 12)
+        self.assertEqual(statement["summary"]["reconciled_run_count"], 12)
+        self.assertEqual(statement["summary"]["exception_count"], 0)
+        self.assertEqual(statement["summary"]["effective_credit"], "120000.00")
+        self.assertEqual(len(statement["partners"]), 100)
+
+        client = APIClient()
+        client.force_authenticate(approver)
+        params = {
+            "entity": entity.id,
+            "entityfinid": entityfin.id,
+            "from_date": "2026-04-01",
+            "to_date": "2027-03-31",
+        }
+        permissions = {
+            "reports.financial_hub.profit_loss.view",
+            "reports.financial_hub.balance_sheet.view",
+        }
+        export_started = perf_counter()
+        with (
+            patch("core.entitlements.SubscriptionService.assert_entity_access", return_value=None),
+            patch("core.entitlements.EffectivePermissionService.has_scope_access", return_value=True),
+            patch("core.entitlements.EffectivePermissionService.has_data_scope_access", return_value=True),
+            patch(
+                "reports.api.report_permissions.EffectivePermissionService.permission_codes_for_user",
+                return_value=permissions,
+            ),
+        ):
+            for report_name in ("profit-loss", "balance-sheet"):
+                csv_response = client.get(reverse(f"reports_api:financial-{report_name}-csv"), params)
+                self.assertEqual(csv_response.status_code, 200, csv_response.content[:500])
+                self.assertIn("Appropriation Reconciliation", csv_response.content.decode("utf-8-sig"))
+
+                excel_response = client.get(reverse(f"reports_api:financial-{report_name}-excel"), params)
+                self.assertEqual(excel_response.status_code, 200, excel_response.content[:500])
+                workbook = load_workbook(BytesIO(excel_response.content), data_only=True)
+                self.assertGreaterEqual(len(workbook.sheetnames), 1)
+
+                pdf_response = client.get(reverse(f"reports_api:financial-{report_name}-pdf"), params)
+                self.assertEqual(pdf_response.status_code, 200, pdf_response.content[:500])
+                self.assertGreaterEqual(len(PdfReader(BytesIO(pdf_response.content)).pages), 1)
+        export_seconds = perf_counter() - export_started
+
+        self.assertLess(lifecycle_seconds, 60)
+        self.assertLess(report_seconds, 15)
+        self.assertLess(export_seconds, 60)
+        print(
+            "capital_distribution_volume "
+            f"partners=100 movements=5000 periods=12 lines=1200 journals=2400 "
+            f"lifecycle_seconds={lifecycle_seconds:.3f} report_seconds={report_seconds:.3f} "
+            f"export_seconds={export_seconds:.3f}"
+        )
 
 
 @skipUnless(connection.vendor == "postgresql", "Requires PostgreSQL row-level locking.")

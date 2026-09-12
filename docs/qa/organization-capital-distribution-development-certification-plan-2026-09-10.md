@@ -1379,13 +1379,22 @@ Implementation checkpoint (2026-09-11):
   requests on 2026-09-12. All 20 returned HTTP 200 in 1.857 seconds, preserved their
   unique correlation IDs, matched entity 2 / financial year 2, and returned one stable
   run-count snapshot. The existing deployed health smoke also passed independently.
-- Deployment note: the parent-entity calculation lock and its lifecycle concurrency test
-  were added after the latest reported deployment. True write concurrency is locally
-  certified; a staging write-race certificate remains pending until this change is
-  checked in and deployed.
-- Remaining Phase 8 work: deployed write-concurrency confirmation, agreed report/export
-  volume, removal of the persisted-tax-working conditional skip, manual screen-reader
-  review, and formal launch signoff.
+- Completed deployed write-concurrency certification on staging on 2026-09-12 using a
+  temporary PostgreSQL database containing the deployed schema and migration ledger but
+  no customer rows. The true two-thread calculation-through-reversal certificate passed
+  in 15.070 seconds with system checks clean. The temporary database was removed after
+  teardown and a following live scoped-health browser smoke passed; customer books were
+  not touched.
+- Added a deterministic local volume certificate covering 100 partners, 5,000 captured
+  capital movements, 12 monthly calculated/approved/posted periods, 1,200 allocation
+  lines, 2,400 journal lines, annual appropriation reconciliation, and Profit & Loss plus
+  Balance Sheet generation in CSV, XLSX, and PDF. Counts reconciled exactly, every period
+  reported as reconciled, effective annual credit was 120,000.00, and journals remained
+  balanced. In the full suite the lifecycle completed in 2.895 seconds, statement build
+  in 0.415 seconds, and six exports in 4.097 seconds, all below the certification limits.
+  The complete capital-distribution suite now passes 75/75.
+- Remaining Phase 8 work: deployed volume confirmation, removal of the persisted-tax-working
+  conditional skip, manual screen-reader review, and formal launch signoff.
 
 ### Phase 9: Company And OPC Equity/Dividend Engine
 
