@@ -27,7 +27,14 @@ from entity.models import (
     SubEntity,
 )
 from financial.models import Ledger, account
-from posting.models import EntityStaticAccountMap, JournalLine, StaticAccount, StaticAccountGroup, TxnType
+from posting.models import (
+    EntityStaticAccountMap,
+    JournalLine,
+    PostingBatch,
+    StaticAccount,
+    StaticAccountGroup,
+    TxnType,
+)
 from reports.services.controls.opening_generation import _build_opening_lines
 from reports.services.controls.year_end_close import _build_close_journal_lines, _posted_appropriation_coverage
 from core.concurrency import StaleObjectConflict
@@ -3116,6 +3123,152 @@ class TaxWorkingLifecycleTests(CapitalDistributionFixtureMixin, TestCase):
         ):
             denied = client.get(export_url, {"entity": self.entity.id, "format": "csv"})
         self.assertEqual(denied.status_code, 403)
+
+
+@skipUnless(connection.vendor == "postgresql", "Requires PostgreSQL row-level locking.")
+class CapitalDistributionPostgreSQLConcurrencyTests(CapitalDistributionFixtureMixin, TransactionTestCase):
+    make_account = CapitalDistributionPostingLifecycleTests.make_account
+    calculate = CapitalDistributionPostingLifecycleTests.calculate
+
+    def setUp(self):
+        CapitalDistributionPostingLifecycleTests.setUp(self)
+
+    def _run_concurrently(self, operation):
+        barrier = Barrier(2)
+
+        def execute():
+            close_old_connections()
+            try:
+                barrier.wait(timeout=10)
+                return operation()
+            finally:
+                connections.close_all()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            return list(executor.map(lambda _: execute(), range(2)))
+
+    def test_simultaneous_run_lifecycle_is_idempotent_and_posts_exactly_once(self):
+        calculation_key = "run-simultaneous-lifecycle"
+
+        def calculate_once():
+            local_entity = Entity.objects.get(pk=self.entity.pk)
+            local_entityfin = EntityFinancialYear.objects.get(pk=self.entityfin.pk)
+            local_actor = User.objects.get(pk=self.maker.pk)
+            run = calculate_distribution_run(
+                entity=local_entity,
+                entityfin=local_entityfin,
+                subentity=None,
+                period_from=date(2026, 4, 1),
+                period_to=date(2027, 3, 31),
+                cadence="annual",
+                profit_source="manual_approved",
+                supplied_profit=Decimal("100000.00"),
+                book_adjustments=Decimal("0.00"),
+                balance_inputs=[
+                    {"ownership": self.first.id, "capital_balance": "100000.00"},
+                    {"ownership": self.second.id, "capital_balance": "50000.00"},
+                ],
+                idempotency_key=calculation_key,
+                actor=local_actor,
+            )
+            return run.pk
+
+        calculated_ids = self._run_concurrently(calculate_once)
+        self.assertEqual(len(set(calculated_ids)), 1)
+        run = CapitalDistributionRun.objects.get(pk=calculated_ids[0])
+        self.assertEqual(CapitalDistributionRun.objects.filter(
+            entity=self.entity,
+            idempotency_key=calculation_key,
+        ).count(), 1)
+        self.assertEqual(run.segments.count(), 1)
+        self.assertEqual(run.audit_events.filter(action="run_calculated").count(), 1)
+
+        def race_transition(service, actor_id, expected_updated_at, **kwargs):
+            def transition():
+                local_run = CapitalDistributionRun.objects.get(pk=run.pk)
+                local_actor = User.objects.get(pk=actor_id)
+                try:
+                    result = service(
+                        run=local_run,
+                        actor=local_actor,
+                        expected_updated_at=expected_updated_at,
+                        **kwargs,
+                    )
+                    return "success", result.pk, result.posting_batch_id, result.reversal_batch_id
+                except StaleObjectConflict:
+                    return "stale", local_run.pk, None, None
+
+            return self._run_concurrently(transition)
+
+        submitted_version = run.updated_at
+        submit_results = race_transition(
+            submit_distribution_run,
+            self.maker.pk,
+            submitted_version,
+        )
+        self.assertEqual(sorted(row[0] for row in submit_results), ["stale", "success"])
+        run.refresh_from_db()
+        self.assertEqual(run.status, CapitalDistributionRun.Status.SUBMITTED)
+        self.assertEqual(run.audit_events.filter(action="run_submitted").count(), 1)
+
+        approve_results = race_transition(
+            approve_distribution_run,
+            self.approver.pk,
+            run.updated_at,
+        )
+        self.assertEqual(sorted(row[0] for row in approve_results), ["stale", "success"])
+        run.refresh_from_db()
+        self.assertEqual(run.status, CapitalDistributionRun.Status.APPROVED)
+        self.assertEqual(run.audit_events.filter(action="run_approved").count(), 1)
+
+        post_results = race_transition(
+            post_distribution_run,
+            self.approver.pk,
+            run.updated_at,
+        )
+        self.assertEqual([row[0] for row in post_results], ["success", "success"])
+        run.refresh_from_db()
+        self.assertEqual(run.status, CapitalDistributionRun.Status.POSTED)
+        self.assertEqual({row[2] for row in post_results}, {run.posting_batch_id})
+        self.assertEqual(run.audit_events.filter(action="run_posted").count(), 1)
+
+        posted_rows = JournalLine.objects.filter(
+            entity=self.entity,
+            txn_type=TxnType.CAPITAL_DISTRIBUTION,
+            txn_id=run.id,
+        )
+        self.assertTrue(posted_rows.exists())
+        self.assertEqual(
+            sum(posted_rows.filter(drcr=True).values_list("amount", flat=True), Decimal("0.00")),
+            sum(posted_rows.filter(drcr=False).values_list("amount", flat=True), Decimal("0.00")),
+        )
+        self.assertEqual(PostingBatch.objects.filter(
+            entity=self.entity,
+            txn_type=TxnType.CAPITAL_DISTRIBUTION,
+            txn_id=run.id,
+        ).count(), 1)
+
+        reverse_results = race_transition(
+            reverse_distribution_run,
+            self.approver.pk,
+            run.updated_at,
+            reason="Concurrent certification reversal",
+        )
+        self.assertEqual(sorted(row[0] for row in reverse_results), ["stale", "success"])
+        run.refresh_from_db()
+        self.assertEqual(run.status, CapitalDistributionRun.Status.REVERSED)
+        self.assertIsNotNone(run.reversal_batch_id)
+        self.assertNotEqual(run.reversal_batch_id, run.posting_batch_id)
+        self.assertEqual(run.audit_events.filter(action="run_reversed").count(), 1)
+        self.assertEqual(PostingBatch.objects.filter(
+            entity=self.entity,
+            txn_type=TxnType.CAPITAL_DISTRIBUTION,
+            txn_id=run.id,
+        ).count(), 2)
+        self.assertEqual(
+            sum(posted_rows.filter(drcr=True).values_list("amount", flat=True), Decimal("0.00")),
+            sum(posted_rows.filter(drcr=False).values_list("amount", flat=True), Decimal("0.00")),
+        )
 
 
 @skipUnless(connection.vendor == "postgresql", "Requires PostgreSQL row-level locking.")

@@ -1057,6 +1057,9 @@ def calculate_distribution_run(
 ) -> CapitalDistributionRun:
     from .migration_services import assert_wave_one_activation
 
+    # Serialize creation for an entity because a missing idempotency row cannot be
+    # protected with SELECT FOR UPDATE until one transaction has created it.
+    Entity.objects.select_for_update().only("pk").get(pk=entity.pk)
     fy_start = _as_date(entityfin.finstartyear)
     fy_end = _as_date(entityfin.finendyear)
     if period_from < fy_start or period_to > fy_end:

@@ -1,6 +1,6 @@
 # Organization Capital, Appropriation, And Distribution Development Plan
 
-Last updated: 11 September 2026
+Last updated: 12 September 2026
 
 ## Purpose
 
@@ -1335,10 +1335,57 @@ Implementation checkpoint (2026-09-11):
   correlation and duration, persisted validation failure diagnostics, stale-run health,
   24-hour failure visibility, safe HTTP 500 handling, and correlation propagation.
   Django system checks and migration-drift checks pass with no schema changes.
-- Remaining Phase 8 work: frontend operator health presentation, full role matrix,
-  timeout/offline/401/403/409/422/500 browser recovery, concurrent lifecycle and flake
-  lanes, agreed report/export volume, removal of the persisted-tax-working conditional
-  skip, manual screen-reader review, visual baseline approval, and formal launch signoff.
+- Staging backend smoke passed for Manav-T on 2026-09-11. The scoped health request
+  returned HTTP 200, the expected entity and financial-year scope, a generated
+  `X-Correlation-ID`, healthy status, two reversed runs, and no stale, aging, or failed
+  operations. A separate non-mutating invalid-scope request returned structured HTTP 400
+  validation and preserved its caller correlation ID in both response header and body.
+  No business records were mutated by these smokes.
+- Added a permission-gated Health tab to the capital-distribution workspace. It presents
+  run lifecycle counts, stale and aging work, 24-hour failures, latency samples, and
+  diagnostic correlation IDs. A health-endpoint failure remains isolated from the core
+  setup and workflow screens, and the tab is hidden without run-view access.
+- Frontend evidence: TypeScript passes, all 14 focused Angular component tests pass, and
+  the complete 22-case Chromium workspace suite passes. Healthy, attention, unavailable,
+  permission, and 390px mobile states also pass in Firefox and WebKit. Automated serious
+  and critical accessibility findings remain zero, and the updated Chromium operational
+  baseline was reviewed and approved.
+- The deployed Health tab passed three staging browser checks on 2026-09-12: scoped
+  backend correlation, rendered health data and refresh, zero browser console/page
+  errors, 390px mobile containment, and zero serious or critical automated accessibility
+  findings.
+- Completed the deterministic frontend role matrix for administrator, setup-only,
+  restricted, read-only, accountant/maker, approver, poster, and reverser. Run, history,
+  statement, and health data are no longer requested or displayed without compatible
+  run-view or policy-view access. The full backend suite remains 73/73 green and the
+  expanded Chromium workspace suite passes all 31 cases. The visual baseline also passed
+  twice consecutively after masking the unrelated live header date.
+- Completed the recovery response matrix for this workspace: live staging `401` preserves
+  correlation without exposing data; browser `403` preserves the calculated run; `409`
+  preserves stale run/tax-working state for retry; `422` permits corrected calculation;
+  `500` leaves the workspace intact; timeout isolates operational health; and interrupted
+  download retries without duplicate output. The critical role, recovery, mobile, and
+  visual lane then passed 54/54 across three consecutive executions.
+- Completed PostgreSQL write-concurrency certification for the primary appropriation
+  lifecycle. Calculation creation now locks the parent entity before checking a new
+  idempotency key, closing the race where two transactions could both observe that no
+  run existed. A true two-thread test proves one calculated run and calculation audit,
+  one submit winner, one approve winner, one idempotent posting batch, balanced journals,
+  one reverse winner, one reversal batch, stale-version rejection for losing transitions,
+  and one audit event for every committed lifecycle action. The complete backend suite
+  passes 74/74 with system checks and migration-drift checks clean. The focused threaded
+  lifecycle certificate also passed five consecutive executions without a flaky result.
+- Staging read-concurrency certification issued 20 simultaneous scoped operational-health
+  requests on 2026-09-12. All 20 returned HTTP 200 in 1.857 seconds, preserved their
+  unique correlation IDs, matched entity 2 / financial year 2, and returned one stable
+  run-count snapshot. The existing deployed health smoke also passed independently.
+- Deployment note: the parent-entity calculation lock and its lifecycle concurrency test
+  were added after the latest reported deployment. True write concurrency is locally
+  certified; a staging write-race certificate remains pending until this change is
+  checked in and deployed.
+- Remaining Phase 8 work: deployed write-concurrency confirmation, agreed report/export
+  volume, removal of the persisted-tax-working conditional skip, manual screen-reader
+  review, and formal launch signoff.
 
 ### Phase 9: Company And OPC Equity/Dividend Engine
 
