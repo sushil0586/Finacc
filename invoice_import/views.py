@@ -193,7 +193,8 @@ class InvoiceImportJobReviewAPIView(InvoiceImportBaseAPIView):
 
 class InvoiceImportJobErrorsExportAPIView(InvoiceImportBaseAPIView):
     def get(self, request, job_id: int):
-        job = self._get_job(request, job_id, action="view")
+        # Error workbooks belong to the import workflow and may expose source rows.
+        job = self._get_job(request, job_id, action="create")
         fmt = (request.query_params.get("format") or "xlsx").lower()
         content, content_type, filename = export_job_errors(job=job, fmt=fmt)
         response = HttpResponse(content, content_type=content_type)

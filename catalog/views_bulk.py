@@ -24,7 +24,13 @@ from .bulk_products import (
 )
 from .models import ProductBulkJob
 from entity.models import Entity
+from rbac.access import assert_any_entity_permission
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
+
+
+PRODUCT_VIEW_PERMISSIONS = ("catalog.product.view", "catalog.products.view", "stock.product.view", "product.view")
+PRODUCT_EXPORT_PERMISSIONS = ("catalog.product.export", "catalog.products.export")
+PRODUCT_IMPORT_PERMISSIONS = ("catalog.product.import", "catalog.products.import")
 
 
 class SafeFormatNegotiation(DefaultContentNegotiation):
@@ -39,7 +45,7 @@ class SafeFormatNegotiation(DefaultContentNegotiation):
         return super().filter_renderers(renderers, format)
 
 
-def _entity_from_request(request):
+def _entity_from_request(request, *, required_permissions=PRODUCT_VIEW_PERMISSIONS):
     raw = request.query_params.get("entity") or request.data.get("entity")
     if not raw:
         raise ValidationError({"entity": "entity query param is required."})
@@ -53,6 +59,11 @@ def _entity_from_request(request):
         entity=entity,
         access_mode=SubscriptionService.ACCESS_MODE_OPERATIONAL,
         feature_code=SubscriptionLimitCodes.FEATURE_INVENTORY,
+    )
+    assert_any_entity_permission(
+        user=request.user,
+        entity_id=entity.id,
+        required_permissions=required_permissions,
     )
     return entity
 
@@ -96,7 +107,7 @@ class ProductBulkExportAPIView(APIView):
     content_negotiation_class = SafeFormatNegotiation
 
     def get(self, request):
-        entity = _entity_from_request(request)
+        entity = _entity_from_request(request, required_permissions=PRODUCT_EXPORT_PERMISSIONS)
         fmt = (request.query_params.get("format") or "xlsx").lower()
         search = (request.query_params.get("search") or "").strip()
         if fmt not in ("xlsx", "csv"):
@@ -127,7 +138,7 @@ class ProductBulkImportValidateAPIView(APIView):
     content_negotiation_class = SafeFormatNegotiation
 
     def post(self, request):
-        entity = _entity_from_request(request)
+        entity = _entity_from_request(request, required_permissions=PRODUCT_IMPORT_PERMISSIONS)
         upload = request.FILES.get("file")
         if not upload:
             raise ValidationError({"file": "Upload file is required."})
@@ -201,7 +212,7 @@ class ProductBulkImportCommitAPIView(APIView):
     content_negotiation_class = SafeFormatNegotiation
 
     def post(self, request):
-        entity = _entity_from_request(request)
+        entity = _entity_from_request(request, required_permissions=PRODUCT_IMPORT_PERMISSIONS)
         token = (request.data.get("validation_token") or "").strip()
         if not token:
             raise ValidationError({"validation_token": "validation_token is required."})
@@ -277,7 +288,7 @@ class ProductBulkJobErrorsExportAPIView(APIView):
     content_negotiation_class = SafeFormatNegotiation
 
     def get(self, request, job_id: int):
-        entity = _entity_from_request(request)
+        entity = _entity_from_request(request, required_permissions=PRODUCT_IMPORT_PERMISSIONS)
         job = get_object_or_404(ProductBulkJob, pk=job_id, entity=entity)
         fmt = (request.query_params.get("format") or "xlsx").lower()
         if fmt not in ("xlsx", "csv"):

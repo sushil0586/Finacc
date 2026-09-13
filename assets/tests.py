@@ -589,6 +589,25 @@ class AssetApiScopeTests(APITestCase):
         self.assertEqual(response.data["rows"][0]["location_name"], "Head Office")
         self.assertEqual(response.data["rows"][0]["custodian_name"], "A. Kumar")
 
+    def test_asset_report_view_permission_does_not_grant_export_or_print(self):
+        self._assign_asset_role("assets.fixed_asset_register.view")
+
+        report = self.client.get(
+            reverse("reports:fixed-asset-register"),
+            {"entity": self.entity.id, "entityfinid": self.entityfin.id},
+        )
+        self.assertEqual(report.status_code, status.HTTP_200_OK)
+        self.assertFalse(report.data["actions"]["can_export_csv"])
+        self.assertFalse(report.data["actions"]["can_print"])
+        self.assertEqual(report.data["actions"]["export_urls"], {})
+        self.assertEqual(report.data["available_exports"], [])
+
+        export_response = self.client.get(
+            reverse("reports:fixed-asset-register-csv"),
+            {"entity": self.entity.id, "entityfinid": self.entityfin.id},
+        )
+        self.assertEqual(export_response.status_code, status.HTTP_403_FORBIDDEN)
+
     def test_asset_dashboard_summary_returns_bundled_sections(self):
         response = self.client.get(
             reverse("reports:asset-dashboard-summary"),

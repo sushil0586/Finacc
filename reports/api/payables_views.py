@@ -8,6 +8,7 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.entitlements import ScopedEntitlementMixin
 from reports.api.receivables_views import _write_csv, _write_excel, _write_pdf
 from reports.schemas.common import build_report_envelope
 from reports.schemas.payables_reports import PayableAgingScopeSerializer, PayableReportScopeSerializer
@@ -24,6 +25,7 @@ from reports.services.payables_perf import profile_payables_block
 from reports.services.report_preferences import list_user_report_preferences
 from reports.selectors.financial import resolve_scope_names
 from rbac.services import EffectivePermissionService
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
 PAYABLE_DEFAULTS = PAYABLE_REPORT_DEFAULTS
@@ -136,34 +138,69 @@ def _filtered_querydict(request, *, overrides=None, exclude=None):
     return params.urlencode()
 
 
-def _attach_payable_actions(payload, request, *, export_base_path):
+def _attach_payable_actions(payload, request, *, export_base_path, can_export=None):
+    if can_export is None:
+        entity_id = request.query_params.get("entity")
+        subentity_id = request.query_params.get("subentity")
+        try:
+            entity_id = int(entity_id)
+            subentity_id = int(subentity_id) if subentity_id else None
+        except (TypeError, ValueError):
+            can_export = False
+        else:
+            can_export = "reports.payables.export" in EffectivePermissionService.permission_codes_for_user(
+                request.user,
+                entity_id,
+                subentity_id=subentity_id,
+            )
+
     query = _filtered_querydict(request, exclude=["page", "page_size"])
-    payload["actions"]["can_print"] = True
-    payload["actions"]["export_urls"] = {
-        "excel": f"{export_base_path}excel/?{query}",
-        "pdf": f"{export_base_path}pdf/?{query}",
-        "csv": f"{export_base_path}csv/?{query}",
-        "print": f"{export_base_path}print/?{query}",
-    }
-    payload["available_exports"] = ["excel", "pdf", "csv", "print"]
+    payload["actions"].update(
+        {
+            "can_export_excel": can_export,
+            "can_export_pdf": can_export,
+            "can_export_csv": can_export,
+            "can_print": can_export,
+        }
+    )
+    payload["actions"]["export_urls"] = (
+        {
+            "excel": f"{export_base_path}excel/?{query}",
+            "pdf": f"{export_base_path}pdf/?{query}",
+            "csv": f"{export_base_path}csv/?{query}",
+            "print": f"{export_base_path}print/?{query}",
+        }
+        if can_export
+        else {}
+    )
+    payload["available_exports"] = ["excel", "pdf", "csv", "print"] if can_export else []
     return payload
 
 
-class _BasePayableAPIView(APIView):
+class _BasePayableAPIView(ScopedEntitlementMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = PayableReportScopeSerializer
+    subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
+    subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
 
     def get_scope(self, request):
         serializer = self.serializer_class(data=request.query_params)
         serializer.is_valid(raise_exception=True)
         scope = serializer.validated_data
-        entity = EffectivePermissionService.entity_for_user(request.user, scope["entity"])
-        if not entity:
-            raise PermissionDenied("You do not have access to this entity.")
+        self.enforce_scope(
+            request,
+            entity_id=scope["entity"],
+            entityfinid_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
+        )
         return scope
 
     def get_permission_codes(self, request, scope):
-        return EffectivePermissionService.permission_codes_for_user(request.user, scope["entity"])
+        return EffectivePermissionService.permission_codes_for_user(
+            request.user,
+            scope["entity"],
+            subentity_id=scope.get("subentity"),
+        )
 
     def assert_report_permission(self, request, scope, report_code, *, view=None):
         report = get_payables_report_config(report_code, view=view)
@@ -184,7 +221,12 @@ class _BasePayableAPIView(APIView):
             filters=_payable_scope_filters(scope),
             defaults=PAYABLE_DEFAULTS,
         )
-        return _attach_payable_actions(response, request, export_base_path=export_base_path)
+        return _attach_payable_actions(
+            response,
+            request,
+            export_base_path=export_base_path,
+            can_export="reports.payables.export" in self.get_permission_codes(request, scope),
+        )
 
 
 class VendorOutstandingReportAPIView(_BasePayableAPIView):
@@ -296,6 +338,15 @@ class PayablesReportsMetaAPIView(_BasePayableAPIView):
                 entityfinid_id=scope.get("entityfinid"),
                 subentity_id=scope.get("subentity"),
                 permission_codes=permission_codes,
+            )
+            can_export = "reports.payables.export" in permission_codes
+            payload["actions"].update(
+                {
+                    "can_export_excel": can_export,
+                    "can_export_pdf": can_export,
+                    "can_export_csv": can_export,
+                    "can_print": can_export,
+                }
             )
             if not payload.get("reports"):
                 raise PermissionDenied("You do not have permission to access payables reports.")
@@ -428,6 +479,12 @@ class MsmeOverdueReportAPIView(_BasePayableAPIView):
 class _BasePayableExportAPIView(_BasePayableAPIView):
     file_type = None
     export_mode = "attachment"
+
+    def get_scope(self, request):
+        scope = super().get_scope(request)
+        if "reports.payables.export" not in self.get_permission_codes(request, scope):
+            raise PermissionDenied("Missing permission: reports.payables.export")
+        return scope
 
     def export_response(self, *, filename, content, content_type):
         response = HttpResponse(content, content_type=content_type)

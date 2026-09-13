@@ -664,10 +664,7 @@ class SalesInvoiceCancelEWayAPIView(_ScopedInvoiceMixin, GenericAPIView):
 
     def post(self, request, id: int, *args, **kwargs):
         inv = self._fetch_invoice_with_related(id)
-        self._require_any_permission(
-            ["sales.compliance.cancel_eway", "sales.invoice.update", "sales.invoice.edit"],
-            inv.entity_id,
-        )
+        self._require_permission("sales.compliance.cancel_eway", inv.entity_id)
         ser = self.get_serializer(data=request.data)
         ser.is_valid(raise_exception=True)
         try:

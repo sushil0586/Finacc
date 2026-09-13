@@ -29,7 +29,12 @@ class Gstr9ScaffoldAPITests(APITestCase):
         )
         self.permission_codes_patch = patch(
             "reports.api.report_permissions.EffectivePermissionService.permission_codes_for_user",
-            return_value=["reports.gstr9.view"],
+            return_value=[
+                "reports.gstr9.view",
+                "reports.gstr9.export",
+                "reports.gstr9.freeze",
+                "reports.gstr9.file",
+            ],
         )
         self.permission_codes_patch.start()
         self.addCleanup(self.permission_codes_patch.stop)
@@ -172,6 +177,8 @@ class Gstr9ScaffoldAPITests(APITestCase):
         self.assertIn("excel", payload["actions"]["export_urls"])
         self.assertIn("csv", payload["actions"]["export_urls"])
         self.assertIn("json", payload["actions"]["export_urls"])
+        self.assertTrue(payload["actions"]["can_freeze"])
+        self.assertTrue(payload["actions"]["can_file"])
         self.assertEqual(payload["summary"]["phase"], 1)
         self.assertEqual(payload["summary"]["status"], "phase1_complete")
         table_status = {row["code"]: row["status"] for row in payload["summary"]["tables"]}
@@ -181,6 +188,45 @@ class Gstr9ScaffoldAPITests(APITestCase):
         self.assertEqual(table_status["TABLE_8"], "implemented")
         self.assertEqual(table_status["TABLE_10_14"], "implemented")
         self.assertEqual(table_status["TABLE_15_19"], "implemented")
+
+    def test_view_only_user_has_no_export_actions_and_cannot_export_directly(self):
+        with patch(
+            "reports.api.report_permissions.EffectivePermissionService.permission_codes_for_user",
+            return_value=["reports.gstr9.view"],
+        ):
+            summary_response = self.client.get(self.summary_url, self.params)
+            export_response = self.client.get(self.export_url, {**self.params, "format": "csv"})
+
+        self.assertEqual(summary_response.status_code, 200)
+        payload = summary_response.json()
+        self.assertEqual(payload["available_exports"], [])
+        self.assertEqual(payload["actions"]["export_urls"], {})
+        self.assertFalse(payload["actions"]["can_export_excel"])
+        self.assertFalse(payload["actions"]["can_export_csv"])
+        self.assertFalse(payload["actions"]["can_freeze"])
+        self.assertFalse(payload["actions"]["can_file"])
+        self.assertEqual(export_response.status_code, 403)
+
+    def test_view_only_user_cannot_freeze_prepare_or_submit_filing(self):
+        with patch(
+            "reports.api.report_permissions.EffectivePermissionService.permission_codes_for_user",
+            return_value=["reports.gstr9.view"],
+        ):
+            freeze_response = self.client.post(self.freeze_url, self.params, format="json")
+            prepare_response = self.client.post(
+                self.filing_prepare_url,
+                {**self.params, "freeze_version": 1},
+                format="json",
+            )
+            submit_response = self.client.post(
+                self.filing_submit_url,
+                {**self.params, "filing_id": 1},
+                format="json",
+            )
+
+        self.assertEqual(freeze_response.status_code, 403)
+        self.assertEqual(prepare_response.status_code, 403)
+        self.assertEqual(submit_response.status_code, 403)
 
     @patch("reports.gstr9.views.summary.Gstr9SummaryAPIView.enforce_report_scope", side_effect=PermissionDenied("forbidden"))
     def test_summary_denies_when_scope_enforcement_fails(self, _enforce_scope):

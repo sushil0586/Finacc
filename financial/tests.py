@@ -192,6 +192,144 @@ class FinancialApiContractSmokeTests(TestCase):
         self.assertEqual(response.data["code"], "subscription_feature_disabled")
         self.assertEqual(response.data["feature_code"], SubscriptionLimitCodes.FEATURE_FINANCIAL)
 
+    @patch("rbac.access.EffectivePermissionService.active_assignments_queryset")
+    @patch("rbac.access.EffectivePermissionService.permission_codes_for_user", return_value=["financial.account_type.view"])
+    def test_account_type_create_rejects_view_only_user(self, _mocked_permissions, mocked_assignments):
+        mocked_assignments.return_value.exists.return_value = True
+
+        response = self.client.post(
+            "/api/financial/accounttypes-v2",
+            {
+                "entity": self.entity.id,
+                "accounttypename": "Denied Type",
+                "accounttypecode": "DENIED",
+                "balanceType": True,
+                "isactive": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    @patch("rbac.access.EffectivePermissionService.active_assignments_queryset")
+    @patch("rbac.access.EffectivePermissionService.permission_codes_for_user", return_value=["financial.account_type.view"])
+    def test_account_type_list_allows_view_only_user(self, _mocked_permissions, mocked_assignments):
+        mocked_assignments.return_value.exists.return_value = True
+
+        response = self.client.get(f"/api/financial/accounttypes-v2?entity={self.entity.id}")
+
+        self.assertEqual(response.status_code, 200)
+
+    @patch("rbac.access.EffectivePermissionService.active_assignments_queryset")
+    @patch("rbac.access.EffectivePermissionService.permission_codes_for_user", return_value=["financial.account.view"])
+    def test_account_detail_update_rejects_view_only_user(self, _mocked_permissions, mocked_assignments):
+        mocked_assignments.return_value.exists.return_value = True
+        customer = account.objects.create(
+            entity=self.entity,
+            accountname="Protected Account",
+            createdby=self.user,
+        )
+
+        response = self.client.patch(
+            f"/api/financial/accounts-v2/{customer.id}",
+            {"accountname": "Unauthorized Rename"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        customer.refresh_from_db()
+        self.assertEqual(customer.accountname, "Protected Account")
+
+    @patch("rbac.access.EffectivePermissionService.active_assignments_queryset")
+    @patch("rbac.access.EffectivePermissionService.permission_codes_for_user", return_value=["financial.account.view"])
+    def test_shipping_detail_create_rejects_view_only_user(self, _mocked_permissions, mocked_assignments):
+        mocked_assignments.return_value.exists.return_value = True
+        customer = account.objects.create(
+            entity=self.entity,
+            accountname="Protected Shipping Account",
+            createdby=self.user,
+        )
+
+        response = self.client.post(
+            "/api/financial/shipping-details/",
+            {
+                "entity": self.entity.id,
+                "account": customer.id,
+                "address1": "Denied address",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    @patch("rbac.access.EffectivePermissionService.active_assignments_queryset")
+    @patch("rbac.access.EffectivePermissionService.permission_codes_for_user", return_value=["financial.account.view"])
+    def test_contact_detail_update_rejects_view_only_user(self, _mocked_permissions, mocked_assignments):
+        mocked_assignments.return_value.exists.return_value = True
+        customer = account.objects.create(
+            entity=self.entity,
+            accountname="Protected Contact Account",
+            createdby=self.user,
+        )
+        contact = ContactDetails.objects.create(
+            entity=self.entity,
+            account=customer,
+            full_name="Original Contact",
+            createdby=self.user,
+        )
+
+        response = self.client.patch(
+            f"/api/financial/contact-details/{contact.id}/",
+            {"full_name": "Denied Rename"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    @patch("rbac.access.EffectivePermissionService.active_assignments_queryset")
+    @patch("rbac.access.EffectivePermissionService.permission_codes_for_user", return_value=["purchase.invoice.view"])
+    def test_custom_field_manage_list_rejects_invoice_view_only_user(self, _mocked_permissions, mocked_assignments):
+        mocked_assignments.return_value.exists.return_value = True
+
+        response = self.client.get(
+            f"/api/financial/invoice-custom-fields/definitions/?entity={self.entity.id}"
+            "&module=purchase_invoice&manage=1"
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    @patch("rbac.access.EffectivePermissionService.active_assignments_queryset")
+    @patch("rbac.access.EffectivePermissionService.permission_codes_for_user", return_value=["purchase.invoice.view"])
+    def test_effective_custom_fields_allow_purchase_invoice_view_user(self, _mocked_permissions, mocked_assignments):
+        mocked_assignments.return_value.exists.return_value = True
+
+        response = self.client.get(
+            f"/api/financial/invoice-custom-fields/definitions/?entity={self.entity.id}"
+            "&module=purchase_invoice"
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+    @patch("rbac.access.EffectivePermissionService.active_assignments_queryset")
+    @patch("rbac.access.EffectivePermissionService.permission_codes_for_user", return_value=["admin.invoice_custom_fields.view"])
+    def test_custom_field_create_rejects_admin_view_only_user(self, _mocked_permissions, mocked_assignments):
+        mocked_assignments.return_value.exists.return_value = True
+
+        response = self.client.post(
+            "/api/financial/invoice-custom-fields/definitions/",
+            {
+                "entity": self.entity.id,
+                "module": "purchase_invoice",
+                "key": "denied_field",
+                "label": "Denied Field",
+                "field_type": "text",
+                "options_json": [],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+
     def test_account_type_duplicate_name_is_rejected_cleanly(self):
         accounttype.objects.create(
             entity=self.entity,
@@ -2642,6 +2780,24 @@ class FinancialAccountsBulkCoverageTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data["code"], "subscription_feature_disabled")
         self.assertEqual(response.data["feature_code"], SubscriptionLimitCodes.FEATURE_FINANCIAL)
+
+    @patch("rbac.access.EffectivePermissionService.permission_codes_for_user", return_value=["financial.account.view"])
+    @patch("financial.views_bulk_accounts.SubscriptionService.assert_entity_access")
+    def test_bulk_export_rejects_view_only_user(self, _mocked_access, _mocked_permissions):
+        response = self.client.get(f"/api/financial/accounts-v2/bulk/export/?entity={self.entity.id}&format=xlsx")
+
+        self.assertEqual(response.status_code, 403)
+
+    @patch("rbac.access.EffectivePermissionService.permission_codes_for_user", return_value=["financial.account.view"])
+    @patch("financial.views_bulk_accounts.SubscriptionService.assert_entity_access")
+    def test_bulk_import_rejects_view_only_user(self, _mocked_access, _mocked_permissions):
+        response = self.client.post(
+            "/api/financial/accounts-v2/bulk/import/validate/",
+            {"entity": self.entity.id},
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 403)
 
     def test_template_and_export_include_extended_profile_fields(self):
         template_row = accounts_bulk_template_payload()["accounts"][0]

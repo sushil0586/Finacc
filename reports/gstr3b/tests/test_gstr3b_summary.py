@@ -33,7 +33,7 @@ class Gstr3bSummaryAPITests(APITestCase):
         )
         self.permission_codes_patch = patch(
             "reports.api.report_permissions.EffectivePermissionService.permission_codes_for_user",
-            return_value=["reports.gstr3b.view"],
+            return_value=["reports.gstr3b.view", "reports.gstr3b.export"],
         )
         self.permission_codes_patch.start()
         self.addCleanup(self.permission_codes_patch.stop)
@@ -240,6 +240,22 @@ class Gstr3bSummaryAPITests(APITestCase):
         self.assertIn("format=csv", payload["actions"]["export_urls"]["csv"])
         self.assertIn("format=json", payload["actions"]["export_urls"]["json"])
         self.assertIn("format=whitebox_json", payload["actions"]["export_urls"]["whitebox_json"])
+
+    def test_view_only_user_has_no_export_actions_and_cannot_export_directly(self):
+        with patch(
+            "reports.api.report_permissions.EffectivePermissionService.permission_codes_for_user",
+            return_value=["reports.gstr3b.view"],
+        ):
+            summary_response = self.client.get(self.summary_url, self.params)
+            export_response = self.client.get(self.export_url, {**self.params, "format": "csv"})
+
+        self.assertEqual(summary_response.status_code, 200)
+        payload = summary_response.json()
+        self.assertEqual(payload["available_exports"], [])
+        self.assertEqual(payload["actions"]["export_urls"], {})
+        self.assertFalse(payload["actions"]["can_export_excel"])
+        self.assertFalse(payload["actions"]["can_export_csv"])
+        self.assertEqual(export_response.status_code, 403)
 
     def test_summary_computes_phase1_sections(self):
         self._create_sales_doc(

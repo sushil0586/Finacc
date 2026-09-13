@@ -73,3 +73,26 @@ class FinancialReportApiPermissionTests(APITestCase):
     def test_trading_account_export_denies_when_report_permission_is_missing(self, _assert_permission):
         response = self.client.get(reverse("reports_api:financial-trading-account-pdf"), self.scope_params)
         self.assertEqual(response.status_code, 403)
+
+    def test_view_only_permissions_cannot_download_financial_reports(self):
+        cases = (
+            ("reports_api:financial-trial-balance-csv", {}),
+            ("reports_api:financial-ledger-book-csv", {"ledger": 999999}),
+            ("reports_api:financial-ledger-summary-csv", {}),
+            ("reports_api:financial-profit-loss-csv", {}),
+            ("reports_api:financial-balance-sheet-csv", {}),
+            ("reports_api:financial-trading-account-csv", {}),
+        )
+        for route_name, extra_params in cases:
+            with self.subTest(route_name=route_name):
+                response = self.client.get(reverse(route_name), {**self.scope_params, **extra_params})
+                self.assertEqual(response.status_code, 403)
+
+    def test_view_only_trial_balance_omits_export_capabilities(self):
+        response = self.client.get(reverse("reports_api:financial-trial-balance"), self.scope_params)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.data["actions"]["can_export"])
+        self.assertFalse(response.data["actions"]["can_print"])
+        self.assertEqual(response.data["actions"]["export_urls"], {})
+        self.assertEqual(response.data["available_exports"], [])

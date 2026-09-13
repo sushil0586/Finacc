@@ -22,7 +22,10 @@ class GstExceptionDashboardAPITests(APITestCase):
         )
         self.permission_codes_patch = patch(
             "reports.api.report_permissions.EffectivePermissionService.permission_codes_for_user",
-            return_value=["reports.gst_exception_dashboard.view"],
+            return_value=[
+                "reports.gst_exception_dashboard.view",
+                "reports.gst_exception_dashboard.export",
+            ],
         )
         self.permission_codes_patch.start()
         self.addCleanup(self.permission_codes_patch.stop)
@@ -222,3 +225,16 @@ class GstExceptionDashboardAPITests(APITestCase):
     def test_export_denies_when_report_permission_is_missing(self, _assert_permission):
         response = self.client.get(self.export_url, {**self.params, "format": "csv"})
         self.assertEqual(response.status_code, 403)
+
+    def test_view_only_user_has_no_export_actions_and_cannot_export_directly(self):
+        with patch(
+            "reports.api.report_permissions.EffectivePermissionService.permission_codes_for_user",
+            return_value=["reports.gst_exception_dashboard.view"],
+        ):
+            summary_response = self.client.get(self.summary_url, self.params)
+            export_response = self.client.get(self.export_url, {**self.params, "format": "csv"})
+
+        self.assertEqual(summary_response.status_code, 200)
+        self.assertEqual(summary_response.json()["available_exports"], [])
+        self.assertEqual(summary_response.json()["actions"]["export_urls"], {})
+        self.assertEqual(export_response.status_code, 403)

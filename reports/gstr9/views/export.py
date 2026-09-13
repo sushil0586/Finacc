@@ -37,6 +37,7 @@ class Gstr9ExportAPIView(Gstr9ScopedReportMixin, APIView):
         service = self.service_class()
         scope = service.build_scope(request.query_params)
         self.enforce_report_scope(request, scope)
+        self.enforce_export_permission(request, entity_id=scope.entity_id)
         freeze_service = self.freeze_service_class(report_service=service)
         try:
             freeze_version = parse_freeze_version(request.query_params)

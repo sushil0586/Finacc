@@ -15,6 +15,7 @@ from sales.serializers.sales_ar import (
 )
 from sales.services.sales_ar_service import SalesArService
 from sales.views.rbac import require_sales_scope_permission
+from rbac.services import EffectivePermissionService
 from financial.models import account
 from financial.profile_access import account_gstno, account_pan, account_partytype
 
@@ -40,7 +41,7 @@ def _require_ar_view_permission(*, user, entity_id: int):
     require_sales_scope_permission(
         user=user,
         entity_id=entity_id,
-        permission_codes=("sales.invoice.view", "sales.invoice.update"),
+        permission_codes=("sales.ar.view",),
         access_mode="operational",
         feature_code="feature_sales",
         message="Missing permission to access sales AR data.",
@@ -51,10 +52,21 @@ def _require_ar_manage_permission(*, user, entity_id: int):
     require_sales_scope_permission(
         user=user,
         entity_id=entity_id,
-        permission_codes=("sales.invoice.update", "sales.invoice.post", "sales.invoice.unpost"),
+        permission_codes=("sales.ar.manage",),
         access_mode="operational",
         feature_code="feature_sales",
         message="Missing permission to manage sales AR data.",
+    )
+
+
+def _require_ar_export_permission(*, user, entity_id: int):
+    require_sales_scope_permission(
+        user=user,
+        entity_id=entity_id,
+        permission_codes=("sales.ar.export",),
+        access_mode="operational",
+        feature_code="feature_sales",
+        message="Missing permission to export sales AR data.",
     )
 
 
@@ -65,22 +77,25 @@ def _filtered_querydict(request, *, exclude=None):
     return params.urlencode()
 
 
-def _attach_customer_statement_actions(payload, request, *, export_base_path):
+def _attach_customer_statement_actions(payload, request, *, entity_id, export_base_path):
     query = _filtered_querydict(request)
+    can_export = "sales.ar.export" in EffectivePermissionService.permission_codes_for_user(request.user, entity_id)
     payload["actions"] = {
         "can_view": True,
-        "can_export_excel": True,
-        "can_export_pdf": True,
-        "can_export_csv": True,
-        "can_print": True,
+        "can_export_excel": can_export,
+        "can_export_pdf": can_export,
+        "can_export_csv": can_export,
+        "can_print": can_export,
         "export_urls": {
             "excel": f"{export_base_path}excel/?{query}",
             "pdf": f"{export_base_path}pdf/?{query}",
             "csv": f"{export_base_path}csv/?{query}",
             "print": f"{export_base_path}print/?{query}",
-        },
+        }
+        if can_export
+        else {},
     }
-    payload["available_exports"] = ["excel", "pdf", "csv", "print"]
+    payload["available_exports"] = ["excel", "pdf", "csv", "print"] if can_export else []
     return payload
 
 
@@ -280,4 +295,11 @@ class CustomerStatementAPIView(APIView):
             "advances": CustomerAdvanceBalanceSerializer(data["advances"], many=True).data,
             "settlements": CustomerSettlementSerializer(data["settlements"], many=True).data,
         }
-        return Response(_attach_customer_statement_actions(payload, request, export_base_path="/api/sales/ar/customer-statement/"))
+        return Response(
+            _attach_customer_statement_actions(
+                payload,
+                request,
+                entity_id=entity_id,
+                export_base_path="/api/sales/ar/customer-statement/",
+            )
+        )

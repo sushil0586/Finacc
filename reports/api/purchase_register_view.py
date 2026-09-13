@@ -86,19 +86,24 @@ def _purchase_register_meta(*, cleaned_filters, feature_state, permission_codes=
     }
 
 
-def _attach_purchase_register_actions(payload, request, *, export_base_path):
+def _attach_purchase_register_actions(payload, request, *, export_base_path, permission_codes):
+    can_export = "reports.purchase_register.export" in permission_codes
     params = request.GET.copy()
     params.pop("page", None)
     params.pop("page_size", None)
     query = params.urlencode()
-    payload["actions"]["can_print"] = True
-    payload["actions"]["export_urls"] = {
-        "excel": f"{export_base_path}excel/?{query}",
-        "pdf": f"{export_base_path}pdf/?{query}",
-        "csv": f"{export_base_path}csv/?{query}",
-        "print": f"{export_base_path}print/?{query}",
-    }
-    payload["available_exports"] = ["excel", "pdf", "csv", "print"]
+    payload["actions"]["can_print"] = can_export
+    payload["actions"]["export_urls"] = (
+        {
+            "excel": f"{export_base_path}excel/?{query}",
+            "pdf": f"{export_base_path}pdf/?{query}",
+            "csv": f"{export_base_path}csv/?{query}",
+            "print": f"{export_base_path}print/?{query}",
+        }
+        if can_export
+        else {}
+    )
+    payload["available_exports"] = ["excel", "pdf", "csv", "print"] if can_export else []
     return payload
 
 
@@ -243,11 +248,31 @@ class PurchaseRegisterAPIView(ScopedEntitlementMixin, APIView):
             "total_rows": paginator.page.paginator.count,
             "paginated": True,
         }
-        return Response(_attach_purchase_register_actions(response, request, export_base_path="/api/reports/purchases/register/"))
+        return Response(
+            _attach_purchase_register_actions(
+                response,
+                request,
+                export_base_path="/api/reports/purchases/register/",
+                permission_codes=permission_codes,
+            )
+        )
 
 
 class _BasePurchaseRegisterExportAPIView(PurchaseRegisterAPIView):
     export_mode = "attachment"
+
+    def _require_export_permission(self, request):
+        entity_id = request.query_params.get("entity")
+        try:
+            entity_id = int(entity_id)
+        except (TypeError, ValueError):
+            raise PermissionDenied("A valid entity scope is required for export.")
+        entity = EffectivePermissionService.entity_for_user(request.user, entity_id)
+        if entity is None:
+            raise PermissionDenied("You do not have access to this entity.")
+        permission_codes = EffectivePermissionService.permission_codes_for_user(request.user, entity_id)
+        if "reports.purchase_register.export" not in permission_codes:
+            raise PermissionDenied("Missing permission: reports.purchase_register.export")
 
     def export_response(self, *, filename, content, content_type):
         response = HttpResponse(content, content_type=content_type)
@@ -256,6 +281,7 @@ class _BasePurchaseRegisterExportAPIView(PurchaseRegisterAPIView):
         return response
 
     def report_data(self, request):
+        self._require_export_permission(request)
         payload, cleaned_filters, _paginator, feature_state = self.get_service_payload(request, page=1, page_size=100000)
         include_outstanding = feature_state["include_outstanding"]
         headers = [

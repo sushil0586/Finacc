@@ -37,10 +37,58 @@ from financial.services import (
     ensure_account_profile_for_ledger,
     ledger_should_be_party,
 )
+from rbac.access import assert_any_entity_permission
 
 
 def _include_inactive(request):
     return str(request.query_params.get("include_inactive", "")).lower() in {"1", "true", "yes"}
+
+
+class FinancialMasterListActionMixin:
+    rbac_permission_family = None
+
+    def initial(self, request, *args, **kwargs):
+        super().initial(request, *args, **kwargs)
+        raw_entity_id = request.query_params.get("entity") or request.data.get("entity")
+        try:
+            entity_id = int(raw_entity_id)
+        except (TypeError, ValueError):
+            raise serializers.ValidationError({"entity": "A valid entity is required."})
+        action = "view" if request.method.upper() in {"GET", "HEAD", "OPTIONS"} else "create"
+        assert_any_entity_permission(
+            user=request.user,
+            entity_id=entity_id,
+            required_permissions=(f"{self.rbac_permission_family}.{action}",),
+            message=f"Missing permission for {self.rbac_permission_family} {action}.",
+            allow_legacy_owner=True,
+        )
+
+
+class FinancialMasterDetailActionMixin:
+    rbac_permission_family = None
+
+    def get_object(self):
+        instance = super().get_object()
+        entity_id = getattr(instance, "entity_id", None)
+        if entity_id is None and getattr(instance, "account_id", None):
+            entity_id = getattr(instance.account, "entity_id", None)
+        action = {
+            "GET": "view",
+            "HEAD": "view",
+            "OPTIONS": "view",
+            "PUT": "update",
+            "PATCH": "update",
+            "DELETE": "delete",
+        }.get(self.request.method.upper())
+        if action:
+            assert_any_entity_permission(
+                user=self.request.user,
+                entity_id=entity_id,
+                required_permissions=(f"{self.rbac_permission_family}.{action}",),
+                message=f"Missing permission for {self.rbac_permission_family} {action}.",
+                allow_legacy_owner=True,
+            )
+        return instance
 
 
 def _active_filter_value(request):
@@ -262,7 +310,8 @@ class SoftDeleteRetrieveUpdateDestroyAPIView(RetrieveUpdateDestroyAPIView):
             )
 
 
-class AccountTypeV2ListCreateAPIView(ListCreateAPIView):
+class AccountTypeV2ListCreateAPIView(FinancialMasterListActionMixin, ListCreateAPIView):
+    rbac_permission_family = "financial.account_type"
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = AccountTypeV2Serializer
     pagination_class = FinancialMasterPagination
@@ -312,10 +361,74 @@ class AccountTypeV2ListCreateAPIView(ListCreateAPIView):
         return {"detail": "An account type with the same name or code already exists."}
 
 
-class ShippingDetailsListCreateAPIView(ListCreateAPIView):
+class AccountChildListCreateActionMixin:
+    def get_queryset(self):
+        raw_entity_id = self.request.query_params.get("entity")
+        try:
+            entity_id = int(raw_entity_id)
+        except (TypeError, ValueError):
+            raise serializers.ValidationError({"entity": "A valid entity query parameter is required."})
+        assert_any_entity_permission(
+            user=self.request.user,
+            entity_id=entity_id,
+            required_permissions=("financial.account.view",),
+            message="Missing permission to view account details.",
+            allow_legacy_owner=True,
+        )
+        return self.base_queryset().filter(entity_id=entity_id)
+
+    def perform_create(self, serializer):
+        account_obj = serializer.validated_data.get("account")
+        entity_obj = serializer.validated_data.get("entity")
+        entity_id = getattr(account_obj, "entity_id", None) or getattr(entity_obj, "id", None)
+        assert_any_entity_permission(
+            user=self.request.user,
+            entity_id=entity_id,
+            required_permissions=("financial.account.create", "financial.account.update"),
+            message="Missing permission to add account details.",
+            allow_legacy_owner=True,
+        )
+        serializer.save(createdby=self.request.user)
+
+
+class AccountChildDetailActionMixin:
+    def get_object(self):
+        instance = super().get_object()
+        action_permissions = (
+            ("financial.account.view",)
+            if self.request.method.upper() in {"GET", "HEAD", "OPTIONS"}
+            else ("financial.account.update",)
+        )
+        assert_any_entity_permission(
+            user=self.request.user,
+            entity_id=instance.entity_id or getattr(instance.account, "entity_id", None),
+            required_permissions=action_permissions,
+            message="Missing permission to access account details.",
+            allow_legacy_owner=True,
+        )
+        return instance
+
+
+class AccountChildByAccountActionMixin:
+    def get_queryset(self):
+        account_id = self.kwargs.get("account_id")
+        account_obj = account.objects.only("id", "entity_id").filter(pk=account_id).first()
+        if account_obj is None:
+            return self.base_queryset().none()
+        assert_any_entity_permission(
+            user=self.request.user,
+            entity_id=account_obj.entity_id,
+            required_permissions=("financial.account.view",),
+            message="Missing permission to view account details.",
+            allow_legacy_owner=True,
+        )
+        return self.account_queryset(account_id)
+
+
+class ShippingDetailsListCreateAPIView(AccountChildListCreateActionMixin, ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
-    def get_queryset(self):
+    def base_queryset(self):
         return ShippingDetails.objects.select_related(
             "account", "entity", "country", "state", "district", "city"
         )
@@ -325,11 +438,8 @@ class ShippingDetailsListCreateAPIView(ListCreateAPIView):
             return ShippingDetailsListSerializer
         return ShippingDetailsSerializer
 
-    def perform_create(self, serializer):
-        serializer.save(createdby=self.request.user)
 
-
-class ShippingDetailsRetrieveUpdateDestroyView(RetrieveUpdateDestroyAPIView):
+class ShippingDetailsRetrieveUpdateDestroyView(AccountChildDetailActionMixin, RetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = ShippingDetailsSerializer
 
@@ -339,12 +449,14 @@ class ShippingDetailsRetrieveUpdateDestroyView(RetrieveUpdateDestroyAPIView):
         )
 
 
-class ShippingDetailsByAccountView(ListAPIView):
+class ShippingDetailsByAccountView(AccountChildByAccountActionMixin, ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = ShippingDetailsListSerializer
 
-    def get_queryset(self):
-        account_id = self.kwargs.get("account_id")
+    def base_queryset(self):
+        return ShippingDetails.objects.all()
+
+    def account_queryset(self, account_id):
         return (
             ShippingDetails.objects.select_related(
                 "account", "entity", "country", "state", "district", "city"
@@ -371,10 +483,10 @@ class ShippingDetailsByAccountView(ListAPIView):
         )
 
 
-class ContactDetailsListCreateView(ListCreateAPIView):
+class ContactDetailsListCreateView(AccountChildListCreateActionMixin, ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
-    def get_queryset(self):
+    def base_queryset(self):
         return ContactDetails.objects.select_related(
             "account", "entity", "country", "state", "district", "city"
         )
@@ -384,11 +496,8 @@ class ContactDetailsListCreateView(ListCreateAPIView):
             return ContactDetailsListSerializer
         return ContactDetailsSerializer
 
-    def perform_create(self, serializer):
-        serializer.save(createdby=self.request.user)
 
-
-class ContactDetailsRetrieveUpdateDestroyView(RetrieveUpdateDestroyAPIView):
+class ContactDetailsRetrieveUpdateDestroyView(AccountChildDetailActionMixin, RetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = ContactDetailsSerializer
 
@@ -398,12 +507,14 @@ class ContactDetailsRetrieveUpdateDestroyView(RetrieveUpdateDestroyAPIView):
         )
 
 
-class ContactDetailsByAccountView(ListAPIView):
+class ContactDetailsByAccountView(AccountChildByAccountActionMixin, ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = ContactDetailsListSerializer
 
-    def get_queryset(self):
-        account_id = self.kwargs.get("account_id")
+    def base_queryset(self):
+        return ContactDetails.objects.all()
+
+    def account_queryset(self, account_id):
         return (
             ContactDetails.objects.select_related(
                 "account", "entity", "country", "state", "district", "city"
@@ -430,7 +541,8 @@ class ContactDetailsByAccountView(ListAPIView):
         )
 
 
-class AccountTypeV2RetrieveUpdateDestroyAPIView(SoftDeleteRetrieveUpdateDestroyAPIView):
+class AccountTypeV2RetrieveUpdateDestroyAPIView(FinancialMasterDetailActionMixin, SoftDeleteRetrieveUpdateDestroyAPIView):
+    rbac_permission_family = "financial.account_type"
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = AccountTypeV2Serializer
 
@@ -453,7 +565,8 @@ class AccountTypeV2RetrieveUpdateDestroyAPIView(SoftDeleteRetrieveUpdateDestroyA
             raise serializers.ValidationError(errors or {"detail": "An account type with the same name or code already exists."})
 
 
-class AccountHeadV2ListCreateAPIView(ListCreateAPIView):
+class AccountHeadV2ListCreateAPIView(FinancialMasterListActionMixin, ListCreateAPIView):
+    rbac_permission_family = "financial.account_head"
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = AccountHeadV2Serializer
     pagination_class = FinancialMasterPagination
@@ -505,7 +618,8 @@ class AccountHeadV2ListCreateAPIView(ListCreateAPIView):
             raise serializers.ValidationError(errors or {"detail": "An account head with the same name or code already exists."})
 
 
-class AccountHeadV2RetrieveUpdateDestroyAPIView(SoftDeleteRetrieveUpdateDestroyAPIView):
+class AccountHeadV2RetrieveUpdateDestroyAPIView(FinancialMasterDetailActionMixin, SoftDeleteRetrieveUpdateDestroyAPIView):
+    rbac_permission_family = "financial.account_head"
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = AccountHeadV2Serializer
 
@@ -528,7 +642,8 @@ class AccountHeadV2RetrieveUpdateDestroyAPIView(SoftDeleteRetrieveUpdateDestroyA
             raise serializers.ValidationError(errors or {"detail": "An account head with the same name or code already exists."})
 
 
-class LedgerListCreateAPIView(ListCreateAPIView):
+class LedgerListCreateAPIView(FinancialMasterListActionMixin, ListCreateAPIView):
+    rbac_permission_family = "financial.ledger"
     permission_classes = [permissions.IsAuthenticated]
     pagination_class = FinancialMasterPagination
 
@@ -634,7 +749,8 @@ class LedgerListCreateAPIView(ListCreateAPIView):
         _sync_party_management(ledger=ledger, request_user=self.request.user)
 
 
-class LedgerRetrieveUpdateDestroyAPIView(SoftDeleteRetrieveUpdateDestroyAPIView):
+class LedgerRetrieveUpdateDestroyAPIView(FinancialMasterDetailActionMixin, SoftDeleteRetrieveUpdateDestroyAPIView):
+    rbac_permission_family = "financial.ledger"
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = LedgerSerializer
 
@@ -992,7 +1108,8 @@ class AccountGstinLookupAPIView(APIView):
         )
 
 
-class AccountProfileV2ListCreateAPIView(ListCreateAPIView):
+class AccountProfileV2ListCreateAPIView(FinancialMasterListActionMixin, ListCreateAPIView):
+    rbac_permission_family = "financial.account"
     permission_classes = [permissions.IsAuthenticated]
     pagination_class = AccountProfileV2Pagination
 
@@ -1108,7 +1225,8 @@ class AccountProfileV2ListCreateAPIView(ListCreateAPIView):
         return Response(read_serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
 
-class AccountProfileV2RetrieveUpdateDestroyAPIView(SoftDeleteRetrieveUpdateDestroyAPIView):
+class AccountProfileV2RetrieveUpdateDestroyAPIView(FinancialMasterDetailActionMixin, SoftDeleteRetrieveUpdateDestroyAPIView):
+    rbac_permission_family = "financial.account"
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):

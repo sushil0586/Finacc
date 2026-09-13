@@ -20,6 +20,7 @@ from helpers.utils.meta_cache import (
     SALES_META_NAMESPACES,
     bump_meta_namespaces,
 )
+from rbac.access import assert_any_entity_permission
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
@@ -41,15 +42,37 @@ def _feature_code_for_module(module: str | None) -> str | None:
     return None
 
 
-def _enforce_entity_module_access(*, request, entity_id: int, module: str | None) -> None:
+def _module_view_permission(module: str | None) -> str | None:
+    normalized = str(module or "").strip().lower()
+    if normalized == InvoiceCustomFieldDefinition.Module.PURCHASE_INVOICE:
+        return "purchase.invoice.view"
+    if normalized == InvoiceCustomFieldDefinition.Module.SALES_INVOICE:
+        return "sales.invoice.view"
+    return None
+
+
+def _enforce_entity_module_access(
+    *,
+    request,
+    entity_id: int,
+    module: str | None,
+    required_permissions: tuple[str, ...],
+) -> None:
     feature_code = _feature_code_for_module(module)
     if not feature_code:
-        return
+        raise serializers.ValidationError({"module": "Unsupported invoice module."})
     enforce_operational_entity_access(
         request=request,
         entity_id=entity_id,
         feature_code=feature_code,
         access_mode=SubscriptionService.ACCESS_MODE_OPERATIONAL,
+    )
+    assert_any_entity_permission(
+        user=request.user,
+        entity_id=entity_id,
+        required_permissions=required_permissions,
+        message="Missing permission to access invoice custom fields.",
+        allow_legacy_owner=True,
     )
 
 
@@ -95,6 +118,13 @@ class InvoiceCustomFieldDefinitionSerializer(serializers.ModelSerializer):
         )
         field_type = attrs.get("field_type") or getattr(instance, "field_type", None)
         options_json = attrs.get("options_json") if "options_json" in attrs else getattr(instance, "options_json", [])
+
+        if subentity and entity and subentity.entity_id != entity.id:
+            raise serializers.ValidationError({"subentity": "Subentity must belong to the selected entity."})
+        if applies_to_account and entity and applies_to_account.entity_id != entity.id:
+            raise serializers.ValidationError(
+                {"applies_to_account": "Account must belong to the selected entity."}
+            )
 
         if field_type in (
             InvoiceCustomFieldDefinition.FieldType.SELECT,
@@ -180,7 +210,13 @@ class InvoiceCustomFieldDefinitionListCreateAPIView(APIView):
 
         if not entity_id or not module:
             return Response({"detail": "entity and module query params are required."}, status=400)
-        _enforce_entity_module_access(request=request, entity_id=int(entity_id), module=str(module))
+        permission = "admin.invoice_custom_fields.view" if manage_mode else _module_view_permission(module)
+        _enforce_entity_module_access(
+            request=request,
+            entity_id=int(entity_id),
+            module=str(module),
+            required_permissions=(permission,) if permission else (),
+        )
 
         if manage_mode:
             qs = InvoiceCustomFieldDefinition.objects.filter(
@@ -214,6 +250,7 @@ class InvoiceCustomFieldDefinitionListCreateAPIView(APIView):
             request=request,
             entity_id=ser.validated_data["entity"].id,
             module=ser.validated_data.get("module"),
+            required_permissions=("admin.invoice_custom_fields.update",),
         )
         obj = ser.save()
         namespaces = _meta_namespaces_for_module(obj.module)
@@ -227,10 +264,24 @@ class InvoiceCustomFieldDefinitionDetailAPIView(APIView):
 
     def patch(self, request, pk: int):
         obj = get_object_or_404(InvoiceCustomFieldDefinition, pk=pk)
-        _enforce_entity_module_access(request=request, entity_id=obj.entity_id, module=obj.module)
+        _enforce_entity_module_access(
+            request=request,
+            entity_id=obj.entity_id,
+            module=obj.module,
+            required_permissions=("admin.invoice_custom_fields.update",),
+        )
         previous_module = obj.module
         ser = InvoiceCustomFieldDefinitionSerializer(obj, data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
+        target_entity = ser.validated_data.get("entity", obj.entity)
+        target_module = ser.validated_data.get("module", obj.module)
+        if target_entity.id != obj.entity_id or target_module != obj.module:
+            _enforce_entity_module_access(
+                request=request,
+                entity_id=target_entity.id,
+                module=target_module,
+                required_permissions=("admin.invoice_custom_fields.update",),
+            )
         saved = ser.save()
         namespaces = sorted(set(_meta_namespaces_for_module(previous_module) + _meta_namespaces_for_module(saved.module)))
         if namespaces:
@@ -249,7 +300,13 @@ class InvoiceCustomFieldDefaultListCreateAPIView(APIView):
 
         if not entity_id or not module or not party_account_id:
             return Response({"detail": "entity, module and party query params are required."}, status=400)
-        _enforce_entity_module_access(request=request, entity_id=int(entity_id), module=str(module))
+        permission = _module_view_permission(module)
+        _enforce_entity_module_access(
+            request=request,
+            entity_id=int(entity_id),
+            module=str(module),
+            required_permissions=(permission,) if permission else (),
+        )
 
         defaults = InvoiceCustomFieldService.get_defaults_map(
             entity_id=int(entity_id),
@@ -267,6 +324,7 @@ class InvoiceCustomFieldDefaultListCreateAPIView(APIView):
             request=request,
             entity_id=payload["definition"].entity_id,
             module=payload["definition"].module,
+            required_permissions=("admin.invoice_custom_fields.update",),
         )
         obj, _ = InvoiceCustomFieldDefault.objects.update_or_create(
             definition=payload["definition"],

@@ -27,7 +27,7 @@ from sales.serializers.sales_ar import (
     CustomerSettlementSerializer,
 )
 from sales.services.sales_ar_service import SalesArService
-from sales.views.sales_ar import _parse_scope, _require_ar_view_permission
+from sales.views.sales_ar import _parse_scope, _require_ar_export_permission, _require_ar_view_permission
 
 
 def _filtered_querydict(request, *, exclude=None):
@@ -602,6 +602,7 @@ class _CustomerStatementExportMixin(_BaseCustomerStatementExportAPIView):
     def report_data(self, request):
         entity_id, entityfinid_id, subentity_id = _parse_scope(request)
         _require_ar_view_permission(user=request.user, entity_id=entity_id)
+        _require_ar_export_permission(user=request.user, entity_id=entity_id)
         customer_value = request.query_params.get("customer")
         if not customer_value:
             raise ValueError("customer query param is required.")

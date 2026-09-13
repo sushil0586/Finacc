@@ -13,6 +13,7 @@ from rest_framework.views import APIView
 
 from catalog.models import ProductBulkJob
 from entity.models import Entity
+from rbac.access import assert_any_entity_permission
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 from withholding.bulk_statutory import (
     CONFIGS_SHEET,
@@ -35,6 +36,19 @@ from withholding.bulk_statutory import (
 )
 
 
+TCS_SECTION_VIEW_PERMISSIONS = ("compliance.tcs_section.view", "tcs.section.view", "tcs.sections.view")
+TCS_SECTION_EXPORT_PERMISSIONS = ("compliance.tcs_section.export", "tcs.section.export")
+TCS_SECTION_IMPORT_PERMISSIONS = ("compliance.tcs_section.import", "tcs.section.import")
+TCS_RULE_VIEW_PERMISSIONS = ("compliance.tcs_rule.view", "tcs.rule.view", "tcs.rules.view")
+TCS_RULE_EXPORT_PERMISSIONS = ("compliance.tcs_rule.export", "tcs.rule.export")
+TCS_RULE_IMPORT_PERMISSIONS = ("compliance.tcs_rule.import", "tcs.rule.import")
+TCS_CONFIG_VIEW_PERMISSIONS = ("compliance.tcs_config.view", "tcs.config.view")
+TCS_CONFIG_EXPORT_PERMISSIONS = ("compliance.tcs_config.export", "tcs.config.export")
+TCS_CONFIG_IMPORT_PERMISSIONS = ("compliance.tcs_config.import", "tcs.config.import")
+TCS_BULK_VIEW_PERMISSIONS = TCS_SECTION_VIEW_PERMISSIONS + TCS_RULE_VIEW_PERMISSIONS + TCS_CONFIG_VIEW_PERMISSIONS
+TCS_BULK_IMPORT_PERMISSIONS = TCS_SECTION_IMPORT_PERMISSIONS + TCS_RULE_IMPORT_PERMISSIONS + TCS_CONFIG_IMPORT_PERMISSIONS
+
+
 class SafeFormatNegotiation(DefaultContentNegotiation):
     def filter_renderers(self, renderers, format):
         if format and not any(renderer.format == format for renderer in renderers):
@@ -42,7 +56,7 @@ class SafeFormatNegotiation(DefaultContentNegotiation):
         return super().filter_renderers(renderers, format)
 
 
-def _entity_from_request(request):
+def _entity_from_request(request, *, required_permissions=TCS_BULK_VIEW_PERMISSIONS):
     raw = request.query_params.get("entity") or request.data.get("entity")
     if not raw:
         raise ValidationError({"entity": "entity is required."})
@@ -52,6 +66,11 @@ def _entity_from_request(request):
         entity=entity,
         access_mode=SubscriptionService.ACCESS_MODE_OPERATIONAL,
         feature_code=SubscriptionLimitCodes.FEATURE_FINANCIAL,
+    )
+    assert_any_entity_permission(
+        user=request.user,
+        entity_id=entity.id,
+        required_permissions=required_permissions,
     )
     return entity
 
@@ -86,7 +105,7 @@ class _BaseBulkMixin:
 
 class TcsSectionsBulkTemplateAPIView(_BaseBulkMixin, APIView):
     def get(self, request):
-        _entity_from_request(request)
+        _entity_from_request(request, required_permissions=TCS_SECTION_VIEW_PERMISSIONS)
         fmt = _fmt(request)
         content = render_payload(sections_template_payload(), fmt)
         if fmt == "xlsx":
@@ -100,7 +119,7 @@ class TcsSectionsBulkTemplateAPIView(_BaseBulkMixin, APIView):
 
 class TcsSectionsBulkExportAPIView(_BaseBulkMixin, APIView):
     def get(self, request):
-        entity = _entity_from_request(request)
+        entity = _entity_from_request(request, required_permissions=TCS_SECTION_EXPORT_PERMISSIONS)
         fmt = _fmt(request)
         search = (request.query_params.get("search") or "").strip()
         data = sections_export_payload(search=search)
@@ -126,7 +145,7 @@ class TcsSectionsBulkImportValidateAPIView(_BaseBulkMixin, APIView):
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
-        entity = _entity_from_request(request)
+        entity = _entity_from_request(request, required_permissions=TCS_SECTION_IMPORT_PERMISSIONS)
         upload = request.FILES.get("file")
         if not upload:
             raise ValidationError({"file": "Upload file is required."})
@@ -155,7 +174,7 @@ class TcsSectionsBulkImportValidateAPIView(_BaseBulkMixin, APIView):
 
 class TcsSectionsBulkImportCommitAPIView(_BaseBulkMixin, APIView):
     def post(self, request):
-        entity = _entity_from_request(request)
+        entity = _entity_from_request(request, required_permissions=TCS_SECTION_IMPORT_PERMISSIONS)
         token = (request.data.get("validation_token") or "").strip()
         if not token:
             raise ValidationError({"validation_token": "validation_token is required."})
@@ -181,7 +200,7 @@ class TcsSectionsBulkImportCommitAPIView(_BaseBulkMixin, APIView):
 
 class TcsRulesBulkTemplateAPIView(_BaseBulkMixin, APIView):
     def get(self, request):
-        _entity_from_request(request)
+        _entity_from_request(request, required_permissions=TCS_RULE_VIEW_PERMISSIONS)
         fmt = _fmt(request)
         content = render_payload(rules_template_payload(), fmt)
         if fmt == "xlsx":
@@ -195,7 +214,7 @@ class TcsRulesBulkTemplateAPIView(_BaseBulkMixin, APIView):
 
 class TcsRulesBulkExportAPIView(_BaseBulkMixin, APIView):
     def get(self, request):
-        entity = _entity_from_request(request)
+        entity = _entity_from_request(request, required_permissions=TCS_RULE_EXPORT_PERMISSIONS)
         fmt = _fmt(request)
         search = (request.query_params.get("search") or "").strip()
         data = rules_export_payload(search=search)
@@ -221,7 +240,7 @@ class TcsRulesBulkImportValidateAPIView(_BaseBulkMixin, APIView):
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
-        entity = _entity_from_request(request)
+        entity = _entity_from_request(request, required_permissions=TCS_RULE_IMPORT_PERMISSIONS)
         upload = request.FILES.get("file")
         if not upload:
             raise ValidationError({"file": "Upload file is required."})
@@ -250,7 +269,7 @@ class TcsRulesBulkImportValidateAPIView(_BaseBulkMixin, APIView):
 
 class TcsRulesBulkImportCommitAPIView(_BaseBulkMixin, APIView):
     def post(self, request):
-        entity = _entity_from_request(request)
+        entity = _entity_from_request(request, required_permissions=TCS_RULE_IMPORT_PERMISSIONS)
         token = (request.data.get("validation_token") or "").strip()
         if not token:
             raise ValidationError({"validation_token": "validation_token is required."})
@@ -276,7 +295,7 @@ class TcsRulesBulkImportCommitAPIView(_BaseBulkMixin, APIView):
 
 class TcsConfigsBulkTemplateAPIView(_BaseBulkMixin, APIView):
     def get(self, request):
-        entity = _entity_from_request(request)
+        entity = _entity_from_request(request, required_permissions=TCS_CONFIG_VIEW_PERMISSIONS)
         fmt = _fmt(request)
         entityfin = _entityfin_from_request(request)
         content = render_payload(configs_template_payload(entity.id, entityfin), fmt)
@@ -291,7 +310,7 @@ class TcsConfigsBulkTemplateAPIView(_BaseBulkMixin, APIView):
 
 class TcsConfigsBulkExportAPIView(_BaseBulkMixin, APIView):
     def get(self, request):
-        entity = _entity_from_request(request)
+        entity = _entity_from_request(request, required_permissions=TCS_CONFIG_EXPORT_PERMISSIONS)
         fmt = _fmt(request)
         entityfin = _entityfin_from_request(request)
         search = (request.query_params.get("search") or "").strip()
@@ -318,7 +337,7 @@ class TcsConfigsBulkImportValidateAPIView(_BaseBulkMixin, APIView):
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
-        entity = _entity_from_request(request)
+        entity = _entity_from_request(request, required_permissions=TCS_CONFIG_IMPORT_PERMISSIONS)
         upload = request.FILES.get("file")
         if not upload:
             raise ValidationError({"file": "Upload file is required."})
@@ -348,7 +367,7 @@ class TcsConfigsBulkImportValidateAPIView(_BaseBulkMixin, APIView):
 
 class TcsConfigsBulkImportCommitAPIView(_BaseBulkMixin, APIView):
     def post(self, request):
-        entity = _entity_from_request(request)
+        entity = _entity_from_request(request, required_permissions=TCS_CONFIG_IMPORT_PERMISSIONS)
         entityfin = _entityfin_from_request(request)
         token = (request.data.get("validation_token") or "").strip()
         if not token:
@@ -401,7 +420,7 @@ class TcsBulkJobDetailAPIView(_BaseBulkMixin, APIView):
 
 class TcsBulkJobErrorsExportAPIView(_BaseBulkMixin, APIView):
     def get(self, request, job_id: int):
-        entity = _entity_from_request(request)
+        entity = _entity_from_request(request, required_permissions=TCS_BULK_IMPORT_PERMISSIONS)
         job = get_object_or_404(ProductBulkJob, pk=job_id, entity=entity)
         fmt = _fmt(request)
         payload = {"errors": job.errors or []}

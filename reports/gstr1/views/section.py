@@ -27,7 +27,7 @@ class Gstr1SectionAPIView(Gstr1ScopedReportMixin, APIView):
     def get(self, request, section_name):
         service = self.service_class()
         scope = service.build_scope(request.query_params)
-        self.enforce_report_scope(request, scope)
+        permission_codes = self.enforce_report_scope(request, scope)
         smart_filters = service.build_smart_filters(request.query_params)
         qs = service.section(scope, section_name, smart_filters=smart_filters)
         qs = Gstr1SectionService.annotate_rows(qs).order_by(
@@ -71,10 +71,18 @@ class Gstr1SectionAPIView(Gstr1ScopedReportMixin, APIView):
             },
         )
         query = filtered_query(request, exclude=["page", "page_size"], overrides={"section": section_name})
-        response["actions"]["export_urls"] = {
-            "excel": f"/api/reports/gstr1/export/?format=xlsx&{query}",
-            "csv": f"/api/reports/gstr1/export/?format=csv&{query}",
-            "json": f"/api/reports/gstr1/export/?format=json&{query}",
-        }
-        response["available_exports"] = ["excel", "csv", "json"]
+        can_export = "reports.gst.export" in permission_codes
+        response["actions"]["export_urls"] = (
+            {
+                "excel": f"/api/reports/gstr1/export/?format=xlsx&{query}",
+                "csv": f"/api/reports/gstr1/export/?format=csv&{query}",
+                "json": f"/api/reports/gstr1/export/?format=json&{query}",
+            }
+            if can_export
+            else {}
+        )
+        response["available_exports"] = ["excel", "csv", "json"] if can_export else []
+        response["actions"]["can_export_excel"] = can_export
+        response["actions"]["can_export_csv"] = can_export
+        response["actions"]["can_export_pdf"] = False
         return Response(response)

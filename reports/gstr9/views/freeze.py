@@ -39,6 +39,7 @@ class Gstr9FreezeAPIView(Gstr9ScopedReportMixin, APIView):
         try:
             scope = service.build_scope(request.data or request.query_params)
             self.enforce_report_scope(request, scope)
+            self.enforce_freeze_permission(request, entity_id=scope.entity_id)
             snapshot = freeze_service.freeze(scope, user=request.user)
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)

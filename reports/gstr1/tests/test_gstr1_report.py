@@ -40,7 +40,7 @@ class Gstr1ReportAPITests(APITestCase):
         )
         self.permission_codes_patch = patch(
             "reports.api.report_permissions.EffectivePermissionService.permission_codes_for_user",
-            return_value=["reports.gst.view", "reports.gstr1report.view"],
+            return_value=["reports.gst.view", "reports.gstr1report.view", "reports.gst.export"],
         )
         self.permission_codes_patch.start()
         self.addCleanup(self.permission_codes_patch.stop)
@@ -278,7 +278,7 @@ class Gstr1ReportAPITests(APITestCase):
         self.assertEqual(payload["report_name"], "GSTR-1 Summary")
         self.assertTrue(payload["actions"]["can_view"])
         self.assertTrue(payload["actions"]["can_export_excel"])
-        self.assertTrue(payload["actions"]["can_export_pdf"])
+        self.assertFalse(payload["actions"]["can_export_pdf"])
         self.assertTrue(payload["actions"]["can_export_csv"])
         self.assertTrue(payload["actions"]["can_drilldown"])
         self.assertEqual(set(payload["actions"]["export_urls"].keys()), {"excel", "csv", "json", "gstn_json", "whitebox_json"})
@@ -288,6 +288,22 @@ class Gstr1ReportAPITests(APITestCase):
         self.assertIn("format=json", payload["actions"]["export_urls"]["json"])
         self.assertIn("format=gstn_json", payload["actions"]["export_urls"]["gstn_json"])
         self.assertIn("format=whitebox_json", payload["actions"]["export_urls"]["whitebox_json"])
+
+    def test_view_only_user_has_no_export_actions_and_cannot_export_directly(self):
+        with patch(
+            "reports.api.report_permissions.EffectivePermissionService.permission_codes_for_user",
+            return_value=["reports.gst.view", "reports.gstr1report.view"],
+        ):
+            summary_response = self.client.get(self.summary_url, self.base_params)
+            export_response = self.client.get(self.export_url, {**self.base_params, "format": "csv"})
+
+        self.assertEqual(summary_response.status_code, 200)
+        payload = summary_response.json()
+        self.assertEqual(payload["available_exports"], [])
+        self.assertEqual(payload["actions"]["export_urls"], {})
+        self.assertFalse(payload["actions"]["can_export_excel"])
+        self.assertFalse(payload["actions"]["can_export_csv"])
+        self.assertEqual(export_response.status_code, 403)
 
     def test_invoice_detail_includes_posting_lookup_and_drilldowns(self):
         invoice = self._create_sales_document(customer=self.customer_alpha)
@@ -407,7 +423,7 @@ class Gstr1ReportAPITests(APITestCase):
         self.assertEqual(payload["report_name"], "GSTR-1 B2B")
         self.assertTrue(payload["actions"]["can_view"])
         self.assertTrue(payload["actions"]["can_export_excel"])
-        self.assertTrue(payload["actions"]["can_export_pdf"])
+        self.assertFalse(payload["actions"]["can_export_pdf"])
         self.assertTrue(payload["actions"]["can_export_csv"])
         self.assertTrue(payload["actions"]["can_drilldown"])
         self.assertEqual(payload["available_exports"], ["excel", "csv", "json"])

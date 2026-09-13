@@ -87,3 +87,26 @@ class BookReportApiPermissionTests(APITestCase):
             self.scope_params,
         )
         self.assertEqual(response.status_code, 403)
+
+    def test_view_only_permissions_cannot_download_book_reports(self):
+        cases = (
+            (reverse("reports_api:financial-daybook-csv"), self.scope_params),
+            (reverse("reports_api:financial-cashbook-csv"), self.scope_params),
+            (
+                reverse("reports_api:financial-posting-detail-csv", kwargs={"entry_id": 1}),
+                self.scope_params,
+            ),
+        )
+        for url, params in cases:
+            with self.subTest(url=url):
+                response = self.client.get(url, params)
+                self.assertEqual(response.status_code, 403)
+
+    def test_view_only_daybook_omits_export_capabilities(self):
+        response = self.client.get(reverse("reports_api:financial-daybook"), self.scope_params)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.data["actions"]["can_export"])
+        self.assertFalse(response.data["actions"]["can_print"])
+        self.assertEqual(response.data["actions"]["export_urls"], {})
+        self.assertEqual(response.data["available_exports"], [])

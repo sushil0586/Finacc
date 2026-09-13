@@ -23,7 +23,10 @@ class GstReconciliationAPITests(APITestCase):
         )
         self.permission_codes_patch = patch(
             "reports.api.report_permissions.EffectivePermissionService.permission_codes_for_user",
-            return_value=["reports.gstr1_gstr3b_reconciliation.view"],
+            return_value=[
+                "reports.gstr1_gstr3b_reconciliation.view",
+                "reports.gstr1_gstr3b_reconciliation.export",
+            ],
         )
         self.permission_codes_patch.start()
         self.addCleanup(self.permission_codes_patch.stop)
@@ -127,6 +130,19 @@ class GstReconciliationAPITests(APITestCase):
     def test_export_denies_when_report_permission_is_missing(self, _assert_permission):
         response = self.client.get(self.export_url, {**self.params, "format": "csv"})
         self.assertEqual(response.status_code, 403)
+
+    def test_view_only_user_has_no_export_actions_and_cannot_export_directly(self):
+        with patch(
+            "reports.api.report_permissions.EffectivePermissionService.permission_codes_for_user",
+            return_value=["reports.gstr1_gstr3b_reconciliation.view"],
+        ):
+            summary_response = self.client.get(self.summary_url, self.params)
+            export_response = self.client.get(self.export_url, {**self.params, "format": "csv"})
+
+        self.assertEqual(summary_response.status_code, 200)
+        self.assertEqual(summary_response.json()["available_exports"], [])
+        self.assertEqual(summary_response.json()["actions"]["export_urls"], {})
+        self.assertEqual(export_response.status_code, 403)
 
     @patch("reports.services.gst_reconciliation.SalesInvoiceLine.objects.filter")
     def test_source_document_drilldown_uses_service_invoice_route_when_service_lines_exist(self, mocked_filter):

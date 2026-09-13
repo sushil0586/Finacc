@@ -18,7 +18,7 @@ class Gstr1ReadinessAPIView(Gstr1ScopedReportMixin, APIView):
     def get(self, request):
         service = self.service_class()
         scope = service.build_scope(request.query_params)
-        self.enforce_report_scope(request, scope)
+        permission_codes = self.enforce_report_scope(request, scope)
         smart_filters = service.build_smart_filters(request.query_params)
         summary = service.summary(scope, smart_filters=smart_filters)
         payload = service.readiness(scope, smart_filters=smart_filters, summary=summary)
@@ -38,5 +38,5 @@ class Gstr1ReadinessAPIView(Gstr1ScopedReportMixin, APIView):
                 "enable_drilldown": True,
             },
         )
-        attach_gstr1_export_actions(response, request)
+        attach_gstr1_export_actions(response, request, permission_codes=permission_codes)
         return Response(response)

@@ -4,6 +4,7 @@ from datetime import date as date_cls, datetime
 
 from django.http import HttpResponse
 from rest_framework import permissions
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -17,6 +18,7 @@ from reports.serializers.sales_register_serializer import (
     SalesRegisterTotalsSerializer,
 )
 from reports.services.sales_register_service import SalesRegisterService
+from rbac.services import EffectivePermissionService
 from sales.views.rbac import require_sales_scope_permission
 
 
@@ -54,19 +56,30 @@ def _safe_filename(value):
     return text or "report"
 
 
-def _attach_sales_register_actions(payload, request, *, export_base_path):
+def _attach_sales_register_actions(payload, request, *, export_base_path, can_export):
     params = request.GET.copy()
     params.pop("page", None)
     params.pop("page_size", None)
     query = params.urlencode()
-    payload["actions"]["can_print"] = True
-    payload["actions"]["export_urls"] = {
-        "excel": f"{export_base_path}excel/?{query}",
-        "pdf": f"{export_base_path}pdf/?{query}",
-        "csv": f"{export_base_path}csv/?{query}",
-        "print": f"{export_base_path}print/?{query}",
-    }
-    payload["available_exports"] = ["excel", "pdf", "csv", "print"]
+    payload["actions"].update(
+        {
+            "can_export_excel": can_export,
+            "can_export_pdf": can_export,
+            "can_export_csv": can_export,
+            "can_print": can_export,
+        }
+    )
+    payload["actions"]["export_urls"] = (
+        {
+            "excel": f"{export_base_path}excel/?{query}",
+            "pdf": f"{export_base_path}pdf/?{query}",
+            "csv": f"{export_base_path}csv/?{query}",
+            "print": f"{export_base_path}print/?{query}",
+        }
+        if can_export
+        else {}
+    )
+    payload["available_exports"] = ["excel", "pdf", "csv", "print"] if can_export else []
     return payload
 
 
@@ -90,7 +103,7 @@ class SalesRegisterAPIView(APIView):
         require_sales_scope_permission(
             user=request.user,
             entity_id=cleaned_filters["entity"],
-            permission_codes=("reports.sales_register.view", "reports.sales_register.export"),
+            permission_codes=("reports.sales_register.view",),
             access_mode="operational",
             feature_code="feature_reporting",
             message="Missing permission: reports.sales_register.view",
@@ -174,11 +187,38 @@ class SalesRegisterAPIView(APIView):
                 "enable_drilldown": True,
             },
         )
-        return Response(_attach_sales_register_actions(response, request, export_base_path="/api/reports/sales/register/"))
+        permission_codes = EffectivePermissionService.permission_codes_for_user(
+            request.user,
+            cleaned_filters["entity"],
+            subentity_id=cleaned_filters.get("subentity"),
+        )
+        return Response(
+            _attach_sales_register_actions(
+                response,
+                request,
+                export_base_path="/api/reports/sales/register/",
+                can_export="reports.sales_register.export" in permission_codes,
+            )
+        )
 
 
 class _BaseSalesRegisterExportAPIView(SalesRegisterAPIView):
     export_mode = "attachment"
+
+    def _require_export_permission(self, request):
+        entity_id = request.query_params.get("entity")
+        try:
+            entity_id = int(entity_id)
+        except (TypeError, ValueError):
+            raise PermissionDenied("A valid entity scope is required for export.")
+        require_sales_scope_permission(
+            user=request.user,
+            entity_id=entity_id,
+            permission_codes=("reports.sales_register.export",),
+            access_mode="operational",
+            feature_code="feature_reporting",
+            message="Missing permission: reports.sales_register.export",
+        )
 
     def export_response(self, *, filename, content, content_type):
         response = HttpResponse(content, content_type=content_type)
@@ -187,6 +227,7 @@ class _BaseSalesRegisterExportAPIView(SalesRegisterAPIView):
         return response
 
     def report_data(self, request):
+        self._require_export_permission(request)
         payload, cleaned_filters, _paginator = self.get_service_payload(request, paginate=False)
         scope_names = resolve_scope_names(
             cleaned_filters.get("entity"),

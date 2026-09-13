@@ -25,7 +25,7 @@ class Gstr3bSummaryAPIView(ScopedEntitlementMixin, APIView):
     subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
 
     def enforce_report_permission(self, request, *, entity_id: int):
-        assert_any_report_permission(
+        return assert_any_report_permission(
             user=request.user,
             entity_id=entity_id,
             required_permissions=("reports.gstr3b.view",),
@@ -39,7 +39,7 @@ class Gstr3bSummaryAPIView(ScopedEntitlementMixin, APIView):
         except ValidationError as exc:
             return Response(exc.message_dict, status=400)
         self.enforce_scope(request, entity_id=scope.entity_id, entityfinid_id=scope.entityfinid_id, subentity_id=scope.subentity_id)
-        self.enforce_report_permission(request, entity_id=scope.entity_id)
+        current_permissions = self.enforce_report_permission(request, entity_id=scope.entity_id)
 
         payload = {
             "summary": Gstr3bSummarySerializer(service.build(scope)).data,
@@ -60,16 +60,21 @@ class Gstr3bSummaryAPIView(ScopedEntitlementMixin, APIView):
         query.pop("page", None)
         query.pop("page_size", None)
         encoded = query.urlencode()
-        response["actions"]["export_urls"] = {
-            "excel": f"/api/reports/gstr3b/export/?format=xlsx&{encoded}",
-            "csv": f"/api/reports/gstr3b/export/?format=csv&{encoded}",
-            "json": f"/api/reports/gstr3b/export/?format=json&{encoded}",
-            "whitebox_json": f"/api/reports/gstr3b/export/?format=whitebox_json&{encoded}",
-        }
-        response["available_exports"] = ["json", "xlsx", "csv", "whitebox_json"]
-        response["actions"]["can_export_excel"] = True
+        can_export = "reports.gstr3b.export" in current_permissions
+        response["actions"]["export_urls"] = (
+            {
+                "excel": f"/api/reports/gstr3b/export/?format=xlsx&{encoded}",
+                "csv": f"/api/reports/gstr3b/export/?format=csv&{encoded}",
+                "json": f"/api/reports/gstr3b/export/?format=json&{encoded}",
+                "whitebox_json": f"/api/reports/gstr3b/export/?format=whitebox_json&{encoded}",
+            }
+            if can_export
+            else {}
+        )
+        response["available_exports"] = ["json", "xlsx", "csv", "whitebox_json"] if can_export else []
+        response["actions"]["can_export_excel"] = can_export
         response["actions"]["can_export_pdf"] = False
-        response["actions"]["can_export_csv"] = True
+        response["actions"]["can_export_csv"] = can_export
         return Response(response)
 
 
@@ -152,6 +157,12 @@ class Gstr3bExportAPIView(ScopedEntitlementMixin, APIView):
             entity_id=scope.entity_id,
             required_permissions=("reports.gstr3b.view",),
             message="You do not have permission to access the GSTR-3B workspace.",
+        )
+        assert_any_report_permission(
+            user=request.user,
+            entity_id=scope.entity_id,
+            required_permissions=("reports.gstr3b.export",),
+            message="You do not have permission to export the GSTR-3B workspace.",
         )
 
         summary = Gstr3bSummarySerializer(service.build(scope)).data

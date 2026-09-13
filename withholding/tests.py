@@ -1498,7 +1498,8 @@ class WithholdingTcsReportingExportTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("quarter", response.data)
 
-    def test_filing_pack_export_requires_financial_year(self):
+    @patch("withholding.views._require_tcs_scope_permission")
+    def test_filing_pack_export_requires_financial_year(self, _mocked_permission):
         request = APIRequestFactory().get("/tcs/reports/filing-pack/export/?entity_id=1&quarter=Q1")
         force_authenticate(request, user=self.user)
         response = TcsReportFilingPackExportAPIView.as_view()(request)
@@ -1930,8 +1931,13 @@ class WithholdingTcsReportingExportTests(TestCase):
         self.assertEqual(response.data["rows"][0]["document_no"], "SINV-TRACE-001")
         self.assertEqual(response.data["header"]["row_count"], 1)
 
+    @patch("withholding.views._require_tcs_scope_permission")
     @patch.object(TcsReportFilingPackAPIView, "get")
-    def test_filing_pack_export_includes_management_and_tracker_sheets(self, mocked_get):
+    def test_filing_pack_export_includes_management_and_tracker_sheets(
+        self,
+        mocked_get,
+        _mocked_permission,
+    ):
         mocked_get.return_value = SimpleNamespace(
             data={
                 "header": {
@@ -2122,8 +2128,9 @@ class WithholdingTcsRulesBulkApiTests(TestCase):
         self.client.force_authenticate(user=self.user)
         self.entity = Entity.objects.create(entityname="TCS Rules Bulk Entity", createdby=self.user)
 
+    @patch("rbac.access.EffectivePermissionService.permission_codes_for_user", return_value=["compliance.tcs_rule.view"])
     @patch("withholding.views_bulk_statutory.SubscriptionService.assert_entity_access")
-    def test_tcs_rules_bulk_template_uses_rule_sheet_and_filename(self, _mocked_access):
+    def test_tcs_rules_bulk_template_uses_rule_sheet_and_filename(self, _mocked_access, _mocked_permissions):
         response = self.client.get(
             "/api/tcs/rules/bulk/template/",
             {"entity": self.entity.id, "format": "xlsx"},
@@ -2138,8 +2145,9 @@ class WithholdingTcsRulesBulkApiTests(TestCase):
         self.assertIn("rate_default", headers)
         self.assertIn("threshold_default", headers)
 
+    @patch("rbac.access.EffectivePermissionService.permission_codes_for_user", return_value=["compliance.tcs_rule.export"])
     @patch("withholding.views_bulk_statutory.SubscriptionService.assert_entity_access")
-    def test_tcs_rules_bulk_export_filters_income_tax_rules_and_uses_rule_filename(self, _mocked_access):
+    def test_tcs_rules_bulk_export_filters_income_tax_rules_and_uses_rule_filename(self, _mocked_access, _mocked_permissions):
         WithholdingSection.objects.create(
             tax_type=WithholdingTaxType.TCS,
             law_type="INCOME_TAX",
@@ -2183,8 +2191,9 @@ class WithholdingTcsRulesBulkApiTests(TestCase):
         self.assertEqual(data_rows[0]["rate_default"], "0.1000")
         self.assertEqual(data_rows[0]["threshold_default"], "5000000.00")
 
+    @patch("rbac.access.EffectivePermissionService.permission_codes_for_user", return_value=["compliance.tcs_rule.import"])
     @patch("withholding.views_bulk_statutory.SubscriptionService.assert_entity_access")
-    def test_tcs_rules_bulk_validate_accepts_rule_sheet_and_reports_rule_summary(self, _mocked_access):
+    def test_tcs_rules_bulk_validate_accepts_rule_sheet_and_reports_rule_summary(self, _mocked_access, _mocked_permissions):
         workbook = Workbook()
         sheet = workbook.active
         sheet.title = "tcs_rules"
@@ -2237,6 +2246,16 @@ class WithholdingTcsRulesBulkApiTests(TestCase):
         self.assertEqual(response.data["errors"], [])
         self.assertTrue(response.data["can_commit"])
 
+    @patch("rbac.access.EffectivePermissionService.permission_codes_for_user", return_value=["compliance.tcs_rule.view"])
+    @patch("withholding.views_bulk_statutory.SubscriptionService.assert_entity_access")
+    def test_tcs_rules_bulk_export_rejects_view_only_user(self, _mocked_access, _mocked_permissions):
+        response = self.client.get(
+            "/api/tcs/rules/bulk/export/",
+            {"entity": self.entity.id, "format": "xlsx"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+
 
 class WithholdingTcsWorkspaceExportTests(TestCase):
     def setUp(self):
@@ -2247,8 +2266,13 @@ class WithholdingTcsWorkspaceExportTests(TestCase):
             password="testpass123",
         )
 
+    @patch("withholding.views._require_tcs_scope_permission")
     @patch.object(TcsWorkspaceTransactionsAPIView, "get")
-    def test_workspace_export_preserves_threshold_and_impact_metadata(self, mocked_get):
+    def test_workspace_export_preserves_threshold_and_impact_metadata(
+        self,
+        mocked_get,
+        _mocked_permission,
+    ):
         mocked_get.return_value = SimpleNamespace(
             data={
                 "rows": [
@@ -2312,6 +2336,33 @@ class WithholdingTcsComplianceCenterCaPackExportTests(TestCase):
             email="tcs-ca-pack-tests@example.com",
             password="testpass123",
         )
+
+    @patch("withholding.views.SubscriptionService.assert_entity_access")
+    @patch(
+        "withholding.views.EffectivePermissionService.permission_codes_for_user",
+        return_value=["reports.financial_hub.tcs_compliance_center.view"],
+    )
+    @patch(
+        "withholding.views.EffectivePermissionService.entity_for_user",
+        return_value=SimpleNamespace(id=1),
+    )
+    def test_ca_pack_export_denies_view_only_user(
+        self,
+        mocked_entity,
+        mocked_codes,
+        mocked_subscription,
+    ):
+        request = self.factory.get(
+            "/tcs/compliance-center/export/ca-pack/?entity_id=1&fy=2026-27&quarter=Q1"
+        )
+        force_authenticate(request, user=self.user)
+
+        response = TcsComplianceCenterCaPackExportAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 403)
+        mocked_entity.assert_called_once_with(self.user, 1)
+        mocked_codes.assert_called_once_with(self.user, 1)
+        mocked_subscription.assert_called_once()
 
     @patch("withholding.views._require_tcs_scope_permission")
     @patch("withholding.views.TcsQuarterlyReturn.objects.filter")
@@ -2531,9 +2582,12 @@ class WithholdingTcsLedgerReportTests(SimpleTestCase):
         mocked_subscription.assert_called_once()
 
     @patch("withholding.views.SubscriptionService.assert_entity_access")
-    @patch("withholding.views.EffectivePermissionService.permission_codes_for_user", return_value=[])
+    @patch(
+        "withholding.views.EffectivePermissionService.permission_codes_for_user",
+        return_value=["reports.financial_hub.tcs_compliance_center.view"],
+    )
     @patch("withholding.views.EffectivePermissionService.entity_for_user", return_value=SimpleNamespace(id=1))
-    def test_tcs_workspace_export_requires_workspace_permission(self, mocked_entity, mocked_codes, mocked_subscription):
+    def test_tcs_workspace_export_denies_view_only_user(self, mocked_entity, mocked_codes, mocked_subscription):
         request = self.factory.get("/tcs/workspace/transactions/export/?entity_id=1")
         force_authenticate(request, user=self.user)
 
@@ -2816,9 +2870,12 @@ class WithholdingTcsLedgerReportTests(SimpleTestCase):
         self.assertNotIn("posting_lookup", rows["SINV-DRAFT-002"]["drilldowns"])
 
     @patch("withholding.views.SubscriptionService.assert_entity_access")
-    @patch("withholding.views.EffectivePermissionService.permission_codes_for_user", return_value=[])
+    @patch(
+        "withholding.views.EffectivePermissionService.permission_codes_for_user",
+        return_value=["reports.tcsfilingpack.view"],
+    )
     @patch("withholding.views.EffectivePermissionService.entity_for_user", return_value=SimpleNamespace(id=1))
-    def test_tcs_filing_pack_export_requires_report_permission(self, mocked_entity, mocked_codes, mocked_subscription):
+    def test_tcs_filing_pack_export_denies_view_only_user(self, mocked_entity, mocked_codes, mocked_subscription):
         request = self.factory.get("/tcs/reports/filing-pack/export/?entity_id=1&fy=2026-27&quarter=Q1")
         force_authenticate(request, user=self.user)
 

@@ -130,19 +130,28 @@ def filtered_querydict(request, *, exclude=None):
     return params.urlencode()
 
 
-def attach_export_actions(payload, request, *, export_base_path, exclude=None, include_orientation=False):
+def attach_export_actions(
+    payload,
+    request,
+    *,
+    export_base_path,
+    exclude=None,
+    include_orientation=False,
+    can_export=True,
+):
     exclusions = ["page", "page_size", *(exclude or [])]
     if include_orientation:
         exclusions.append("orientation")
     query = filtered_querydict(request, exclude=exclusions)
-    payload["actions"]["can_print"] = True
+    payload["actions"]["can_export"] = bool(can_export)
+    payload["actions"]["can_print"] = bool(can_export)
     payload["actions"]["export_urls"] = {
         "excel": f"{export_base_path}excel/?{query}",
         "pdf": f"{export_base_path}pdf/?{query}",
         "csv": f"{export_base_path}csv/?{query}",
         "print": f"{export_base_path}print/?{query}",
-    }
-    payload["available_exports"] = ["excel", "pdf", "csv", "print"]
+    } if can_export else {}
+    payload["available_exports"] = ["excel", "pdf", "csv", "print"] if can_export else []
     return payload
 
 

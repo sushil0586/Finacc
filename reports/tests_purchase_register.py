@@ -9,6 +9,7 @@ from uuid import uuid4
 from django.test import override_settings
 from django.urls import reverse
 from django.utils import timezone
+from rest_framework import status
 from rest_framework.test import APITestCase, APIClient
 
 from Authentication.models import User
@@ -764,6 +765,27 @@ class PurchaseRegisterAPITests(APITestCase):
                 self.assertEqual(response.status_code, 200)
                 self.assertTrue(response["Content-Type"].startswith(content_type))
                 self.assertTrue(bytes(response.content).startswith(prefix))
+
+    @patch(
+        "reports.api.purchase_register_view.EffectivePermissionService.permission_codes_for_user",
+        return_value=["reports.purchase_register.view"],
+    )
+    def test_view_only_user_does_not_receive_export_actions(self, _mock_permissions):
+        response = self._get()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.data["actions"]["can_print"])
+        self.assertEqual(response.data["actions"]["export_urls"], {})
+        self.assertEqual(response.data["available_exports"], [])
+
+    @patch(
+        "reports.api.purchase_register_view.EffectivePermissionService.permission_codes_for_user",
+        return_value=["reports.purchase_register.view"],
+    )
+    def test_view_only_user_cannot_call_export_endpoint_directly(self, _mock_permissions):
+        response = self.client.get(reverse("reports_api:purchase-register-csv"), self.base_params)
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_purchase_register_meta_is_config_driven(self):
         header = self._create_purchase_document(purchase_number="META-001")

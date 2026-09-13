@@ -1,6 +1,7 @@
 from tempfile import TemporaryDirectory
 from datetime import datetime
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -353,6 +354,106 @@ class CatalogPhase1Tests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data["code"], "subscription_feature_disabled")
         self.assertEqual(response.data["feature_code"], SubscriptionLimitCodes.FEATURE_INVENTORY)
+
+    @patch("rbac.access.EffectivePermissionService.active_assignments_queryset")
+    @patch("rbac.access.EffectivePermissionService.permission_codes_for_user", return_value=["catalog.product.view"])
+    @patch("catalog.views.SubscriptionService.assert_entity_access")
+    def test_product_create_rejects_view_only_user(self, _mocked_access, _mocked_permissions, mocked_assignments):
+        mocked_assignments.return_value.exists.return_value = True
+
+        response = self.client.post(
+            f"/api/catalog/products/?entity={self.entity.id}",
+            self._valid_payload(sku="RBAC-CREATE-DENIED"),
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    @patch("rbac.access.EffectivePermissionService.active_assignments_queryset")
+    @patch("rbac.access.EffectivePermissionService.permission_codes_for_user", return_value=["catalog.product.view"])
+    @patch("catalog.views.SubscriptionService.assert_entity_access")
+    def test_product_child_create_rejects_view_only_user(self, _mocked_access, _mocked_permissions, mocked_assignments):
+        mocked_assignments.return_value.exists.return_value = True
+        product = self._create_product(sku="RBAC-CHILD-DENIED")
+
+        response = self.client.post(
+            f"/api/catalog/products/{product.id}/gst-rates/?entity={self.entity.id}",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    @patch("rbac.access.EffectivePermissionService.active_assignments_queryset")
+    @patch("rbac.access.EffectivePermissionService.permission_codes_for_user", return_value=["catalog.product.view"])
+    @patch("catalog.views.SubscriptionService.assert_entity_access")
+    def test_product_barcode_create_rejects_view_only_user(self, _mocked_access, _mocked_permissions, mocked_assignments):
+        mocked_assignments.return_value.exists.return_value = True
+        product = self._create_product(sku="RBAC-BARCODE-DENIED")
+
+        response = self.client.post(
+            reverse("product-barcode-list-create", kwargs={"product_id": product.id}) + f"?entity={self.entity.id}",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    @patch("rbac.access.EffectivePermissionService.active_assignments_queryset")
+    @patch("rbac.access.EffectivePermissionService.permission_codes_for_user", return_value=["catalog.product.view"])
+    @patch("catalog.views.SubscriptionService.assert_entity_access")
+    def test_barcode_template_create_rejects_view_only_user(self, _mocked_access, _mocked_permissions, mocked_assignments):
+        mocked_assignments.return_value.exists.return_value = True
+
+        response = self.client.post(
+            reverse("barcode-label-template-list-create") + f"?entity={self.entity.id}",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    @patch("rbac.access.EffectivePermissionService.active_assignments_queryset")
+    @patch("rbac.access.EffectivePermissionService.permission_codes_for_user", return_value=["catalog.product.view"])
+    @patch("catalog.views.SubscriptionService.assert_entity_access")
+    def test_barcode_pdf_rejects_view_only_user(self, _mocked_access, _mocked_permissions, mocked_assignments):
+        mocked_assignments.return_value.exists.return_value = True
+
+        response = self.client.post(
+            reverse("barcode-download-pdf") + f"?entity={self.entity.id}",
+            [],
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    @patch("rbac.access.EffectivePermissionService.active_assignments_queryset")
+    @patch("rbac.access.EffectivePermissionService.permission_codes_for_user", return_value=["catalog.product.view"])
+    @patch("catalog.views.SubscriptionService.assert_entity_access")
+    def test_product_list_allows_view_only_user(self, _mocked_access, _mocked_permissions, mocked_assignments):
+        mocked_assignments.return_value.exists.return_value = True
+
+        response = self.client.get(f"/api/catalog/products/?entity={self.entity.id}")
+
+        self.assertEqual(response.status_code, 200)
+
+    @patch("rbac.access.EffectivePermissionService.permission_codes_for_user", return_value=["catalog.product.view"])
+    @patch("catalog.views_bulk.SubscriptionService.assert_entity_access")
+    def test_catalog_bulk_export_rejects_view_only_user(self, _mocked_access, _mocked_permissions):
+        response = self.client.get(f"/api/catalog/products/bulk/export/?entity={self.entity.id}&format=xlsx")
+
+        self.assertEqual(response.status_code, 403)
+
+    @patch("rbac.access.EffectivePermissionService.permission_codes_for_user", return_value=["catalog.hsn_sac.view"])
+    @patch("catalog.views_bulk_hsn.SubscriptionService.assert_entity_access")
+    def test_hsn_bulk_import_rejects_view_only_user(self, _mocked_access, _mocked_permissions):
+        response = self.client.post(
+            "/api/catalog/hsn-sac/bulk/import/validate/",
+            {"entity": self.entity.id},
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 403)
 
     def test_service_classification_normalizes_service_and_clears_stock_controls(self):
         serializer = ProductSerializer(

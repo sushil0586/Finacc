@@ -357,10 +357,7 @@ class SalesInvoiceCancelIRNAPIView(_InvoiceMixin, GenericAPIView):
 
     def post(self, request, pk: int, *args, **kwargs):
         invoice = self.get_invoice()
-        self._require_any_permission(
-            ["sales.compliance.cancel_irn", "sales.invoice.update", "sales.invoice.edit"],
-            invoice.entity_id,
-        )
+        self._require_permission("sales.compliance.cancel_irn", invoice.entity_id)
         ser = self.get_serializer(data=request.data)
         ser.is_valid(raise_exception=True)
         try:

@@ -13,6 +13,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from reportlab.pdfgen import canvas as pdf_canvas
 from rest_framework import permissions
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -21,11 +22,14 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from financial.models import account
+from core.entitlements import ScopedEntitlementMixin
+from rbac.services import EffectivePermissionService
 from sales.models.sales_ar import CustomerSettlement
 from reports.schemas.common import build_report_envelope
 from reports.selectors.financial import resolve_scope_names
 from reports.schemas.receivables_reports import CollectionsHistoryScopeSerializer, ReceivableAgingScopeSerializer, ReceivableReportScopeSerializer
 from reports.services.receivables import build_collections_history_report, build_customer_outstanding_report, build_open_items_report, build_receivable_aging_report
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
 RECEIVABLE_DEFAULTS = {
@@ -118,15 +122,27 @@ def _filtered_querydict(request, *, overrides=None, exclude=None):
     return params.urlencode()
 
 
-def _attach_receivable_actions(payload, request, *, export_base_path):
+def _attach_receivable_actions(payload, request, *, export_base_path, can_export):
     query = _filtered_querydict(request, exclude=["page", "page_size"])
-    payload["actions"]["can_print"] = True
-    payload["actions"]["export_urls"] = {
-        "excel": f"{export_base_path}excel/?{query}",
-        "pdf": f"{export_base_path}pdf/?{query}",
-        "csv": f"{export_base_path}csv/?{query}",
-        "print": f"{export_base_path}print/?{query}",
-    }
+    payload["actions"].update(
+        {
+            "can_export_excel": can_export,
+            "can_export_pdf": can_export,
+            "can_export_csv": can_export,
+            "can_print": can_export,
+        }
+    )
+    payload["actions"]["export_urls"] = (
+        {
+            "excel": f"{export_base_path}excel/?{query}",
+            "pdf": f"{export_base_path}pdf/?{query}",
+            "csv": f"{export_base_path}csv/?{query}",
+            "print": f"{export_base_path}print/?{query}",
+        }
+        if can_export
+        else {}
+    )
+    payload["available_exports"] = ["excel", "pdf", "csv", "print"] if can_export else []
     return payload
 
 
@@ -524,14 +540,52 @@ def _write_pdf(
     return pdf
 
 
-class _BaseReceivableAPIView(APIView):
+class _BaseReceivableAPIView(ScopedEntitlementMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = ReceivableReportScopeSerializer
+    subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
+    subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
+    permission_action = "view"
+    view_permission_code = None
+    export_permission_code = None
+
+    def get_view_permission_code(self, scope):
+        return self.view_permission_code
+
+    def get_export_permission_code(self, scope):
+        return self.export_permission_code
+
+    def get_required_permission_code(self, scope):
+        if self.permission_action == "export":
+            return self.get_export_permission_code(scope)
+        return self.get_view_permission_code(scope)
+
+    def get_permission_codes(self, request, scope):
+        return EffectivePermissionService.permission_codes_for_user(
+            request.user,
+            scope["entity"],
+            subentity_id=scope.get("subentity"),
+        )
+
+    def assert_report_permission(self, request, scope):
+        required_permission = self.get_required_permission_code(scope)
+        if not required_permission:
+            raise PermissionDenied("This receivables report has no configured permission contract.")
+        if required_permission not in self.get_permission_codes(request, scope):
+            raise PermissionDenied(f"Missing permission: {required_permission}")
 
     def get_scope(self, request):
         serializer = self.serializer_class(data=request.query_params)
         serializer.is_valid(raise_exception=True)
-        return serializer.validated_data
+        scope = serializer.validated_data
+        self.enforce_scope(
+            request,
+            entity_id=scope["entity"],
+            entityfinid_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
+        )
+        self.assert_report_permission(request, scope)
+        return scope
 
     def build_envelope(self, *, report_code, report_name, payload, scope, request, export_base_path):
         response = build_report_envelope(
@@ -541,11 +595,29 @@ class _BaseReceivableAPIView(APIView):
             filters=_receivable_scope_filters(scope),
             defaults=RECEIVABLE_DEFAULTS,
         )
-        return _attach_receivable_actions(response, request, export_base_path=export_base_path)
+        export_permission = self.get_export_permission_code(scope)
+        can_export = bool(export_permission and export_permission in self.get_permission_codes(request, scope))
+        return _attach_receivable_actions(
+            response,
+            request,
+            export_base_path=export_base_path,
+            can_export=can_export,
+        )
 
 
 class CustomerOutstandingReportAPIView(_BaseReceivableAPIView):
     serializer_class = ReceivableReportScopeSerializer
+    view_permission_code = "reports.financial_hub.receivables_hub.customer_outstanding.view"
+    export_permission_code = "reports.financial_hub.receivables_hub.customer_outstanding.export"
+
+    def get_view_permission_code(self, scope):
+        if scope.get("exception_only"):
+            return "reports.financial_hub.receivables_hub.receivables_exception_report.view"
+        if scope.get("credit_limit_exceeded") and not scope.get("overdue_only"):
+            return "reports.financial_hub.receivables_hub.credit_exposure.view"
+        if scope.get("overdue_only") and not scope.get("credit_limit_exceeded"):
+            return "reports.financial_hub.receivables_hub.overdue_customers.view"
+        return self.view_permission_code
 
     def get(self, request):
         scope = self.get_scope(request)
@@ -585,6 +657,13 @@ class CustomerOutstandingReportAPIView(_BaseReceivableAPIView):
 
 class ReceivableAgingReportAPIView(_BaseReceivableAPIView):
     serializer_class = ReceivableAgingScopeSerializer
+    view_permission_code = "reports.financial_hub.receivables_hub.receivable_aging.view"
+    export_permission_code = "reports.financial_hub.receivables_hub.receivable_aging.export"
+
+    def get_view_permission_code(self, scope):
+        if scope.get("view") == "invoice":
+            return "reports.financial_hub.receivables_hub.receivable_aging_detail.view"
+        return self.view_permission_code
 
     def get(self, request):
         scope = self.get_scope(request)
@@ -621,6 +700,7 @@ class ReceivableAgingReportAPIView(_BaseReceivableAPIView):
 class _BaseReceivableExportAPIView(_BaseReceivableAPIView):
     file_type = None
     export_mode = "attachment"
+    permission_action = "export"
 
     def export_response(self, *, filename, content, content_type):
         response = HttpResponse(content, content_type=content_type)
@@ -631,6 +711,7 @@ class _BaseReceivableExportAPIView(_BaseReceivableAPIView):
 
 class _CustomerOutstandingExportMixin(_BaseReceivableExportAPIView):
     serializer_class = ReceivableReportScopeSerializer
+    export_permission_code = "reports.financial_hub.receivables_hub.customer_outstanding.export"
 
     @staticmethod
     def _variant_titles(scope):
@@ -790,6 +871,8 @@ class CustomerOutstandingPrintAPIView(CustomerOutstandingPDFAPIView):
 
 class OpenItemsReportAPIView(_BaseReceivableAPIView):
     serializer_class = ReceivableReportScopeSerializer
+    view_permission_code = "reports.financial_hub.receivables_hub.open_items.view"
+    export_permission_code = "reports.financial_hub.receivables_hub.open_items.export"
 
     def get(self, request):
         scope = self.get_scope(request)
@@ -819,6 +902,7 @@ class OpenItemsReportAPIView(_BaseReceivableAPIView):
 
 class _OpenItemsExportMixin(_BaseReceivableExportAPIView):
     serializer_class = ReceivableReportScopeSerializer
+    export_permission_code = "reports.financial_hub.receivables_hub.open_items.export"
 
     def report_data(self, request):
         scope = self.get_scope(request)
@@ -974,6 +1058,8 @@ def _settlement_status_label(value):
 
 class CollectionsHistoryReportAPIView(_BaseReceivableAPIView):
     serializer_class = CollectionsHistoryScopeSerializer
+    view_permission_code = "reports.financial_hub.receivables_hub.collections_history.view"
+    export_permission_code = "reports.financial_hub.receivables_hub.collections_history.export"
 
     def get(self, request):
         scope = self.get_scope(request)
@@ -1006,6 +1092,7 @@ class CollectionsHistoryReportAPIView(_BaseReceivableAPIView):
 
 class _CollectionsHistoryExportMixin(_BaseReceivableExportAPIView):
     serializer_class = CollectionsHistoryScopeSerializer
+    export_permission_code = "reports.financial_hub.receivables_hub.collections_history.export"
 
     def report_data(self, request):
         scope = self.get_scope(request)
@@ -1149,6 +1236,7 @@ class CollectionsHistoryPrintAPIView(CollectionsHistoryPDFAPIView):
 
 class _ReceivableAgingExportMixin(_BaseReceivableExportAPIView):
     serializer_class = ReceivableAgingScopeSerializer
+    export_permission_code = "reports.financial_hub.receivables_hub.receivable_aging.export"
 
     def report_data(self, request):
         scope = self.get_scope(request)

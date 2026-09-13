@@ -11,6 +11,7 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from rest_framework import permissions
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -31,6 +32,7 @@ from reports.services.assets import (
     build_depreciation_schedule,
     build_fixed_asset_register,
 )
+from rbac.services import EffectivePermissionService
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 ASSET_REPORT_DEFAULTS = {
@@ -49,15 +51,25 @@ def _filtered_querydict(request, *, exclude=None):
     return params.urlencode()
 
 
-def _attach_asset_actions(payload, request, *, export_base_path):
+def _attach_asset_actions(payload, request, *, export_base_path, can_export):
     query = _filtered_querydict(request, exclude=["page", "page_size"])
-    payload["actions"]["can_print"] = True
-    payload["actions"]["export_urls"] = {
-        "excel": f"{export_base_path}excel/?{query}",
-        "pdf": f"{export_base_path}pdf/?{query}",
-        "csv": f"{export_base_path}csv/?{query}",
-        "print": f"{export_base_path}print/?{query}",
-    }
+    payload["actions"].update(
+        {
+            "can_export_excel": can_export,
+            "can_export_pdf": can_export,
+            "can_export_csv": can_export,
+            "can_print": can_export,
+            "export_urls": {
+                "excel": f"{export_base_path}excel/?{query}",
+                "pdf": f"{export_base_path}pdf/?{query}",
+                "csv": f"{export_base_path}csv/?{query}",
+                "print": f"{export_base_path}print/?{query}",
+            }
+            if can_export
+            else {},
+        }
+    )
+    payload["available_exports"] = ["excel", "pdf", "csv", "print"] if can_export else []
     return payload
 
 
@@ -156,7 +168,24 @@ class _BaseAssetReportAPIView(ScopedEntitlementMixin, APIView):
         )
         return scope
 
-    def build_envelope(self, *, report_code, report_name, payload, scope, request, export_base_path):
+    def get_permission_codes(self, request, scope):
+        return EffectivePermissionService.permission_codes_for_user(
+            request.user,
+            scope["entity"],
+            subentity_id=scope.get("subentity"),
+        )
+
+    def has_report_permission(self, request, scope, permission_code):
+        assignments = EffectivePermissionService.active_assignments_queryset(request.user, scope["entity"])
+        if not assignments.exists():
+            return True
+        return permission_code in self.get_permission_codes(request, scope)
+
+    def assert_report_permission(self, request, scope, permission_code):
+        if not self.has_report_permission(request, scope, permission_code):
+            raise PermissionDenied(f"Missing permission: {permission_code}")
+
+    def build_envelope(self, *, report_code, report_name, payload, scope, request, export_base_path, export_permission):
         response = build_report_envelope(
             report_code=report_code,
             report_name=report_name,
@@ -164,13 +193,19 @@ class _BaseAssetReportAPIView(ScopedEntitlementMixin, APIView):
             filters=scope,
             defaults=ASSET_REPORT_DEFAULTS,
         )
-        return _attach_asset_actions(response, request, export_base_path=export_base_path)
+        return _attach_asset_actions(
+            response,
+            request,
+            export_base_path=export_base_path,
+            can_export=self.has_report_permission(request, scope, export_permission),
+        )
 
 
 class FixedAssetRegisterAPIView(_BaseAssetReportAPIView):
 
     def get(self, request):
         scope = self.get_scope(request, FixedAssetRegisterScopeSerializer)
+        self.assert_report_permission(request, scope, "assets.fixed_asset_register.view")
         payload = build_fixed_asset_register(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -182,13 +217,14 @@ class FixedAssetRegisterAPIView(_BaseAssetReportAPIView):
             page=scope.get("page", 1),
             page_size=scope.get("page_size", 100),
         )
-        return Response(self.build_envelope(report_code="fixed_asset_register", report_name="Fixed Asset Register", payload=payload, scope=scope, request=request, export_base_path="/api/reports/fixed-assets/register/"))
+        return Response(self.build_envelope(report_code="fixed_asset_register", report_name="Fixed Asset Register", payload=payload, scope=scope, request=request, export_base_path="/api/reports/fixed-assets/register/", export_permission="assets.fixed_asset_register.export"))
 
 
 class DepreciationScheduleAPIView(_BaseAssetReportAPIView):
 
     def get(self, request):
         scope = self.get_scope(request, DepreciationScheduleScopeSerializer)
+        self.assert_report_permission(request, scope, "assets.depreciation_schedule.view")
         payload = build_depreciation_schedule(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -200,13 +236,14 @@ class DepreciationScheduleAPIView(_BaseAssetReportAPIView):
             page=scope.get("page", 1),
             page_size=scope.get("page_size", 100),
         )
-        return Response(self.build_envelope(report_code="depreciation_schedule", report_name="Depreciation Schedule", payload=payload, scope=scope, request=request, export_base_path="/api/reports/fixed-assets/depreciation-schedule/"))
+        return Response(self.build_envelope(report_code="depreciation_schedule", report_name="Depreciation Schedule", payload=payload, scope=scope, request=request, export_base_path="/api/reports/fixed-assets/depreciation-schedule/", export_permission="assets.depreciation_schedule.export"))
 
 
 class AssetLocationCustodianAPIView(_BaseAssetReportAPIView):
 
     def get(self, request):
         scope = self.get_scope(request, AssetLocationCustodianScopeSerializer)
+        self.assert_report_permission(request, scope, "assets.asset_location_custodian.view")
         payload = build_asset_location_custodian_report(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -226,6 +263,7 @@ class AssetLocationCustodianAPIView(_BaseAssetReportAPIView):
                 scope=scope,
                 request=request,
                 export_base_path="/api/reports/fixed-assets/location-custodian/",
+                export_permission="assets.asset_location_custodian.export",
             )
         )
 
@@ -233,6 +271,7 @@ class AssetLocationCustodianAPIView(_BaseAssetReportAPIView):
 class AssetEventReportAPIView(_BaseAssetReportAPIView):
     def get(self, request):
         scope = self.get_scope(request, AssetEventReportScopeSerializer)
+        self.assert_report_permission(request, scope, "assets.asset_events.view")
         payload = build_asset_event_report(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -244,13 +283,14 @@ class AssetEventReportAPIView(_BaseAssetReportAPIView):
             page=scope.get("page", 1),
             page_size=scope.get("page_size", 100),
         )
-        return Response(self.build_envelope(report_code="fixed_asset_events", report_name="Fixed Asset Events", payload=payload, scope=scope, request=request, export_base_path="/api/reports/fixed-assets/events/"))
+        return Response(self.build_envelope(report_code="fixed_asset_events", report_name="Fixed Asset Events", payload=payload, scope=scope, request=request, export_base_path="/api/reports/fixed-assets/events/", export_permission="assets.asset_events.export"))
 
 
 class AssetHistoryAPIView(_BaseAssetReportAPIView):
 
     def get(self, request):
         scope = self.get_scope(request, AssetHistoryScopeSerializer)
+        self.assert_report_permission(request, scope, "assets.asset_history.view")
         payload = build_asset_history(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -264,6 +304,7 @@ class AssetDashboardSummaryAPIView(_BaseAssetReportAPIView):
 
     def get(self, request):
         scope = self.get_scope(request, AssetDashboardScopeSerializer)
+        self.assert_report_permission(request, scope, "assets.asset_dashboard.view")
 
         register_payload = build_fixed_asset_register(
             entity_id=scope["entity"],
@@ -346,6 +387,14 @@ class _BaseAssetExportAPIView(_BaseAssetReportAPIView):
     media_type = "application/octet-stream"
     extension = "bin"
     inline = False
+    view_permission_code = None
+    export_permission_code = None
+
+    def get_scope(self, request, serializer_class):
+        scope = super().get_scope(request, serializer_class)
+        self.assert_report_permission(request, scope, self.view_permission_code)
+        self.assert_report_permission(request, scope, self.export_permission_code)
+        return scope
 
     def response(self, content):
         resp = HttpResponse(content, content_type=self.media_type)
@@ -355,6 +404,8 @@ class _BaseAssetExportAPIView(_BaseAssetReportAPIView):
 
 
 class _FixedAssetRegisterExportMixin(_BaseAssetExportAPIView):
+    view_permission_code = "assets.fixed_asset_register.view"
+    export_permission_code = "assets.fixed_asset_register.export"
     def get_payload(self, request):
         scope = self.get_scope(request, FixedAssetRegisterScopeSerializer)
         payload = build_fixed_asset_register(
@@ -420,6 +471,8 @@ class FixedAssetRegisterPrintAPIView(FixedAssetRegisterPDFAPIView):
 
 
 class _DepreciationScheduleExportMixin(_BaseAssetExportAPIView):
+    view_permission_code = "assets.depreciation_schedule.view"
+    export_permission_code = "assets.depreciation_schedule.export"
     def get_payload(self, request):
         scope = self.get_scope(request, DepreciationScheduleScopeSerializer)
         payload = build_depreciation_schedule(
@@ -479,6 +532,8 @@ class DepreciationSchedulePrintAPIView(DepreciationSchedulePDFAPIView):
 
 
 class _AssetLocationCustodianExportMixin(_BaseAssetExportAPIView):
+    view_permission_code = "assets.asset_location_custodian.view"
+    export_permission_code = "assets.asset_location_custodian.export"
     def get_payload(self, request):
         scope = self.get_scope(request, AssetLocationCustodianScopeSerializer)
         payload = build_asset_location_custodian_report(
@@ -580,6 +635,8 @@ class AssetLocationCustodianPrintAPIView(AssetLocationCustodianPDFAPIView):
 
 
 class _AssetEventExportMixin(_BaseAssetExportAPIView):
+    view_permission_code = "assets.asset_events.view"
+    export_permission_code = "assets.asset_events.export"
     def get_payload(self, request):
         scope = self.get_scope(request, AssetEventReportScopeSerializer)
         payload = build_asset_event_report(

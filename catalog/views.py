@@ -39,6 +39,7 @@ from entity.models import Entity, Godown, SubEntity
 from financial.models import Ledger
 from assets.models import AssetCategory
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
+from rbac.access import assert_any_entity_permission
 
 from .models import (
     ProductCategory,
@@ -118,6 +119,30 @@ class EntityFromQueryMixin:
     Forces entity scoping using ?entity=<id> query param.
     Helps prevent cross-entity access by plain id.
     """
+    rbac_permission_family = None
+
+    def check_permissions(self, request):
+        super().check_permissions(request)
+        if self.rbac_permission_family:
+            entity = self.get_entity()
+            action = {
+                "GET": "view",
+                "HEAD": "view",
+                "OPTIONS": "view",
+                "POST": "create",
+                "PUT": "update",
+                "PATCH": "update",
+                "DELETE": "delete",
+            }.get(request.method.upper())
+            if action:
+                assert_any_entity_permission(
+                    user=request.user,
+                    entity_id=entity.id,
+                    required_permissions=(f"{self.rbac_permission_family}.{action}",),
+                    message=f"Missing permission for {self.rbac_permission_family} {action}.",
+                    allow_legacy_owner=True,
+                )
+
     def get_entity(self):
         entity_param = self.request.query_params.get("entity")
         if not entity_param:
@@ -262,6 +287,7 @@ class ProductListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIView)
     POST /api/products/?entity=<id>
     """
     serializer_class = ProductSerializer
+    rbac_permission_family = "catalog.product"
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
@@ -328,6 +354,7 @@ class ProductRetrieveUpdateDestroyAPIView(ProtectedDeleteMessageMixin, EntityFro
     GET/PATCH/PUT/DELETE /api/products/<pk>/?entity=<id>
     """
     serializer_class = ProductSerializer
+    rbac_permission_family = "catalog.product"
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
@@ -348,6 +375,7 @@ class ProductRetrieveUpdateDestroyAPIView(ProtectedDeleteMessageMixin, EntityFro
 # ----------------------------------------------------------------------
 
 class ProductCategoryListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIView):
+    rbac_permission_family = "catalog.category"
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = ProductCategorySerializercreate
 
@@ -366,6 +394,7 @@ class ProductCategoryListCreateAPIView(EntityFromQueryMixin, generics.ListCreate
 
 
 class ProductCategoryRetrieveUpdateDestroyAPIView(ProtectedDeleteMessageMixin, EntityFromQueryMixin, generics.RetrieveUpdateDestroyAPIView):
+    rbac_permission_family = "catalog.category"
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = ProductCategorySerializercreate
     protected_delete_code = "product_category_delete_blocked"
@@ -386,6 +415,7 @@ class ProductCategoryRetrieveUpdateDestroyAPIView(ProtectedDeleteMessageMixin, E
 
 
 class BrandListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIView):
+    rbac_permission_family = "catalog.brand"
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = BrandSerializer
 
@@ -398,6 +428,7 @@ class BrandListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIView):
 
 
 class BrandRetrieveUpdateDestroyAPIView(ProtectedDeleteMessageMixin, EntityFromQueryMixin, generics.RetrieveUpdateDestroyAPIView):
+    rbac_permission_family = "catalog.brand"
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = BrandSerializer
     protected_delete_code = "brand_delete_blocked"
@@ -410,6 +441,7 @@ class BrandRetrieveUpdateDestroyAPIView(ProtectedDeleteMessageMixin, EntityFromQ
 
 
 class UnitOfMeasureListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIView):
+    rbac_permission_family = "catalog.uom"
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = UnitOfMeasureSerializer
 
@@ -422,6 +454,7 @@ class UnitOfMeasureListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAP
 
 
 class UnitOfMeasureRetrieveUpdateDestroyAPIView(ProtectedDeleteMessageMixin, EntityFromQueryMixin, generics.RetrieveUpdateDestroyAPIView):
+    rbac_permission_family = "catalog.uom"
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = UnitOfMeasureSerializer
     protected_delete_code = "uom_delete_blocked"
@@ -434,6 +467,7 @@ class UnitOfMeasureRetrieveUpdateDestroyAPIView(ProtectedDeleteMessageMixin, Ent
 
 
 class HsnSacListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIView):
+    rbac_permission_family = "catalog.hsn_sac"
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = HsnSacSerializer
 
@@ -446,6 +480,7 @@ class HsnSacListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIView):
 
 
 class HsnSacRetrieveUpdateDestroyAPIView(ProtectedDeleteMessageMixin, EntityFromQueryMixin, generics.RetrieveUpdateDestroyAPIView):
+    rbac_permission_family = "catalog.hsn_sac"
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = HsnSacSerializer
     protected_delete_code = "hsn_sac_delete_blocked"
@@ -458,6 +493,7 @@ class HsnSacRetrieveUpdateDestroyAPIView(ProtectedDeleteMessageMixin, EntityFrom
 
 
 class PriceListListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIView):
+    rbac_permission_family = "catalog.price_list"
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = PriceListSerializer
 
@@ -470,6 +506,7 @@ class PriceListListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIVie
 
 
 class PriceListRetrieveUpdateDestroyAPIView(ProtectedDeleteMessageMixin, EntityFromQueryMixin, generics.RetrieveUpdateDestroyAPIView):
+    rbac_permission_family = "catalog.price_list"
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = PriceListSerializer
     protected_delete_code = "price_list_delete_blocked"
@@ -482,6 +519,7 @@ class PriceListRetrieveUpdateDestroyAPIView(ProtectedDeleteMessageMixin, EntityF
 
 
 class ProductAttributeListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIView):
+    rbac_permission_family = "catalog.product_attribute"
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = ProductAttributeSerializer
 
@@ -494,6 +532,7 @@ class ProductAttributeListCreateAPIView(EntityFromQueryMixin, generics.ListCreat
 
 
 class ProductAttributeRetrieveUpdateDestroyAPIView(ProtectedDeleteMessageMixin, EntityFromQueryMixin, generics.RetrieveUpdateDestroyAPIView):
+    rbac_permission_family = "catalog.product_attribute"
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = ProductAttributeSerializer
     protected_delete_code = "product_attribute_delete_blocked"
@@ -768,6 +807,7 @@ class ProductImportantListAPIView(InventoryScopedPathEntityMixin, APIView):
 
 class BarcodeLabelTemplateListCreateAPIView(EntityFromQueryMixin, generics.ListCreateAPIView):
     serializer_class = BarcodeLabelTemplateSerializer
+    rbac_permission_family = "catalog.product"
 
     def get_queryset(self):
         entity = self.get_entity()
@@ -785,6 +825,7 @@ class BarcodeLabelTemplateListCreateAPIView(EntityFromQueryMixin, generics.ListC
 
 class BarcodeLabelTemplateRUDAPIView(EntityFromQueryMixin, generics.RetrieveUpdateDestroyAPIView):
     serializer_class = BarcodeLabelTemplateSerializer
+    rbac_permission_family = "catalog.product"
 
     def get_queryset(self):
         return BarcodeLabelTemplate.objects.filter(entity=self.get_entity())
@@ -792,6 +833,7 @@ class BarcodeLabelTemplateRUDAPIView(EntityFromQueryMixin, generics.RetrieveUpda
 
 class BarcodeLabelTemplateDefaultAPIView(EntityFromQueryMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
+    rbac_permission_family = "catalog.product"
 
     def get(self, request):
         entity = self.get_entity()
@@ -823,6 +865,18 @@ class BarcodeLabelTemplateDefaultAPIView(EntityFromQueryMixin, APIView):
 class ProductBarcodeListCreateAPIView(generics.ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = ProductBarcodeManageSerializer
+
+    def check_permissions(self, request):
+        super().check_permissions(request)
+        action = "create" if request.method.upper() == "POST" else "view"
+        entity = self._get_entity()
+        assert_any_entity_permission(
+            user=request.user,
+            entity_id=entity.id,
+            required_permissions=(f"catalog.product.{action}",),
+            message=f"Missing permission for catalog.product {action}.",
+            allow_legacy_owner=True,
+        )
 
     def _get_entity(self):
         entity_param = self.request.query_params.get("entity")
@@ -862,22 +916,45 @@ class ProductBarcodeRUDAPIView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = ProductBarcodeManageSerializer
 
-    def get_queryset(self):
+    def _get_entity(self):
         entity_param = self.request.query_params.get("entity")
         if not entity_param:
             raise ValidationError({"entity": "Query param ?entity=<id> is required."})
         try:
-            entity_id = int(entity_param)
-        except (TypeError, ValueError):
-            raise ValidationError({"entity": "Invalid entity id"})
-        entity = get_object_or_404(Entity, id=entity_id)
+            entity = Entity.objects.get(id=int(entity_param))
+        except (TypeError, ValueError, Entity.DoesNotExist):
+            raise NotFound("Invalid entity")
         SubscriptionService.assert_entity_access(
             user=self.request.user,
             entity=entity,
             access_mode=SubscriptionService.ACCESS_MODE_OPERATIONAL,
             feature_code=SubscriptionLimitCodes.FEATURE_INVENTORY,
         )
-        return ProductBarcode.objects.select_related("product", "uom").filter(product__entity_id=entity_id)
+        return entity
+
+    def check_permissions(self, request):
+        super().check_permissions(request)
+        action = {
+            "GET": "view",
+            "HEAD": "view",
+            "OPTIONS": "view",
+            "PUT": "update",
+            "PATCH": "update",
+            "DELETE": "delete",
+        }.get(request.method.upper())
+        if action:
+            entity = self._get_entity()
+            assert_any_entity_permission(
+                user=request.user,
+                entity_id=entity.id,
+                required_permissions=(f"catalog.product.{action}",),
+                message=f"Missing permission for catalog.product {action}.",
+                allow_legacy_owner=True,
+            )
+
+    def get_queryset(self):
+        entity = self._get_entity()
+        return ProductBarcode.objects.select_related("product", "uom").filter(product__entity=entity)
 
 
 class BarcodeLookupAPIView(EntityFromQueryMixin, APIView):
@@ -928,6 +1005,28 @@ class BarcodeLookupAPIView(EntityFromQueryMixin, APIView):
 
 class ProductScopedChildMixin:
     permission_classes = [permissions.IsAuthenticated]
+    rbac_permission_family = "catalog.product"
+
+    def check_permissions(self, request):
+        super().check_permissions(request)
+        action = {
+            "GET": "view",
+            "HEAD": "view",
+            "OPTIONS": "view",
+            "POST": "create",
+            "PUT": "update",
+            "PATCH": "update",
+            "DELETE": "delete",
+        }.get(request.method.upper())
+        if action:
+            entity = self._get_entity()
+            assert_any_entity_permission(
+                user=request.user,
+                entity_id=entity.id,
+                required_permissions=(f"{self.rbac_permission_family}.{action}",),
+                message=f"Missing permission for {self.rbac_permission_family} {action}.",
+                allow_legacy_owner=True,
+            )
 
     def _get_entity(self):
         entity_param = self.request.query_params.get("entity")
@@ -1333,6 +1432,21 @@ class ProductBarcodeDownloadPDFAPIView(APIView):
             entity_id = int(entity_param)
         except Exception:
             return Response({"detail": "Invalid entity id"}, status=400)
+
+        entity = get_object_or_404(Entity, id=entity_id)
+        SubscriptionService.assert_entity_access(
+            user=request.user,
+            entity=entity,
+            access_mode=SubscriptionService.ACCESS_MODE_OPERATIONAL,
+            feature_code=SubscriptionLimitCodes.FEATURE_INVENTORY,
+        )
+        assert_any_entity_permission(
+            user=request.user,
+            entity_id=entity.id,
+            required_permissions=("catalog.product.export", "catalog.products.export"),
+            message="Missing permission to export product barcodes.",
+            allow_legacy_owner=True,
+        )
 
         if not isinstance(data, list):
             return Response({"detail": "Request body must be a JSON array"}, status=400)

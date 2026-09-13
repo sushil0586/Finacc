@@ -19,7 +19,7 @@ class Gstr9SummaryAPIView(Gstr9ScopedReportMixin, APIView):
     def get(self, request):
         service = self.service_class()
         scope = service.build_scope(request.query_params)
-        self.enforce_report_scope(request, scope)
+        permission_codes = self.enforce_report_scope(request, scope)
         freeze_service = self.freeze_service_class(report_service=service)
         frozen_meta = None
         try:
@@ -57,10 +57,20 @@ class Gstr9SummaryAPIView(Gstr9ScopedReportMixin, APIView):
             },
         )
         query = filtered_query(request, exclude=["page", "page_size"])
-        response["actions"]["export_urls"] = {
-            "excel": f"/api/reports/gstr9/export/?format=xlsx&{query}",
-            "csv": f"/api/reports/gstr9/export/?format=csv&{query}",
-            "json": f"/api/reports/gstr9/export/?format=json&{query}",
-        }
-        response["available_exports"] = ["excel", "csv", "json"]
+        can_export = "reports.gstr9.export" in permission_codes
+        response["actions"]["export_urls"] = (
+            {
+                "excel": f"/api/reports/gstr9/export/?format=xlsx&{query}",
+                "csv": f"/api/reports/gstr9/export/?format=csv&{query}",
+                "json": f"/api/reports/gstr9/export/?format=json&{query}",
+            }
+            if can_export
+            else {}
+        )
+        response["available_exports"] = ["excel", "csv", "json"] if can_export else []
+        response["actions"]["can_export_excel"] = can_export
+        response["actions"]["can_export_csv"] = can_export
+        response["actions"]["can_export_pdf"] = False
+        response["actions"]["can_freeze"] = "reports.gstr9.freeze" in permission_codes
+        response["actions"]["can_file"] = "reports.gstr9.file" in permission_codes
         return Response(response)

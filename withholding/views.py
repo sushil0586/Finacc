@@ -108,10 +108,13 @@ TCS_PARTY_PROFILE_DELETE_PERMISSIONS = (
     "tcs.partyprofile.delete",
 )
 TCS_WORKSPACE_VIEW_PERMISSIONS = ("reports.financial_hub.tcs_compliance_center.view", "compliance.tcs_statutory.view", "tcs.menu.access", "tcs.return_27eq.view")
+TCS_WORKSPACE_EXPORT_PERMISSIONS = ("reports.tcs_workspace.export",)
 TCS_RETURN_VIEW_PERMISSIONS = ("reports.financial_hub.tcs_compliance_center.view", "compliance.tcs_return_27eq.view", "tcs.return_27eq.view", "compliance.tcs_statutory.view")
 TCS_RETURN_FILE_PERMISSIONS = ("compliance.tcs_return_27eq.file", "tcs.return_27eq.view", "compliance.tcs_statutory.view")
 TCS_LEDGER_REPORT_VIEW_PERMISSIONS = ("reports.financial_hub.tcs_compliance_center.view", "reports.tcsledgerreport.view", "tcs.ledger_report.view")
 TCS_FILING_PACK_VIEW_PERMISSIONS = ("reports.financial_hub.tcs_compliance_center.view", "reports.tcsfilingpack.view", "tcs.filing_pack.view")
+TCS_FILING_PACK_EXPORT_PERMISSIONS = ("reports.tcs_filing_pack.export",)
+TCS_CA_PACK_EXPORT_PERMISSIONS = ("reports.tcs_ca_pack.export",)
 WITHHOLDING_READINESS_VIEW_PERMISSIONS = ("purchase.statutory.view", "reports.tds.view")
 logger = logging.getLogger(__name__)
 
@@ -2711,6 +2714,13 @@ class TcsWorkspaceTransactionsExportAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        entity_id = _entity_id_from_request(request, required=True)
+        _require_tcs_scope_permission(
+            request=request,
+            entity_id=entity_id,
+            permission_codes=TCS_WORKSPACE_EXPORT_PERMISSIONS,
+            message="Missing permission to export the TCS workspace.",
+        )
         payload = TcsWorkspaceTransactionsAPIView().get(request).data
         rows = payload.get("rows") or []
         section_summary = payload.get("section_summary") or []
@@ -2762,6 +2772,13 @@ class TcsReportFilingPackExportAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        entity_id = _entity_id_from_request(request, required=True)
+        _require_tcs_scope_permission(
+            request=request,
+            entity_id=entity_id,
+            permission_codes=TCS_FILING_PACK_EXPORT_PERMISSIONS,
+            message="Missing permission to export the TCS filing pack.",
+        )
         payload = TcsReportFilingPackAPIView().get(request).data
         rows = payload.get("rows") or []
         section_summary = payload.get("section_summary") or []
@@ -2885,7 +2902,7 @@ class TcsComplianceCenterCaPackExportAPIView(APIView):
         _require_tcs_scope_permission(
             request=request,
             entity_id=entity_id,
-            permission_codes=TCS_WORKSPACE_VIEW_PERMISSIONS,
+            permission_codes=TCS_CA_PACK_EXPORT_PERMISSIONS,
             message="Missing permission to export the TCS compliance center CA Pack.",
         )
 

@@ -20,6 +20,7 @@ class Gstr9FilingPrepareAPIView(Gstr9ScopedReportMixin, APIView):
         service = self.service_class()
         scope = service.build_scope(request.data or request.query_params)
         self.enforce_report_scope(request, scope)
+        self.enforce_filing_permission(request, entity_id=scope.entity_id)
         freeze_service = self.freeze_service_class(report_service=service)
         filing_service = self.filing_service_class(freeze_service=freeze_service)
         try:
@@ -42,6 +43,7 @@ class Gstr9FilingSubmitAPIView(Gstr9ScopedReportMixin, APIView):
         service = self.service_class()
         scope = service.build_scope(request.data or request.query_params)
         self.enforce_report_scope(request, scope)
+        self.enforce_filing_permission(request, entity_id=scope.entity_id)
         freeze_service = self.freeze_service_class(report_service=service)
         filing_service = self.filing_service_class(freeze_service=freeze_service)
         try:

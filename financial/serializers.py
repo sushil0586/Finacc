@@ -35,6 +35,9 @@ class ShippingDetailsSerializer(serializers.ModelSerializer):
         account = attrs.get("account", getattr(self.instance, "account", None))
         entity = attrs.get("entity", getattr(self.instance, "entity", None))
 
+        if self.instance and account and account.id != self.instance.account_id:
+            raise serializers.ValidationError({"account": "Account cannot be changed after creation."})
+
         if isprimary is True and account:
             qs = ShippingDetails.objects.filter(account=account, isprimary=True)
             if self.instance:
@@ -42,8 +45,16 @@ class ShippingDetailsSerializer(serializers.ModelSerializer):
             if qs.exists():
                 raise serializers.ValidationError({"isprimary": "Primary shipping address already exists for this account."})
 
-        if entity is None and account and getattr(account, "entity_id", None):
+        if account and getattr(account, "entity_id", None):
+            if entity is not None and entity.id != account.entity_id:
+                raise serializers.ValidationError(
+                    {"entity": "Entity must match the selected account."}
+                )
             attrs["entity"] = account.entity
+        elif entity is None:
+            raise serializers.ValidationError(
+                {"entity": "Entity is required when no account is selected."}
+            )
 
         return attrs
 
@@ -112,6 +123,9 @@ class ContactDetailsSerializer(serializers.ModelSerializer):
         isprimary = attrs.get("isprimary", None)
         account = attrs.get("account", getattr(self.instance, "account", None))
 
+        if self.instance and account and account.id != self.instance.account_id:
+            raise serializers.ValidationError({"account": "Account cannot be changed after creation."})
+
         if isprimary is True and account:
             qs = ContactDetails.objects.filter(account=account, isprimary=True)
             if self.instance:
@@ -119,9 +133,17 @@ class ContactDetailsSerializer(serializers.ModelSerializer):
             if qs.exists():
                 raise serializers.ValidationError({"isprimary": "Primary contact already exists for this account."})
 
-        entity = attrs.get("entity", None)
-        if entity is None and account and getattr(account, "entity_id", None):
+        entity = attrs.get("entity", getattr(self.instance, "entity", None))
+        if account and getattr(account, "entity_id", None):
+            if entity is not None and entity.id != account.entity_id:
+                raise serializers.ValidationError(
+                    {"entity": "Entity must match the selected account."}
+                )
             attrs["entity"] = account.entity
+        elif entity is None:
+            raise serializers.ValidationError(
+                {"entity": "Entity is required when no account is selected."}
+            )
 
         return attrs
 

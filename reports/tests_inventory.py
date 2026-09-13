@@ -180,6 +180,7 @@ class InventoryReportAPITests(APITestCase):
         self._grant_inventory_permission('reports.inventory.non_moving_stock.view')
         self._grant_inventory_permission('reports.inventory.reorder_status.view')
         self._grant_inventory_permission('reports.inventory.slow_moving_dead_stock.view')
+        self._grant_inventory_permission('reports.inventory.export')
 
     def test_inventory_export_dates_use_dd_mmm_yyyy_format(self):
         self.assertEqual(_format_scope_date(date(2025, 4, 30)), "30-Apr-2025")
@@ -696,6 +697,23 @@ class InventoryReportAPITests(APITestCase):
         self.assertIn('attachment', csv_response.headers.get('Content-Disposition', '').lower())
         self.assertIn('attachment', pdf.headers.get('Content-Disposition', '').lower())
         self.assertIn('inline', print_response.headers.get('Content-Disposition', '').lower())
+
+    def test_inventory_view_permission_does_not_grant_export_or_print(self):
+        role_ids = UserRoleAssignment.objects.filter(user=self.user).values_list('role_id', flat=True)
+        RolePermission.objects.filter(
+            role_id__in=role_ids,
+            permission__code='reports.inventory.export',
+        ).delete()
+
+        report = self.client.get(reverse('reports_api:inventory-stock-summary'), self._scope())
+        self.assertEqual(report.status_code, 200)
+        self.assertFalse(report.data['actions']['can_export_csv'])
+        self.assertFalse(report.data['actions']['can_print'])
+        self.assertEqual(report.data['actions']['export_urls'], {})
+        self.assertEqual(report.data['available_exports'], [])
+
+        export_response = self.client.get(reverse('reports_api:inventory-stock-summary-csv'), self._scope())
+        self.assertEqual(export_response.status_code, 403)
 
     def test_inventory_stock_summary_respects_category_hsn_location_and_search_filters(self):
         alternate_category = ProductCategory.objects.create(

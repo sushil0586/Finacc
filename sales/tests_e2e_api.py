@@ -247,6 +247,8 @@ class SalesApiEndToEndTests(APITestCase):
                 "sales.invoice.post",
                 "sales.invoice.unpost",
                 "sales.invoice.cancel",
+                "sales.compliance.cancel_irn",
+                "sales.compliance.cancel_eway",
                 "sales.credit_note.view",
                 "sales.credit_note.read",
                 "sales.credit_note.list",

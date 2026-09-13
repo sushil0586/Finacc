@@ -44,7 +44,7 @@ class GstExceptionDashboardAPIView(ScopedEntitlementMixin, APIView):
             entityfinid_id=gstr1_scope.entityfinid_id,
             subentity_id=gstr1_scope.subentity_id,
         )
-        assert_any_report_permission(
+        current_permissions = assert_any_report_permission(
             user=request.user,
             entity_id=gstr1_scope.entity_id,
             required_permissions=("reports.gst_exception_dashboard.view",),
@@ -99,12 +99,20 @@ class GstExceptionDashboardAPIView(ScopedEntitlementMixin, APIView):
         query.pop("page", None)
         query.pop("page_size", None)
         encoded = query.urlencode()
-        response["actions"]["export_urls"] = {
-            "excel": f"/api/reports/gst-exception-dashboard/export/?format=xlsx&{encoded}",
-            "csv": f"/api/reports/gst-exception-dashboard/export/?format=csv&{encoded}",
-            "json": f"/api/reports/gst-exception-dashboard/export/?format=json&{encoded}",
-        }
-        response["available_exports"] = ["excel", "csv", "json"]
+        can_export = "reports.gst_exception_dashboard.export" in current_permissions
+        response["actions"]["export_urls"] = (
+            {
+                "excel": f"/api/reports/gst-exception-dashboard/export/?format=xlsx&{encoded}",
+                "csv": f"/api/reports/gst-exception-dashboard/export/?format=csv&{encoded}",
+                "json": f"/api/reports/gst-exception-dashboard/export/?format=json&{encoded}",
+            }
+            if can_export
+            else {}
+        )
+        response["available_exports"] = ["excel", "csv", "json"] if can_export else []
+        response["actions"]["can_export_excel"] = can_export
+        response["actions"]["can_export_csv"] = can_export
+        response["actions"]["can_export_pdf"] = False
         return Response(response)
 
 
@@ -136,6 +144,12 @@ class GstExceptionDashboardExportAPIView(ScopedEntitlementMixin, APIView):
             entity_id=gstr1_scope.entity_id,
             required_permissions=("reports.gst_exception_dashboard.view",),
             message="You do not have permission to access the GST exception dashboard.",
+        )
+        assert_any_report_permission(
+            user=request.user,
+            entity_id=gstr1_scope.entity_id,
+            required_permissions=("reports.gst_exception_dashboard.export",),
+            message="You do not have permission to export the GST exception dashboard.",
         )
         gstr1_warnings = gstr1_service.validations(gstr1_scope)
         gstr3b_warnings = gstr3b_service.validations(gstr3b_scope)

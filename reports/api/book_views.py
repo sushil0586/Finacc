@@ -27,7 +27,7 @@ from receipts.models.receipt_core import ReceiptVoucherHeader
 from reports.schemas.book_reports import CashbookScopeSerializer, DaybookScopeSerializer
 from reports.schemas.common import build_report_envelope
 from reports.api.financial.export_utils import ExportSection, write_sectioned_csv, write_sectioned_excel, write_sectioned_pdf
-from reports.api.report_permissions import assert_any_report_permission
+from reports.api.report_permissions import assert_any_report_permission, permission_codes_for_entity
 from reports.services.financial_hub_settings import (
     apply_amount_display_unit_override,
     financial_hub_amount_unit_label,
@@ -62,6 +62,27 @@ class BookReportPermissionMixin:
             required_permissions=self.required_permission_codes,
             message=self.permission_denied_message,
         )
+
+
+DAYBOOK_EXPORT_PERMISSIONS = (
+    "reports.financial_hub.daybook.export",
+    "reports.daybook.export",
+)
+CASHBOOK_EXPORT_PERMISSIONS = (
+    "reports.financial_hub.cashbook.export",
+    "reports.cash_book.export",
+    "reports.cashbook.export",
+)
+POSTING_DETAIL_EXPORT_PERMISSIONS = (
+    "reports.financial_hub.ledger_book.export",
+    "reports.ledger_book.export",
+    *DAYBOOK_EXPORT_PERMISSIONS,
+)
+
+
+def _can_export_book_report(request, *, entity_id, permission_codes):
+    available = permission_codes_for_entity(user=request.user, entity_id=entity_id)
+    return any(code in available for code in permission_codes)
 
 
 class _BaseBookReportAPIView(BookReportPermissionMixin, ScopedEntitlementMixin, APIView):
@@ -133,10 +154,11 @@ def _filtered_querydict(request, *, exclude=None):
     return params.urlencode()
 
 
-def _attach_export_actions(payload, request, *, export_base_path):
+def _attach_export_actions(payload, request, *, export_base_path, can_export):
     query = _filtered_querydict(request, exclude=["page", "page_size", "orientation"])
     payload.setdefault("actions", {})
-    payload["actions"]["can_print"] = True
+    payload["actions"]["can_export"] = bool(can_export)
+    payload["actions"]["can_print"] = bool(can_export)
     payload["actions"]["export_urls"] = {
         "excel": f"{export_base_path}excel/?{query}",
         "pdf": f"{export_base_path}pdf/?{query}",
@@ -146,8 +168,8 @@ def _attach_export_actions(payload, request, *, export_base_path):
         "excel_portrait": f"{export_base_path}excel/portrait/?{query}",
         "pdf_landscape": f"{export_base_path}pdf/landscape/?{query}",
         "pdf_portrait": f"{export_base_path}pdf/portrait/?{query}",
-    }
-    payload["available_exports"] = ["excel", "pdf", "csv", "print", "excel_landscape", "excel_portrait", "pdf_landscape", "pdf_portrait"]
+    } if can_export else {}
+    payload["available_exports"] = ["excel", "pdf", "csv", "print", "excel_landscape", "excel_portrait", "pdf_landscape", "pdf_portrait"] if can_export else []
     return payload
 
 
@@ -915,7 +937,16 @@ class DaybookAPIView(_BaseBookReportAPIView):
             },
             defaults=BOOK_REPORT_DEFAULTS,
         )
-        response = _attach_export_actions(response, request, export_base_path="/api/reports/financial/daybook/")
+        response = _attach_export_actions(
+            response,
+            request,
+            export_base_path="/api/reports/financial/daybook/",
+            can_export=_can_export_book_report(
+                request,
+                entity_id=scope["entity"],
+                permission_codes=DAYBOOK_EXPORT_PERMISSIONS,
+            ),
+        )
         return Response(response)
 
 
@@ -1020,12 +1051,7 @@ class _BasePostingDetailExportAPIView(BookReportPermissionMixin, ScopedEntitleme
     subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
     export_mode = "attachment"
     export_orientation = "landscape"
-    required_permission_codes = (
-        "reports.financial_hub.ledger_book.view",
-        "reports.ledger_book.view",
-        "reports.financial_hub.daybook.view",
-        "reports.daybook.view",
-    )
+    required_permission_codes = POSTING_DETAIL_EXPORT_PERMISSIONS
 
     def export_response(self, *, filename, content, content_type):
         response = HttpResponse(content=content, content_type=content_type)
@@ -1140,10 +1166,7 @@ class _BaseDaybookExportAPIView(_BaseBookReportAPIView):
     serializer_class = DaybookScopeSerializer
     export_mode = "attachment"
     export_orientation = "landscape"
-    required_permission_codes = (
-        "reports.financial_hub.daybook.view",
-        "reports.daybook.view",
-    )
+    required_permission_codes = DAYBOOK_EXPORT_PERMISSIONS
 
     def export_response(self, *, filename, content, content_type):
         response = HttpResponse(content=content, content_type=content_type)
@@ -1352,7 +1375,16 @@ class CashbookAPIView(_BaseBookReportAPIView):
             },
             defaults=BOOK_REPORT_DEFAULTS,
         )
-        response = _attach_export_actions(response, request, export_base_path="/api/reports/financial/cashbook/")
+        response = _attach_export_actions(
+            response,
+            request,
+            export_base_path="/api/reports/financial/cashbook/",
+            can_export=_can_export_book_report(
+                request,
+                entity_id=scope["entity"],
+                permission_codes=CASHBOOK_EXPORT_PERMISSIONS,
+            ),
+        )
         return Response(response)
 
 
@@ -1510,11 +1542,7 @@ class _BaseCashbookExportAPIView(_BaseBookReportAPIView):
     serializer_class = CashbookScopeSerializer
     export_mode = "attachment"
     export_orientation = "landscape"
-    required_permission_codes = (
-        "reports.financial_hub.cashbook.view",
-        "reports.cash_book.view",
-        "reports.cashbook.view",
-    )
+    required_permission_codes = CASHBOOK_EXPORT_PERMISSIONS
 
     def export_response(self, *, filename, content, content_type):
         response = HttpResponse(content=content, content_type=content_type)

@@ -120,7 +120,7 @@ class PurchaseInvoiceConfirmAPIView(APIView):
             user=request.user,
             entity_id=header.entity_id,
             doc_type=header.doc_type,
-            action="post",
+            action="confirm",
             feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
         )
         try:

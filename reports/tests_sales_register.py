@@ -839,3 +839,25 @@ class SalesRegisterAPITests(APITestCase):
             self.assertIn("search=ENV", payload["actions"]["export_urls"][key])
         self.assertNotIn("page=", payload["actions"]["export_urls"]["excel"])
         self.assertNotIn("page_size=", payload["actions"]["export_urls"]["excel"])
+
+    @patch(
+        "sales.views.rbac.EffectivePermissionService.permission_codes_for_user",
+        return_value=["reports.sales_register.view"],
+    )
+    def test_view_only_user_does_not_receive_export_actions(self, _mock_permissions):
+        response = self._get()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.data["actions"]["can_print"])
+        self.assertFalse(response.data["actions"]["can_export_csv"])
+        self.assertEqual(response.data["actions"]["export_urls"], {})
+        self.assertEqual(response.data["available_exports"], [])
+
+    @patch(
+        "sales.views.rbac.EffectivePermissionService.permission_codes_for_user",
+        return_value=["reports.sales_register.view"],
+    )
+    def test_view_only_user_cannot_call_export_endpoint_directly(self, _mock_permissions):
+        response = self.client.get(reverse("reports_api:sales-register-csv"), self.base_params)
+
+        self.assertEqual(response.status_code, 403)

@@ -41,6 +41,7 @@ class Gstr1ExportAPIView(Gstr1ScopedReportMixin, APIView):
         service = self.service_class()
         scope = service.build_scope(request.query_params)
         self.enforce_report_scope(request, scope)
+        self.enforce_export_permission(request, entity_id=scope.entity_id)
         smart_filters = service.build_smart_filters(request.query_params)
         exporter = self.export_service_class()
 

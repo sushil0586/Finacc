@@ -11,9 +11,10 @@ class Gstr1ScopedReportMixin(ScopedEntitlementMixin):
     subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
     subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
     required_permission_codes = ("reports.gst.view", "reports.gstr1report.view")
+    export_permission_codes = ("reports.gst.export",)
 
     def enforce_permission(self, request, *, entity_id: int):
-        assert_any_report_permission(
+        return assert_any_report_permission(
             user=request.user,
             entity_id=entity_id,
             required_permissions=self.required_permission_codes,
@@ -27,7 +28,15 @@ class Gstr1ScopedReportMixin(ScopedEntitlementMixin):
             entityfinid_id=scope.entityfinid_id,
             subentity_id=scope.subentity_id,
         )
-        self.enforce_permission(request, entity_id=scope.entity_id)
+        return self.enforce_permission(request, entity_id=scope.entity_id)
+
+    def enforce_export_permission(self, request, *, entity_id: int):
+        return assert_any_report_permission(
+            user=request.user,
+            entity_id=entity_id,
+            required_permissions=self.export_permission_codes,
+            message="You do not have permission to export the GSTR-1 workspace.",
+        )
 
     def enforce_entity_scope(self, request, *, entity_id: int, entityfinid_id: int | None = None, subentity_id: int | None = None):
         self.enforce_scope(
@@ -67,14 +76,22 @@ def filtered_query(request, *, exclude=None, overrides=None):
     return params.urlencode()
 
 
-def attach_gstr1_export_actions(payload, request):
+def attach_gstr1_export_actions(payload, request, *, permission_codes):
     query = filtered_query(request, exclude=["page", "page_size"])
-    payload["actions"]["export_urls"] = {
-        "excel": f"/api/reports/gstr1/export/?format=xlsx&{query}",
-        "csv": f"/api/reports/gstr1/export/?format=csv&{query}",
-        "json": f"/api/reports/gstr1/export/?format=json&{query}",
-        "gstn_json": f"/api/reports/gstr1/export/?format=gstn_json&{query}",
-        "whitebox_json": f"/api/reports/gstr1/export/?format=whitebox_json&{query}",
-    }
-    payload["available_exports"] = ["excel", "csv", "json", "gstn_json", "whitebox_json"]
+    can_export = "reports.gst.export" in permission_codes
+    payload["actions"]["export_urls"] = (
+        {
+            "excel": f"/api/reports/gstr1/export/?format=xlsx&{query}",
+            "csv": f"/api/reports/gstr1/export/?format=csv&{query}",
+            "json": f"/api/reports/gstr1/export/?format=json&{query}",
+            "gstn_json": f"/api/reports/gstr1/export/?format=gstn_json&{query}",
+            "whitebox_json": f"/api/reports/gstr1/export/?format=whitebox_json&{query}",
+        }
+        if can_export
+        else {}
+    )
+    payload["available_exports"] = ["excel", "csv", "json", "gstn_json", "whitebox_json"] if can_export else []
+    payload["actions"]["can_export_excel"] = can_export
+    payload["actions"]["can_export_csv"] = can_export
+    payload["actions"]["can_export_pdf"] = False
     return payload

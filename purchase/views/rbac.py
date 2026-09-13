@@ -44,12 +44,14 @@ def purchase_permission_codes(doc_type: int, action: str) -> list[str]:
         return [f"{family}.update", f"{family}.edit"]
     if action == "delete":
         return [f"{family}.delete"]
+    if action == "confirm":
+        return [f"{family}.confirm"]
     if action == "post":
-        return [f"{family}.post", f"{family}.confirm"]
+        return [f"{family}.post"]
     if action == "unpost":
         return [f"{family}.unpost"]
     if action == "cancel":
-        return [f"{family}.cancel", f"{family}.update", f"{family}.edit"]
+        return [f"{family}.cancel"]
     if action in {"rebuild_tax_summary", "itc", "gstr2b"}:
         return [f"{family}.update", f"{family}.edit"]
     raise ValueError(f"Unsupported purchase permission action: {action}")

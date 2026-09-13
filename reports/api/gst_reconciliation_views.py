@@ -40,7 +40,7 @@ class Gstr1VsGstr3bReconciliationAPIView(ScopedEntitlementMixin, APIView):
             entityfinid_id=gstr1_scope.entityfinid_id,
             subentity_id=gstr1_scope.subentity_id,
         )
-        assert_any_report_permission(
+        current_permissions = assert_any_report_permission(
             user=request.user,
             entity_id=gstr1_scope.entity_id,
             required_permissions=("reports.gstr1_gstr3b_reconciliation.view",),
@@ -81,12 +81,20 @@ class Gstr1VsGstr3bReconciliationAPIView(ScopedEntitlementMixin, APIView):
         query.pop("page", None)
         query.pop("page_size", None)
         encoded = query.urlencode()
-        response["actions"]["export_urls"] = {
-            "excel": f"/api/reports/gst-reconciliation/export/?format=xlsx&{encoded}",
-            "csv": f"/api/reports/gst-reconciliation/export/?format=csv&{encoded}",
-            "json": f"/api/reports/gst-reconciliation/export/?format=json&{encoded}",
-        }
-        response["available_exports"] = ["excel", "csv", "json"]
+        can_export = "reports.gstr1_gstr3b_reconciliation.export" in current_permissions
+        response["actions"]["export_urls"] = (
+            {
+                "excel": f"/api/reports/gst-reconciliation/export/?format=xlsx&{encoded}",
+                "csv": f"/api/reports/gst-reconciliation/export/?format=csv&{encoded}",
+                "json": f"/api/reports/gst-reconciliation/export/?format=json&{encoded}",
+            }
+            if can_export
+            else {}
+        )
+        response["available_exports"] = ["excel", "csv", "json"] if can_export else []
+        response["actions"]["can_export_excel"] = can_export
+        response["actions"]["can_export_csv"] = can_export
+        response["actions"]["can_export_pdf"] = False
         return Response(response)
 
 
@@ -119,6 +127,12 @@ class Gstr1VsGstr3bReconciliationExportAPIView(ScopedEntitlementMixin, APIView):
             entity_id=gstr1_scope.entity_id,
             required_permissions=("reports.gstr1_gstr3b_reconciliation.view",),
             message="You do not have permission to access the GSTR-1 vs GSTR-3B reconciliation report.",
+        )
+        assert_any_report_permission(
+            user=request.user,
+            entity_id=gstr1_scope.entity_id,
+            required_permissions=("reports.gstr1_gstr3b_reconciliation.export",),
+            message="You do not have permission to export the GSTR-1 vs GSTR-3B reconciliation report.",
         )
         payload = build_gstr1_vs_gstr3b_reconciliation(
             gstr1_summary=gstr1_service.summary(gstr1_scope),

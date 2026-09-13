@@ -12,6 +12,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from entity.models import Entity
+from rbac.access import assert_any_entity_permission
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 from .bulk_hsn_sac import (
@@ -25,6 +26,11 @@ from .bulk_hsn_sac import (
 from .models import ProductBulkJob
 
 
+HSN_SAC_VIEW_PERMISSIONS = ("catalog.hsn_sac.view",)
+HSN_SAC_EXPORT_PERMISSIONS = ("catalog.hsn_sac.export",)
+HSN_SAC_IMPORT_PERMISSIONS = ("catalog.hsn_sac.import",)
+
+
 class SafeFormatNegotiation(DefaultContentNegotiation):
     def filter_renderers(self, renderers, format):
         if format and not any(renderer.format == format for renderer in renderers):
@@ -32,7 +38,7 @@ class SafeFormatNegotiation(DefaultContentNegotiation):
         return super().filter_renderers(renderers, format)
 
 
-def _entity_from_request(request):
+def _entity_from_request(request, *, required_permissions=HSN_SAC_VIEW_PERMISSIONS):
     raw = request.query_params.get("entity") or request.data.get("entity")
     if not raw:
         raise ValidationError({"entity": "entity query param is required."})
@@ -42,6 +48,11 @@ def _entity_from_request(request):
         entity=entity,
         access_mode=SubscriptionService.ACCESS_MODE_OPERATIONAL,
         feature_code=SubscriptionLimitCodes.FEATURE_INVENTORY,
+    )
+    assert_any_entity_permission(
+        user=request.user,
+        entity_id=entity.id,
+        required_permissions=required_permissions,
     )
     return entity
 
@@ -70,7 +81,7 @@ class HsnSacBulkExportAPIView(APIView):
     content_negotiation_class = SafeFormatNegotiation
 
     def get(self, request):
-        entity = _entity_from_request(request)
+        entity = _entity_from_request(request, required_permissions=HSN_SAC_EXPORT_PERMISSIONS)
         fmt = (request.query_params.get("format") or "xlsx").lower()
         search = (request.query_params.get("search") or "").strip()
         if fmt not in ("xlsx", "csv"):
@@ -100,7 +111,7 @@ class HsnSacBulkImportValidateAPIView(APIView):
     content_negotiation_class = SafeFormatNegotiation
 
     def post(self, request):
-        entity = _entity_from_request(request)
+        entity = _entity_from_request(request, required_permissions=HSN_SAC_IMPORT_PERMISSIONS)
         upload = request.FILES.get("file")
         if not upload:
             raise ValidationError({"file": "Upload file is required."})
@@ -143,7 +154,7 @@ class HsnSacBulkImportCommitAPIView(APIView):
     content_negotiation_class = SafeFormatNegotiation
 
     def post(self, request):
-        entity = _entity_from_request(request)
+        entity = _entity_from_request(request, required_permissions=HSN_SAC_IMPORT_PERMISSIONS)
         token = (request.data.get("validation_token") or "").strip()
         if not token:
             raise ValidationError({"validation_token": "validation_token is required."})
@@ -206,7 +217,7 @@ class HsnSacBulkJobErrorsExportAPIView(APIView):
     content_negotiation_class = SafeFormatNegotiation
 
     def get(self, request, job_id: int):
-        entity = _entity_from_request(request)
+        entity = _entity_from_request(request, required_permissions=HSN_SAC_IMPORT_PERMISSIONS)
         job = get_object_or_404(ProductBulkJob, pk=job_id, entity=entity)
         fmt = (request.query_params.get("format") or "xlsx").lower()
         if fmt not in ("xlsx", "csv"):

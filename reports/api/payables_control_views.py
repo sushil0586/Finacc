@@ -36,6 +36,7 @@ class ApGlReconciliationReportAPIView(_BasePayableAPIView):
 
     def get(self, request):
         scope = self.get_scope(request)
+        self.assert_report_permission(request, scope, "ap_gl_reconciliation")
         payload = build_ap_gl_reconciliation_report(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -67,6 +68,7 @@ class VendorBalanceExceptionReportAPIView(_BasePayableAPIView):
 
     def get(self, request):
         scope = self.get_scope(request)
+        self.assert_report_permission(request, scope, "vendor_balance_exceptions")
         payload = build_vendor_balance_exception_report(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -103,6 +105,7 @@ class PayablesCloseValidationAPIView(_BasePayableAPIView):
 
     def get(self, request):
         scope = self.get_scope(request)
+        self.assert_report_permission(request, scope, "payables_close_validation")
         payload = build_payables_close_validation(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -130,6 +133,7 @@ class PayablesCloseReadinessSummaryAPIView(_BasePayableAPIView):
 
     def get(self, request):
         scope = self.get_scope(request)
+        self.assert_report_permission(request, scope, "payables_close_readiness_summary")
         payload = build_payables_close_readiness_summary(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),

@@ -112,6 +112,16 @@ def _require_statutory_approve(request, entity_id: int) -> None:
     )
 
 
+def _require_statutory_export(request, entity_id: int) -> None:
+    _require_any_permission(
+        request,
+        entity_id,
+        [
+            "purchase.statutory.export",
+        ],
+    )
+
+
 def _extract_entity_id_from_request(request):
     raw = None
     if hasattr(request, "data"):
@@ -140,6 +150,8 @@ def _require_for_pk_if_resolvable(request, model, pk: int, level: str = "view") 
         _require_statutory_manage(request, entity_id)
     elif level == "approve":
         _require_statutory_approve(request, entity_id)
+    elif level == "export":
+        _require_statutory_export(request, entity_id)
     else:
         raise ValueError(f"Unsupported RBAC level: {level}")
 
@@ -967,6 +979,7 @@ class PurchaseStatutoryChallanExportAPIView(APIView):
     def get(self, request):
         entity_id, entityfinid_id, subentity_id = _parse_scope(request)
         _require_statutory_view(request, entity_id)
+        _require_statutory_export(request, entity_id)
         fmt = (request.query_params.get("format") or "xlsx").lower().strip()
         if fmt not in ("xlsx", "pdf", "csv"):
             raise ValidationError({"detail": "format must be xlsx|pdf|csv"})
@@ -1036,6 +1049,7 @@ class PurchaseStatutoryReturnExportAPIView(APIView):
     def get(self, request):
         entity_id, entityfinid_id, subentity_id = _parse_scope(request)
         _require_statutory_view(request, entity_id)
+        _require_statutory_export(request, entity_id)
         fmt = (request.query_params.get("format") or "xlsx").lower().strip()
         if fmt not in ("xlsx", "pdf", "csv"):
             raise ValidationError({"detail": "format must be xlsx|pdf|csv"})
@@ -1140,7 +1154,8 @@ class PurchaseStatutoryCaPackExportAPIView(APIView):
 
     def get(self, request):
         entity_id, entityfinid_id, subentity_id = _parse_scope(request)
-        _require_statutory_manage(request, entity_id)
+        _require_statutory_view(request, entity_id)
+        _require_statutory_export(request, entity_id)
         period_from_raw = request.query_params.get("period_from")
         period_to_raw = request.query_params.get("period_to")
         if not period_from_raw or not period_to_raw:
@@ -1943,6 +1958,7 @@ class PurchaseStatutoryReturnNsdlExportAPIView(APIView):
 
     def get(self, request, pk: int):
         _require_for_pk_if_resolvable(request, PurchaseStatutoryReturn, pk, level="view")
+        _require_for_pk_if_resolvable(request, PurchaseStatutoryReturn, pk, level="export")
         try:
             payload = PurchaseStatutoryService.generate_nsdl_payload(filing_id=pk)
         except ValueError as e:
@@ -2165,6 +2181,7 @@ class PurchaseStatutoryReturnForm16ADownloadAPIView(APIView):
 
     def get(self, request, pk: int, issue_no: int):
         _require_for_pk_if_resolvable(request, PurchaseStatutoryReturn, pk, level="view")
+        _require_for_pk_if_resolvable(request, PurchaseStatutoryReturn, pk, level="export")
         try:
             payload = PurchaseStatutoryService.form16a_download_payload(
                 filing_id=pk, issue_no=issue_no
@@ -2281,6 +2298,7 @@ class PurchaseStatutoryReturnForm16ACertificateDownloadAPIView(APIView):
 
     def get(self, request, pk: int, deductee_key: str):
         _require_for_pk_if_resolvable(request, PurchaseStatutoryReturn, pk, level="view")
+        _require_for_pk_if_resolvable(request, PurchaseStatutoryReturn, pk, level="export")
         try:
             payload = PurchaseStatutoryService.traces_form16a_certificate_download_payload(
                 filing_id=pk,

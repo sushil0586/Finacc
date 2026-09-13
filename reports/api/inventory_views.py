@@ -87,16 +87,25 @@ def _inventory_querydict(request, *, exclude=None):
     return params.urlencode()
 
 
-def _attach_inventory_actions(payload, request, *, export_base_path):
+def _attach_inventory_actions(payload, request, *, export_base_path, can_export):
     query = _inventory_querydict(request, exclude=["page", "page_size"])
-    payload["actions"]["can_print"] = True
-    payload["actions"]["export_urls"] = {
-        "excel": f"{export_base_path}excel/?{query}",
-        "pdf": f"{export_base_path}pdf/?{query}",
-        "csv": f"{export_base_path}csv/?{query}",
-        "print": f"{export_base_path}print/?{query}",
-    }
-    payload["available_exports"] = ["excel", "pdf", "csv", "print"]
+    payload["actions"].update(
+        {
+            "can_export_excel": can_export,
+            "can_export_pdf": can_export,
+            "can_export_csv": can_export,
+            "can_print": can_export,
+            "export_urls": {
+                "excel": f"{export_base_path}excel/?{query}",
+                "pdf": f"{export_base_path}pdf/?{query}",
+                "csv": f"{export_base_path}csv/?{query}",
+                "print": f"{export_base_path}print/?{query}",
+            }
+            if can_export
+            else {},
+        }
+    )
+    payload["available_exports"] = ["excel", "pdf", "csv", "print"] if can_export else []
     return payload
 
 
@@ -358,17 +367,17 @@ class _BaseInventoryReportAPIView(ScopedEntitlementMixin, APIView):
 
     def decorate_payload(self, payload):
         payload.setdefault("actions", {})
-        payload["actions"].update(
-            {
-                "can_view": True,
-                "can_export_excel": True,
-                "can_export_pdf": True,
-                "can_export_csv": True,
-                "can_drilldown": False,
-            }
-        )
+        payload["actions"]["can_view"] = True
+        payload["actions"]["can_drilldown"] = False
         payload.setdefault("available_drilldowns", [])
         return payload
+
+
+class _InventoryExportPermissionMixin:
+    def get_scope(self, request):
+        scope = super().get_scope(request)
+        self.assert_report_permission(request, scope, "reports.inventory.export")
+        return scope
 
 
 class InventoryReportsMetaAPIView(ScopedEntitlementMixin, APIView):
@@ -382,6 +391,7 @@ class InventoryReportsMetaAPIView(ScopedEntitlementMixin, APIView):
             return Response({"detail": "entity is required."}, status=400)
         entity_id = int(entity_id)
         self.enforce_scope(request, entity_id=entity_id)
+        permission_codes = EffectivePermissionService.permission_codes_for_user(request.user, entity_id)
         meta = build_inventory_report_meta(entity_id)
         financial_year_ids = [row["id"] for row in meta["financial_years"]]
         permitted_financial_year_ids = {
@@ -421,7 +431,17 @@ class InventoryReportsMetaAPIView(ScopedEntitlementMixin, APIView):
             "reports.inventory.stock_book_detail.view",
             "reports.inventory.non_moving_stock.view",
             "reports.inventory.reorder_status.view",
+            "reports.inventory.export",
         ]
+        can_export = "reports.inventory.export" in permission_codes
+        meta["actions"].update(
+            {
+                "can_export_excel": can_export,
+                "can_export_pdf": can_export,
+                "can_export_csv": can_export,
+                "can_print": can_export,
+            }
+        )
         return Response(meta)
 
 
@@ -459,11 +479,11 @@ class InventoryStockSummaryAPIView(_BaseInventoryReportAPIView):
             filters=self.build_filters(scope),
             defaults=INVENTORY_REPORT_DEFAULTS,
         )
-        payload = self.decorate_payload(_attach_inventory_actions(response, request, export_base_path=self.export_base_path))
+        payload = self.decorate_payload(_attach_inventory_actions(response, request, export_base_path=self.export_base_path, can_export="reports.inventory.export" in self.get_permission_codes(request, scope)))
         return Response(_attach_inventory_drilldowns(payload, "inventory_stock_summary"))
 
 
-class _BaseInventoryStockSummaryExportAPIView(_BaseInventoryReportAPIView):
+class _BaseInventoryStockSummaryExportAPIView(_InventoryExportPermissionMixin, _BaseInventoryReportAPIView):
     export_mode = "attachment"
     export_format = "xlsx"
 
@@ -647,11 +667,11 @@ class InventoryStockLedgerAPIView(_BaseInventoryReportAPIView):
             filters=self.build_filters(scope),
             defaults=INVENTORY_REPORT_DEFAULTS,
         )
-        payload = self.decorate_payload(_attach_inventory_actions(response, request, export_base_path=self.export_base_path))
+        payload = self.decorate_payload(_attach_inventory_actions(response, request, export_base_path=self.export_base_path, can_export="reports.inventory.export" in self.get_permission_codes(request, scope)))
         return Response(_attach_inventory_drilldowns(payload, "inventory_stock_ledger"))
 
 
-class _BaseInventoryStockLedgerExportAPIView(_BaseInventoryReportAPIView):
+class _BaseInventoryStockLedgerExportAPIView(_InventoryExportPermissionMixin, _BaseInventoryReportAPIView):
     export_mode = "attachment"
 
     def export_response(self, *, filename, content, content_type):
@@ -824,11 +844,11 @@ class InventoryStockAgingAPIView(_BaseInventoryReportAPIView):
             filters=self.build_filters(scope),
             defaults=INVENTORY_REPORT_DEFAULTS,
         )
-        payload = self.decorate_payload(_attach_inventory_actions(response, request, export_base_path=self.export_base_path))
+        payload = self.decorate_payload(_attach_inventory_actions(response, request, export_base_path=self.export_base_path, can_export="reports.inventory.export" in self.get_permission_codes(request, scope)))
         return Response(_attach_inventory_drilldowns(payload, "inventory_stock_aging"))
 
 
-class _BaseInventoryStockAgingExportAPIView(_BaseInventoryReportAPIView):
+class _BaseInventoryStockAgingExportAPIView(_InventoryExportPermissionMixin, _BaseInventoryReportAPIView):
     export_mode = "attachment"
 
     def export_response(self, *, filename, content, content_type):
@@ -990,11 +1010,11 @@ class InventoryLocationStockAPIView(_BaseInventoryReportAPIView):
             filters=self.build_filters(scope),
             defaults=INVENTORY_REPORT_DEFAULTS,
         )
-        payload = self.decorate_payload(_attach_inventory_actions(response, request, export_base_path=self.export_base_path))
+        payload = self.decorate_payload(_attach_inventory_actions(response, request, export_base_path=self.export_base_path, can_export="reports.inventory.export" in self.get_permission_codes(request, scope)))
         return Response(_attach_location_drilldowns(payload, "inventory_location_stock"))
 
 
-class _BaseInventoryLocationStockExportAPIView(_BaseInventoryReportAPIView):
+class _BaseInventoryLocationStockExportAPIView(_InventoryExportPermissionMixin, _BaseInventoryReportAPIView):
     export_mode = "attachment"
 
     def export_response(self, *, filename, content, content_type):
@@ -1142,11 +1162,11 @@ class InventoryNonMovingStockAPIView(_BaseInventoryReportAPIView):
             filters=self.build_filters(scope),
             defaults=INVENTORY_REPORT_DEFAULTS,
         )
-        payload = self.decorate_payload(_attach_inventory_actions(response, request, export_base_path=self.export_base_path))
+        payload = self.decorate_payload(_attach_inventory_actions(response, request, export_base_path=self.export_base_path, can_export="reports.inventory.export" in self.get_permission_codes(request, scope)))
         return Response(_attach_control_drilldowns(payload, "inventory_non_moving_stock"))
 
 
-class _BaseInventoryNonMovingStockExportAPIView(_BaseInventoryReportAPIView):
+class _BaseInventoryNonMovingStockExportAPIView(_InventoryExportPermissionMixin, _BaseInventoryReportAPIView):
     export_mode = "attachment"
 
     def export_response(self, *, filename, content, content_type):
@@ -1307,11 +1327,11 @@ class InventoryReorderStatusAPIView(_BaseInventoryReportAPIView):
             filters=self.build_filters(scope),
             defaults=INVENTORY_REPORT_DEFAULTS,
         )
-        payload = self.decorate_payload(_attach_inventory_actions(response, request, export_base_path=self.export_base_path))
+        payload = self.decorate_payload(_attach_inventory_actions(response, request, export_base_path=self.export_base_path, can_export="reports.inventory.export" in self.get_permission_codes(request, scope)))
         return Response(_attach_control_drilldowns(payload, "inventory_reorder_status"))
 
 
-class _BaseInventoryReorderStatusExportAPIView(_BaseInventoryReportAPIView):
+class _BaseInventoryReorderStatusExportAPIView(_InventoryExportPermissionMixin, _BaseInventoryReportAPIView):
     export_mode = "attachment"
 
     def export_response(self, *, filename, content, content_type):
@@ -1478,11 +1498,11 @@ class InventorySlowMovingDeadStockAPIView(_BaseInventoryReportAPIView):
             filters=self.build_filters(scope),
             defaults=INVENTORY_REPORT_DEFAULTS,
         )
-        payload = self.decorate_payload(_attach_inventory_actions(response, request, export_base_path=self.export_base_path))
+        payload = self.decorate_payload(_attach_inventory_actions(response, request, export_base_path=self.export_base_path, can_export="reports.inventory.export" in self.get_permission_codes(request, scope)))
         return Response(_attach_control_drilldowns(payload, "inventory_slow_moving_dead_stock"))
 
 
-class _BaseInventorySlowMovingDeadStockExportAPIView(_BaseInventoryReportAPIView):
+class _BaseInventorySlowMovingDeadStockExportAPIView(_InventoryExportPermissionMixin, _BaseInventoryReportAPIView):
     export_mode = "attachment"
 
     def export_response(self, *, filename, content, content_type):
@@ -1879,11 +1899,11 @@ class InventoryStockMovementAPIView(_BaseInventoryReportAPIView):
             filters=self.build_filters(scope),
             defaults=INVENTORY_REPORT_DEFAULTS,
         )
-        payload = self.decorate_payload(_attach_inventory_actions(response, request, export_base_path=self.export_base_path))
+        payload = self.decorate_payload(_attach_inventory_actions(response, request, export_base_path=self.export_base_path, can_export="reports.inventory.export" in self.get_permission_codes(request, scope)))
         return Response(_attach_operational_drilldowns(payload, "inventory_stock_movement"))
 
 
-class _BaseInventoryStockMovementExportAPIView(_BaseInventoryReportAPIView):
+class _BaseInventoryStockMovementExportAPIView(_InventoryExportPermissionMixin, _BaseInventoryReportAPIView):
     export_mode = "attachment"
 
     def export_response(self, *, filename, content, content_type):
@@ -2017,11 +2037,11 @@ class InventoryStockDayBookAPIView(_BaseInventoryReportAPIView):
             filters=self.build_filters(scope),
             defaults=INVENTORY_REPORT_DEFAULTS,
         )
-        payload = self.decorate_payload(_attach_inventory_actions(response, request, export_base_path=self.export_base_path))
+        payload = self.decorate_payload(_attach_inventory_actions(response, request, export_base_path=self.export_base_path, can_export="reports.inventory.export" in self.get_permission_codes(request, scope)))
         return Response(_attach_operational_drilldowns(payload, "inventory_stock_day_book"))
 
 
-class _BaseInventoryStockDayBookExportAPIView(_BaseInventoryReportAPIView):
+class _BaseInventoryStockDayBookExportAPIView(_InventoryExportPermissionMixin, _BaseInventoryReportAPIView):
     export_mode = "attachment"
 
     def export_response(self, *, filename, content, content_type):
@@ -2145,11 +2165,11 @@ class InventoryStockBookSummaryAPIView(_BaseInventoryReportAPIView):
             filters=self.build_filters(scope),
             defaults=INVENTORY_REPORT_DEFAULTS,
         )
-        payload = self.decorate_payload(_attach_inventory_actions(response, request, export_base_path=self.export_base_path))
+        payload = self.decorate_payload(_attach_inventory_actions(response, request, export_base_path=self.export_base_path, can_export="reports.inventory.export" in self.get_permission_codes(request, scope)))
         return Response(_attach_operational_drilldowns(payload, "inventory_stock_book_summary"))
 
 
-class _BaseInventoryStockBookSummaryExportAPIView(_BaseInventoryReportAPIView):
+class _BaseInventoryStockBookSummaryExportAPIView(_InventoryExportPermissionMixin, _BaseInventoryReportAPIView):
     export_mode = "attachment"
 
     def export_response(self, *, filename, content, content_type):
@@ -2283,11 +2303,11 @@ class InventoryStockBookDetailAPIView(_BaseInventoryReportAPIView):
             filters=self.build_filters(scope),
             defaults=INVENTORY_REPORT_DEFAULTS,
         )
-        payload = self.decorate_payload(_attach_inventory_actions(response, request, export_base_path=self.export_base_path))
+        payload = self.decorate_payload(_attach_inventory_actions(response, request, export_base_path=self.export_base_path, can_export="reports.inventory.export" in self.get_permission_codes(request, scope)))
         return Response(_attach_operational_drilldowns(payload, "inventory_stock_book_detail"))
 
 
-class _BaseInventoryStockBookDetailExportAPIView(_BaseInventoryReportAPIView):
+class _BaseInventoryStockBookDetailExportAPIView(_InventoryExportPermissionMixin, _BaseInventoryReportAPIView):
     export_mode = "attachment"
 
     def export_response(self, *, filename, content, content_type):

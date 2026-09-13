@@ -8044,7 +8044,7 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
     @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
     @patch("purchase.views.purchase_statutory.PurchaseStatutoryReturn.objects")
     def test_statutory_return_export_endpoint_applies_status_and_date_filters(self, mock_return_objects, mock_perm_codes):
-        mock_perm_codes.return_value = {"purchase.statutory.view"}
+        mock_perm_codes.return_value = {"purchase.statutory.view", "purchase.statutory.export"}
         qs = MagicMock()
         qs.filter.return_value = qs
         qs.order_by.return_value = qs
@@ -8063,7 +8063,7 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
     @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
     @patch("purchase.views.purchase_statutory.PurchaseStatutoryChallan.objects")
     def test_statutory_challan_export_endpoint_applies_status_and_date_filters(self, mock_challan_objects, mock_perm_codes):
-        mock_perm_codes.return_value = {"purchase.statutory.view"}
+        mock_perm_codes.return_value = {"purchase.statutory.view", "purchase.statutory.export"}
         qs = MagicMock()
         qs.filter.return_value = qs
         qs.order_by.return_value = qs
@@ -8153,7 +8153,7 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
         mock_recon_exceptions,
         mock_get_review_note,
     ):
-        mock_perm_codes.return_value = {"purchase.statutory.manage"}
+        mock_perm_codes.return_value = {"purchase.statutory.view", "purchase.statutory.export"}
 
         invoice_it = SimpleNamespace(
             id=11,
@@ -8403,7 +8403,7 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
         mock_recon_exceptions,
         mock_get_review_note,
     ):
-        mock_perm_codes.return_value = {"purchase.statutory.manage"}
+        mock_perm_codes.return_value = {"purchase.statutory.view", "purchase.statutory.export"}
         mock_invoice_objects.filter.return_value = _FakeQuerySet([])
         mock_challan_objects.filter.return_value = _FakeQuerySet([])
         mock_get_review_note.side_effect = [None, None, None]
@@ -8535,7 +8535,7 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
         mock_recon_exceptions,
         mock_get_review_note,
     ):
-        mock_perm_codes.return_value = {"purchase.statutory.manage"}
+        mock_perm_codes.return_value = {"purchase.statutory.view", "purchase.statutory.export"}
         mock_invoice_objects.filter.return_value = _FakeQuerySet([])
         mock_challan_objects.filter.return_value = _FakeQuerySet([])
         mock_return_objects.filter.return_value = _FakeQuerySet([])
@@ -8627,7 +8627,7 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
         mock_recon_exceptions,
         mock_get_review_note,
     ):
-        mock_perm_codes.return_value = {"purchase.statutory.manage"}
+        mock_perm_codes.return_value = {"purchase.statutory.view", "purchase.statutory.export"}
         mock_invoice_objects.filter.return_value = _FakeQuerySet([])
         mock_challan_objects.filter.return_value = _FakeQuerySet([])
         mock_get_review_note.side_effect = [None, None, None]
@@ -9505,7 +9505,7 @@ class PurchaseApiPermissionTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
-    def test_statutory_ca_pack_export_requires_manage_permission(self, mock_codes):
+    def test_statutory_ca_pack_export_denies_view_only_user(self, mock_codes):
         mock_codes.return_value = {"purchase.statutory.view"}
 
         response = self.client.get(
@@ -9513,6 +9513,20 @@ class PurchaseApiPermissionTests(APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
+    def test_statutory_list_exports_deny_view_only_user(self, mock_codes):
+        mock_codes.return_value = {"purchase.statutory.view"}
+
+        challan_response = self.client.get(
+            "/api/purchase/statutory/challans/export/?entity=1&entityfinid=1&format=csv"
+        )
+        return_response = self.client.get(
+            "/api/purchase/statutory/returns/export/?entity=1&entityfinid=1&format=csv"
+        )
+
+        self.assertEqual(challan_response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(return_response.status_code, status.HTTP_403_FORBIDDEN)
 
     @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
     def test_statutory_review_note_get_requires_period_params(self, mock_codes):
@@ -9536,7 +9550,7 @@ class PurchaseApiPermissionTests(APITestCase):
 
     @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
     def test_statutory_ca_pack_export_requires_period_params(self, mock_codes):
-        mock_codes.return_value = {"purchase.statutory.manage"}
+        mock_codes.return_value = {"purchase.statutory.view", "purchase.statutory.export"}
 
         response = self.client.get("/api/purchase/statutory/export/ca-pack/?entity=1&entityfinid=1")
 
@@ -9545,7 +9559,7 @@ class PurchaseApiPermissionTests(APITestCase):
 
     @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
     def test_statutory_ca_pack_export_rejects_inverted_period(self, mock_codes):
-        mock_codes.return_value = {"purchase.statutory.manage"}
+        mock_codes.return_value = {"purchase.statutory.view", "purchase.statutory.export"}
 
         response = self.client.get(
             "/api/purchase/statutory/export/ca-pack/?entity=1&entityfinid=1&period_from=2026-04-30&period_to=2026-04-01"
@@ -9649,8 +9663,8 @@ class PurchaseApiPermissionTests(APITestCase):
 
     @patch("purchase.views.purchase_statutory.PurchaseStatutoryReturn.objects")
     @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
-    def test_statutory_form16a_download_requires_view_permission(self, mock_codes, mock_return_objects):
-        mock_codes.return_value = set()
+    def test_statutory_form16a_download_denies_view_only_user(self, mock_codes, mock_return_objects):
+        mock_codes.return_value = {"purchase.statutory.view"}
         mock_return_objects.filter.return_value.only.return_value.first.return_value = self._pk_scope_obj()
 
         response = self.client.get("/api/purchase/statutory/returns/21/form16a/1/download/")
@@ -9659,11 +9673,27 @@ class PurchaseApiPermissionTests(APITestCase):
 
     @patch("purchase.views.purchase_statutory.PurchaseStatutoryReturn.objects")
     @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
-    def test_statutory_nsdl_export_requires_view_permission(self, mock_codes, mock_return_objects):
-        mock_codes.return_value = set()
+    def test_statutory_nsdl_export_denies_view_only_user(self, mock_codes, mock_return_objects):
+        mock_codes.return_value = {"purchase.statutory.view"}
         mock_return_objects.filter.return_value.only.return_value.first.return_value = self._pk_scope_obj()
 
         response = self.client.get("/api/purchase/statutory/returns/21/nsdl-export/")
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    @patch("purchase.views.purchase_statutory.PurchaseStatutoryReturn.objects")
+    @patch("purchase.views.purchase_statutory.EffectivePermissionService.permission_codes_for_user")
+    def test_statutory_form16a_certificate_download_denies_view_only_user(
+        self,
+        mock_codes,
+        mock_return_objects,
+    ):
+        mock_codes.return_value = {"purchase.statutory.view"}
+        mock_return_objects.filter.return_value.only.return_value.first.return_value = self._pk_scope_obj()
+
+        response = self.client.get(
+            "/api/purchase/statutory/returns/21/form16a-certificates/group/PAN_ABCDE1234F/download/"
+        )
 
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
@@ -9880,12 +9910,72 @@ class PurchaseApiPermissionTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
         mock_post.assert_not_called()
 
+    @patch("purchase.views.purchase_invoice_actions.PurchaseInvoiceActions.confirm")
+    @patch("purchase.views.purchase_invoice_actions._assert_invoice_scope")
+    @patch("purchase.views.rbac.EffectivePermissionService.permission_codes_for_user")
+    @patch("purchase.views.rbac.EffectivePermissionService.entity_for_user")
+    def test_credit_note_confirm_rejects_post_permission_without_confirm(
+        self,
+        mock_entity_for_user,
+        mock_codes,
+        mock_scope,
+        mock_confirm,
+    ):
+        mock_entity_for_user.return_value = SimpleNamespace(id=self.allowed_entity.id)
+        mock_codes.return_value = {"purchase.credit_note.post"}
+        mock_scope.return_value = SimpleNamespace(
+            id=11,
+            entity_id=self.allowed_entity.id,
+            doc_type=int(PurchaseInvoiceHeader.DocType.CREDIT_NOTE),
+        )
+
+        response = self.client.post(
+            f"/api/purchase/purchase-invoices/11/confirm/?entity={self.allowed_entity.id}&entityfinid={self.allowed_fy.id}",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        mock_confirm.assert_not_called()
+
+    @patch("purchase.views.purchase_invoice_actions.PurchaseInvoiceHeaderSerializer")
+    @patch("purchase.views.purchase_invoice_actions.PurchaseInvoiceActions.confirm")
+    @patch("purchase.views.purchase_invoice_actions._assert_invoice_scope")
+    @patch("purchase.views.rbac.EffectivePermissionService.permission_codes_for_user")
+    @patch("purchase.views.rbac.EffectivePermissionService.entity_for_user")
+    def test_credit_note_confirm_allows_dedicated_confirm_permission(
+        self,
+        mock_entity_for_user,
+        mock_codes,
+        mock_scope,
+        mock_confirm,
+        mock_serializer,
+    ):
+        mock_entity_for_user.return_value = SimpleNamespace(id=self.allowed_entity.id)
+        mock_codes.return_value = {"purchase.credit_note.confirm"}
+        mock_scope.return_value = SimpleNamespace(
+            id=11,
+            entity_id=self.allowed_entity.id,
+            doc_type=int(PurchaseInvoiceHeader.DocType.CREDIT_NOTE),
+        )
+        mock_confirm.return_value = SimpleNamespace(message="confirmed", header=SimpleNamespace(id=11))
+        mock_serializer.return_value.data = {"id": 11}
+
+        response = self.client.post(
+            f"/api/purchase/purchase-invoices/11/confirm/?entity={self.allowed_entity.id}&entityfinid={self.allowed_fy.id}",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mock_confirm.assert_called_once()
+
     @patch("purchase.views.purchase_invoice_actions.PurchaseInvoiceHeaderSerializer")
     @patch("purchase.views.purchase_invoice_actions.PurchaseInvoiceActions.cancel")
     @patch("purchase.views.purchase_invoice_actions._assert_invoice_scope")
     @patch("purchase.views.rbac.EffectivePermissionService.permission_codes_for_user")
     @patch("purchase.views.rbac.EffectivePermissionService.entity_for_user")
-    def test_credit_note_cancel_allows_update_permission_fallback(
+    def test_credit_note_cancel_rejects_update_permission_without_cancel(
         self,
         mock_entity_for_user,
         mock_codes,
@@ -9895,6 +9985,35 @@ class PurchaseApiPermissionTests(APITestCase):
     ):
         mock_entity_for_user.return_value = SimpleNamespace(id=self.allowed_entity.id)
         mock_codes.return_value = {"purchase.credit_note.update"}
+        mock_scope.return_value = SimpleNamespace(
+            id=12,
+            entity_id=self.allowed_entity.id,
+            doc_type=int(PurchaseInvoiceHeader.DocType.CREDIT_NOTE),
+        )
+        response = self.client.post(
+            f"/api/purchase/purchase-invoices/12/cancel/?entity={self.allowed_entity.id}&entityfinid={self.allowed_fy.id}",
+            {"reason": "test"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        mock_cancel.assert_not_called()
+
+    @patch("purchase.views.purchase_invoice_actions.PurchaseInvoiceHeaderSerializer")
+    @patch("purchase.views.purchase_invoice_actions.PurchaseInvoiceActions.cancel")
+    @patch("purchase.views.purchase_invoice_actions._assert_invoice_scope")
+    @patch("purchase.views.rbac.EffectivePermissionService.permission_codes_for_user")
+    @patch("purchase.views.rbac.EffectivePermissionService.entity_for_user")
+    def test_credit_note_cancel_allows_dedicated_cancel_permission(
+        self,
+        mock_entity_for_user,
+        mock_codes,
+        mock_scope,
+        mock_cancel,
+        mock_serializer,
+    ):
+        mock_entity_for_user.return_value = SimpleNamespace(id=self.allowed_entity.id)
+        mock_codes.return_value = {"purchase.credit_note.cancel"}
         mock_scope.return_value = SimpleNamespace(
             id=12,
             entity_id=self.allowed_entity.id,

@@ -52,6 +52,7 @@ from sales.views.sales_invoice_views import (
     SalesInvoiceReverseAPIView,
     SalesInvoiceRetrieveUpdateAPIView,
 )
+from sales.views.sales_invoice_compliance_api import SalesInvoiceCancelIRNAPIView
 from sales.views.sales_invoice_compliance_api import SalesInvoiceGenerateIRNAndEWayAPIView
 from sales.views.sales_invoice_compliance_api import SalesInvoiceGenerateIRNAPIView
 from sales.views.sales_invoice_compliance_api import SalesInvoiceGetIRNByDocDetailsAPIView
@@ -63,6 +64,7 @@ from sales.views.sales_invoice_compliance_api import SalesInvoiceGetEWayByIRNAPI
 from sales.views.sales_settings_views import SalesSettingsAPIView
 from sales.views.eway_views import SalesInvoiceGetEWayDetailsAPIView
 from sales.views.eway_views import (
+    SalesInvoiceCancelEWayAPIView,
     SalesInvoiceGetEWayTransporterDetailsAPIView,
     SalesInvoiceGetEWayGSTINDetailsAPIView,
     SalesInvoiceGetEWayHSNDetailsAPIView,
@@ -79,6 +81,40 @@ from sales.views.sales_ar import CustomerSettlementListCreateAPIView
 from sales.views.sales_ar_exports import CustomerStatementExcelAPIView
 from posting.adapters.sales_invoice import SalesInvoicePostingAdapter, SalesInvoicePostingConfig
 from posting.common.static_accounts import StaticAccountCodes
+
+
+class SalesCompliancePermissionContractTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.user = SimpleNamespace(id=11, is_authenticated=True)
+        self.invoice = SimpleNamespace(entity_id=77)
+        self.editor_permissions = {"sales.invoice.view", "sales.invoice.update"}
+
+    @patch("sales.views.sales_invoice_compliance_api._InvoiceMixin.get_invoice")
+    @patch("sales.views.sales_invoice_compliance_api.EffectivePermissionService.permission_codes_for_user")
+    def test_invoice_editor_cannot_cancel_irn(self, mocked_permission_codes, mocked_get_invoice):
+        mocked_get_invoice.return_value = self.invoice
+        mocked_permission_codes.return_value = self.editor_permissions
+        request = self.factory.post("/cancel-irn/", {"reason_code": "1"}, format="json")
+        force_authenticate(request, user=self.user)
+
+        response = SalesInvoiceCancelIRNAPIView.as_view()(request, pk=1)
+
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("sales.compliance.cancel_irn", str(response.data))
+
+    @patch("sales.views.eway_views._ScopedInvoiceMixin._fetch_invoice_with_related")
+    @patch("sales.views.eway_views.EffectivePermissionService.permission_codes_for_user")
+    def test_invoice_editor_cannot_cancel_eway(self, mocked_permission_codes, mocked_get_invoice):
+        mocked_get_invoice.return_value = self.invoice
+        mocked_permission_codes.return_value = self.editor_permissions
+        request = self.factory.post("/cancel-eway/", {"reason_code": "1"}, format="json")
+        force_authenticate(request, user=self.user)
+
+        response = SalesInvoiceCancelEWayAPIView.as_view()(request, id=1)
+
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("sales.compliance.cancel_eway", str(response.data))
 
 
 class SalesInvoiceServiceUnitTests(SimpleTestCase):
@@ -6975,6 +7011,7 @@ class CustomerStatementExportViewTests(SimpleTestCase):
         self.factory = APIRequestFactory()
         self.user = SimpleNamespace(id=11, is_authenticated=True)
 
+    @patch("sales.views.sales_ar_exports._require_ar_export_permission")
     @patch("sales.views.sales_ar_exports._require_ar_view_permission")
     @patch("sales.views.sales_ar_exports.SalesArService.customer_statement")
     @patch("sales.views.sales_ar_exports.account.objects.filter")
@@ -6985,8 +7022,10 @@ class CustomerStatementExportViewTests(SimpleTestCase):
         mocked_account_filter,
         mocked_customer_statement,
         mocked_require_permission,
+        mocked_require_export_permission,
     ):
         mocked_require_permission.return_value = None
+        mocked_require_export_permission.return_value = None
         mocked_resolve_scope_names.return_value = {
             "entity_name": "Arnika G",
             "entityfin_name": "FY 2026-27",

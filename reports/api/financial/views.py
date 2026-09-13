@@ -33,7 +33,7 @@ from reports.api.financial.export_utils import (
     write_sectioned_excel,
     write_sectioned_pdf,
 )
-from reports.api.report_permissions import assert_any_report_permission
+from reports.api.report_permissions import assert_any_report_permission, permission_codes_for_entity
 from reports.services.financial_hub_settings import (
     financial_hub_amount_unit_label,
     get_effective_balance_sheet_settings,
@@ -78,6 +78,34 @@ class FinancialReportPermissionMixin:
             required_permissions=self.required_permission_codes,
             message=self.permission_denied_message,
         )
+
+
+TRIAL_BALANCE_EXPORT_PERMISSIONS = (
+    "reports.financial_hub.trial_balance.export",
+    "reports.trial_balance.export",
+)
+LEDGER_BOOK_EXPORT_PERMISSIONS = (
+    "reports.financial_hub.ledger_book.export",
+    "reports.ledger_book.export",
+)
+LEDGER_SUMMARY_EXPORT_PERMISSIONS = ("reports.financial_hub.ledger_summary.export",)
+PROFIT_LOSS_EXPORT_PERMISSIONS = (
+    "reports.financial_hub.profit_loss.export",
+    "reports.income_expenditure.export",
+)
+BALANCE_SHEET_EXPORT_PERMISSIONS = (
+    "reports.financial_hub.balance_sheet.export",
+    "reports.balance_sheet.export",
+)
+TRADING_ACCOUNT_EXPORT_PERMISSIONS = (
+    "reports.financial_hub.trading_account.export",
+    "reports.trading_account.export",
+)
+
+
+def _can_export_financial_report(request, *, entity_id, permission_codes):
+    available = permission_codes_for_entity(user=request.user, entity_id=entity_id)
+    return any(code in available for code in permission_codes)
 
 
 class _BaseFinancialReportAPIView(FinancialReportPermissionMixin, ScopedEntitlementMixin, APIView):
@@ -2454,11 +2482,21 @@ class TrialBalanceAPIView(_BaseFinancialReportAPIView):
             filters=self.build_filters(scope),
             defaults=REPORT_DEFAULTS,
         )
-        return Response(_attach_financial_actions(response, request, export_base_path="/api/reports/financial/trial-balance/"))
+        return Response(_attach_financial_actions(
+            response,
+            request,
+            export_base_path="/api/reports/financial/trial-balance/",
+            can_export=_can_export_financial_report(
+                request,
+                entity_id=scope["entity"],
+                permission_codes=TRIAL_BALANCE_EXPORT_PERMISSIONS,
+            ),
+        ))
 
 
 class _BaseTrialBalanceExportAPIView(_BaseFinancialReportAPIView):
     export_mode = "attachment"
+    required_permission_codes = TRIAL_BALANCE_EXPORT_PERMISSIONS
 
     def export_response(self, *, filename, content, content_type):
         response = HttpResponse(content=content, content_type=content_type)
@@ -2674,6 +2712,11 @@ class LedgerBookAPIView(_BaseFinancialReportAPIView):
                 ),
                 request,
                 export_base_path="/api/reports/financial/ledger-book/",
+                can_export=_can_export_financial_report(
+                    request,
+                    entity_id=scope["entity"],
+                    permission_codes=LEDGER_BOOK_EXPORT_PERMISSIONS,
+                ),
             )
         )
 
@@ -2681,6 +2724,7 @@ class LedgerBookAPIView(_BaseFinancialReportAPIView):
 class _BaseLedgerBookExportAPIView(_BaseFinancialReportAPIView):
     serializer_class = LedgerBookScopeSerializer
     export_mode = "attachment"
+    required_permission_codes = LEDGER_BOOK_EXPORT_PERMISSIONS
 
     def export_response(self, *, filename, content, content_type):
         response = HttpResponse(content=content, content_type=content_type)
@@ -2964,11 +3008,21 @@ class LedgerSummaryAPIView(_BaseFinancialReportAPIView):
             filters=self.build_filters(scope),
             defaults=REPORT_DEFAULTS,
         )
-        return Response(_attach_financial_actions(response, request, export_base_path="/api/reports/financial/ledger-summary/"))
+        return Response(_attach_financial_actions(
+            response,
+            request,
+            export_base_path="/api/reports/financial/ledger-summary/",
+            can_export=_can_export_financial_report(
+                request,
+                entity_id=scope["entity"],
+                permission_codes=LEDGER_SUMMARY_EXPORT_PERMISSIONS,
+            ),
+        ))
 
 
 class _BaseLedgerSummaryExportAPIView(_BaseFinancialReportAPIView):
     export_mode = "attachment"
+    required_permission_codes = LEDGER_SUMMARY_EXPORT_PERMISSIONS
 
     def export_response(self, *, filename, content, content_type):
         response = HttpResponse(content=content, content_type=content_type)
@@ -3196,21 +3250,28 @@ class ProfitAndLossAPIView(_BaseFinancialReportAPIView):
             response,
             request,
             export_base_path="/api/reports/financial/profit-loss/",
+            can_export=_can_export_financial_report(
+                request,
+                entity_id=scope["entity"],
+                permission_codes=PROFIT_LOSS_EXPORT_PERMISSIONS,
+            ),
         )
-        query = _filtered_querydict(request, exclude=["page", "page_size", "orientation"])
-        base_url = "/api/reports/financial/profit-loss/"
-        query_suffix = f"?{query}" if query else ""
-        response["actions"]["export_urls"]["pdf_landscape"] = f"{base_url}pdf/landscape/{query_suffix}"
-        response["actions"]["export_urls"]["pdf_portrait"] = f"{base_url}pdf/portrait/{query_suffix}"
-        response["actions"]["export_urls"]["excel_landscape"] = f"{base_url}excel/landscape/{query_suffix}"
-        response["actions"]["export_urls"]["excel_portrait"] = f"{base_url}excel/portrait/{query_suffix}"
-        response["available_exports"] = ["excel", "pdf", "csv", "print", "pdf_landscape", "pdf_portrait", "excel_landscape", "excel_portrait"]
+        if response["actions"]["can_export"]:
+            query = _filtered_querydict(request, exclude=["page", "page_size", "orientation"])
+            base_url = "/api/reports/financial/profit-loss/"
+            query_suffix = f"?{query}" if query else ""
+            response["actions"]["export_urls"]["pdf_landscape"] = f"{base_url}pdf/landscape/{query_suffix}"
+            response["actions"]["export_urls"]["pdf_portrait"] = f"{base_url}pdf/portrait/{query_suffix}"
+            response["actions"]["export_urls"]["excel_landscape"] = f"{base_url}excel/landscape/{query_suffix}"
+            response["actions"]["export_urls"]["excel_portrait"] = f"{base_url}excel/portrait/{query_suffix}"
+            response["available_exports"] = ["excel", "pdf", "csv", "print", "pdf_landscape", "pdf_portrait", "excel_landscape", "excel_portrait"]
         return Response(response)
 
 
 class _BaseProfitAndLossExportAPIView(_BaseFinancialReportAPIView):
     export_mode = "attachment"
     export_orientation = "landscape"
+    required_permission_codes = PROFIT_LOSS_EXPORT_PERMISSIONS
 
     def export_response(self, *, filename, content, content_type):
         response = HttpResponse(content=content, content_type=content_type)
@@ -3527,15 +3588,21 @@ class BalanceSheetAPIView(_BaseFinancialReportAPIView):
             response,
             request,
             export_base_path="/api/reports/financial/balance-sheet/",
+            can_export=_can_export_financial_report(
+                request,
+                entity_id=scope["entity"],
+                permission_codes=BALANCE_SHEET_EXPORT_PERMISSIONS,
+            ),
         )
-        query = _filtered_querydict(request, exclude=["page", "page_size", "orientation"])
-        base_url = "/api/reports/financial/balance-sheet/"
-        query_suffix = f"?{query}" if query else ""
-        response["actions"]["export_urls"]["pdf_landscape"] = f"{base_url}pdf/landscape/{query_suffix}"
-        response["actions"]["export_urls"]["pdf_portrait"] = f"{base_url}pdf/portrait/{query_suffix}"
-        response["actions"]["export_urls"]["excel_landscape"] = f"{base_url}excel/landscape/{query_suffix}"
-        response["actions"]["export_urls"]["excel_portrait"] = f"{base_url}excel/portrait/{query_suffix}"
-        response["available_exports"] = ["excel", "pdf", "csv", "print", "pdf_landscape", "pdf_portrait", "excel_landscape", "excel_portrait"]
+        if response["actions"]["can_export"]:
+            query = _filtered_querydict(request, exclude=["page", "page_size", "orientation"])
+            base_url = "/api/reports/financial/balance-sheet/"
+            query_suffix = f"?{query}" if query else ""
+            response["actions"]["export_urls"]["pdf_landscape"] = f"{base_url}pdf/landscape/{query_suffix}"
+            response["actions"]["export_urls"]["pdf_portrait"] = f"{base_url}pdf/portrait/{query_suffix}"
+            response["actions"]["export_urls"]["excel_landscape"] = f"{base_url}excel/landscape/{query_suffix}"
+            response["actions"]["export_urls"]["excel_portrait"] = f"{base_url}excel/portrait/{query_suffix}"
+            response["available_exports"] = ["excel", "pdf", "csv", "print", "pdf_landscape", "pdf_portrait", "excel_landscape", "excel_portrait"]
         return Response(response)
 
 
@@ -3613,6 +3680,7 @@ def _balance_sheet_scope_filename(scope_names, scope):
 class _BaseBalanceSheetExportAPIView(_BaseFinancialReportAPIView):
     export_mode = "attachment"
     export_orientation = "landscape"
+    required_permission_codes = BALANCE_SHEET_EXPORT_PERMISSIONS
 
     def export_response(self, *, filename, content, content_type):
         response = HttpResponse(content=content, content_type=content_type)
@@ -3924,15 +3992,21 @@ class TradingAccountAPIView(FinancialReportPermissionMixin, ScopedEntitlementMix
             response,
             request,
             export_base_path="/api/reports/financial/trading-account/",
+            can_export=_can_export_financial_report(
+                request,
+                entity_id=scope["entity"],
+                permission_codes=TRADING_ACCOUNT_EXPORT_PERMISSIONS,
+            ),
         )
-        query = _filtered_querydict(request, exclude=["page", "page_size", "orientation"])
-        base_url = "/api/reports/financial/trading-account/"
-        query_suffix = f"?{query}" if query else ""
-        response["actions"]["export_urls"]["pdf_landscape"] = f"{base_url}pdf/landscape/{query_suffix}"
-        response["actions"]["export_urls"]["pdf_portrait"] = f"{base_url}pdf/portrait/{query_suffix}"
-        response["actions"]["export_urls"]["excel_landscape"] = f"{base_url}excel/landscape/{query_suffix}"
-        response["actions"]["export_urls"]["excel_portrait"] = f"{base_url}excel/portrait/{query_suffix}"
-        response["available_exports"] = ["excel", "pdf", "csv", "print", "pdf_landscape", "pdf_portrait", "excel_landscape", "excel_portrait"]
+        if response["actions"]["can_export"]:
+            query = _filtered_querydict(request, exclude=["page", "page_size", "orientation"])
+            base_url = "/api/reports/financial/trading-account/"
+            query_suffix = f"?{query}" if query else ""
+            response["actions"]["export_urls"]["pdf_landscape"] = f"{base_url}pdf/landscape/{query_suffix}"
+            response["actions"]["export_urls"]["pdf_portrait"] = f"{base_url}pdf/portrait/{query_suffix}"
+            response["actions"]["export_urls"]["excel_landscape"] = f"{base_url}excel/landscape/{query_suffix}"
+            response["actions"]["export_urls"]["excel_portrait"] = f"{base_url}excel/portrait/{query_suffix}"
+            response["available_exports"] = ["excel", "pdf", "csv", "print", "pdf_landscape", "pdf_portrait", "excel_landscape", "excel_portrait"]
         return Response(response)
 
     def build_filters(self, scope, *, level: str, valuation_method: str, start, end, period_by: str | None):
@@ -3964,10 +4038,7 @@ class _BaseTradingAccountExportAPIView(FinancialReportPermissionMixin, ScopedEnt
     subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
     export_mode = "attachment"
     export_orientation = "landscape"
-    required_permission_codes = (
-        "reports.financial_hub.trading_account.view",
-        "reports.trading_account.view",
-    )
+    required_permission_codes = TRADING_ACCOUNT_EXPORT_PERMISSIONS
 
     def export_response(self, *, filename, content, content_type):
         response = HttpResponse(content=content, content_type=content_type)

@@ -24,6 +24,8 @@ from posting.models import Entry, EntryStatus, JournalLine, PostingBatch, TxnTyp
 from purchase.models.purchase_core import PurchaseInvoiceHeader, PurchaseInvoiceLine
 from rbac.models import Permission, Role, RolePermission, UserRoleAssignment
 from rbac.services import EffectiveMenuService
+from subscriptions.models import UserEntityAccess
+from subscriptions.services import SubscriptionService
 
 
 @override_settings(ROOT_URLCONF="FA.urls", AUTH_PASSWORD_VALIDATORS=[])
@@ -64,6 +66,7 @@ class PayableReportAPITests(APITestCase):
         )
         report_permission_codes = [
             "reports.payables.view",
+            "reports.payables.export",
             "reports.vendoroutstanding.view",
             "reports.accountspayableaging.view",
             "reports.purchase_register.view",
@@ -389,6 +392,13 @@ class PayableReportAPITests(APITestCase):
             role=role,
             assigned_by=self.user,
             is_primary=True,
+        )
+        customer_account = SubscriptionService._customer_account_for_entity(self.entity)
+        SubscriptionService.ensure_account_membership(
+            customer_account=customer_account,
+            user=user,
+            role=UserEntityAccess.Role.MEMBER,
+            granted_by=self.user,
         )
         return user
 
@@ -2194,7 +2204,12 @@ class PayableReportAPITests(APITestCase):
         limited_client.force_authenticate(user=limited_user)
 
         meta_response = limited_client.get(reverse("reports_api:payables-meta"), self._base_scope())
-        self.assertEqual(meta_response.status_code, 403)
+        self.assertEqual(meta_response.status_code, 200)
+        report_codes = {report["code"] for report in meta_response.data["reports"]}
+        self.assertIn("vendor_outstanding", report_codes)
+        self.assertNotIn("ap_aging", report_codes)
+        self.assertFalse(meta_response.data["actions"]["can_export_csv"])
+        self.assertFalse(meta_response.data["actions"]["can_print"])
 
         denied_response = limited_client.get(
             reverse("reports_api:ap-aging-report"),
@@ -2203,6 +2218,27 @@ class PayableReportAPITests(APITestCase):
         self.assertEqual(denied_response.status_code, 403)
         detail = denied_response.json()["detail"].lower()
         self.assertTrue("permission" in detail or "access to this entity" in detail)
+
+    def test_view_only_user_cannot_see_or_call_payables_exports(self):
+        limited_user = self._create_limited_report_user("reports.vendoroutstanding.view")
+        limited_client = APIClient()
+        limited_client.force_authenticate(user=limited_user)
+
+        view_response = limited_client.get(
+            reverse("reports_api:vendor-outstanding-report"),
+            self._base_scope(from_date="2025-04-01", to_date="2025-04-30"),
+        )
+        self.assertEqual(view_response.status_code, 200, view_response.data)
+        self.assertFalse(view_response.data["actions"]["can_export_csv"])
+        self.assertFalse(view_response.data["actions"]["can_print"])
+        self.assertEqual(view_response.data["actions"]["export_urls"], {})
+        self.assertEqual(view_response.data["available_exports"], [])
+
+        export_response = limited_client.get(
+            reverse("reports_api:vendor-outstanding-report-csv"),
+            self._base_scope(from_date="2025-04-01", to_date="2025-04-30"),
+        )
+        self.assertEqual(export_response.status_code, 403)
 
     def test_accountspayableaging_alias_routes_to_canonical_ap_aging(self):
         response = self.client.get(

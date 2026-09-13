@@ -370,7 +370,7 @@ Evidence and findings to date:
 
 ### Phase 8: Import, Failure Recovery, Concurrency, And Idempotency
 
-Status: Core local purchase import, recovery, concurrency, and idempotency gates passed on 13 September 2026; staging deployment verification and partial-import policy decision remain open
+Status: Core local and staging purchase import, recovery, concurrency, and idempotency gates passed on 13 September 2026; partial-import policy decision remains open
 
 Work:
 
@@ -392,11 +392,13 @@ Evidence and findings to date:
 - The full shared import backend suite passed `76/76`; the Angular legacy-import component suite passed `50/50`; Django system checks passed.
 - Purchase scale certificates passed at `100`, `500`, and `1,000` records. Each run reconciled exact header count, taxable/grand totals, payable open-item count/outstanding, and rejected a replay of the same source data without increasing persisted counts.
 - `FIN-CON-001` passed with simultaneous 100-row sales and purchase validation/commit plus three concurrent sales bulk-print jobs. Both import streams produced exactly 100 headers and 100 open items, and all print manifests remained unique and ordered.
+- Deployed staging verification passed under the Manav-T scope. Chromium recovery passed `4/4`; the staging-safe operational import set passed `9/9`; Firefox and WebKit each passed the two highest-risk lost-response idempotency and actionable-failure scenarios (`2/2` per browser).
+- The staging recovery assertions now read reconciliation from the deployed job API instead of a local database. The workbook generator accepts environment-specific financial-year, branch, and vendor values, preventing fixture scope mismatches from being misreported as product failures.
 - Open policy decision: the existing import contract intentionally supports a terminal `partial` status and returns `409` when some document groups fail. This is deterministic and now retry-safe, but it does not satisfy the plan's all-or-nothing wording; product/accounting must either approve group-atomic partial import or require whole-job rollback before Phase 8 can close.
 
 ### Phase 9: Permissions And Scope Isolation
 
-Status: In progress; focused UI/API scope gates passed, full role matrix remains open
+Status: In progress; core denial/isolation gates passed on staging, and the positive action-role hardening plus browser matrix passed local compilation; deployment replay remains open
 
 Work:
 
@@ -409,6 +411,21 @@ Exit:
 
 - UI and API enforce the same permission decision.
 - No identifiers, totals, names, documents, or exports leak across scope.
+
+Evidence and findings to date:
+
+- Focused backend permission and object-scope suites passed `223/223`, covering purchase invoice/note permissions, direct-object scope, payment voucher validation, invoice import, payables reports, Purchase Register, and book-report APIs. Django system checks were clean. One initial command referenced an incorrect Purchase Register test class name; the corrected `PurchaseRegisterAPITests` class passed `29/29` and the loader error was not a product failure.
+- Focused Angular authorization coverage passed `167/167`, with TypeScript compilation green. Coverage included the route guard, RBAC service, role/menu/access-preview/user-assignment screens, and RBAC audit rendering.
+- The provisioned zero-permission staging user was limited to the assigned entity, received `403/404` for a foreign entity's permissions and context mutation, and was redirected to the authenticated unauthorized surface for protected setup and operational routes. The route matrix now explicitly includes all six purchase document routes, Purchase Legacy Import, settings, charge types, payment, financial reporting, and sensitive administration screens.
+- The provisioned view-only staging user received all six purchase document menus plus Purchase Legacy Import, could download import templates, could not select a file or validate an upload, could not run bulk print, and received `403` when attempting to create purchase invoice, credit-note, or debit-note records directly through the API.
+- The provisioned branch-only user could read purchase metadata for the assigned branch, received `403` for a second branch, and received `403` when omitting branch scope to request an entity-wide aggregate.
+- Staging browser result: Chromium passed all three core RBAC scenarios (`4/4` including authentication setup); Firefox and WebKit each passed view-only and branch-isolation (`3/3` per engine including setup). No authorization mismatch or scope leak was found.
+- The positive-action audit found and corrected three authority collapses: invoice/note confirmation no longer accepts posting authority, posting no longer accepts confirmation authority, and cancellation no longer accepts update/edit authority. The same exact Confirm, Post, Unpost, and Cancel separation is enforced by all three Angular purchase document families.
+- Purchase Register list responses no longer advertise print/export actions to view-only users, and CSV/XLSX/PDF/print endpoints now independently require `reports.purchase_register.export` after entity-access validation.
+- Migration `rbac.0153` attaches create/update/edit/delete/print/confirm/post/unpost/cancel action permissions to all six purchase invoice/note menu routes. Its clean test-database migration path passed after removing an invalid historical-model field assumption.
+- Local verification passed `65/65` focused and `228/228` widened Django object-scope/payment/import/payables/report permission tests, `353/353` purchase document Angular tests, TypeScript compilation, targeted lint, migration drift check, and Chromium `2/2` (authentication plus the new four-role browser matrix). The matrix provisions operator, accountant, approver, and reporting users sequentially, checks effective permissions and menus, exercises non-mutating create gates, and verifies Purchase Register view/export isolation.
+- Open certification work: deploy and replay the positive role matrix on staging; extend direct object-ID/export checks to the remaining purchase/payables endpoint families; complete payment-allocation role separation plus FY and stock-location switch isolation.
+- Performance observation for Phase 11: the Purchase Invoice form is slow to initialize and drain metadata requests on the heavily seeded Manav-T staging tenant. It did not expose unauthorized actions, but repeated full form loads can exceed normal test budgets and need a measured catalog-size performance run.
 
 ### Phase 10: Visual, Mobile, Accessibility, And Browser Certification
 
@@ -525,6 +542,9 @@ The final confidence score must be evidence weighted. It may exceed 95% only whe
 | 13 Sep 2026 | Phase 7 | Ran live report-state integrity and AP-to-GL browser coverage on staging; synchronized Close Pack assertions with its asynchronous renderer. | AP-to-GL passed `10/10`; the focused Close Pack rerun passed; source-record/export and independent accounting amount tie-out remains |
 | 13 Sep 2026 | Phase 7 | Added and ran `LAUNCH-REP-001E` against a fresh posted service purchase and vendor on staging. | Purchase Register, Vendor Outstanding, Vendor Ledger, AP subledger, AP control GL, and CSV export matched exactly with zero difference; Phase 7 passed |
 | 13 Sep 2026 | Phase 8 | Hardened import commit idempotency and added purchase-specific browser recovery coverage. | Backend `76/76`, Angular `50/50`, purchase import `14/14`, recovery `4/4`, 100-row concurrency `1/1`, and scale runs at 100/500/1,000 records passed locally; partial-import policy and deployed staging replay remain open |
+| 13 Sep 2026 | Phase 8 | Replayed deployed purchase import and recovery behavior with environment-scoped fixtures on Manav-T staging. | Chromium recovery `4/4` and operational import `9/9` passed; lost-response idempotency and actionable failures passed Firefox `2/2` and WebKit `2/2`; only the partial-import product policy remains open |
+| 13 Sep 2026 | Phase 9 | Expanded provisioned RBAC coverage to all six purchase routes, menu visibility, document-family create denial, cross-entity context, and branch-only metadata scope; replayed locally and on staging. | Backend `223/223`, Angular `167/167`, Chromium core RBAC `4/4`, Firefox `3/3`, and WebKit `3/3` passed; positive action-role and exhaustive endpoint/export matrices remain open |
+| 13 Sep 2026 | Phase 9 | Separated confirm/post/unpost/cancel authority, secured Purchase Register exports, synchronized all six purchase menu action mappings, and added the provisioned operator/accountant/approver/reporting matrix. | Local Django `228/228`, Angular `353/353`, Chromium `2/2`, typecheck, lint, and clean migration execution passed; staging deployment replay remains required |
 
 ## Related QA Assets
 
