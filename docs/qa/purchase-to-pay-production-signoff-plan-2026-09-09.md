@@ -250,7 +250,7 @@ Evidence and findings to date:
 
 ### Phase 4: Inventory, Expense, Asset, And GL Integrity
 
-Status: Extended local and staging business-integrity gates passed on 13 September 2026; one charge-master validation correction awaits deployment
+Status: Extended local and staging business-integrity gates passed on 13 September 2026; validation is deployed and one legacy charge master awaits accounting correction
 
 Work:
 
@@ -281,8 +281,9 @@ Evidence and findings to date:
 - Posting invoice `792` increased product `135` from `1,000.0000` to `1,003.0000` units and from `100,000.00` to `100,180.00` value. Stock Ledger recorded exactly `3.0000` inward at effective unit cost `60.0000` and line value `180.00`, proving discounted cost distribution across paid plus free quantity. Asset `15` was created at gross block `450.00`; the service line remained expense-classified.
 - Stock Summary CSV, XLSX, and PDF exports returned HTTP `200` with the expected content types and non-empty artifacts. Linked price-difference credit-note draft `793` retained source `792`, all three lines, and the note reason.
 - Cleanup was exact: note `793` was cancelled, invoice `792` was unposted and cancelled, stock returned to `1,000.0000` / `100,000.00`, and the generated asset was removed. No active certification fixture remains.
-- The replay found stale charge master `2` configured as a service with four-digit default SAC `1001`. Confirmation correctly rejected it. Local purchase and sales charge-type setup now require a six-digit SAC for services or a 4/6/8-digit HSN for goods whenever default GST applies; line serializers enforce the same shape. Backend regressions passed `4/4` and the Angular component suite passed `29/29`. Deployment and correction of the existing staging master remain required before this finding can be closed.
-- Remaining Phase 4 work is limited to deploying the charge-master validation, correcting invalid existing charge masters through setup, and a short post-deployment replay. The extended stock, landed-cost, discount, free-quantity, mixed-line, note-linkage, export, and exact-reversal gates are complete.
+- The replay found stale charge master `2` configured as a service with four-digit default SAC `1001`. Confirmation correctly rejected it. Purchase and sales charge-type setup now require a six-digit SAC for services or a 4/6/8-digit HSN for goods whenever default GST applies; line serializers enforce the same shape. Backend regressions passed `4/4` and the Angular component suite passed `29/29`.
+- Post-deployment validation passed at both boundaries: the staging API rejected an invalid PATCH with HTTP `400`, while the deployed setup screen displayed `SAC must contain exactly 6 digits.` without issuing a PATCH request. A valid controlled replay through invoice `794`, generated asset `16`, and linked note `795` repeated all calculation, posting, export, and reversal evidence and restored the `1,000.0000` / `100,000.00` stock and zero-asset baselines.
+- Remaining Phase 4 work is limited to replacing the existing staging insurance charge master's invalid `1001` with the legally appropriate six-digit SAC after accounting confirmation. The extended stock, landed-cost, discount, free-quantity, mixed-line, note-linkage, export, exact-reversal, and deployed validation gates are complete.
 
 ### Phase 5: Notes, Returns, Amendments, And Locked Periods
 
@@ -466,6 +467,7 @@ The final confidence score must be evidence weighted. It may exceed 95% only whe
 - Multi-GSTIN behavior needs a confirmed product model if more than one active GST registration per entity is expected.
 - Future-dated purchase policy must be explicit and tested consistently in UI, API, posting, and reports.
 - Mixed RCM and non-RCM lines are currently treated as unsupported unless the product rule changes.
+- Legacy purchase charge master `2` (`Purchase Charge Type 1`, insurance) remains configured with invalid service SAC `1001`. The active Manav-T HSN/SAC catalog contains no insurance classification, so accounting must add or select the legally appropriate six-digit SAC; no code is inferred automatically.
 - Production-scale volumes, latency thresholds, supported mobile widths, and accepted WCAG level must be confirmed before Phase 11.
 - Any intentionally deferred visual or browser item must be recorded as `Backlog`; it cannot be counted as certified.
 
@@ -495,6 +497,8 @@ The final confidence score must be evidence weighted. It may exceed 95% only whe
 | 13 Sep 2026 | Phase 4 | Rechecked the deployed inherited asset-category fix with an authenticated Manav-T staging session and the Asset Master UI. | Both APIs returned HTTP `200` with all `20` entity-wide categories under branch `2`; filter and New Asset dropdowns each exposed all categories plus their placeholder; deployed scope fix confirmed |
 | 13 Sep 2026 | Phase 4 | Ran a controlled mixed purchase with inventory, free quantity, percentage discount, asset, amount discount, expense, taxable charge, exports, linked credit note, unpost, and cancellation. | Exact stock/value/asset/tax/round-off evidence passed; CSV/XLSX/PDF returned `200`; cleanup restored all baselines |
 | 13 Sep 2026 | Phase 4 | Hardened purchase and sales charge-master HSN/SAC validation after staging master `2` supplied invalid four-digit service SAC `1001`. | Backend `4/4` and Angular `29/29` passed locally; deployment and existing-master correction pending |
+| 13 Sep 2026 | Phase 4 | Replayed deployed validation and the controlled mixed purchase lifecycle. | API and browser rejected invalid SAC before mutation; invoice `794` and note `795` passed posting, exports, linkage, exact reversal, and cleanup; only legacy master data correction remains |
+| 13 Sep 2026 | Phase 4 | Audited the active Manav-T HSN/SAC catalog and added visible legacy-classification health warnings to Charge Types. | Catalog had `21` active entries but no insurance SAC; malformed and missing classifications now show `Needs correction`, while save-time validation remains authoritative; Angular `33/33`, typecheck, and focused lint passed |
 
 ## Related QA Assets
 
