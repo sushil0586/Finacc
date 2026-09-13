@@ -29,6 +29,33 @@ STOCK_VALUATION_METHODS = {"fifo", "lifo", "mwa", "wac", "latest"}
 INVENTORY_LABEL = "Inventory (Closing Stock)"
 
 
+def _select_balance_sheet_primary_reason(reason_cards):
+    search_filter_reason = next(
+        (item for item in reason_cards if item.get("code") == "search_filter_scope_gap"),
+        None,
+    )
+    if search_filter_reason:
+        return search_filter_reason
+
+    severity_rank = {"warning": 0, "info": 1, "success": 2}
+    reason_priority = {
+        "excluded_balance_sheet_rows": 0,
+        "base_balance_gap": 1,
+        "contra_balances_detected": 2,
+        "profit_transfer_applied": 3,
+        "stock_valuation_context": 4,
+        "balanced": 5,
+    }
+    return sorted(
+        reason_cards,
+        key=lambda item: (
+            severity_rank.get(str(item.get("severity")), 9),
+            reason_priority.get(str(item.get("code")), 99),
+            -abs(Decimal(str(item.get("amount") or 0))),
+        ),
+    )[0]
+
+
 def _capital_distribution_disclosure(*, entity_id, entityfin_id, subentity_id, from_date, to_date):
     from capital_distribution.reporting import build_financial_statement_disclosure
 
@@ -1810,24 +1837,7 @@ def _build_snapshot(
                 )
             )
 
-    severity_rank = {"warning": 0, "info": 1, "success": 2}
-    reason_priority = {
-        "excluded_balance_sheet_rows": 0,
-        "search_filter_scope_gap": 1,
-        "base_balance_gap": 2,
-        "contra_balances_detected": 3,
-        "profit_transfer_applied": 4,
-        "stock_valuation_context": 5,
-        "balanced": 6,
-    }
-    primary_reason = sorted(
-        reason_cards,
-        key=lambda item: (
-            severity_rank.get(str(item.get("severity")), 9),
-            reason_priority.get(str(item.get("code")), 99),
-            -abs(Decimal(str(item.get("amount") or 0))),
-        ),
-    )[0]
+    primary_reason = _select_balance_sheet_primary_reason(reason_cards)
 
     next_actions = []
     if final_difference != 0:

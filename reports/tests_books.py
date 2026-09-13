@@ -2767,6 +2767,29 @@ class BookReportAPITests(APITestCase):
         self.assertIn("base_balance_gap", reason_codes)
         self.assertIn("excluded_balance_sheet_rows", reason_codes)
 
+    def test_balance_sheet_search_filter_reason_takes_diagnostic_priority(self):
+        from reports.services.financial.statements import _select_balance_sheet_primary_reason
+
+        primary_reason = _select_balance_sheet_primary_reason(
+            [
+                {
+                    "code": "excluded_balance_sheet_rows",
+                    "severity": "warning",
+                    "amount": "5200.00",
+                },
+                {
+                    "code": "search_filter_scope_gap",
+                    "severity": "info",
+                    "amount": "1542000.00",
+                },
+            ]
+        )
+
+        self.assertEqual(
+            primary_reason.get("code"),
+            "search_filter_scope_gap",
+        )
+
     def test_balance_sheet_api_omits_diagnostics_by_default(self):
         response = self.client.get(
             reverse("reports_api:financial-balance-sheet"),
