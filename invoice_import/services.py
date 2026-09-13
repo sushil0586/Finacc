@@ -1716,7 +1716,10 @@ def mark_job_reviewed(*, job: ImportJob, user, note: str = "") -> ImportJob:
 
 @transaction.atomic
 def commit_job(*, job: ImportJob, user) -> ImportJob:
-    if job.status not in {ImportJob.Status.VALIDATED, ImportJob.Status.PARTIAL, ImportJob.Status.COMMITTED}:
+    job = ImportJob.objects.select_for_update().get(pk=job.pk)
+    if job.status in {ImportJob.Status.PARTIAL, ImportJob.Status.COMMITTED}:
+        return job
+    if job.status != ImportJob.Status.VALIDATED:
         raise ValueError("Only validated jobs can be committed.")
     if job.review_required and not job.reviewed_at:
         raise ValueError("This import job must be reviewed before commit.")

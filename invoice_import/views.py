@@ -149,7 +149,10 @@ class InvoiceImportJobDetailAPIView(InvoiceImportBaseAPIView):
 class InvoiceImportJobCommitAPIView(InvoiceImportBaseAPIView):
     def post(self, request, job_id: int):
         job = self._get_job(request, job_id, action="post")
-        job = commit_job(job=job, user=request.user)
+        try:
+            job = commit_job(job=job, user=request.user)
+        except ValueError as exc:
+            raise ValidationError({"detail": str(exc)}) from exc
         payload = ImportJobSerializer(job).data
         if job.status == ImportJob.Status.COMMITTED:
             return Response(payload, status=status.HTTP_200_OK)
@@ -181,7 +184,10 @@ class InvoiceImportJobReviewAPIView(InvoiceImportBaseAPIView):
         note = ""
         if isinstance(request.data, dict):
             note = str(request.data.get("review_note") or "")
-        job = mark_job_reviewed(job=job, user=request.user, note=note)
+        try:
+            job = mark_job_reviewed(job=job, user=request.user, note=note)
+        except ValueError as exc:
+            raise ValidationError({"detail": str(exc)}) from exc
         return Response(ImportJobSerializer(job).data)
 
 

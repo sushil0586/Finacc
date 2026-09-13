@@ -311,7 +311,7 @@ Evidence and findings to date:
 
 ### Phase 6: Payments, Allocation, And Vendor Balances
 
-Status: Functional staging certification passed on 13 September 2026; entity-isolation hardening passed locally and awaits deployment verification
+Status: Functional staging certification passed on 13 September 2026 across Chromium, Firefox, and WebKit; mobile and accessibility remain cross-phase launch gates
 
 Work:
 
@@ -337,13 +337,14 @@ Evidence and findings to date:
 - Ambiguous-response retry coverage now proves that repeating a successful payment post returns the existing Posted result without duplicating AP settlement history or accounting impact. The canonical posting lookup/daybook detail APIs resolve the same entry and journal-line IDs before and after retry; the vendor/AP debit and cash/bank credit equal the settled payable exactly and remain balanced. The strengthened case passed in Chromium (`2/2` including authentication) and Firefox/WebKit (`4/4` including authentication).
 - The initial fifteen focused payment and purchase-chain scenarios remain green locally in Chromium, with the later concurrency, idempotency, reconciliation, and cross-browser race runs recorded separately above. No confirmed product defect remains from this batch; stale SAC, supplier-invoice sequencing, TDS dialog completion, nested settings payload, and cancellation-response assertions were corrected in test fixtures/helpers.
 - Staging Chromium passed `17/17` focused Phase 6 workflows on 13 September 2026: unpost/replacement, cancellation, concurrent posting, idempotent retry, advance funding and splitting, allocation and advance limit guards, allocation-date/TDS persistence, runtime-TDS validation, and full/partial/multi-bill/advance-adjusted Vendor Outstanding reconciliation.
-- The staging isolation probe found that payment-voucher lists denied an inaccessible entity with `403`, but the AP open-items helper returned an empty `200`. No rows leaked in the observed request, but code review confirmed that five authenticated AP helper endpoints lacked an explicit entity-membership/`voucher.payment.view` check. Local hardening now covers open items, open advances, settlements, allocation preview, and vendor statement; the full payment backend suite passed `88/88` after the change.
-- `FIN-PUR-CHAIN-007` now certifies missing-scope rejection, inaccessible-entity denial, and zero data for invalid FY/branch scopes across payment-voucher and open-item endpoints. It is intentionally pending on staging until the backend hardening is deployed.
-- Remaining Phase 6 gates: deploy and pass `FIN-PUR-CHAIN-007` on staging, complete Firefox/WebKit workflow parity beyond the critical race/retry cases, mobile, and accessibility.
+- The staging isolation probe found that payment-voucher lists denied an inaccessible entity with `403`, but the AP open-items helper returned an empty `200`. No rows leaked in the observed request, but code review confirmed that five authenticated AP helper endpoints lacked an explicit entity-membership/`voucher.payment.view` check. Hardening now covers open items, open advances, settlements, allocation preview, and vendor statement; the full payment backend suite passed `88/88` after the change.
+- After deployment, `FIN-PUR-CHAIN-007` passed on staging and certified missing-scope rejection, inaccessible-entity denial, and zero data for invalid FY/branch scopes across payment-voucher and open-item endpoints.
+- Representative staging parity passed `14/14` across Firefox and WebKit. The selected workflows covered fully advance-funded settlement, over-settlement blocking, one advance split across two bills, saved bill-date/TDS allocation metadata, missing-section and zero-rate TDS validation, and runtime TDS mode/section persistence after reopen.
+- Remaining Phase 6 gates are the mobile and accessibility checks governed by Phases 10-11; no functional desktop-browser blocker remains in this phase.
 
 ### Phase 7: Payables Reports And Exports
 
-Status: In progress; deterministic report suite passed locally on 12 September 2026
+Status: Passed locally and on staging on 13 September 2026
 
 Work:
 
@@ -362,11 +363,14 @@ Evidence and findings to date:
 - Payables backend regression passed `98/98`, including report scope, export behavior, and controlled `400` responses for foreign-vendor ledger requests instead of an HTML/500 failure.
 - The deterministic Payables suite passed all `183` Chromium scenarios. Across Chromium, Firefox, and WebKit the broad run passed `547/549`; the two WebKit harness failures were corrected and their focused rerun passed `6/6`, yielding effective green evidence for all `549` scheduled browser scenarios without claiming an uninterrupted rerun.
 - Coverage includes hub/settings and operational reports, filters, sorting, pagination, empty/populated/error states, drilldowns, scoped links, downloads/print responses, desktop/mobile screenshots, and export filenames.
-- A focused authenticated staging payables sweep passed, but the complete source-record-to-export and AP-to-GL staging certificate remains open.
+- Authenticated staging live-data checks aligned rendered Vendor Outstanding, AP Aging, Purchase Register, and Close Pack output with the Angular component state. Three additional checks were correctly data-dependent skips because the active scope had no comparable rows; the Close Pack refresh assertion was synchronized with the renderer and its focused rerun passed.
+- AP-to-GL staging coverage passed `10/10`, including shell metadata, filters, request/route synchronization, sorting, grid readability, conditional drilldowns, exports, pagination, and tablet/mobile usability.
+- `LAUNCH-REP-001E` created a fresh uniquely identified service purchase and passed the independent staging amount certificate. Purchase Register source total/outstanding, Vendor Outstanding open item, Vendor Ledger closing balance, AP subledger balance, AP control GL balance, and the generated AP-to-GL CSV vendor row matched exactly; unapplied advance and reconciliation difference were both zero and the result status was `matched`.
+- The Phase 7 source-record, export, subledger, and AP-to-GL staging gates are complete with no open report-correctness blocker.
 
 ### Phase 8: Import, Failure Recovery, Concurrency, And Idempotency
 
-Status: In progress; deterministic import, recovery, concurrency, and idempotency evidence exists
+Status: Core local purchase import, recovery, concurrency, and idempotency gates passed on 13 September 2026; staging deployment verification and partial-import policy decision remain open
 
 Work:
 
@@ -379,6 +383,16 @@ Exit:
 
 - Failures provide actionable recovery and never create partial or duplicate business effects.
 - Retry behavior is deterministic and concurrency conflicts are explicit.
+
+Evidence and findings to date:
+
+- The complete purchase legacy-import browser pack passed `14/14` in Chromium, covering route controls, templates, mapping profiles, valid commit/reconciliation, mandatory review, malformed and invalid files, error exports, configurable credit-note rules, replacement-file state, refresh recovery, duplicate rejection, and mobile overflow.
+- Purchase-specific recovery coverage passed `4/4`. An interrupted validation retried cleanly; a deliberately lost successful commit response retried to the same committed job; `403`, `409`, `422`, `429`, and `500` responses remained actionable and retryable with zero imported documents; an expired `401` session redirected after one failed token refresh.
+- Import service hardening now locks and reloads the job before commit. Repeated committed or partial requests preserve their original reconciliation evidence and cannot duplicate invoices or payable open items. Invalid terminal transitions return structured `400` responses instead of unhandled HTML errors.
+- The full shared import backend suite passed `76/76`; the Angular legacy-import component suite passed `50/50`; Django system checks passed.
+- Purchase scale certificates passed at `100`, `500`, and `1,000` records. Each run reconciled exact header count, taxable/grand totals, payable open-item count/outstanding, and rejected a replay of the same source data without increasing persisted counts.
+- `FIN-CON-001` passed with simultaneous 100-row sales and purchase validation/commit plus three concurrent sales bulk-print jobs. Both import streams produced exactly 100 headers and 100 open items, and all print manifests remained unique and ordered.
+- Open policy decision: the existing import contract intentionally supports a terminal `partial` status and returns `409` when some document groups fail. This is deterministic and now retry-safe, but it does not satisfy the plan's all-or-nothing wording; product/accounting must either approve group-atomic partial import or require whole-job rollback before Phase 8 can close.
 
 ### Phase 9: Permissions And Scope Isolation
 
@@ -507,6 +521,10 @@ The final confidence score must be evidence weighted. It may exceed 95% only whe
 | 13 Sep 2026 | Phase 4 | Audited the active Manav-T HSN/SAC catalog and added visible legacy-classification health warnings to Charge Types. | Catalog had `21` active entries but no insurance SAC; malformed and missing classifications now show `Needs correction`, while save-time validation remains authoritative; Angular `33/33`, typecheck, and focused lint passed |
 | 13 Sep 2026 | Phase 4 | Verified the deployed legacy-classification safeguard on `accerio.in`. | Purchase Charge Types loaded without login/RBAC/console errors; legacy insurance master displayed `Needs correction: Service SAC must be 6 digits`; Save was blocked with the precise error and emitted zero POST/PATCH/PUT requests |
 | 13 Sep 2026 | Phase 5 | Replayed all four purchase-note routes, controlled draft correction lifecycles, and locked-period correction discovery on `accerio.in`. | Chromium route checks passed for lookup, note reason, and fresh-tab state; temporary goods/service credit and debit notes `796`-`799` reopened with source links `775`/`756`, emitted no browser or API errors, and were deleted (`204`, then `404`). A transient lock on posted invoice `775` produced `can_correct_locked_posted: true`; the enabled `Correct` action opened with Full Reversal and current-period guidance, and root/branch lock settings were restored exactly |
+| 13 Sep 2026 | Phase 6 | Replayed the deployed AP entity-isolation gate and representative payment workflows on all supported desktop browser engines. | `FIN-PUR-CHAIN-007` passed on Chromium; Firefox/WebKit payment parity passed `14/14`, closing the functional desktop-browser and deployment-verification gates |
+| 13 Sep 2026 | Phase 7 | Ran live report-state integrity and AP-to-GL browser coverage on staging; synchronized Close Pack assertions with its asynchronous renderer. | AP-to-GL passed `10/10`; the focused Close Pack rerun passed; source-record/export and independent accounting amount tie-out remains |
+| 13 Sep 2026 | Phase 7 | Added and ran `LAUNCH-REP-001E` against a fresh posted service purchase and vendor on staging. | Purchase Register, Vendor Outstanding, Vendor Ledger, AP subledger, AP control GL, and CSV export matched exactly with zero difference; Phase 7 passed |
+| 13 Sep 2026 | Phase 8 | Hardened import commit idempotency and added purchase-specific browser recovery coverage. | Backend `76/76`, Angular `50/50`, purchase import `14/14`, recovery `4/4`, 100-row concurrency `1/1`, and scale runs at 100/500/1,000 records passed locally; partial-import policy and deployed staging replay remain open |
 
 ## Related QA Assets
 

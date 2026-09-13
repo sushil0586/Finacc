@@ -245,6 +245,37 @@ class InvoiceImportServiceTests(TestCase):
         self.assertEqual(header.match_notes["legacy_settlement"]["outstanding_amount"], "780.00")
         self.assertEqual(open_item.outstanding_amount, Decimal("780.00"))
 
+    def test_repeated_purchase_commit_preserves_reconciliation_and_creates_no_duplicates(self):
+        job = self._build_job(
+            module=ImportJob.Module.PURCHASE,
+            mode=ImportJob.Mode.OUTSTANDING_ONLY,
+            detail_level=ImportJob.DetailLevel.HEADER_ONLY,
+            rows=[self._purchase_row(source_key="purchase-idempotent-1", invoice_number="P-IDEMP-001")],
+        )
+
+        first_result = commit_job(job=job, user=self.user)
+        original_reconciliation = first_result.reconciliation_summary
+        stale_job = ImportJob.objects.get(pk=job.pk)
+        second_result = commit_job(job=stale_job, user=self.user)
+
+        self.assertEqual(second_result.status, ImportJob.Status.COMMITTED)
+        self.assertEqual(second_result.reconciliation_summary, original_reconciliation)
+        self.assertEqual(len(second_result.reconciliation_summary["imported_documents"]), 1)
+        self.assertEqual(
+            PurchaseInvoiceHeader.objects.filter(
+                entity=self.entity,
+                legacy_source_key="purchase-idempotent-1",
+            ).count(),
+            1,
+        )
+        self.assertEqual(
+            VendorBillOpenItem.objects.filter(
+                header__entity=self.entity,
+                header__legacy_source_key="purchase-idempotent-1",
+            ).count(),
+            1,
+        )
+
     def test_purchase_import_can_generate_finacc_document_number(self):
         doc_type = ensure_document_type(
             module="purchase",
@@ -1772,6 +1803,18 @@ class InvoiceImportAPIViewTests(InvoiceImportServiceTests):
         self.assertIn("partially completed", commit_response.data["detail"].lower())
         self.assertGreater(commit_response.data["error_count"], 0)
 
+        reconciliation = commit_response.data["reconciliation_summary"]
+        repeat_request = self._request(
+            "post",
+            f"/api/purchase/legacy-import/jobs/{job_id}/commit/",
+            data={"entity": self.entity.id},
+            format="json",
+        )
+        repeat_response = PurchaseInvoiceImportJobCommitAPIView.as_view()(repeat_request, job_id=job_id)
+        self.assertEqual(repeat_response.status_code, 409)
+        self.assertEqual(repeat_response.data["status"], ImportJob.Status.PARTIAL)
+        self.assertEqual(repeat_response.data["reconciliation_summary"], reconciliation)
+
     @patch("invoice_import.views.require_purchase_request_permission")
     def test_purchase_job_commit_view_returns_failed_when_all_groups_fail(self, _mock_permission):
         bad_cn_row = self._purchase_row(source_key="purchase-cn-fail-1", invoice_number="P-CN-FAIL-001")
@@ -1807,6 +1850,16 @@ class InvoiceImportAPIViewTests(InvoiceImportServiceTests):
         self.assertEqual(commit_response.data["status"], ImportJob.Status.FAILED)
         self.assertIn("failed", commit_response.data["detail"].lower())
         self.assertGreater(commit_response.data["error_count"], 0)
+
+        repeat_request = self._request(
+            "post",
+            f"/api/purchase/legacy-import/jobs/{job_id}/commit/",
+            data={"entity": self.entity.id},
+            format="json",
+        )
+        repeat_response = PurchaseInvoiceImportJobCommitAPIView.as_view()(repeat_request, job_id=job_id)
+        self.assertEqual(repeat_response.status_code, 400)
+        self.assertEqual(repeat_response.data["detail"], "Only validated jobs can be committed.")
 
     @patch("invoice_import.views.require_purchase_request_permission")
     def test_purchase_reconciliation_view_returns_summary(self, _mock_permission):
