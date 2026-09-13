@@ -262,6 +262,12 @@ def resolve_posting_entry_for_document(
         "source_module": source_module,
         "document_type": document_type,
         "document_id": document.id,
+        "document_status": getattr(document, "status", None),
+        "document_status_name": (
+            document.get_status_display()
+            if callable(getattr(document, "get_status_display", None))
+            else str(getattr(document, "status", "") or "")
+        ),
     }
 
 

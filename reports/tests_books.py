@@ -39,6 +39,14 @@ class BookReportAPITests(APITestCase):
                 "reports.financial_hub.trading_account.view",
                 "reports.financial_hub.daybook.view",
                 "reports.financial_hub.cashbook.view",
+                "reports.financial_hub.trial_balance.export",
+                "reports.financial_hub.ledger_book.export",
+                "reports.financial_hub.ledger_summary.export",
+                "reports.financial_hub.profit_loss.export",
+                "reports.financial_hub.balance_sheet.export",
+                "reports.financial_hub.trading_account.export",
+                "reports.financial_hub.daybook.export",
+                "reports.financial_hub.cashbook.export",
             ],
         )
         self.permission_codes_patch.start()
@@ -1075,6 +1083,59 @@ class BookReportAPITests(APITestCase):
         self.assertEqual(data["entry_id"], purchase_entry.id)
         self.assertEqual(data["txn_type"], TxnType.PURCHASE)
         self.assertEqual(data["source_module"], "purchase")
+        self.assertEqual(data["document_status"], PurchaseInvoiceHeader.Status.POSTED)
+        self.assertEqual(data["document_status_name"], "Posted")
+
+    def test_posting_lookup_distinguishes_confirmed_document_from_reversed_entry(self):
+        purchase_document = PurchaseInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            created_by=self.user,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            status=PurchaseInvoiceHeader.Status.CONFIRMED,
+            bill_date=date(2025, 4, 9),
+            posting_date=date(2025, 4, 9),
+            doc_code="PINV",
+            doc_no=102,
+            purchase_number="PI-PINV-102",
+        )
+        purchase_entry = self._create_entry(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.PURCHASE,
+            txn_id=purchase_document.id,
+            voucher_no="PI-PINV-102",
+            posting_date=date(2025, 4, 9),
+            voucher_date=date(2025, 4, 9),
+            status=EntryStatus.REVERSED,
+            narration="Reversed purchase invoice",
+            lines=[
+                {"account": self.expense_account, "drcr": False, "amount": "80.00", "description": "Expense reversal"},
+                {"account": self.ap_account, "drcr": True, "amount": "80.00", "description": "Payable reversal"},
+            ],
+        )
+
+        response = self.client.get(
+            reverse("reports_api:financial-posting-lookup"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "document_type": "purchase_invoice",
+                "document_id": purchase_document.id,
+                "source_module": "purchase",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["entry_id"], purchase_entry.id)
+        self.assertEqual(data["status"], EntryStatus.REVERSED)
+        self.assertEqual(data["status_name"], "Reversed")
+        self.assertEqual(data["document_status"], PurchaseInvoiceHeader.Status.CONFIRMED)
+        self.assertEqual(data["document_status_name"], "Confirmed")
 
     def test_posting_lookup_resolves_sales_credit_note_entry(self):
         sales_credit_note = SalesInvoiceHeader.objects.create(
