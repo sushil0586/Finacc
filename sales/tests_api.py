@@ -747,6 +747,46 @@ class SalesOversizedValidationTests(SalesApiTestBase):
         self.assertIn("hsn_sac_code_default", serializer.errors)
         self.assertIn("description", serializer.errors)
 
+    def test_sales_charge_type_serializer_rejects_invalid_service_sac_default(self):
+        serializer = SalesChargeTypeSerializer(
+            data={
+                "entity": self.entity.id,
+                "code": "FREIGHT",
+                "name": "Freight",
+                "base_category": "FREIGHT",
+                "is_active": True,
+                "is_service": True,
+                "hsn_sac_code_default": "9965",
+                "gst_rate_default": "18.00",
+                "description": "",
+                "revenue_account": self.sales_account.id,
+            }
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertEqual(
+            serializer.errors["hsn_sac_code_default"][0],
+            "SAC must contain exactly 6 digits.",
+        )
+
+    def test_sales_charge_type_serializer_accepts_valid_service_sac_default(self):
+        serializer = SalesChargeTypeSerializer(
+            data={
+                "entity": self.entity.id,
+                "code": "FREIGHT",
+                "name": "Freight",
+                "base_category": "FREIGHT",
+                "is_active": True,
+                "is_service": True,
+                "hsn_sac_code_default": "996511",
+                "gst_rate_default": "18.00",
+                "description": "",
+                "revenue_account": self.sales_account.id,
+            }
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
     def test_sales_charge_line_serializer_rejects_oversized_charge_type(self):
         serializer = SalesChargeLineSerializer(
             data={

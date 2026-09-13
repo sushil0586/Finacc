@@ -250,7 +250,7 @@ Evidence and findings to date:
 
 ### Phase 4: Inventory, Expense, Asset, And GL Integrity
 
-Status: Passed locally on 12 September 2026; core staging mutation, reconciliation, reversal, and cleanup passed
+Status: Extended local and staging business-integrity gates passed on 13 September 2026; one charge-master validation correction awaits deployment
 
 Work:
 
@@ -276,7 +276,13 @@ Evidence and findings to date:
 - Service invoice `786` created no stock movement, debited Audit Fees by exactly `600.00` (`5,460.00` to `6,060.00` closing), appeared in Profit & Loss for the same amount, and created a payable of `708.00`, including `108.00` IGST.
 - Reversal cleanup passed: stock returned to `29.4000` / `3,004.00`, Audit Fees returned to `5,460.00`, all tagged open items disappeared, the temporary CWIP asset was removed, and all three invoices were cancelled after unpost. Tagged product `151` remains as the reusable staging asset-purchase fixture.
 - The replay exposed and corrected inherited asset-category visibility: branch-scoped category and metadata APIs now return entity-wide categories plus the selected branch's categories, while excluding categories private to another branch. Focused regressions passed `2/2`; the complete asset suite passed `80/80` with no system-check issues.
-- Remaining extended Phase 4 gates are staging permutations for landed cost, discounts, free quantity, mixed inventory/expense/asset lines, notes, and export artifact inspection. The core stock/expense/asset posting and reversal chain is no longer open.
+- Post-deployment verification on 13 September 2026 passed against Manav-T branch `2`: `/api/assets/categories/` and `/api/assets/meta/` both returned HTTP `200` and all `20` inherited entity-wide categories, including `Computers`. Asset Master then exposed `21` filter options and `21` New Asset category options including their respective placeholders, with `Computers` selectable. The authenticated browser setup also passed. The three fixture-dependent browser checks correctly found no purchase-linked asset because invoice `784` and asset `12` had already been reversed and cancelled during the certified cleanup; this is not a deployed scope regression.
+- The extended controlled staging replay used invoice `792` to combine a percentage-discounted inventory line, free quantity, an amount-discounted asset line, a service-expense line, and taxable insurance/landed cost. Server persistence reconciled to taxable value `930.00`, IGST `159.40`, round-off `-0.40`, and payable `1,089.00`.
+- Posting invoice `792` increased product `135` from `1,000.0000` to `1,003.0000` units and from `100,000.00` to `100,180.00` value. Stock Ledger recorded exactly `3.0000` inward at effective unit cost `60.0000` and line value `180.00`, proving discounted cost distribution across paid plus free quantity. Asset `15` was created at gross block `450.00`; the service line remained expense-classified.
+- Stock Summary CSV, XLSX, and PDF exports returned HTTP `200` with the expected content types and non-empty artifacts. Linked price-difference credit-note draft `793` retained source `792`, all three lines, and the note reason.
+- Cleanup was exact: note `793` was cancelled, invoice `792` was unposted and cancelled, stock returned to `1,000.0000` / `100,000.00`, and the generated asset was removed. No active certification fixture remains.
+- The replay found stale charge master `2` configured as a service with four-digit default SAC `1001`. Confirmation correctly rejected it. Local purchase and sales charge-type setup now require a six-digit SAC for services or a 4/6/8-digit HSN for goods whenever default GST applies; line serializers enforce the same shape. Backend regressions passed `4/4` and the Angular component suite passed `29/29`. Deployment and correction of the existing staging master remain required before this finding can be closed.
+- Remaining Phase 4 work is limited to deploying the charge-master validation, correcting invalid existing charge masters through setup, and a short post-deployment replay. The extended stock, landed-cost, discount, free-quantity, mixed-line, note-linkage, export, and exact-reversal gates are complete.
 
 ### Phase 5: Notes, Returns, Amendments, And Locked Periods
 
@@ -486,6 +492,9 @@ The final confidence score must be evidence weighted. It may exceed 95% only whe
 | 12 Sep 2026 | Phase 7 | Hardened payables scope errors and completed deterministic browser/report evidence. | Backend `98/98`; Chromium `183/183`; effective cross-browser `549/549` after focused WebKit reruns; full staging reconciliation remains |
 | 12 Sep 2026 | Phase 4 | Executed the dedicated local purchase-to-stock/expense/asset/GL bundle, stabilized inventory visual time, and replayed deployed purchase routes with real authentication and RBAC. | Backend `239/239`, browser `77/77`, and staging route sweep `11/11` passed; controlled persisted staging mutation/reversal evidence remains |
 | 12 Sep 2026 | Phase 4 | Posted tagged asset, inventory, and service-expense purchases on Manav-T staging; reconciled asset intake, stock, AP, GST, ledgers, Trial Balance, Profit & Loss, and Balance Sheet; then reversed and cancelled the fixtures. | Core staging mutation gate passed with exact cleanup; fixed inherited category visibility and passed asset backend `80/80` plus staging asset browser `4/4` |
+| 13 Sep 2026 | Phase 4 | Rechecked the deployed inherited asset-category fix with an authenticated Manav-T staging session and the Asset Master UI. | Both APIs returned HTTP `200` with all `20` entity-wide categories under branch `2`; filter and New Asset dropdowns each exposed all categories plus their placeholder; deployed scope fix confirmed |
+| 13 Sep 2026 | Phase 4 | Ran a controlled mixed purchase with inventory, free quantity, percentage discount, asset, amount discount, expense, taxable charge, exports, linked credit note, unpost, and cancellation. | Exact stock/value/asset/tax/round-off evidence passed; CSV/XLSX/PDF returned `200`; cleanup restored all baselines |
+| 13 Sep 2026 | Phase 4 | Hardened purchase and sales charge-master HSN/SAC validation after staging master `2` supplied invalid four-digit service SAC `1001`. | Backend `4/4` and Angular `29/29` passed locally; deployment and existing-master correction pending |
 
 ## Related QA Assets
 

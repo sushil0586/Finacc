@@ -6,6 +6,7 @@ from rest_framework import serializers
 from decimal import Decimal, ROUND_HALF_UP
 
 
+from core.gst_document_validation import gst_classification_error
 from purchase.models.purchase_addons import PurchaseChargeLine,PurchaseChargeType
 ZERO2 = Decimal("0.00")
 ZERO4 = Decimal("0.0000")
@@ -82,6 +83,13 @@ class PurchaseChargeLineSerializer(serializers.ModelSerializer):
         hsn = (attrs.get("hsn_sac_code") or "").strip()
         if gst_rate > ZERO2 and taxable > ZERO2 and not hsn:
             raise serializers.ValidationError({"hsn_sac_code": "HSN/SAC is required when GST is applied."})
+        if hsn:
+            classification_error = gst_classification_error(
+                hsn,
+                is_service=bool(attrs.get("is_service", getattr(self.instance, "is_service", True))),
+            )
+            if classification_error:
+                raise serializers.ValidationError({"hsn_sac_code": classification_error})
 
         return attrs
     
@@ -119,3 +127,20 @@ class PurchaseChargeTypeSerializer(serializers.ModelSerializer):
         if not v:
             raise serializers.ValidationError("Code is required.")
         return v
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        gst_rate = q2(attrs.get("gst_rate_default", getattr(self.instance, "gst_rate_default", ZERO2)))
+        code = str(
+            attrs.get("hsn_sac_code_default", getattr(self.instance, "hsn_sac_code_default", "")) or ""
+        ).strip()
+        is_service = bool(attrs.get("is_service", getattr(self.instance, "is_service", True)))
+
+        if gst_rate > ZERO2 and not code:
+            label = "SAC" if is_service else "HSN"
+            raise serializers.ValidationError({"hsn_sac_code_default": f"{label} is required when default GST is applied."})
+        if code:
+            classification_error = gst_classification_error(code, is_service=is_service)
+            if classification_error:
+                raise serializers.ValidationError({"hsn_sac_code_default": classification_error})
+        return attrs

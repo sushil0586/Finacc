@@ -7473,6 +7473,46 @@ class PurchaseApiExtendedSmokeTests(APITestCase):
         self.assertIn("hsn_sac_code_default", serializer.errors)
         self.assertIn("description", serializer.errors)
 
+    def test_purchase_charge_type_serializer_rejects_invalid_service_sac_default(self):
+        serializer = PurchaseChargeTypeSerializer(
+            data={
+                "entity": self.entity.id,
+                "code": "FREIGHT",
+                "name": "Freight",
+                "base_category": "FREIGHT",
+                "is_active": True,
+                "is_service": True,
+                "hsn_sac_code_default": "1001",
+                "gst_rate_default": "18.00",
+                "itc_eligible_default": True,
+                "description": "",
+            }
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertEqual(
+            serializer.errors["hsn_sac_code_default"][0],
+            "SAC must contain exactly 6 digits.",
+        )
+
+    def test_purchase_charge_type_serializer_accepts_valid_goods_hsn_default(self):
+        serializer = PurchaseChargeTypeSerializer(
+            data={
+                "entity": self.entity.id,
+                "code": "PACKING",
+                "name": "Packing",
+                "base_category": "PACKING",
+                "is_active": True,
+                "is_service": False,
+                "hsn_sac_code_default": "4819",
+                "gst_rate_default": "18.00",
+                "itc_eligible_default": True,
+                "description": "",
+            }
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
     def test_purchase_charge_line_serializer_rejects_oversized_charge_type(self):
         serializer = PurchaseChargeLineSerializer(
             data={
