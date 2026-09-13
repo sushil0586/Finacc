@@ -3,7 +3,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from rest_framework import generics, permissions
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -16,6 +16,17 @@ from purchase.serializers.purchase_ap import (
 from purchase.services.purchase_ap_service import PurchaseApService
 from purchase.services.ap_allocation_service import PurchaseApAllocationService
 from financial.profile_access import account_gstno, account_pan, account_partytype
+from rbac.services import EffectivePermissionService
+
+
+def _require_payment_view_permission(user, entity_id: int) -> None:
+    entity = EffectivePermissionService.entity_for_user(user, int(entity_id))
+    if entity is None:
+        raise PermissionDenied({"detail": "Entity not found or inaccessible."})
+
+    permission_codes = EffectivePermissionService.permission_codes_for_user(user, int(entity_id))
+    if "voucher.payment.view" not in permission_codes and "payment.voucher.view" not in permission_codes:
+        raise PermissionDenied({"detail": "Missing permission: voucher.payment.view"})
 
 
 class PaymentVendorBillOpenItemListAPIView(generics.ListAPIView):
@@ -41,6 +52,8 @@ class PaymentVendorBillOpenItemListAPIView(generics.ListAPIView):
             vendor_id = int(vendor) if vendor not in (None, "", "null") else None
         except (TypeError, ValueError):
             raise ValidationError({"detail": "entity/entityfinid/subentity/vendor must be integers."})
+
+        _require_payment_view_permission(self.request.user, entity_id)
 
         if is_open in (None, "", "null"):
             open_flag = True
@@ -122,6 +135,8 @@ class PaymentVendorAdvanceBalanceListAPIView(generics.ListAPIView):
         except (TypeError, ValueError):
             raise ValidationError({"detail": "entity/entityfinid/subentity/vendor must be integers."})
 
+        _require_payment_view_permission(self.request.user, entity_id)
+
         if is_open in (None, "", "null"):
             open_flag = True
         else:
@@ -158,6 +173,8 @@ class PaymentVendorSettlementListAPIView(generics.ListAPIView):
             vendor_id = int(vendor) if vendor not in (None, "", "null") else None
         except (TypeError, ValueError):
             raise ValidationError({"detail": "entity/entityfinid/subentity/vendor must be integers."})
+
+        _require_payment_view_permission(self.request.user, entity_id)
 
         qs = (
             VendorSettlement.objects
@@ -205,6 +222,7 @@ class PaymentAllocationPreviewAPIView(APIView):
         entityfinid_id = self._parse_int(data, "entityfinid")
         vendor_id = self._parse_int(data, "vendor")
         subentity_id = self._parse_int(data, "subentity", required=False)
+        _require_payment_view_permission(request.user, entity_id)
 
         cash_paid_amount = self._parse_decimal(data, "cash_paid_amount", default="0")
         adjustments = data.get("adjustments") or []
@@ -265,6 +283,8 @@ class PaymentVendorStatementAPIView(APIView):
             vendor_id = int(vendor)
         except (TypeError, ValueError):
             raise ValidationError({"detail": "entity/entityfinid/subentity/vendor must be integers."})
+
+        _require_payment_view_permission(request.user, entity_id)
 
         include_closed = str(request.query_params.get("include_closed") or "").lower() in ("1", "true", "yes", "y")
 

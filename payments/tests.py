@@ -14,6 +14,7 @@ from django.http import Http404
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 from django.core.cache import cache
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from entity.models import Entity, EntityFinancialYear, GstRegistrationType, SubEntity
@@ -27,6 +28,13 @@ from payments.services.payment_voucher_service import PaymentVoucherService
 from payments.services.payment_settings_service import PaymentSettingsService
 from payments.views.payment_exports import PaymentVoucherPDFAPIView
 from payments.views.payment_meta import PaymentVoucherDetailFormMetaAPIView, PaymentVoucherFormMetaAPIView
+from payments.views.payment_readonly import (
+    PaymentAllocationPreviewAPIView,
+    PaymentVendorAdvanceBalanceListAPIView,
+    PaymentVendorBillOpenItemListAPIView,
+    PaymentVendorSettlementListAPIView,
+    PaymentVendorStatementAPIView,
+)
 from payments.views.payment_voucher import (
     PaymentVoucherApprovalAPIView,
     PaymentVoucherCancelAPIView,
@@ -1706,6 +1714,46 @@ class PaymentVoucherViewValidationTests(SimpleTestCase):
         request = self.factory.post(path, data or {}, format="json") if data is not None else self.factory.get(path)
         force_authenticate(request, user=self.user)
         return request
+
+    @patch(
+        "payments.views.payment_readonly._require_payment_view_permission",
+        side_effect=PermissionDenied("Entity not found or inaccessible."),
+    )
+    def test_payment_read_helpers_check_entity_access_before_returning_data(self, mocked_permission):
+        cases = [
+            (
+                PaymentVendorBillOpenItemListAPIView.as_view(),
+                self.factory.get("/api/payments/open-items/?entity=99&entityfinid=1"),
+            ),
+            (
+                PaymentVendorAdvanceBalanceListAPIView.as_view(),
+                self.factory.get("/api/payments/open-advances/?entity=99&entityfinid=1"),
+            ),
+            (
+                PaymentVendorSettlementListAPIView.as_view(),
+                self.factory.get("/api/payments/ap/settlements/?entity=99&entityfinid=1"),
+            ),
+            (
+                PaymentAllocationPreviewAPIView.as_view(),
+                self.factory.post(
+                    "/api/payments/allocation-preview/",
+                    {"entity": 99, "entityfinid": 1, "vendor": 2, "cash_paid_amount": "100"},
+                    format="json",
+                ),
+            ),
+            (
+                PaymentVendorStatementAPIView.as_view(),
+                self.factory.get("/api/payments/vendor-statement/?entity=99&entityfinid=1&vendor=2"),
+            ),
+        ]
+
+        for view, request in cases:
+            force_authenticate(request, user=self.user)
+            with self.subTest(path=request.path):
+                response = view(request)
+                self.assertEqual(response.status_code, 403)
+
+        self.assertEqual(mocked_permission.call_count, len(cases))
 
     @patch("errorlogger.drf_exception_handler.ErrorLog.objects.create")
     def test_list_view_reports_missing_scope_as_field_errors(self, mocked_error_log):

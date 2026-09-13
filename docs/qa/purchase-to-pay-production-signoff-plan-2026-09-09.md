@@ -1,6 +1,6 @@
 # Purchase-To-Pay Production Sign-Off Plan
 
-Last updated: 12 September 2026
+Last updated: 13 September 2026
 
 ## Purpose
 
@@ -250,7 +250,7 @@ Evidence and findings to date:
 
 ### Phase 4: Inventory, Expense, Asset, And GL Integrity
 
-Status: Extended local and staging business-integrity gates passed on 13 September 2026; validation is deployed and one legacy charge master awaits accounting correction
+Status: Application controls passed locally and on staging on 13 September 2026; one legacy charge master awaits accounting correction
 
 Work:
 
@@ -287,7 +287,7 @@ Evidence and findings to date:
 
 ### Phase 5: Notes, Returns, Amendments, And Locked Periods
 
-Status: Passed locally on 12 September 2026; staging replay remains open
+Status: Passed locally and on staging on 13 September 2026; final cross-browser and human launch gates remain in Phases 10-11
 
 Work:
 
@@ -305,10 +305,13 @@ Evidence and findings to date:
 
 - All four goods/service note routes passed reference selection, value-only and quantity-return behavior, duplicate override, multi-line, batch retention, GST/RCM continuity, vendor/state recalculation, attachments, lifecycle, locked-period correction, concurrency, and downstream report checks in the Phase 2 focused batches.
 - The final coherent `245/245` browser run revalidated the note routes together with their upstream invoice and downstream voucher workflows.
+- Staging Chromium passed the repository route/lookup/fresh-state assertions for all four note variants. Controlled draft corrections `796`-`799` reopened with the expected goods/service source links and were deleted with verified `404` follow-up reads.
+- Posted goods invoice `775` was transiently placed behind root and branch purchase locks. Detail metadata exposed `can_correct_locked_posted: true`; the enabled `Correct` action opened with Full Reversal and current-period guidance. Both lock scopes were restored exactly after the check.
+- Existing posted QA notes `677`, `679`, `681`, and `683` reconciled read-only across Purchase Register, Vendor Note Register, Daybook, and Vendor Ledger. Goods/service credit notes carried `-118.00` document totals, `-18.00` GST, and `118.00` vendor debits; debit notes carried `+118.00` document totals, `+18.00` GST, and `118.00` vendor credits. Source links, posted state, journal entry IDs `744`, `746`, `748`, and `750`, and goods/service drilldown routes all matched.
 
 ### Phase 6: Payments, Allocation, And Vendor Balances
 
-Status: In progress locally on 10 September 2026
+Status: Functional staging certification passed on 13 September 2026; entity-isolation hardening passed locally and awaits deployment verification
 
 Work:
 
@@ -333,7 +336,10 @@ Evidence and findings to date:
 - The complete purchase-to-payment reconciliation file passed `5/5` in one Chromium run, covering full, partial, multi-bill, and advance-adjusted settlement against live AP open items.
 - Ambiguous-response retry coverage now proves that repeating a successful payment post returns the existing Posted result without duplicating AP settlement history or accounting impact. The canonical posting lookup/daybook detail APIs resolve the same entry and journal-line IDs before and after retry; the vendor/AP debit and cash/bank credit equal the settled payable exactly and remain balanced. The strengthened case passed in Chromium (`2/2` including authentication) and Firefox/WebKit (`4/4` including authentication).
 - The initial fifteen focused payment and purchase-chain scenarios remain green locally in Chromium, with the later concurrency, idempotency, reconciliation, and cross-browser race runs recorded separately above. No confirmed product defect remains from this batch; stale SAC, supplier-invoice sequencing, TDS dialog completion, nested settings payload, and cancellation-response assertions were corrected in test fixtures/helpers.
-- Remaining Phase 6 gates: expanded vendor/entity/branch/FY allocation isolation, staging execution, complete Firefox/WebKit workflow parity beyond the critical race/retry cases, mobile, and accessibility.
+- Staging Chromium passed `17/17` focused Phase 6 workflows on 13 September 2026: unpost/replacement, cancellation, concurrent posting, idempotent retry, advance funding and splitting, allocation and advance limit guards, allocation-date/TDS persistence, runtime-TDS validation, and full/partial/multi-bill/advance-adjusted Vendor Outstanding reconciliation.
+- The staging isolation probe found that payment-voucher lists denied an inaccessible entity with `403`, but the AP open-items helper returned an empty `200`. No rows leaked in the observed request, but code review confirmed that five authenticated AP helper endpoints lacked an explicit entity-membership/`voucher.payment.view` check. Local hardening now covers open items, open advances, settlements, allocation preview, and vendor statement; the full payment backend suite passed `88/88` after the change.
+- `FIN-PUR-CHAIN-007` now certifies missing-scope rejection, inaccessible-entity denial, and zero data for invalid FY/branch scopes across payment-voucher and open-item endpoints. It is intentionally pending on staging until the backend hardening is deployed.
+- Remaining Phase 6 gates: deploy and pass `FIN-PUR-CHAIN-007` on staging, complete Firefox/WebKit workflow parity beyond the critical race/retry cases, mobile, and accessibility.
 
 ### Phase 7: Payables Reports And Exports
 
@@ -499,6 +505,8 @@ The final confidence score must be evidence weighted. It may exceed 95% only whe
 | 13 Sep 2026 | Phase 4 | Hardened purchase and sales charge-master HSN/SAC validation after staging master `2` supplied invalid four-digit service SAC `1001`. | Backend `4/4` and Angular `29/29` passed locally; deployment and existing-master correction pending |
 | 13 Sep 2026 | Phase 4 | Replayed deployed validation and the controlled mixed purchase lifecycle. | API and browser rejected invalid SAC before mutation; invoice `794` and note `795` passed posting, exports, linkage, exact reversal, and cleanup; only legacy master data correction remains |
 | 13 Sep 2026 | Phase 4 | Audited the active Manav-T HSN/SAC catalog and added visible legacy-classification health warnings to Charge Types. | Catalog had `21` active entries but no insurance SAC; malformed and missing classifications now show `Needs correction`, while save-time validation remains authoritative; Angular `33/33`, typecheck, and focused lint passed |
+| 13 Sep 2026 | Phase 4 | Verified the deployed legacy-classification safeguard on `accerio.in`. | Purchase Charge Types loaded without login/RBAC/console errors; legacy insurance master displayed `Needs correction: Service SAC must be 6 digits`; Save was blocked with the precise error and emitted zero POST/PATCH/PUT requests |
+| 13 Sep 2026 | Phase 5 | Replayed all four purchase-note routes, controlled draft correction lifecycles, and locked-period correction discovery on `accerio.in`. | Chromium route checks passed for lookup, note reason, and fresh-tab state; temporary goods/service credit and debit notes `796`-`799` reopened with source links `775`/`756`, emitted no browser or API errors, and were deleted (`204`, then `404`). A transient lock on posted invoice `775` produced `can_correct_locked_posted: true`; the enabled `Correct` action opened with Full Reversal and current-period guidance, and root/branch lock settings were restored exactly |
 
 ## Related QA Assets
 
