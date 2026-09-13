@@ -2768,6 +2768,25 @@ class PayableReportAPITests(APITestCase):
         self.assertEqual(payload["rows"][0]["drilldown_target"], "purchase_invoice_detail")
         self.assertIn("vendor_settlements", payload["rows"][0]["_meta"]["drilldown"])
 
+    def test_vendor_ledger_statement_routes_reject_vendor_outside_entity_scope(self):
+        params = self._base_scope(vendor=99999999, from_date="2025-04-01", to_date="2025-04-30")
+        route_names = (
+            "reports_api:vendor-ledger-statement",
+            "reports_api:vendor-ledger-statement-excel",
+            "reports_api:vendor-ledger-statement-csv",
+            "reports_api:vendor-ledger-statement-pdf",
+            "reports_api:vendor-ledger-statement-print",
+        )
+
+        for route_name in route_names:
+            with self.subTest(route_name=route_name):
+                response = self.client.get(reverse(route_name), params)
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(
+                    response.json()["vendor"],
+                    ["Vendor is not available in the selected entity scope."],
+                )
+
     def test_vendor_ledger_statement_purchase_document_drilldown_uses_service_route_for_service_bills(self):
         PurchaseInvoiceLine.objects.create(
             header=self.invoice,

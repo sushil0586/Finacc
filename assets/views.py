@@ -3,6 +3,7 @@ from __future__ import annotations
 import secrets
 
 from django.db import transaction
+from django.db.models import Q
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -164,7 +165,7 @@ class AssetCategoryListCreateAPIView(AssetScopedAPIView, generics.ListCreateAPIV
         entity_id, _, subentity_id = self._scope_from_query(self.request, require_entity=True)
         qs = AssetCategory.objects.filter(entity_id=entity_id, is_active=True).order_by("name")
         if subentity_id is not None:
-            qs = qs.filter(subentity_id=subentity_id)
+            qs = qs.filter(Q(subentity_id__isnull=True) | Q(subentity_id=subentity_id))
         return qs
 
     def perform_create(self, serializer):
@@ -511,7 +512,7 @@ class AssetMetaAPIView(AssetScopedAPIView):
         entity_id, _, subentity_id = self._scope_from_query(request, require_entity=True)
         categories = AssetCategory.objects.filter(entity_id=entity_id, is_active=True)
         if subentity_id:
-            categories = categories.filter(subentity_id=subentity_id)
+            categories = categories.filter(Q(subentity_id__isnull=True) | Q(subentity_id=subentity_id))
         ledgers = Ledger.objects.filter(entity_id=entity_id).order_by("name").values("id", "name", "ledger_code", "accounthead_id")
         vendor_accounts = (
             account.objects.filter(entity_id=entity_id, isactive=True)

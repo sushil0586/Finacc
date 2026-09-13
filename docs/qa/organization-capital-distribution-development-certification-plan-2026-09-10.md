@@ -1289,7 +1289,7 @@ Rollback-only staging migration checkpoint (2026-09-11):
 
 ### Phase 8: Wave 1 Production Certification
 
-Status: In progress; backend operational observability Wave 1 complete
+Status: Automated gates complete; manual accessibility and owner signoff pending
 
 Development:
 
@@ -1393,8 +1393,44 @@ Implementation checkpoint (2026-09-11):
   balanced. In the full suite the lifecycle completed in 2.895 seconds, statement build
   in 0.415 seconds, and six exports in 4.097 seconds, all below the certification limits.
   The complete capital-distribution suite now passes 75/75.
-- Remaining Phase 8 work: deployed volume confirmation, removal of the persisted-tax-working
-  conditional skip, manual screen-reader review, and formal launch signoff.
+- Completed deployed volume certification on staging on 2026-09-12 using a temporary
+  PostgreSQL database containing the deployed schema and migration ledger but no customer
+  rows. The 100-partner / 5,000-movement / 12-period certificate passed in 24.734 seconds:
+  lifecycle 7.598 seconds, report generation 1.294 seconds, and six exports 11.883 seconds.
+  All 1,200 allocation lines and 2,400 balanced journal lines reconciled, system checks were
+  clean, and the temporary database was removed after teardown.
+- Removed the persisted-tax-working conditional skip from the launch-critical browser
+  lane. The live assertion now certifies frozen-working reconciliation, reproduction,
+  exports, and unchanged books when staged evidence exists, or the rendered empty state
+  and unchanged books when the selected scope legitimately has no working. The complete
+  staging browser certificate passed 10/10 with no skipped test on 2026-09-12.
+- Certified the deployed frozen-tax-working implementation in a customer-empty temporary
+  PostgreSQL database on staging. All 14 lifecycle and true-concurrency tests passed in
+  40.860 seconds with system checks clean, covering source freezing, statutory formulas,
+  caps, overrides and evidence, maker-checker, rollback, idempotency, stale versions,
+  scope and permissions, reconciliation, reproduction, exports, and book neutrality.
+  The temporary database was removed after teardown.
+- Remaining Phase 8 work: manual screen-reader review and formal launch signoff.
+
+Phase 8 launch matrix (2026-09-12):
+
+| Gate | Result | Evidence / remaining action |
+| --- | --- | --- |
+| Calculation, approval, posting, reversal | Pass | Deterministic backend lifecycle, rollback-only staging lifecycle, and deployed PostgreSQL concurrency certificates |
+| Tax policy and frozen tax working | Pass | 14/14 deployed lifecycle/concurrency tests plus no-skip live browser empty/persisted-state assertion |
+| P&L, Balance Sheet, trial balance, and appropriation statement | Pass | Browser, API, CSV, XLSX, and PDF reconciliation with unchanged operating profit and balanced equity movement |
+| Scope, RBAC, maker-checker, and tenant isolation | Pass | Backend permission matrix and deterministic eight-role browser matrix |
+| Failure, retry, rollback, and observability | Pass | 401/403/409/422/500, timeout, interrupted download, stale version, correlation, health, and rollback certificates |
+| Concurrent writes and reads | Pass | True PostgreSQL lifecycle race and 20-request scoped staging read certificate |
+| Production-like volume | Pass | Deployed 100-partner, 5,000-movement, 12-period, 1,200-line, 2,400-journal certificate |
+| Desktop/mobile and cross-browser visuals | Pass | Chromium workspace and Firefox/WebKit critical-state lanes with reviewed stable baseline |
+| Automated accessibility | Pass | Zero serious or critical axe findings on desktop and 390px operational surfaces |
+| Manual screen-reader review | Pending | Product/QA owner must complete the documented VoiceOver or equivalent script |
+| Business and launch-owner approval | Pending | Product, accounting, engineering, and QA names/date must be recorded |
+
+Release recommendation: **conditional release candidate**. No unresolved critical or
+high automated defect is known. Wave 1 confidence remains **95%**, capped until the
+manual screen-reader review and named owner approvals are complete.
 
 ### Phase 9: Company And OPC Equity/Dividend Engine
 

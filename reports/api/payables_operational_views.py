@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 
+from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
 from reports.api.payables_views import (
@@ -39,13 +40,21 @@ def _safe_filename(value):
     return text.strip("._-") or "report"
 
 
+def _build_vendor_ledger_statement(**kwargs):
+    try:
+        return build_vendor_ledger_statement(**kwargs)
+    except ValueError as exc:
+        detail = exc.args[0] if exc.args else {"vendor": ["Vendor is not available in the selected entity scope."]}
+        raise ValidationError(detail) from exc
+
+
 class VendorLedgerStatementAPIView(_BasePayableAPIView):
     serializer_class = PayableVendorLedgerScopeSerializer
 
     def get(self, request):
         scope = self.get_scope(request)
         self.assert_report_permission(request, scope, "vendor_ledger_statement")
-        payload = build_vendor_ledger_statement(
+        payload = _build_vendor_ledger_statement(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
             subentity_id=scope.get("subentity"),
@@ -174,7 +183,7 @@ class _VendorLedgerExportMixin(_BasePayableExportAPIView):
     def report_data(self, request):
         scope = self.get_scope(request)
         self.assert_report_permission(request, scope, "vendor_ledger_statement")
-        data = build_vendor_ledger_statement(
+        data = _build_vendor_ledger_statement(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
             subentity_id=scope.get("subentity"),

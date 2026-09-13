@@ -1,6 +1,6 @@
 # Purchase-To-Pay Production Sign-Off Plan
 
-Last updated: 10 September 2026
+Last updated: 12 September 2026
 
 ## Purpose
 
@@ -31,43 +31,43 @@ The register is the minimum UI inventory. Route aliases discovered during execut
 
 | ID | Surface | Route | Certification status |
 | --- | --- | --- | --- |
-| P2P-DOC-01 | Purchase Invoice - Goods | `/purchaseinvoice` | In progress locally |
-| P2P-DOC-02 | Purchase Invoice - Services | `/purchaseserviceinvoice` | In progress locally |
-| P2P-DOC-03 | Purchase Credit Note - Goods | `/purchasecreditnoteinvoice` | In progress locally |
-| P2P-DOC-04 | Purchase Debit Note - Goods | `/purchasedebitnoteinvoice` | In progress locally |
-| P2P-DOC-05 | Purchase Credit Note - Services | `/purchaseservicecreditnoteinvoice` | In progress locally |
-| P2P-DOC-06 | Purchase Debit Note - Services | `/purchaseservicedebitnoteinvoice` | In progress locally |
+| P2P-DOC-01 | Purchase Invoice - Goods | `/purchaseinvoice` | Passed locally; staging gate open |
+| P2P-DOC-02 | Purchase Invoice - Services | `/purchaseserviceinvoice` | Passed locally; staging gate open |
+| P2P-DOC-03 | Purchase Credit Note - Goods | `/purchasecreditnoteinvoice` | Passed locally; staging gate open |
+| P2P-DOC-04 | Purchase Debit Note - Goods | `/purchasedebitnoteinvoice` | Passed locally; staging gate open |
+| P2P-DOC-05 | Purchase Credit Note - Services | `/purchaseservicecreditnoteinvoice` | Passed locally; staging gate open |
+| P2P-DOC-06 | Purchase Debit Note - Services | `/purchaseservicedebitnoteinvoice` | Passed locally; staging gate open |
 | P2P-SET-01 | Purchase Settings | `/purchasesettings` | Passed locally |
 | P2P-SET-02 | Purchase Charge Types | `/purchase-charge-types` and `/purchasesettings/chargetypes` | Passed locally |
 | P2P-SET-03 | Posting Account Mapping | `/staticaccountsettings` | Passed locally |
 | P2P-MST-01 | Vendor Account Workspace | Account/ledger workspace | Passed locally |
 | P2P-MST-02 | Product/Service Master | Product workspace | Passed locally |
-| P2P-IMP-01 | Purchase Legacy Import | `/purchase-legacy-import` | Not run |
-| P2P-PAY-01 | Payment Voucher | `/paymentvoucher` | In progress locally |
-| P2P-CMP-01 | Purchase Statutory | `/purchasestatutory` | Not run |
-| P2P-CMP-02 | GST Reconciliation | `/gst-reconciliation` | Not run |
-| P2P-CMP-03 | GST Reconciliation Run Detail | GST reconciliation detail route | Not run |
-| P2P-CMP-04 | GST-TDS Configuration | `/gstdsconfig` | Not run |
-| P2P-CMP-05 | TDS Report/Return | `/reports/tds` | Not run |
-| P2P-CMP-06 | GST-TDS Report/Return | `/reports/gst-tds` | Not run |
-| P2P-RPT-01 | Payables Hub | `/reports/payables` | Not run |
-| P2P-RPT-02 | Payables Settings | `/reports/payables/settings` | Not run |
-| P2P-RPT-03 | Vendor Outstanding | `/reports/payables/vendor_outstanding` | In progress locally |
-| P2P-RPT-04 | AP Aging | `/reports/payables/ap_aging` | In progress locally |
-| P2P-RPT-05 | Vendor Ledger Statement | `/reports/payables/vendor_ledger_statement` | Not run |
-| P2P-RPT-06 | Upcoming Payments Calendar | `/reports/payables/upcoming_payments_calendar` | Not run |
-| P2P-RPT-07 | Purchase Register | `/reports/payables/purchase-register` | In progress locally |
-| P2P-RPT-08 | MSME Overdue | `/reports/payables/msme_overdue` | Not run |
-| P2P-RPT-09 | AP Payment Forecast | `/reports/payables/ap_payment_forecast` | Not run |
-| P2P-RPT-10 | Vendor Reconciliation Statement | `/reports/payables/vendor_reconciliation_statement` | Not run |
-| P2P-RPT-11 | GRN/Invoice/Posting Exceptions | `/reports/payables/grn_invoice_posting_exceptions` | Not run |
-| P2P-RPT-12 | AP Compliance Aging | `/reports/payables/ap_compliance_aging` | Not run |
-| P2P-RPT-13 | Duplicate/Anomalous Bills | `/reports/payables/duplicate_anomalous_bill_detection` | Not run |
-| P2P-RPT-14 | Vendor Settlement History | `/reports/payables/vendor_settlement_history` | Not run |
-| P2P-RPT-15 | Vendor Debit/Credit Note Register | `/reports/payables/vendor_note_register` | In progress locally |
-| P2P-RPT-16 | Payables Close Pack | `/reports/payables/payables_close_pack` | Not run |
-| P2P-RPT-17 | AP-to-GL Reconciliation | Dynamic payables report route | Not run |
-| P2P-RPT-18 | Vendor Balance Exceptions | Dynamic payables report route | Not run |
+| P2P-IMP-01 | Purchase Legacy Import | `/purchase-legacy-import` | Passed locally; scale gate open |
+| P2P-PAY-01 | Payment Voucher | `/paymentvoucher` | Passed locally; staging gate open |
+| P2P-CMP-01 | Purchase Statutory | `/purchasestatutory` | Passed automated local/staging scope |
+| P2P-CMP-02 | GST Reconciliation | `/gst-reconciliation` | Passed automated local scope; pilot UAT open |
+| P2P-CMP-03 | GST Reconciliation Run Detail | GST reconciliation detail route | Passed automated local scope; pilot UAT open |
+| P2P-CMP-04 | GST-TDS Configuration | `/gstdsconfig` | Passed automated local/staging scope |
+| P2P-CMP-05 | TDS Report/Return | `/reports/tds` | Passed automated local/staging scope |
+| P2P-CMP-06 | GST-TDS Report/Return | `/reports/gst-tds` | Passed automated local/staging scope |
+| P2P-RPT-01 | Payables Hub | `/reports/payables` | Passed deterministic local; staging trace gate open |
+| P2P-RPT-02 | Payables Settings | `/reports/payables/settings` | Passed deterministic local |
+| P2P-RPT-03 | Vendor Outstanding | `/reports/payables/vendor_outstanding` | Passed deterministic local; staging trace gate open |
+| P2P-RPT-04 | AP Aging | `/reports/payables/ap_aging` | Passed deterministic local; staging trace gate open |
+| P2P-RPT-05 | Vendor Ledger Statement | `/reports/payables/vendor_ledger_statement` | Passed deterministic local; staging trace gate open |
+| P2P-RPT-06 | Upcoming Payments Calendar | `/reports/payables/upcoming_payments_calendar` | Passed deterministic local; staging trace gate open |
+| P2P-RPT-07 | Purchase Register | `/reports/payables/purchase-register` | Passed deterministic local; staging trace gate open |
+| P2P-RPT-08 | MSME Overdue | `/reports/payables/msme_overdue` | Passed deterministic local; staging trace gate open |
+| P2P-RPT-09 | AP Payment Forecast | `/reports/payables/ap_payment_forecast` | Passed deterministic local; staging trace gate open |
+| P2P-RPT-10 | Vendor Reconciliation Statement | `/reports/payables/vendor_reconciliation_statement` | Passed deterministic local; staging trace gate open |
+| P2P-RPT-11 | GRN/Invoice/Posting Exceptions | `/reports/payables/grn_invoice_posting_exceptions` | Passed deterministic local; staging trace gate open |
+| P2P-RPT-12 | AP Compliance Aging | `/reports/payables/ap_compliance_aging` | Passed deterministic local; staging trace gate open |
+| P2P-RPT-13 | Duplicate/Anomalous Bills | `/reports/payables/duplicate_anomalous_bill_detection` | Passed deterministic local; staging trace gate open |
+| P2P-RPT-14 | Vendor Settlement History | `/reports/payables/vendor_settlement_history` | Passed deterministic local; staging trace gate open |
+| P2P-RPT-15 | Vendor Debit/Credit Note Register | `/reports/payables/vendor_note_register` | Passed deterministic local; staging trace gate open |
+| P2P-RPT-16 | Payables Close Pack | `/reports/payables/payables_close_pack` | Passed deterministic local; staging trace gate open |
+| P2P-RPT-17 | AP-to-GL Reconciliation | Dynamic payables report route | Passed deterministic local; staging trace gate open |
+| P2P-RPT-18 | Vendor Balance Exceptions | Dynamic payables report route | Passed deterministic local; staging trace gate open |
 
 ## Common Element Checklist
 
@@ -183,7 +183,7 @@ Evidence and findings:
 
 ### Phase 2: Six Document Screens And Lifecycle
 
-Status: In progress locally on 10 September 2026
+Status: Passed locally on 12 September 2026; staging and final human gates remain open
 
 Work:
 
@@ -219,11 +219,14 @@ Evidence and findings to date:
 - Expanded payment permutations passed locally in Chromium: multi-invoice settlement, advance-adjusted settlement, over-settlement block and warning policies, multiple advances against one bill, one advance split across two bills, purchase-allocation date/TDS persistence, and payment TDS mode/section persistence.
 - Payment reversal and cancellation integrity passed locally: unposting a fully settled payment restored the exact AP open balance, a new replacement voucher cleared it once without duplication, and cancelling an unposted against-bill voucher left the payable unchanged. The configured unpost target status was also proven through the browser.
 - Payment-chain fixtures now provide mandatory service SAC `998399`, generate collision-resistant valid PAN/GSTIN values, and follow the configured submit/approval lifecycle.
-- No confirmed application defect remains open from these Phase 2 batches. Serial browser-run latency is retained as a reliability/performance observation, and this phase remains incomplete until staging, cross-browser, responsive, accessibility, concurrency, retry/idempotency, and remaining cross-scope batches pass.
+- On 12 September, the complete upstream document/import/voucher pack passed `245/245` in one Chromium run (`16.2m`). It covers both invoice modes, all four note modes, purchase import, cash/bank/journal/payment/receipt vouchers, lifecycle actions, attachments, approval, locked-period failures, allocation, runtime TDS/TCS, AR/AP drilldowns, and stale-tab protection.
+- The run exposed a real receipt-voucher state defect: after post/unpost the screen could retain stale local status when the action response used a partial envelope. Receipt lifecycle actions now apply the immediate expected status and refresh canonical detail, matching payment-voucher behavior. Focused browser rerun passed `14/14`; receipt component units passed `87/87`.
+- Stale browser expectations were aligned to the intentional UX: Save Draft and Confirm are separate actions, posting detail is available for posted records, and AR guidance is exposed through the action tooltip instead of permanent layout-shifting copy.
+- No confirmed application defect remains open from the local Phase 2 batches. Staging persisted-data replay, full document Firefox/WebKit parity, responsive review, and manual accessibility remain later cross-phase launch gates rather than Phase 2 local blockers.
 
 ### Phase 3: GST, ITC, RCM, TDS, And Statutory Controls
 
-Status: Not run
+Status: In progress; automated local and staging surface gates passed on 12 September 2026
 
 Work:
 
@@ -238,9 +241,16 @@ Exit:
 - Source document, posting, ITC/RCM/TDS registers, reconciliation, and return/export totals agree exactly.
 - Unsupported combinations are explicitly blocked with useful guidance.
 
+Evidence and findings to date:
+
+- The focused statutory non-visual suite passed `43/43` locally across Purchase Statutory, GST/TDS compliance centers, report filters, return workspaces, and principal validation/error states.
+- GST report visual certification passed `9/9` and produced eight reviewed operational baselines.
+- The focused GST-TDS/TDS staging suite passed `12/12`, confirming authenticated routes and API-backed principal workflows on the deployed environment.
+- Remaining Phase 3 gates are source-to-return amount reconciliation for every required tax permutation, production artifact inspection, provider-dependent filing actions, and statutory-owner signoff.
+
 ### Phase 4: Inventory, Expense, Asset, And GL Integrity
 
-Status: Not run
+Status: Passed locally on 12 September 2026; core staging mutation, reconciliation, reversal, and cleanup passed
 
 Work:
 
@@ -254,9 +264,23 @@ Exit:
 - Quantity/value/open-item/tax/journal invariants agree after every lifecycle action.
 - Exact reversals leave no orphan movement, posting entry, journal, asset intake, or open item.
 
+Evidence and findings to date:
+
+- A focused backend certification bundle passed `239/239` with no system-check issues. It covered inventory and expense posting behavior, UOM and acquisition-cost movement handling, return safety, fixed-asset intake and reversal, the real purchase -> transfer -> adjustment -> sale -> return stock chain, inventory reports, payables reports, and core financial reports.
+- The focused browser gate passed `77/77` in Chromium across goods purchase lifecycle, Stock Summary and Stock Ledger, AP-to-GL Reconciliation, Purchase Register, fixed-asset surfaces, posting drilldowns, exports, accessibility, responsive layout, and approved visual baselines.
+- The inventory visual suite now freezes its reference clock to `5 September 2026`; this removes calendar-driven screenshot churn. Four baselines were deliberately refreshed for the already-approved compact mobile/header layout, while two filter-dialog mismatches disappeared once time was deterministic.
+- The environment-safe authenticated staging route sweep passed `11/11` for all six purchase document screens, Purchase Settings, and every supported Purchase Charge Types route alias under the Manav-T scope.
+- The controlled Manav-T staging replay created, confirmed, and posted three tagged invoices: asset `784` / `PINV-PINV-2026-00104-HO`, inventory `785` / `PINV-PINV-2026-00105-HO`, and service expense `786` / `PINV-PINV-2026-00106-HO`.
+- Asset invoice `784` produced purchase-linked CWIP asset `12` / `FA-000001` for exactly `1,000.00`, preserved source purchase line `870`, category `Computers`, vendor, subentity, and document references, and created an open payable of `1,180.00`. The staged browser asset chain passed `4/4` including authentication, catalog configuration, invoice-to-asset traceability, Trial Balance, and Balance Sheet reflection.
+- Inventory invoice `785` produced one document-specific inward stock move for product `122` at location `18`: quantity increased from `29.4000` to `31.4000`, value increased from `3,004.00` to `3,254.00`, and the Stock Ledger showed `2.0000` inward at unit cost `125.0000` and line value `250.00`. Its payable was `295.00`, including `45.00` IGST.
+- Service invoice `786` created no stock movement, debited Audit Fees by exactly `600.00` (`5,460.00` to `6,060.00` closing), appeared in Profit & Loss for the same amount, and created a payable of `708.00`, including `108.00` IGST.
+- Reversal cleanup passed: stock returned to `29.4000` / `3,004.00`, Audit Fees returned to `5,460.00`, all tagged open items disappeared, the temporary CWIP asset was removed, and all three invoices were cancelled after unpost. Tagged product `151` remains as the reusable staging asset-purchase fixture.
+- The replay exposed and corrected inherited asset-category visibility: branch-scoped category and metadata APIs now return entity-wide categories plus the selected branch's categories, while excluding categories private to another branch. Focused regressions passed `2/2`; the complete asset suite passed `80/80` with no system-check issues.
+- Remaining extended Phase 4 gates are staging permutations for landed cost, discounts, free quantity, mixed inventory/expense/asset lines, notes, and export artifact inspection. The core stock/expense/asset posting and reversal chain is no longer open.
+
 ### Phase 5: Notes, Returns, Amendments, And Locked Periods
 
-Status: Not run
+Status: Passed locally on 12 September 2026; staging replay remains open
 
 Work:
 
@@ -269,6 +293,11 @@ Exit:
 
 - No note can over-return quantity/value or mutate protected history.
 - Original, notes, remaining balance, and downstream reports reconcile.
+
+Evidence and findings to date:
+
+- All four goods/service note routes passed reference selection, value-only and quantity-return behavior, duplicate override, multi-line, batch retention, GST/RCM continuity, vendor/state recalculation, attachments, lifecycle, locked-period correction, concurrency, and downstream report checks in the Phase 2 focused batches.
+- The final coherent `245/245` browser run revalidated the note routes together with their upstream invoice and downstream voucher workflows.
 
 ### Phase 6: Payments, Allocation, And Vendor Balances
 
@@ -301,7 +330,7 @@ Evidence and findings to date:
 
 ### Phase 7: Payables Reports And Exports
 
-Status: Not run
+Status: In progress; deterministic report suite passed locally on 12 September 2026
 
 Work:
 
@@ -315,9 +344,16 @@ Exit:
 - Every report has empty, populated, pagination, filter, drilldown, export, permission, and failure evidence.
 - No unexplained difference remains between operational documents, subledger, reports, exports, and GL.
 
+Evidence and findings to date:
+
+- Payables backend regression passed `98/98`, including report scope, export behavior, and controlled `400` responses for foreign-vendor ledger requests instead of an HTML/500 failure.
+- The deterministic Payables suite passed all `183` Chromium scenarios. Across Chromium, Firefox, and WebKit the broad run passed `547/549`; the two WebKit harness failures were corrected and their focused rerun passed `6/6`, yielding effective green evidence for all `549` scheduled browser scenarios without claiming an uninterrupted rerun.
+- Coverage includes hub/settings and operational reports, filters, sorting, pagination, empty/populated/error states, drilldowns, scoped links, downloads/print responses, desktop/mobile screenshots, and export filenames.
+- A focused authenticated staging payables sweep passed, but the complete source-record-to-export and AP-to-GL staging certificate remains open.
+
 ### Phase 8: Import, Failure Recovery, Concurrency, And Idempotency
 
-Status: Not run
+Status: In progress; deterministic import, recovery, concurrency, and idempotency evidence exists
 
 Work:
 
@@ -333,7 +369,7 @@ Exit:
 
 ### Phase 9: Permissions And Scope Isolation
 
-Status: Not run
+Status: In progress; focused UI/API scope gates passed, full role matrix remains open
 
 Work:
 
@@ -349,7 +385,7 @@ Exit:
 
 ### Phase 10: Visual, Mobile, Accessibility, And Browser Certification
 
-Status: Not run
+Status: In progress; payables cross-browser/mobile and GST visual gates passed
 
 Work:
 
@@ -445,6 +481,11 @@ The final confidence score must be evidence weighted. It may exceed 95% only whe
 | 10 Sep 2026 | Phase 6 | Expanded payment coverage through multi-invoice, advances, overpayment policy, TDS persistence, unpost, cancellation, and replacement settlement. | `15` effective focused scenarios green locally in Chromium; exact payable restoration and no duplicate replacement settlement proven |
 | 10 Sep 2026 | Phase 6 | Added and executed concurrency, idempotency, isolated backend, and combined reconciliation gates. | Browser repeat-action `8/8`; backend `158/158`; reconciliation `5/5`; same-bill race passed Chromium, Firefox, and WebKit with exactly one settlement |
 | 10 Sep 2026 | Phase 6 | Added public-API payment posting trace and retry invariants to `FIN-PUR-CHAIN-006`. | Same settlement, history row, posting entry, and journal-line IDs survive retry; exact balanced vendor/AP and cash/bank legs passed Chromium, Firefox, and WebKit |
+| 12 Sep 2026 | Phases 2, 5, 6, 8 | Re-ran the coherent purchase invoice, note, import, and voucher chain after correcting receipt canonical lifecycle refresh and stale UI assertions. | `245/245` Chromium browser scenarios and `87/87` receipt units passed; local document lifecycle gate is green |
+| 12 Sep 2026 | Phase 3 | Executed statutory, GST visual, and authenticated staging GST-TDS/TDS packs. | `43/43` local statutory, `9/9` GST visual, and `12/12` staging scenarios passed; amount/artifact/provider signoff remains |
+| 12 Sep 2026 | Phase 7 | Hardened payables scope errors and completed deterministic browser/report evidence. | Backend `98/98`; Chromium `183/183`; effective cross-browser `549/549` after focused WebKit reruns; full staging reconciliation remains |
+| 12 Sep 2026 | Phase 4 | Executed the dedicated local purchase-to-stock/expense/asset/GL bundle, stabilized inventory visual time, and replayed deployed purchase routes with real authentication and RBAC. | Backend `239/239`, browser `77/77`, and staging route sweep `11/11` passed; controlled persisted staging mutation/reversal evidence remains |
+| 12 Sep 2026 | Phase 4 | Posted tagged asset, inventory, and service-expense purchases on Manav-T staging; reconciled asset intake, stock, AP, GST, ledgers, Trial Balance, Profit & Loss, and Balance Sheet; then reversed and cancelled the fixtures. | Core staging mutation gate passed with exact cleanup; fixed inherited category visibility and passed asset backend `80/80` plus staging asset browser `4/4` |
 
 ## Related QA Assets
 

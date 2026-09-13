@@ -322,6 +322,72 @@ class AssetApiScopeTests(APITestCase):
         self.assertIn(self.asset.id, returned_ids)
         self.assertNotIn(self.foreign_asset.id, returned_ids)
 
+    def test_category_list_includes_entity_wide_and_matching_branch_categories(self):
+        other_subentity = SubEntity.objects.create(
+            entity=self.entity,
+            subentityname="Other Branch",
+        )
+        branch_category = AssetCategory.objects.create(
+            entity=self.entity,
+            subentity=self.subentity,
+            code="CAT-BRANCH",
+            name="Branch Equipment",
+            created_by=self.owner,
+            updated_by=self.owner,
+        )
+        other_branch_category = AssetCategory.objects.create(
+            entity=self.entity,
+            subentity=other_subentity,
+            code="CAT-OTHER",
+            name="Other Branch Equipment",
+            created_by=self.owner,
+            updated_by=self.owner,
+        )
+
+        response = self.client.get(
+            reverse("assets_api:asset-category-list-create"),
+            {"entity": self.entity.id, "subentity": self.subentity.id},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        returned_ids = {row["id"] for row in response.data}
+        self.assertIn(self.category.id, returned_ids)
+        self.assertIn(branch_category.id, returned_ids)
+        self.assertNotIn(other_branch_category.id, returned_ids)
+
+    def test_asset_meta_includes_entity_wide_and_matching_branch_categories(self):
+        other_subentity = SubEntity.objects.create(
+            entity=self.entity,
+            subentityname="Other Branch",
+        )
+        branch_category = AssetCategory.objects.create(
+            entity=self.entity,
+            subentity=self.subentity,
+            code="META-BRANCH",
+            name="Meta Branch Equipment",
+            created_by=self.owner,
+            updated_by=self.owner,
+        )
+        other_branch_category = AssetCategory.objects.create(
+            entity=self.entity,
+            subentity=other_subentity,
+            code="META-OTHER",
+            name="Meta Other Equipment",
+            created_by=self.owner,
+            updated_by=self.owner,
+        )
+
+        response = self.client.get(
+            reverse("assets_api:asset-meta"),
+            {"entity": self.entity.id, "subentity": self.subentity.id},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        returned_ids = {row["id"] for row in response.data["categories"]}
+        self.assertIn(self.category.id, returned_ids)
+        self.assertIn(branch_category.id, returned_ids)
+        self.assertNotIn(other_branch_category.id, returned_ids)
+
     def test_asset_settings_accept_traceability_advisory_controls(self):
         AssetSettingsService.upsert_settings(
             entity_id=self.entity.id,
@@ -483,7 +549,7 @@ class AssetApiScopeTests(APITestCase):
     def test_detail_blocks_asset_from_unrelated_entity(self):
         response = self.client.get(reverse("assets_api:fixed-asset-detail", args=[self.foreign_asset.id]))
 
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_report_register_blocks_foreign_entity_scope(self):
         response = self.client.get(
@@ -491,7 +557,7 @@ class AssetApiScopeTests(APITestCase):
             {"entity": self.foreign_entity.id},
         )
 
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_report_history_blocks_foreign_asset_scope(self):
         response = self.client.get(
@@ -499,7 +565,7 @@ class AssetApiScopeTests(APITestCase):
             {"entity": self.foreign_entity.id, "asset": self.foreign_asset.id},
         )
 
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_report_location_custodian_blocks_foreign_entity_scope(self):
         response = self.client.get(
@@ -507,7 +573,7 @@ class AssetApiScopeTests(APITestCase):
             {"entity": self.foreign_entity.id},
         )
 
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_report_location_custodian_returns_asset_assignment_fields(self):
         response = self.client.get(
