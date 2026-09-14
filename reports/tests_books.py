@@ -597,6 +597,24 @@ class BookReportAPITests(APITestCase):
             customer=customer,
             customer_name="Customer Searchable",
         )
+        # Purchase and sales tables use independent sequences, so identical
+        # primary keys are normal. Daybook source metadata must follow txn_type.
+        PurchaseInvoiceHeader.objects.create(
+            id=sales_document.id,
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            created_by=self.user,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            status=PurchaseInvoiceHeader.Status.POSTED,
+            bill_date=date(2025, 4, 12),
+            posting_date=date(2025, 4, 12),
+            doc_code="PINV",
+            doc_no=999,
+            purchase_number="COLLIDING-PURCHASE-999",
+            supplier_invoice_number="COLLIDING-SUPPLIER-999",
+            vendor_name="Wrong Colliding Vendor",
+        )
         self._create_entry(
             entity=self.entity,
             entityfin=self.entityfin,
@@ -619,7 +637,23 @@ class BookReportAPITests(APITestCase):
             {"entity": self.entity.id, "entityfinid": self.entityfin.id, "subentity": self.subentity.id, "search": "Customer Searchable"},
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual([row["voucher_number"] for row in response.json()["results"]], ["ENTRY-SAL-25"])
+        rows = response.json()["results"]
+        self.assertEqual([row["voucher_number"] for row in rows], ["ENTRY-SAL-25"])
+        self.assertEqual(rows[0]["document_number"], "SCN-SEARCH-25")
+        self.assertEqual(rows[0]["counterparty_name"], "Customer Searchable")
+        self.assertIsNone(rows[0]["reference_number"])
+
+        collision_response = self.client.get(
+            reverse("reports_api:financial-daybook"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "search": "COLLIDING-SUPPLIER-999",
+            },
+        )
+        self.assertEqual(collision_response.status_code, 200)
+        self.assertEqual(collision_response.json()["results"], [])
 
     def test_daybook_account_filter_and_scope_isolation(self):
         response = self.client.get(reverse("reports_api:financial-daybook"), {"entity": self.entity.id, "account": str(self.cash_account.id)})

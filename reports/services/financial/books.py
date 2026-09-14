@@ -288,10 +288,17 @@ def _entry_reference_annotation():
     payment_ref = PaymentVoucherHeader.objects.filter(id=OuterRef("txn_id")).values("reference_number")[:1]
     purchase_supplier_ref = PurchaseInvoiceHeader.objects.filter(id=OuterRef("txn_id")).values("supplier_invoice_number")[:1]
     return Coalesce(
-        Subquery(voucher_ref),
-        Subquery(receipt_ref),
-        Subquery(payment_ref),
-        Subquery(purchase_supplier_ref),
+        Case(
+            When(txn_type__in=(TxnType.JOURNAL, TxnType.JOURNAL_CASH, TxnType.JOURNAL_BANK), then=Subquery(voucher_ref)),
+            When(txn_type=TxnType.RECEIPT, then=Subquery(receipt_ref)),
+            When(txn_type=TxnType.PAYMENT, then=Subquery(payment_ref)),
+            When(
+                txn_type__in=(TxnType.PURCHASE, TxnType.PURCHASE_CREDIT_NOTE, TxnType.PURCHASE_DEBIT_NOTE),
+                then=Subquery(purchase_supplier_ref),
+            ),
+            default=Value(""),
+            output_field=CharField(),
+        ),
         Value(""),
         output_field=CharField(),
     )
@@ -302,8 +309,18 @@ def _entry_document_number_annotation():
     purchase_doc_number = PurchaseInvoiceHeader.objects.filter(id=OuterRef("txn_id")).values("purchase_number")[:1]
     sales_doc_number = SalesInvoiceHeader.objects.filter(id=OuterRef("txn_id")).values("invoice_number")[:1]
     return Coalesce(
-        Subquery(purchase_doc_number),
-        Subquery(sales_doc_number),
+        Case(
+            When(
+                txn_type__in=(TxnType.PURCHASE, TxnType.PURCHASE_CREDIT_NOTE, TxnType.PURCHASE_DEBIT_NOTE),
+                then=Subquery(purchase_doc_number),
+            ),
+            When(
+                txn_type__in=(TxnType.SALES, TxnType.SALES_CREDIT_NOTE, TxnType.SALES_DEBIT_NOTE),
+                then=Subquery(sales_doc_number),
+            ),
+            default=Value(""),
+            output_field=CharField(),
+        ),
         Value(""),
         output_field=CharField(),
     )
@@ -314,8 +331,18 @@ def _entry_counterparty_name_annotation():
     purchase_vendor_name = PurchaseInvoiceHeader.objects.filter(id=OuterRef("txn_id")).values("vendor_name")[:1]
     sales_customer_name = SalesInvoiceHeader.objects.filter(id=OuterRef("txn_id")).values("customer_name")[:1]
     return Coalesce(
-        Subquery(purchase_vendor_name),
-        Subquery(sales_customer_name),
+        Case(
+            When(
+                txn_type__in=(TxnType.PURCHASE, TxnType.PURCHASE_CREDIT_NOTE, TxnType.PURCHASE_DEBIT_NOTE),
+                then=Subquery(purchase_vendor_name),
+            ),
+            When(
+                txn_type__in=(TxnType.SALES, TxnType.SALES_CREDIT_NOTE, TxnType.SALES_DEBIT_NOTE),
+                then=Subquery(sales_customer_name),
+            ),
+            default=Value(""),
+            output_field=CharField(),
+        ),
         Value(""),
         output_field=CharField(),
     )
