@@ -181,6 +181,16 @@ class HrEmployee(EntityScopedHrmsModel):
     def clean(self):
         if self.subentity_id and self.subentity and self.subentity.entity_id != self.entity_id:
             raise ValidationError({"subentity": "Subentity must belong to the selected entity."})
+        if self.pk and self.lifecycle_status in {self.LifecycleStatus.EXITED, self.LifecycleStatus.ARCHIVED}:
+            operational_statuses = {
+                HrEmploymentContract.ContractStatus.ACTIVE,
+                HrEmploymentContract.ContractStatus.SUSPENDED,
+                HrEmploymentContract.ContractStatus.NOTICE,
+            }
+            if self.contracts.filter(status__in=operational_statuses).exists():
+                raise ValidationError(
+                    {"lifecycle_status": "End active, suspended, or notice-period contracts before closing the employee."}
+                )
 
     def save(self, *args, **kwargs):
         self.employee_number = (self.employee_number or "").strip().upper()
@@ -360,6 +370,25 @@ class HrEmploymentContract(EntityScopedHrmsModel):
             raise ValidationError({"probation_end": "Probation end cannot be before contract start date."})
         if self.confirmation_date and self.probation_end and self.confirmation_date < self.probation_end:
             raise ValidationError({"confirmation_date": "Confirmation date cannot be before probation end date."})
+        terminal_statuses = {
+            self.ContractStatus.TERMINATED,
+            self.ContractStatus.EXPIRED,
+            self.ContractStatus.CLOSED,
+        }
+        operational_statuses = {
+            self.ContractStatus.ACTIVE,
+            self.ContractStatus.SUSPENDED,
+            self.ContractStatus.NOTICE,
+        }
+        if self.status in terminal_statuses and not self.end_date:
+            raise ValidationError({"end_date": "End date is required for a terminated, expired, or closed contract."})
+        if self.status in terminal_statuses and self.is_payroll_eligible:
+            raise ValidationError({"is_payroll_eligible": "A terminated, expired, or closed contract cannot remain payroll eligible."})
+        if self.status in operational_statuses and self.employee.lifecycle_status in {
+            HrEmployee.LifecycleStatus.EXITED,
+            HrEmployee.LifecycleStatus.ARCHIVED,
+        }:
+            raise ValidationError({"status": "An exited or archived employee cannot have an operational contract."})
         if self.reports_to_contract_id:
             if self.reports_to_contract_id == self.id:
                 raise ValidationError({"reports_to_contract": "Contract cannot report to itself."})
@@ -422,5 +451,9 @@ class HrEmploymentContract(EntityScopedHrmsModel):
         self.compensation_basis = (self.compensation_basis or self.CompensationBasis.ANNUAL).strip().lower()
         self.pay_group_code = (self.pay_group_code or "").strip().upper()
         self.vendor_reference = (self.vendor_reference or "").strip()
+        if self.status in {self.ContractStatus.TERMINATED, self.ContractStatus.EXPIRED, self.ContractStatus.CLOSED}:
+            self.is_payroll_eligible = False
+            if kwargs.get("update_fields") is not None:
+                kwargs["update_fields"] = set(kwargs["update_fields"]) | {"is_payroll_eligible"}
         self.full_clean()
         super().save(*args, **kwargs)

@@ -208,6 +208,52 @@ class HrmsApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual([item["contract_code"] for item in response.data], ["CTR-2001"])
 
+    def test_employee_cannot_exit_until_operational_contract_is_ended(self):
+        response = self.client.patch(
+            f"/api/hrms/employees/{self.employee.id}/",
+            {"lifecycle_status": HrEmployee.LifecycleStatus.EXITED},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("lifecycle_status", response.data)
+        self.employee.refresh_from_db()
+        self.assertEqual(self.employee.lifecycle_status, HrEmployee.LifecycleStatus.ACTIVE)
+
+    def test_contract_terminal_transition_requires_end_date(self):
+        response = self.client.patch(
+            f"/api/hrms/contracts/{self.contract.id}/",
+            {"status": HrEmploymentContract.ContractStatus.TERMINATED},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("end_date", response.data)
+        self.contract.refresh_from_db()
+        self.assertEqual(self.contract.status, HrEmploymentContract.ContractStatus.ACTIVE)
+
+    def test_contract_then_employee_can_be_closed_in_order(self):
+        contract_response = self.client.patch(
+            f"/api/hrms/contracts/{self.contract.id}/",
+            {
+                "status": HrEmploymentContract.ContractStatus.TERMINATED,
+                "end_date": "2026-09-30",
+            },
+            format="json",
+        )
+
+        self.assertEqual(contract_response.status_code, status.HTTP_200_OK)
+        self.assertFalse(contract_response.data["is_payroll_eligible"])
+
+        employee_response = self.client.patch(
+            f"/api/hrms/employees/{self.employee.id}/",
+            {"lifecycle_status": HrEmployee.LifecycleStatus.EXITED},
+            format="json",
+        )
+
+        self.assertEqual(employee_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(employee_response.data["lifecycle_status"], HrEmployee.LifecycleStatus.EXITED)
+
     def test_holiday_calendars_api_filters_by_year(self):
         response = self.client.get(
             "/api/hrms/holiday-calendars/",
