@@ -49,6 +49,7 @@ class ContractTaxDeclarationService:
     def list_declarations(
         *,
         entity_id: int,
+        subentity_id: int | None = None,
         search: str | None = None,
         contract_payroll_profile_id: str | None = None,
         financial_year_id: int | None = None,
@@ -63,6 +64,8 @@ class ContractTaxDeclarationService:
             "contract_payroll_profile__hrms_contract__employee",
             "financial_year",
         ).prefetch_related("lines").filter(entity_id=entity_id)
+        if subentity_id is not None:
+            queryset = queryset.filter(contract_payroll_profile__hrms_contract__subentity_id=subentity_id)
         if search:
             queryset = queryset.filter(
                 Q(contract_payroll_profile__hrms_contract__contract_code__icontains=search)

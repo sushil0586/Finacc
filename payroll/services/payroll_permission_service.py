@@ -28,6 +28,20 @@ class PayrollPermissionService:
         "structure_view": {"payroll.structure.view", "payroll.structure.manage"},
         "structure_create": {"payroll.structure.create", "payroll.structure.manage"},
         "structure_edit": {"payroll.structure.edit", "payroll.structure.manage"},
+        "profile_view": {
+            "payroll.contract_profile.view",
+            "payroll.contract_profile.manage",
+            "payroll.contract_salary_assignment.view",
+            "payroll.contract_salary_assignment.manage",
+        },
+        "profile_create": {"payroll.contract_profile.create", "payroll.contract_profile.manage"},
+        "profile_edit": {
+            "payroll.contract_profile.edit",
+            "payroll.contract_profile.manage",
+            "payroll.contract_salary_assignment.create",
+            "payroll.contract_salary_assignment.edit",
+            "payroll.contract_salary_assignment.manage",
+        },
         "global_salary_template_view": {"payroll.global_salary_template.view", "payroll.global_salary_template.manage"},
         "global_salary_template_adopt": {"payroll.global_salary_template.adopt", "payroll.global_salary_template.manage"},
         "period_view": {"payroll.period.view", "payroll.period.manage"},
@@ -162,20 +176,46 @@ class PayrollPermissionService:
         return False
 
     @classmethod
-    def has_entity_permission_access(cls, *, user, entity_id: int | None, permission_key: str) -> bool:
+    def has_entity_permission_access(
+        cls,
+        *,
+        user,
+        entity_id: int | None,
+        permission_key: str,
+        subentity_id: int | None = None,
+    ) -> bool:
         if not entity_id:
             return False
         if not user or not user.is_authenticated:
             return False
         if user.is_superuser:
             return True
-        available_codes = set(EffectivePermissionService.permission_codes_for_user(user, entity_id))
+        available_codes = set(
+            EffectivePermissionService.permission_codes_for_user(
+                user,
+                entity_id,
+                subentity_id=subentity_id,
+            )
+        )
         required_codes = cls.ENTITY_PERMISSION_CODES.get(permission_key, set())
         return bool(required_codes & available_codes)
 
     @classmethod
-    def assert_entity_permission_access(cls, *, user, entity_id: int | None, permission_key: str, label: str) -> None:
-        if cls.has_entity_permission_access(user=user, entity_id=entity_id, permission_key=permission_key):
+    def assert_entity_permission_access(
+        cls,
+        *,
+        user,
+        entity_id: int | None,
+        permission_key: str,
+        label: str,
+        subentity_id: int | None = None,
+    ) -> None:
+        if cls.has_entity_permission_access(
+            user=user,
+            entity_id=entity_id,
+            permission_key=permission_key,
+            subentity_id=subentity_id,
+        ):
             return
         raise PermissionError(f"You do not have permission to {label}.")
 
@@ -186,13 +226,25 @@ class PayrollPermissionService:
         raise PermissionError(f"You do not have permission to {label}.")
 
     @classmethod
-    def has_action_access(cls, *, user, action: str, entity_id: int | None = None) -> bool:
+    def has_action_access(
+        cls,
+        *,
+        user,
+        action: str,
+        entity_id: int | None = None,
+        subentity_id: int | None = None,
+    ) -> bool:
         if not user or not user.is_authenticated:
             return False
         if user.is_superuser:
             return True
         permission_key = cls.ACTION_ENTITY_PERMISSION_KEYS.get(action)
-        if permission_key and cls.has_entity_permission_access(user=user, entity_id=entity_id, permission_key=permission_key):
+        if permission_key and cls.has_entity_permission_access(
+            user=user,
+            entity_id=entity_id,
+            permission_key=permission_key,
+            subentity_id=subentity_id,
+        ):
             return True
         group_names = cls.ACTION_GROUPS.get(action, set())
         if group_names and user.groups.filter(name__in=group_names).exists():
@@ -203,8 +255,20 @@ class PayrollPermissionService:
         return False
 
     @classmethod
-    def assert_action_access(cls, *, user, action: str, entity_id: int | None = None) -> None:
-        if cls.has_action_access(user=user, action=action, entity_id=entity_id):
+    def assert_action_access(
+        cls,
+        *,
+        user,
+        action: str,
+        entity_id: int | None = None,
+        subentity_id: int | None = None,
+    ) -> None:
+        if cls.has_action_access(
+            user=user,
+            action=action,
+            entity_id=entity_id,
+            subentity_id=subentity_id,
+        ):
             return
         raise PermissionError(
             f"You do not have permission to {cls.ACTION_LABELS.get(action, action.replace('_', ' '))}."

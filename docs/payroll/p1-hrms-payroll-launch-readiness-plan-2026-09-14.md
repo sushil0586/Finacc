@@ -68,7 +68,7 @@ Exit evidence:
 
 ### Phase 1: Guided Customer And Organization Setup
 
-Status: In progress; scoped payroll readiness UI now exposes backend counts and employee correction actions
+Status: In progress; scoped readiness UI and live staging payload are verified across Chromium, Firefox, and WebKit
 
 Goal: let an operator configure a payroll-ready entity through the product.
 
@@ -317,7 +317,7 @@ P1 is launch ready only when:
 | Gate | Status | Evidence | Blocking gaps | Owner approval |
 | --- | --- | --- | --- | --- |
 | Product inventory and launch scope | In progress | [P1 Phase 0 scope register](p1-hrms-payroll-phase0-scope-traceability-register-2026-09-14.md) | Proposed profile and exclusions await approval | - |
-| Guided customer setup | Not started | Onboarding documentation exists | Unified in-product journey incomplete | - |
+| Guided customer setup | In progress | Deployed readiness and platform-navigation checks passed in Chromium, Firefox, and WebKit | Full fresh-entity journey and restricted-role certification remain | - |
 | Employee lifecycle | Not started | Existing implementation/tests to inventory | Not assessed | - |
 | Attendance, leave, and inputs | Not started | Attendance engine exists | Leave-ledger integration incomplete | - |
 | Calculation and statutory rules | In progress | Calculation audit Phases 1-5 | Rounding, full TDS/gratuity scope decisions remain | - |
@@ -325,7 +325,7 @@ P1 is launch ready only when:
 | Posting, payment, and GL reconciliation | In progress | Posting foundation and verification exist | Entity editors and governed payment formats pending | - |
 | ESS, reimbursements, and FnF operations | Not started | FnF engine foundation exists | Product workbenches/placeholders remain | - |
 | Reports, documents, and statutory operations | Not started | Existing surfaces to inventory | Not assessed | - |
-| RBAC, isolation, recovery, UX, and scale | Not started | Partial prior test evidence | Consolidated certification absent | - |
+| RBAC, isolation, recovery, UX, and scale | In progress | Payroll route denial 6/6 plus live menu/API/cross-entity denial in Chromium, Firefox, and WebKit; provisioned HRMS viewer and employee/manager approval scenarios passed on Chromium; employee payslip, salary/bank/tax object, payroll run/report/posting/FnF, and payment-batch permission composition passed against PostgreSQL | A governed tax-evidence file repository is not implemented; recovery, scale, and staging verification of the latest fixes remain | - |
 | Customer rehearsal | Pending | - | Prior phases incomplete | - |
 | Launch decision | Pending | - | Prior phases incomplete | - |
 
@@ -335,3 +335,10 @@ P1 is launch ready only when:
 | --- | --- | --- | --- | --- | --- |
 | 14 September 2026 | Planning | Created P1 phase plan using existing payroll audits, workflows, onboarding docs, and backlog. | Existing foundation and gaps classified. | Baseline established. | Execute Phase 0 product inventory and customer-profile decision. |
 | 14 September 2026 | Phase 0 | Inventoried APIs, screens, menus, tests, personas, and repository-visible placeholders; proposed a bounded first-customer profile. | [P1 Phase 0 scope register](p1-hrms-payroll-phase0-scope-traceability-register-2026-09-14.md) | Inventory complete; profile and exclusions require approval. | Begin Phase 1 guided-readiness design after scope approval. |
+| 14 September 2026 | Phase 1 | Verified deployed readiness counts, employee correction actions, mobile empty state, platform navigation, and the unmocked scoped readiness response. | Playwright `payroll-onboarding-readiness.p1.spec.ts`, platform shell check, and `payroll-onboarding-staging-live.p1.spec.ts`: 6/6 including setup checks passed. | Deployed readiness slice is healthy for the active staging operator and `Manav-T`. | Certify a clean entity from setup through Payroll Ready, then run restricted-role and cross-browser matrices. |
+| 14 September 2026 | Phase 1 | Repeated payroll readiness, live API, mobile accessibility, and Platform Operations navigation in Firefox and WebKit. | Targeted staging suite: 10/10 passed. | Cross-browser readiness slice passed. Proposed restricted user was verified as `Entity Super Admin`, so it cannot certify payroll denial paths. | Provision a genuinely restricted payroll user, then execute payroll route, menu, API, and sensitive-data denial tests. |
+| 14 September 2026 | Phase 1 | Activated the existing QA-only restricted fixture and ran payroll route plus live API/menu/cross-entity denial checks. | Payroll routes 6/6; `restricted-rbac-staging-live.p0.spec.ts` passed in all three browsers. | Zero-payroll-access fixture cannot see payroll menus or call payroll readiness; foreign-entity access is denied. | Add HR/payroll persona matrix and employee/salary/bank/tax object-isolation coverage. |
+| 14 September 2026 | Phase 1 | Exercised provisioned HRMS view-only and employee/manager personas against staging. | `FIN-HRMS-RBAC-VIEW-001` and `FIN-HRMS-RBAC-ESS-001` passed on Chromium; full targeted run passed 5/5 including setup. | HRMS viewers can inspect permitted masters but cannot mutate/import; employees can submit their own leave but cannot self-approve; a permitted manager can approve it. | Add salary assignment, bank detail, tax declaration, payslip, and attachment object-isolation cases. |
+| 14 September 2026 | Phase 1 | Added an adversarial ESS payslip regression using two real employee payroll setups. | `PayrollProductizationApiTests.test_ess_payslip_endpoints_do_not_expose_another_employees_document` passed on the PostgreSQL test profile. | An employee list contains only their payslip; another employee's real detail and PDF URLs return 404. The SQLite test profile remains blocked by PostgreSQL-specific SQL in existing migration `sales.0048`. | Add salary assignment, bank detail, tax declaration, and attachment object-isolation cases; repair SQLite migration portability separately. |
+| 14 September 2026 | Phase 1 | Repaired payroll profile permission composition so entity RBAC contract-profile and salary-assignment grants are recognized before legacy group fallback. | `test_contract_profile_permissions_are_resolved_from_entity_rbac` passed as part of the seven-test PostgreSQL authorization regression set. | `profile_view`, `profile_create`, and `profile_edit` now resolve from the established entity permission codes; valid scoped payroll users no longer depend on a legacy Django group. | Complete adversarial salary assignment, bank detail, and tax-document object-isolation coverage. |
+| 14 September 2026 | Phase 1 | Closed cross-branch composition and read-authorization gaps for contract payroll profiles, salary assignments, tax declarations/lines, payroll runs, reports, posting, FnF, and payment batches. | Adversarial branch tests passed, followed by a 91/91 PostgreSQL regression including payroll hardening/runtime transitions and financial attachments; system check passed. | Nested HRMS contract or operational document branch is now the authorization scope. A role's permission in branch A cannot expose sensitive data or authorize payroll operations in branch B, and branch lists are data-filtered. Tax-evidence file upload remains a separate unimplemented product capability. | Deploy and certify these denial and action paths on staging, then begin recovery/concurrency and governed tax-evidence design. |

@@ -22,6 +22,7 @@ from receipts.serializers.receipt_voucher import ReceiptVoucherHeaderSerializer
 from receipts.services.receipt_voucher_service import ReceiptVoucherService
 from receipts.services.receipt_settings_service import ReceiptSettingsService
 from receipts.views.receipt_exports import ReceiptVoucherPDFAPIView
+from receipts.views.receipt_attachment import ReceiptVoucherAttachmentBaseAPIView
 from receipts.views.receipt_meta import ReceiptVoucherDetailFormMetaAPIView, ReceiptVoucherFormMetaAPIView
 from receipts.views.receipt_voucher import (
     ReceiptVoucherApprovalAPIView,
@@ -46,6 +47,20 @@ class FakeRelated(list):
 
 
 class PaymentPostingAdapterTests(SimpleTestCase):
+    @patch("receipts.views.receipt_attachment._require_receipt_permission")
+    def test_attachment_authorization_uses_document_branch(self, mocked_permission):
+        user = SimpleNamespace(id=7)
+        header = SimpleNamespace(entity_id=12, subentity_id=32)
+
+        ReceiptVoucherAttachmentBaseAPIView._authorize(SimpleNamespace(user=user), header, "delete")
+
+        mocked_permission.assert_called_once_with(
+            user,
+            entity_id=12,
+            subentity_id=32,
+            action="delete",
+        )
+
     def _header(self):
         return SimpleNamespace(
             id=1,

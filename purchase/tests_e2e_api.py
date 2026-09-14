@@ -4944,6 +4944,30 @@ class PurchaseApiEndToEndTests(APITestCase):
         self.assertEqual(download_resp.status_code, status.HTTP_200_OK)
         self.assertIn("attachment;", download_resp.get("Content-Disposition", ""))
 
+        outsider = User.objects.create_user(
+            username="purchase-attachment-outsider",
+            email="purchase-attachment-outsider@example.com",
+            password="pass123",
+        )
+        self.client.force_authenticate(user=outsider)
+        self.assertEqual(
+            self.client.get(f"/api/purchase/purchase-invoices/{invoice_id}/attachments/{scope}").status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        self.assertEqual(
+            self.client.get(
+                f"/api/purchase/purchase-invoices/{invoice_id}/attachments/{attachment_id}/download/{scope}"
+            ).status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        self.assertEqual(
+            self.client.delete(
+                f"/api/purchase/purchase-invoices/{invoice_id}/attachments/{attachment_id}/{scope}"
+            ).status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        self.client.force_authenticate(user=self.user)
+
         delete_resp = self.client.delete(
             f"/api/purchase/purchase-invoices/{invoice_id}/attachments/{attachment_id}/{scope}"
         )

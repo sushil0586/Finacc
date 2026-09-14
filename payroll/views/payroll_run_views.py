@@ -28,9 +28,24 @@ def _raise_value_error(err: ValueError):
     raise ValidationError({"detail": str(payload)})
 
 
-def _assert_action_permission(request, action: str, *, entity_id: int | None = None) -> None:
+def _assert_action_permission(
+    request,
+    action: str,
+    *,
+    entity_id: int | None = None,
+    subentity_id: int | None = None,
+) -> None:
     try:
-        PayrollPermissionService.assert_action_access(user=request.user, action=action, entity_id=entity_id)
+        PayrollPermissionService.assert_action_access(
+            user=request.user,
+            action=action,
+            entity_id=entity_id,
+            subentity_id=(
+                subentity_id
+                if subentity_id is not None
+                else getattr(request, "_payroll_scope_subentity_id", None)
+            ),
+        )
     except PermissionError as err:
         raise PermissionDenied(detail=str(err))
 
@@ -104,7 +119,12 @@ class PayrollRunListCreateAPIView(PayrollScopedAPIView, generics.ListCreateAPIVi
             entityfinid_id=data["entityfinid"].id,
             subentity_id=getattr(data.get("subentity"), "id", None),
         )
-        _assert_action_permission(request, "create", entity_id=data["entity"].id)
+        _assert_action_permission(
+            request,
+            "create",
+            entity_id=data["entity"].id,
+            subentity_id=getattr(data.get("subentity"), "id", None),
+        )
         try:
             result = PayrollRunService.create_run(
                 entity_id=data["entity"].id,

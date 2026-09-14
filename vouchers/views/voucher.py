@@ -60,11 +60,22 @@ def _perm_code(voucher_type: str, action: str) -> str:
     return f"voucher.{suffix}.{action}"
 
 
-def _assert_permission(user, *, entity_id: int, voucher_type: str, action: str):
+def _assert_permission(
+    user,
+    *,
+    entity_id: int,
+    voucher_type: str,
+    action: str,
+    subentity_id: int | None = None,
+):
     code = _perm_code(voucher_type, action)
     if not code:
         raise PermissionDenied({"detail": "Unknown voucher type for permission check."})
-    codes = EffectivePermissionService.permission_codes_for_user(user, entity_id)
+    codes = EffectivePermissionService.permission_codes_for_user(
+        user,
+        entity_id,
+        subentity_id=subentity_id,
+    )
     if code not in codes:
         raise PermissionDenied({"detail": f"Missing permission: {code}"})
 

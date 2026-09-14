@@ -214,6 +214,43 @@ class PayrollProductizationApiTests(TestCase):
         self.assertIn("statutory", detail_payload["grouped_components"])
         self.assertGreaterEqual(len(detail_payload["component_trace"]), 1)
 
+    def test_ess_payslip_endpoints_do_not_expose_another_employees_document(self):
+        _, _, own_payslip = self._create_run_with_payslip()
+
+        other_user = User.objects.create_user(
+            username="other-payroll-employee",
+            email="other-payroll-employee@example.com",
+            password="pass123",
+        )
+        other_setup = PayrollFactory.full_payroll_setup()
+        other_setup["hrms_employee"].linked_user = other_user
+        other_setup["hrms_employee"].save(update_fields=["linked_user"])
+        other_run = PayrollRunService.create_run(
+            entity_id=other_setup["entity"].id,
+            entityfinid_id=other_setup["entityfinid"].id,
+            subentity_id=other_setup["subentity"].id,
+            payroll_period_id=other_setup["period"].id,
+            run_type=PayrollRun.RunType.REGULAR,
+            posting_date=other_setup["period"].period_end,
+            payout_date=other_setup["period"].payout_date,
+            created_by_id=other_user.id,
+        ).run
+        other_run = PayrollRunService.calculate_run(other_run).run
+        other_row = other_run.employee_runs.get()
+        other_payslip = PayslipService.build_for_run_employee(other_row)
+
+        list_response = self.client.get("/api/payroll/ess/payslips/")
+        self.assertEqual(list_response.status_code, 200, list_response.content)
+        payload = list_response.json()
+        results = payload.get("results", payload) if isinstance(payload, dict) else payload
+        self.assertEqual([row["id"] for row in results], [own_payslip.id])
+
+        detail_response = self.client.get(f"/api/payroll/ess/payslips/{other_payslip.id}/")
+        self.assertEqual(detail_response.status_code, 404, detail_response.content)
+
+        pdf_response = self.client.get(f"/api/payroll/ess/payslips/{other_payslip.id}/pdf/")
+        self.assertEqual(pdf_response.status_code, 404, pdf_response.content)
+
     def test_ess_tax_and_placeholder_payloads(self):
         declaration = ContractTaxDeclaration.objects.create(
             entity=self.setup["entity"],

@@ -31,6 +31,7 @@ class PayrollScopedAPIView(ScopedEntitlementMixin, APIView):
         if entity_id is None:
             return None, None, None
         subentity_id = self._parse_int(request.query_params.get("subentity"), "subentity", required=False)
+        request._payroll_scope_subentity_id = subentity_id
         entityfinid_id = self._parse_int(request.query_params.get("entityfinid"), "entityfinid", required=require_entityfinid)
         self.enforce_scope(request, entity_id=entity_id, entityfinid_id=entityfinid_id, subentity_id=subentity_id)
         return entity_id, entityfinid_id, subentity_id
@@ -38,6 +39,7 @@ class PayrollScopedAPIView(ScopedEntitlementMixin, APIView):
     def _scope_from_payload(self, request, payload, *, require_entityfinid: bool = False):
         entity_id = self._parse_int(payload.get("entity"), "entity", required=True)
         subentity_id = self._parse_int(payload.get("subentity"), "subentity", required=False)
+        request._payroll_scope_subentity_id = subentity_id
         entityfinid_id = self._parse_int(payload.get("entityfinid"), "entityfinid", required=require_entityfinid)
         self.enforce_scope(request, entity_id=entity_id, entityfinid_id=entityfinid_id, subentity_id=subentity_id)
         return entity_id, entityfinid_id, subentity_id
@@ -47,16 +49,33 @@ class PayrollScopedAPIView(ScopedEntitlementMixin, APIView):
         if getattr(request.user, "is_superuser", False):
             return
 
-        available_codes = set(EffectivePermissionService.permission_codes_for_user(request.user, entity_id))
+        available_codes = set(
+            EffectivePermissionService.permission_codes_for_user(
+                request.user,
+                entity_id,
+                subentity_id=getattr(request, "_payroll_scope_subentity_id", None),
+            )
+        )
         if permission_codes & available_codes:
             return
 
         raise PermissionDenied(detail=f"Missing permission to {label}.")
 
     def _enforce_object_scope(self, request, obj) -> None:
+        subentity_id = getattr(obj, "subentity_id", None)
+        if subentity_id is None:
+            contract = getattr(obj, "hrms_contract", None)
+            if contract is None:
+                profile = getattr(obj, "contract_payroll_profile", None)
+                if profile is None:
+                    declaration = getattr(obj, "declaration", None)
+                    profile = getattr(declaration, "contract_payroll_profile", None)
+                contract = getattr(profile, "hrms_contract", None)
+            subentity_id = getattr(contract, "subentity_id", None)
+        request._payroll_scope_subentity_id = subentity_id
         self.enforce_scope(
             request,
             entity_id=getattr(obj, "entity_id"),
             entityfinid_id=getattr(obj, "entityfinid_id", None),
-            subentity_id=getattr(obj, "subentity_id", None),
+            subentity_id=subentity_id,
         )

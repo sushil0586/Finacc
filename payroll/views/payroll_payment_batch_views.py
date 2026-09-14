@@ -18,9 +18,24 @@ from payroll.views.payroll_run_views import _raise_value_error
 from payroll.views.scoped import PayrollScopedAPIView
 
 
-def _assert_action_permission(request, action: str, *, entity_id: int | None = None) -> None:
+def _assert_action_permission(
+    request,
+    action: str,
+    *,
+    entity_id: int | None = None,
+    subentity_id: int | None = None,
+) -> None:
     try:
-        PayrollPermissionService.assert_action_access(user=request.user, action=action, entity_id=entity_id)
+        PayrollPermissionService.assert_action_access(
+            user=request.user,
+            action=action,
+            entity_id=entity_id,
+            subentity_id=(
+                subentity_id
+                if subentity_id is not None
+                else getattr(request, "_payroll_scope_subentity_id", None)
+            ),
+        )
     except PermissionError as err:
         raise PermissionDenied(detail=str(err))
 
@@ -74,7 +89,12 @@ class PayrollPaymentBatchListCreateAPIView(PayrollScopedAPIView, generics.ListCr
         entityfinid_id = getattr(source, "entityfinid_id", None)
         subentity_id = getattr(source, "subentity_id", None)
         self.enforce_scope(request, entity_id=entity_id, entityfinid_id=entityfinid_id, subentity_id=subentity_id)
-        _assert_action_permission(request, "payment_batch_create", entity_id=entity_id)
+        _assert_action_permission(
+            request,
+            "payment_batch_create",
+            entity_id=entity_id,
+            subentity_id=subentity_id,
+        )
         try:
             if data["source_type"] == PayrollPaymentBatch.SourceType.PAYROLL_RUN:
                 batch = PayrollPaymentBatchService.create_from_payroll_run(

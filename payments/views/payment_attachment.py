@@ -10,9 +10,12 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.entitlements import enforce_operational_entity_access
 from helpers.utils.attachment_validation import validate_attachment_uploads
 from payments.models import PaymentVoucherAttachment, PaymentVoucherHeader
 from payments.serializers.payment_attachment import PaymentVoucherAttachmentSerializer
+from payments.views.payment_voucher import _require_payment_permission
+from subscriptions.services import SubscriptionLimitCodes
 
 
 class PaymentVoucherAttachmentBaseAPIView(APIView):
@@ -34,19 +37,40 @@ class PaymentVoucherAttachmentBaseAPIView(APIView):
         return entity_id, entityfinid_id, subentity_id
 
     def _scoped_header(self, request, pk: int) -> PaymentVoucherHeader:
-        entity_id, entityfinid_id, _subentity_id = self._scope_ids(request)
+        entity_id, entityfinid_id, subentity_id = self._scope_ids(request)
         qs = PaymentVoucherHeader.objects.filter(entity_id=entity_id, entityfinid_id=entityfinid_id)
-        return get_object_or_404(qs, pk=pk)
+        if subentity_id is not None:
+            qs = qs.filter(subentity_id=subentity_id)
+        header = get_object_or_404(qs, pk=pk)
+        enforce_operational_entity_access(
+            request=request,
+            entity_id=header.entity_id,
+            entityfinid_id=header.entityfinid_id,
+            subentity_id=header.subentity_id,
+            feature_code=SubscriptionLimitCodes.FEATURE_FINANCIAL,
+        )
+        return header
+
+    @staticmethod
+    def _authorize(request, header: PaymentVoucherHeader, action: str) -> None:
+        _require_payment_permission(
+            request.user,
+            entity_id=header.entity_id,
+            subentity_id=header.subentity_id,
+            action=action,
+        )
 
 
 class PaymentVoucherAttachmentListCreateAPIView(PaymentVoucherAttachmentBaseAPIView):
     def get(self, request, pk: int):
         header = self._scoped_header(request, pk)
+        self._authorize(request, header, "view")
         rows = header.attachments.order_by("-created_at", "-id")
         return Response(PaymentVoucherAttachmentSerializer(rows, many=True).data)
 
     def post(self, request, pk: int):
         header = self._scoped_header(request, pk)
+        self._authorize(request, header, "create")
         files = request.FILES.getlist("attachments") or request.FILES.getlist("file")
         if not files:
             raise ValidationError({"detail": "At least one attachment file is required."})
@@ -74,6 +98,7 @@ class PaymentVoucherAttachmentListCreateAPIView(PaymentVoucherAttachmentBaseAPIV
 class PaymentVoucherAttachmentDeleteAPIView(PaymentVoucherAttachmentBaseAPIView):
     def delete(self, request, pk: int, attachment_id: int):
         header = self._scoped_header(request, pk)
+        self._authorize(request, header, "delete")
         attachment = get_object_or_404(PaymentVoucherAttachment.objects.filter(payment_voucher=header), pk=attachment_id)
         try:
             attachment.file.delete(save=False)
@@ -88,6 +113,7 @@ class PaymentVoucherAttachmentDownloadAPIView(PaymentVoucherAttachmentBaseAPIVie
 
     def get(self, request, pk: int, attachment_id: int):
         header = self._scoped_header(request, pk)
+        self._authorize(request, header, "view")
         attachment = get_object_or_404(PaymentVoucherAttachment.objects.filter(payment_voucher=header), pk=attachment_id)
         if not attachment.file:
             raise ValidationError({"detail": "Attachment file is missing."})

@@ -10,6 +10,7 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.entitlements import enforce_operational_entity_access
 from helpers.utils.attachment_validation import validate_attachment_uploads
 from sales.models import SalesAttachment, SalesInvoiceHeader
 from sales.serializers.sales_attachment import SalesAttachmentSerializer
@@ -36,9 +37,19 @@ class SalesAttachmentBaseAPIView(APIView):
         return entity_id, entityfinid_id, subentity_id
 
     def _scoped_header(self, request, pk: int) -> SalesInvoiceHeader:
-        entity_id, entityfinid_id, _subentity_id = self._scope_ids(request)
+        entity_id, entityfinid_id, subentity_id = self._scope_ids(request)
         qs = SalesInvoiceHeader.objects.filter(entity_id=entity_id, entityfinid_id=entityfinid_id)
-        return get_object_or_404(qs, pk=pk)
+        if subentity_id is not None:
+            qs = qs.filter(subentity_id=subentity_id)
+        header = get_object_or_404(qs, pk=pk)
+        enforce_operational_entity_access(
+            request=request,
+            entity_id=header.entity_id,
+            entityfinid_id=header.entityfinid_id,
+            subentity_id=header.subentity_id,
+            feature_code=SubscriptionLimitCodes.FEATURE_SALES,
+        )
+        return header
 
 
 class SalesInvoiceAttachmentListCreateAPIView(SalesAttachmentBaseAPIView):
@@ -50,6 +61,7 @@ class SalesInvoiceAttachmentListCreateAPIView(SalesAttachmentBaseAPIView):
             doc_type=header.doc_type,
             action="view",
             feature_code=SubscriptionLimitCodes.FEATURE_SALES,
+            subentity_id=header.subentity_id,
         )
         rows = header.attachments.order_by("-created_at", "-id")
         return Response(SalesAttachmentSerializer(rows, many=True).data)
@@ -62,6 +74,7 @@ class SalesInvoiceAttachmentListCreateAPIView(SalesAttachmentBaseAPIView):
             doc_type=header.doc_type,
             action="create",
             feature_code=SubscriptionLimitCodes.FEATURE_SALES,
+            subentity_id=header.subentity_id,
         )
         files = request.FILES.getlist("attachments") or request.FILES.getlist("file")
         if not files:
@@ -91,6 +104,7 @@ class SalesInvoiceAttachmentDeleteAPIView(SalesAttachmentBaseAPIView):
             doc_type=header.doc_type,
             action="delete",
             feature_code=SubscriptionLimitCodes.FEATURE_SALES,
+            subentity_id=header.subentity_id,
         )
         attachment = get_object_or_404(SalesAttachment.objects.filter(header=header), pk=attachment_id)
         try:
@@ -112,6 +126,7 @@ class SalesInvoiceAttachmentDownloadAPIView(SalesAttachmentBaseAPIView):
             doc_type=header.doc_type,
             action="view",
             feature_code=SubscriptionLimitCodes.FEATURE_SALES,
+            subentity_id=header.subentity_id,
         )
         attachment = get_object_or_404(SalesAttachment.objects.filter(header=header), pk=attachment_id)
         if not attachment.file:

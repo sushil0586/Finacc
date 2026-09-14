@@ -77,6 +77,7 @@ def require_purchase_scope_permission(
     action: str,
     access_mode: str | None = None,
     feature_code: str | None = None,
+    subentity_id: int | None = None,
 ) -> None:
     entity = EffectivePermissionService.entity_for_user(user, entity_id)
     if entity is None:
@@ -92,7 +93,11 @@ def require_purchase_scope_permission(
         )
 
     required_codes = purchase_permission_codes(doc_type, action)
-    available_codes = EffectivePermissionService.permission_codes_for_user(user, entity.id)
+    available_codes = EffectivePermissionService.permission_codes_for_user(
+        user,
+        entity.id,
+        subentity_id=subentity_id,
+    )
     if _has_any_code(available_codes, required_codes):
         return
 
@@ -109,6 +114,7 @@ def require_purchase_request_permission(
     action: str,
     access_mode: str | None = None,
     feature_code: str | None = None,
+    subentity_id: int | None = None,
 ) -> int:
     normalized_doc_type = normalize_purchase_doc_type(doc_type)
     require_purchase_scope_permission(
@@ -118,5 +124,6 @@ def require_purchase_request_permission(
         action=action,
         access_mode=access_mode,
         feature_code=feature_code,
+        subentity_id=subentity_id,
     )
     return normalized_doc_type

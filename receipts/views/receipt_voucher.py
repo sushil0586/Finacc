@@ -110,12 +110,16 @@ def _receipt_permission_code(action: str) -> str:
     return f"voucher.receipt.{action}"
 
 
-def _require_receipt_permission(user, *, entity_id: int, action: str):
+def _require_receipt_permission(user, *, entity_id: int, action: str, subentity_id: int | None = None):
     entity = EffectivePermissionService.entity_for_user(user, int(entity_id))
     if entity is None:
         raise PermissionDenied({"detail": "Entity not found or inaccessible."})
 
-    permission_codes = EffectivePermissionService.permission_codes_for_user(user, int(entity_id))
+    permission_codes = EffectivePermissionService.permission_codes_for_user(
+        user,
+        int(entity_id),
+        subentity_id=subentity_id,
+    )
     permission_code = _receipt_permission_code(action)
     legacy_code = f"receipt.voucher.{action}"
     if permission_code not in permission_codes and legacy_code not in permission_codes:

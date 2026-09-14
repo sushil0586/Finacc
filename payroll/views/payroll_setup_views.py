@@ -107,11 +107,17 @@ class PayrollSetupScopedAPIView(PayrollScopedAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def _assert_setup_permission(self, request, *, entity_id: int, permission_key: str, label: str, legacy_groups: set[str], legacy_permissions: set[str]):
-        if PayrollPermissionService.has_entity_permission_access(user=request.user, entity_id=entity_id, permission_key=permission_key):
-            self.enforce_scope(request, entity_id=entity_id)
+        subentity_id = getattr(request, "_payroll_scope_subentity_id", None)
+        if PayrollPermissionService.has_entity_permission_access(
+            user=request.user,
+            entity_id=entity_id,
+            permission_key=permission_key,
+            subentity_id=subentity_id,
+        ):
+            self.enforce_scope(request, entity_id=entity_id, subentity_id=subentity_id)
             return
         _assert_access(request, groups=legacy_groups, permissions_required=legacy_permissions, label=label)
-        self.enforce_scope(request, entity_id=entity_id)
+        self.enforce_scope(request, entity_id=entity_id, subentity_id=subentity_id)
 
 
 class PayrollRuntimeReadinessPreviewAPIView(PayrollSetupScopedAPIView):
@@ -580,6 +586,18 @@ class ContractSalaryAssignmentRetrieveUpdateAPIView(PayrollSetupScopedAPIView, g
         self._enforce_object_scope(self.request, obj.contract_payroll_profile)
         return obj
 
+    def get(self, request, *args, **kwargs):
+        obj = self.get_object()
+        self._assert_setup_permission(
+            request,
+            entity_id=obj.contract_payroll_profile.entity_id,
+            permission_key="profile_view",
+            label="view contract salary assignments",
+            legacy_groups={"payroll_operator", "payroll_reviewer", "payroll_finance", "payroll_admin"},
+            legacy_permissions={"payroll.view_payrollemployeeprofile"},
+        )
+        return Response(self.get_serializer(obj).data)
+
     def patch(self, request, *args, **kwargs):
         obj = self.get_object()
         self._assert_setup_permission(
@@ -614,10 +632,11 @@ class ContractTaxDeclarationListCreateAPIView(PayrollSetupScopedAPIView, Payroll
     scope_fields = ("entity",)
 
     def get_queryset(self):
-        entity_id, _, _ = self._scope_from_query(self.request, require_entity=True)
+        entity_id, _, subentity_id = self._scope_from_query(self.request, require_entity=True)
         is_active_param = self.request.query_params.get("is_active")
         return ContractTaxDeclarationService.list_declarations(
             entity_id=entity_id,
+            subentity_id=subentity_id,
             search=self.request.query_params.get("search"),
             contract_payroll_profile_id=self.request.query_params.get("contract_payroll_profile"),
             financial_year_id=int(self.request.query_params["financial_year"]) if self.request.query_params.get("financial_year") else None,
@@ -833,6 +852,18 @@ class ContractTaxDeclarationLineRetrieveUpdateAPIView(PayrollSetupScopedAPIView,
         obj = super().get_object()
         self._enforce_object_scope(self.request, obj.declaration)
         return obj
+
+    def get(self, request, *args, **kwargs):
+        obj = self.get_object()
+        self._assert_setup_permission(
+            request,
+            entity_id=obj.declaration.entity_id,
+            permission_key="profile_view",
+            label="view contract tax declaration lines",
+            legacy_groups={"payroll_operator", "payroll_reviewer", "payroll_finance", "payroll_admin"},
+            legacy_permissions={"payroll.view_payrollemployeeprofile"},
+        )
+        return Response(self.get_serializer(obj).data)
 
     def patch(self, request, *args, **kwargs):
         obj = self.get_object()

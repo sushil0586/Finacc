@@ -21,6 +21,7 @@ from vouchers.serializers.voucher import VoucherWriteSerializer
 from vouchers.services.voucher_settings_service import VoucherSettingsService
 from vouchers.services.voucher_service import VoucherResult, VoucherService
 from vouchers.views.voucher_settings import VoucherCompiledChoicesAPIView, VoucherSettingsAPIView
+from vouchers.views.voucher_attachment import VoucherAttachmentBaseAPIView
 from vouchers.views.voucher import (
     VoucherListCreateAPIView,
     VoucherApprovalAPIView,
@@ -34,6 +35,21 @@ from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
 class VoucherServiceUnitTests(SimpleTestCase):
+    @patch("vouchers.views.voucher_attachment._assert_permission")
+    def test_attachment_authorization_uses_document_type_and_branch(self, mocked_permission):
+        user = SimpleNamespace(id=7)
+        header = SimpleNamespace(entity_id=13, subentity_id=33, voucher_type="BANK")
+
+        VoucherAttachmentBaseAPIView._authorize(SimpleNamespace(user=user), header, "create")
+
+        mocked_permission.assert_called_once_with(
+            user,
+            entity_id=13,
+            subentity_id=33,
+            voucher_type="BANK",
+            action="create",
+        )
+
     def test_validate_journal_lines_returns_balanced_totals(self):
         total_dr, total_cr = VoucherService._validate_journal_lines(
             lines=[

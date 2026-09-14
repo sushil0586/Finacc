@@ -27,6 +27,7 @@ from payments.serializers.payment_voucher import PaymentVoucherHeaderSerializer
 from payments.services.payment_voucher_service import PaymentVoucherService
 from payments.services.payment_settings_service import PaymentSettingsService
 from payments.views.payment_exports import PaymentVoucherPDFAPIView
+from payments.views.payment_attachment import PaymentVoucherAttachmentBaseAPIView
 from payments.views.payment_meta import PaymentVoucherDetailFormMetaAPIView, PaymentVoucherFormMetaAPIView
 from payments.views.payment_readonly import (
     PaymentAllocationPreviewAPIView,
@@ -137,6 +138,20 @@ class MetaCacheSingleFlightTests(SimpleTestCase):
 
 
 class PaymentVoucherReferenceWarningTests(SimpleTestCase):
+    @patch("payments.views.payment_attachment._require_payment_permission")
+    def test_attachment_authorization_uses_document_branch(self, mocked_permission):
+        user = SimpleNamespace(id=7)
+        header = SimpleNamespace(entity_id=11, subentity_id=31)
+
+        PaymentVoucherAttachmentBaseAPIView._authorize(SimpleNamespace(user=user), header, "view")
+
+        mocked_permission.assert_called_once_with(
+            user,
+            entity_id=11,
+            subentity_id=31,
+            action="view",
+        )
+
     @patch("payments.views.payment_voucher.PaymentVoucherHeader.objects")
     def test_duplicate_reference_warning_includes_existing_voucher_code(self, mocked_objects):
         exact_qs = mocked_objects.filter.return_value.exclude.return_value.order_by.return_value
