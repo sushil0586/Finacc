@@ -102,6 +102,10 @@ class PayrollRunService:
     happens only through the posting adapter once the run is approved.
     """
 
+    @staticmethod
+    def _lock_run(run: PayrollRun) -> PayrollRun:
+        return PayrollRun.objects.select_for_update().get(pk=run.pk)
+
     REQUIRED_CALCULATION_POLICY_KEYS = ("country_code", "salary_mode", "proration_basis", "rounding_policy")
     DEFAULT_PF_WAGE_CAP = Decimal("15000.00")
     DEFAULT_PF_EMPLOYEE_RATE = Decimal("12.00")
@@ -1679,6 +1683,7 @@ class PayrollRunService:
     @classmethod
     @transaction.atomic
     def calculate_run(cls, run: PayrollRun, *, force: bool = False) -> PayrollRunResult:
+        run = cls._lock_run(run)
         PayrollRunHardeningService.assert_mutable(run)
         if run.status not in {PayrollRun.Status.DRAFT, PayrollRun.Status.CALCULATED}:
             raise ValueError("Only draft or calculated payroll runs can be recalculated.")
@@ -2226,6 +2231,7 @@ class PayrollRunService:
     @staticmethod
     @transaction.atomic
     def submit_run(run: PayrollRun, *, submitted_by_id: int, note: str = "", reason_code: str = "") -> PayrollRunResult:
+        run = PayrollRunService._lock_run(run)
         if run.status != PayrollRun.Status.CALCULATED:
             raise ValueError("Only calculated payroll runs can be submitted.")
         old_status = run.status
@@ -2292,6 +2298,7 @@ class PayrollRunService:
     @staticmethod
     @transaction.atomic
     def approve_run(run: PayrollRun, *, approved_by_id: int, note: str = "") -> PayrollRunResult:
+        run = PayrollRunService._lock_run(run)
         if run.status != PayrollRun.Status.CALCULATED:
             raise ValueError("Only calculated payroll runs can be approved.")
         if not run.employee_runs.exists():
@@ -2316,7 +2323,7 @@ class PayrollRunService:
                 }
             )
         if run.approval_status == PayrollRun.ApprovalStatus.DRAFT:
-            PayrollRunService.submit_run(run, submitted_by_id=approved_by_id, note=note)
+            run = PayrollRunService.submit_run(run, submitted_by_id=approved_by_id, note=note).run
         old_status = run.status
         ApprovalWorkflowService.approve(
             instance=run,
@@ -2354,6 +2361,7 @@ class PayrollRunService:
     @staticmethod
     @transaction.atomic
     def post_run(run: PayrollRun, *, posted_by_id: int) -> PayrollRunResult:
+        run = PayrollRunService._lock_run(run)
         if run.status != PayrollRun.Status.APPROVED:
             raise ValueError("Only approved payroll runs can be posted.")
         if run.approval_status not in {

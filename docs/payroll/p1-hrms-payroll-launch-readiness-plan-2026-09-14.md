@@ -150,7 +150,7 @@ Exit evidence:
 
 ### Phase 5: Payroll Run Operations And Controls
 
-Status: Not started
+Status: In progress; local transition concurrency and calculation idempotency certified
 
 Goal: provide a safe payroll processor workbench from draft to approved result.
 
@@ -171,7 +171,7 @@ Exit evidence:
 
 ### Phase 6: Posting, Reversal, Payment, And Finance Reconciliation
 
-Status: Not started
+Status: In progress; local posting, reversal, payment-batch concurrency, and rollback certified
 
 Goal: connect payroll results to finance and settlement without duplicate or unexplained balances.
 
@@ -321,11 +321,11 @@ P1 is launch ready only when:
 | Employee lifecycle | Not started | Existing implementation/tests to inventory | Not assessed | - |
 | Attendance, leave, and inputs | Not started | Attendance engine exists | Leave-ledger integration incomplete | - |
 | Calculation and statutory rules | In progress | Calculation audit Phases 1-5 | Rounding, full TDS/gratuity scope decisions remain | - |
-| Run operations and approvals | Not started | Workflow foundation exists | End-user certification pending | - |
-| Posting, payment, and GL reconciliation | In progress | Posting foundation and verification exist | Entity editors and governed payment formats pending | - |
+| Run operations and approvals | In progress | PostgreSQL concurrency regression proves one calculation snapshot/action under simultaneous calculation and one posting revision/action under simultaneous posting | Staging concurrency and full processor workbench certification pending | - |
+| Posting, payment, and GL reconciliation | In progress | Posting foundation plus PostgreSQL concurrency/rollback regression proves one active payment batch, one payment confirmation/disbursement event, one reversal posting, and atomic failed-post rollback | Staging concurrency, entity editors, governed payment formats, and full GL reconciliation pending | - |
 | ESS, reimbursements, and FnF operations | Not started | FnF engine foundation exists | Product workbenches/placeholders remain | - |
 | Reports, documents, and statutory operations | Not started | Existing surfaces to inventory | Not assessed | - |
-| RBAC, isolation, recovery, UX, and scale | In progress | Payroll route denial 6/6 plus live menu/API/cross-entity denial in Chromium, Firefox, and WebKit; provisioned HRMS viewer and employee/manager approval scenarios passed on Chromium; employee payslip, salary/bank/tax object, payroll run/report/posting/FnF, and payment-batch permission composition passed against PostgreSQL | A governed tax-evidence file repository is not implemented; recovery, scale, and staging verification of the latest fixes remain | - |
+| RBAC, isolation, recovery, UX, and scale | In progress | Deployed RBAC/isolation gates passed; 108/108 local PostgreSQL payroll lifecycle/concurrency/rollback regressions passed; onboarding failure and retry passed 15/15 locally across Chromium, Firefox, and WebKit, with 48/48 focused Angular tests | Tax-evidence storage and three staging fixtures remain; deploy and repeat concurrency/recovery gates on staging; scale certification remains | - |
 | Customer rehearsal | Pending | - | Prior phases incomplete | - |
 | Launch decision | Pending | - | Prior phases incomplete | - |
 
@@ -342,3 +342,7 @@ P1 is launch ready only when:
 | 14 September 2026 | Phase 1 | Added an adversarial ESS payslip regression using two real employee payroll setups. | `PayrollProductizationApiTests.test_ess_payslip_endpoints_do_not_expose_another_employees_document` passed on the PostgreSQL test profile. | An employee list contains only their payslip; another employee's real detail and PDF URLs return 404. The SQLite test profile remains blocked by PostgreSQL-specific SQL in existing migration `sales.0048`. | Add salary assignment, bank detail, tax declaration, and attachment object-isolation cases; repair SQLite migration portability separately. |
 | 14 September 2026 | Phase 1 | Repaired payroll profile permission composition so entity RBAC contract-profile and salary-assignment grants are recognized before legacy group fallback. | `test_contract_profile_permissions_are_resolved_from_entity_rbac` passed as part of the seven-test PostgreSQL authorization regression set. | `profile_view`, `profile_create`, and `profile_edit` now resolve from the established entity permission codes; valid scoped payroll users no longer depend on a legacy Django group. | Complete adversarial salary assignment, bank detail, and tax-document object-isolation coverage. |
 | 14 September 2026 | Phase 1 | Closed cross-branch composition and read-authorization gaps for contract payroll profiles, salary assignments, tax declarations/lines, payroll runs, reports, posting, FnF, and payment batches. | Adversarial branch tests passed, followed by a 91/91 PostgreSQL regression including payroll hardening/runtime transitions and financial attachments; system check passed. | Nested HRMS contract or operational document branch is now the authorization scope. A role's permission in branch A cannot expose sensitive data or authorize payroll operations in branch B, and branch lists are data-filtered. Tax-evidence file upload remains a separate unimplemented product capability. | Deploy and certify these denial and action paths on staging, then begin recovery/concurrency and governed tax-evidence design. |
+| 14 September 2026 | Phase 1 | Repeated the deployed negative-access and provisioned-persona gates after the payroll branch-scope release. | Live restricted test passed 2/2 including setup in Chromium and 4/4 including setup in Firefox/WebKit; targeted branch isolation, HRMS view-only, and ESS approval run passed 4/4 including setup in Chromium. | Staging still denies payroll APIs and menus to the restricted fixture, denies cross-entity and cross-branch access, keeps HRMS masters read-only for viewers, and separates employee submission from manager approval. | Add direct staging object probes for salary, bank, tax, payslip, run action, FnF, and payment batch endpoints, then start recovery/concurrency testing. |
+| 14 September 2026 | Phase 1 | Added and repeated a live sensitive-payroll object and action gate using a provisioned zero-permission tenant member. | `FIN-PAYROLL-RBAC-OBJECT-001`: two consecutive Chromium runs passed 2/2 including setup. The run exercised real contract profile, salary assignment, payroll run, posting-status, calculation-action, and payment-batch objects. | Restricted reads and lifecycle actions returned `403`; the unlinked member's ESS payslip collection remained empty. Staging had no tax declaration, published run payslip, or FnF settlement fixture, so those direct probes were not counted. | Seed governed tax-declaration, published-payslip, and FnF fixtures, then execute their direct staging denials and begin recovery/concurrency testing. |
+| 14 September 2026 | Phases 5-6 | Added row locking to payroll run transitions, reversal, payment-batch creation, and payment-batch transitions; added six PostgreSQL concurrency/rollback regressions. | Focused concurrency module passed 6/6; broadened payroll lifecycle, posting, reversal, payment, traceability, and hardening suite passed 108/108 with no Django system-check issue. | Simultaneous requests preserve one calculation/posting/batch/payment/reversal effect, and forced posting failure rolls back payroll and accounting state. | Deploy backend and repeat controlled staging concurrency probes before treating this as production-environment evidence. |
+| 14 September 2026 | Cross-cutting recovery | Made onboarding readiness failures actionable, cleared stale payloads, and cancelled superseded loads before retry. | Focused Angular suite passed 48/48; Playwright readiness/recovery suite passed 5/5 in Chromium and 10/10 in Firefox/WebKit against the local build. | Server and network failures show useful messages; one retry issues one replacement request and restores readiness without stale data. | Deploy frontend and repeat the browser gate on staging; add session-expiry and broader payroll action failure injection. |

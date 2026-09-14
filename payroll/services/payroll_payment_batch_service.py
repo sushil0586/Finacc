@@ -41,6 +41,10 @@ class PayrollPaymentExportResult:
 
 class PayrollPaymentBatchService:
     @staticmethod
+    def _lock_batch(batch: PayrollPaymentBatch) -> PayrollPaymentBatch:
+        return PayrollPaymentBatch.objects.select_for_update().get(pk=batch.pk)
+
+    @staticmethod
     def _notification_users_for_batch(batch: PayrollPaymentBatch, *extra_user_ids: int | None):
         user_ids: set[int] = set()
         for field_name in (
@@ -262,6 +266,7 @@ class PayrollPaymentBatchService:
         allow_non_positive_amounts: bool = False,
         export_format: str = PayrollPaymentBatch.ExportFormat.GENERIC_CSV,
     ) -> PayrollPaymentBatch:
+        run = PayrollRun.objects.select_for_update().select_related("payroll_period").get(pk=run.pk)
         if run.status not in {PayrollRun.Status.APPROVED, PayrollRun.Status.POSTED}:
             raise ValueError("Only approved or posted payroll runs can be converted to payment batches.")
         open_statuses = {
@@ -340,6 +345,9 @@ class PayrollPaymentBatchService:
         allow_non_positive_amounts: bool = False,
         export_format: str = PayrollPaymentBatch.ExportFormat.GENERIC_CSV,
     ) -> PayrollPaymentBatch:
+        settlement = FnFSettlement.objects.select_for_update().select_related(
+            "contract_payroll_profile",
+        ).get(pk=settlement.pk)
         if settlement.status not in {FnFSettlement.Status.APPROVED, FnFSettlement.Status.POSTED, FnFSettlement.Status.PAID}:
             raise ValueError("Only approved or posted FnF settlements can be converted to payment batches.")
         open_statuses = {
@@ -400,6 +408,7 @@ class PayrollPaymentBatchService:
     @classmethod
     @transaction.atomic
     def validate_batch(cls, *, batch: PayrollPaymentBatch, user_id: int | None = None, comment: str = "") -> PayrollPaymentBatch:
+        batch = cls._lock_batch(batch)
         if batch.status in {
             PayrollPaymentBatch.Status.PAID,
             PayrollPaymentBatch.Status.FAILED,
@@ -417,6 +426,7 @@ class PayrollPaymentBatchService:
     @classmethod
     @transaction.atomic
     def submit_batch(cls, *, batch: PayrollPaymentBatch, user_id: int | None = None, comment: str = "") -> PayrollPaymentBatch:
+        batch = cls._lock_batch(batch)
         if batch.status not in {PayrollPaymentBatch.Status.VALIDATED, PayrollPaymentBatch.Status.APPROVED}:
             raise ValueError("Only validated or approved payment batches can be submitted for approval.")
         ApprovalWorkflowService.submit_for_approval(
@@ -435,10 +445,11 @@ class PayrollPaymentBatchService:
     @classmethod
     @transaction.atomic
     def approve_batch(cls, *, batch: PayrollPaymentBatch, user_id: int | None = None, comment: str = "") -> PayrollPaymentBatch:
+        batch = cls._lock_batch(batch)
         if batch.status not in {PayrollPaymentBatch.Status.VALIDATED, PayrollPaymentBatch.Status.APPROVED}:
             raise ValueError("Only validated payment batches can be approved.")
         if batch.approval_status == PayrollPaymentBatch.ApprovalStatus.DRAFT:
-            cls.submit_batch(batch=batch, user_id=user_id, comment=comment)
+            batch = cls.submit_batch(batch=batch, user_id=user_id, comment=comment)
         cls._refresh_batch_totals(batch=batch)
         if batch.invalid_line_count:
             raise ValueError("Payment batch approval is blocked until validation issues are resolved.")
@@ -554,6 +565,7 @@ class PayrollPaymentBatchService:
         export_format: str | None = None,
         comment: str = "",
     ) -> PayrollPaymentExportResult:
+        batch = cls._lock_batch(batch)
         if batch.status not in {PayrollPaymentBatch.Status.APPROVED, PayrollPaymentBatch.Status.EXPORTED}:
             raise ValueError("Only approved payment batches can be exported.")
         if batch.approval_status not in {
@@ -646,6 +658,7 @@ class PayrollPaymentBatchService:
     @classmethod
     @transaction.atomic
     def mark_paid(cls, *, batch: PayrollPaymentBatch, user_id: int | None = None, payment_reference: str = "", comment: str = "") -> PayrollPaymentBatch:
+        batch = cls._lock_batch(batch)
         if batch.status not in {PayrollPaymentBatch.Status.APPROVED, PayrollPaymentBatch.Status.EXPORTED, PayrollPaymentBatch.Status.FAILED}:
             raise ValueError("Only approved, exported, or failed payment batches can be marked paid.")
         old_status = batch.status
@@ -686,6 +699,7 @@ class PayrollPaymentBatchService:
     @classmethod
     @transaction.atomic
     def mark_failed(cls, *, batch: PayrollPaymentBatch, user_id: int | None = None, failure_reason: str = "", comment: str = "") -> PayrollPaymentBatch:
+        batch = cls._lock_batch(batch)
         if batch.status not in {PayrollPaymentBatch.Status.APPROVED, PayrollPaymentBatch.Status.EXPORTED, PayrollPaymentBatch.Status.FAILED}:
             raise ValueError("Only approved or exported payment batches can be marked failed.")
         old_status = batch.status
@@ -715,6 +729,7 @@ class PayrollPaymentBatchService:
     @classmethod
     @transaction.atomic
     def cancel_batch(cls, *, batch: PayrollPaymentBatch, user_id: int | None = None, cancellation_reason: str = "", comment: str = "") -> PayrollPaymentBatch:
+        batch = cls._lock_batch(batch)
         if batch.status not in {
             PayrollPaymentBatch.Status.DRAFT,
             PayrollPaymentBatch.Status.VALIDATED,

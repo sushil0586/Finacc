@@ -16,6 +16,7 @@ class PayrollReversalService:
     @classmethod
     @transaction.atomic
     def reverse_run(cls, run: PayrollRun, *, user_id: int, reason: str) -> PayrollRun:
+        run = PayrollRun.objects.select_for_update().get(pk=run.pk)
         if run.status != PayrollRun.Status.POSTED:
             raise ValueError("Only posted payroll runs can be reversed.")
         if run.reversal_runs.exists():
