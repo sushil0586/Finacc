@@ -4127,6 +4127,15 @@ class _FakeQuerySet(list):
 
 
 class PurchasePostingAdapterTests(SimpleTestCase):
+    def setUp(self):
+        super().setUp()
+        eligibility_patcher = patch(
+            "posting.adapters.purchase_invoice._purchase_account_has_report_head",
+            return_value=True,
+        )
+        self.mock_purchase_account_eligibility = eligibility_patcher.start()
+        self.addCleanup(eligibility_patcher.stop)
+
     def _base_header(self, **overrides):
         defaults = {
             "id": 101,
@@ -4202,6 +4211,9 @@ class PurchasePostingAdapterTests(SimpleTestCase):
         resolver.get_account_id.side_effect = lambda code, required=False: code_map.get(code)
         mock_product_resolver_cls.return_value.purchase_account_id.return_value = 5000
         mock_product_objects.filter.return_value.select_related.return_value.prefetch_related.return_value = []
+        self.mock_purchase_account_eligibility.side_effect = (
+            lambda account_id, _entity_id: int(account_id) != 5000
+        )
 
         posting_instance = mock_posting_service_cls.return_value
         posting_instance.post.return_value = SimpleNamespace(id=999)
@@ -4229,8 +4241,10 @@ class PurchasePostingAdapterTests(SimpleTestCase):
 
         kwargs = posting_instance.post.call_args.kwargs
         jl_inputs = kwargs["jl_inputs"]
+        purchase_entries = [x for x in jl_inputs if x.account_id == 8107 and x.amount == Decimal("100.00")]
         charge_entries = [x for x in jl_inputs if x.account_id == 8100 and "charge" in x.description.lower()]
 
+        self.assertTrue(purchase_entries, "Invalid product account should fall back to PURCHASE_DEFAULT.")
         self.assertTrue(charge_entries, "Expected a charge journal line in PURCHASE_MISC_EXPENSE.")
         self.assertEqual(charge_entries[0].amount, Decimal("10.00"))
 

@@ -21,7 +21,8 @@ from posting.common.product_accounts import ProductAccountResolver
 from catalog.models import Product, ProductPurchaseBehavior
 from catalog.lot_tracking import resolve_tracked_lot_number
 from catalog.uom_helpers import resolve_product_uom
-from financial.models import Ledger
+from financial.models import Ledger, account
+from reports.services.financial.classification import is_purchase_expense_classification
 from withholding.models import EntityWithholdingSectionPostingMap
 
 
@@ -121,6 +122,31 @@ def _resolve_asset_purchase_posting_target(
         ledger_head_cache[int(ledger_id)] = accounthead_id
 
     return accounthead_id, int(ledger_id)
+
+
+def _purchase_account_has_report_head(account_id: Optional[int], entity_id: int) -> bool:
+    if not account_id:
+        return False
+    purchase_account = (
+        account.objects.select_related(
+            "ledger__accounthead",
+            "ledger__accounthead__accounttype",
+            "ledger__accounttype",
+        )
+        .filter(
+            id=account_id,
+            entity_id=entity_id,
+            ledger__accounthead_id__isnull=False,
+        )
+        .first()
+    )
+    if not purchase_account or not purchase_account.ledger or not purchase_account.ledger.accounthead:
+        return False
+    head = purchase_account.ledger.accounthead
+    return is_purchase_expense_classification(
+        head,
+        head.accounttype or purchase_account.ledger.accounttype,
+    )
 
 
 # =========================
@@ -330,6 +356,10 @@ class PurchaseInvoicePostingAdapter:
         # Optional default purchase account (fallback if product has no purchase account)
         default_purchase_ac = resolver.get_account_id(StaticAccountCodes.PURCHASE_DEFAULT, required=False)
         default_purchase_ac = int(default_purchase_ac) if default_purchase_ac else misc_exp_ac
+        if not _purchase_account_has_report_head(default_purchase_ac, entity_id):
+            default_purchase_ac = misc_exp_ac
+        if not _purchase_account_has_report_head(default_purchase_ac, entity_id):
+            raise ValueError("Purchase default expense static account must resolve to a purchase/expense ledger.")
 
         # ---- ensure lines list ----
         lines_list = list(lines or [])
@@ -382,19 +412,21 @@ class PurchaseInvoicePostingAdapter:
             )
 
             pid = getattr(ln, "product_id", None)
-            purchase_ac = (
-                getattr(ln, "purchase_account_id", None)
-                or prod_resolver.purchase_account_id(pid)
-                or default_purchase_ac
-                or misc_exp_ac
-            )
+            purchase_ac = None
+            line_purchase_ac = getattr(ln, "purchase_account_id", None)
+            if line_purchase_ac and _purchase_account_has_report_head(line_purchase_ac, entity_id):
+                purchase_ac = int(line_purchase_ac)
+            product_purchase_ac = prod_resolver.purchase_account_id(pid)
+            if product_purchase_ac and _purchase_account_has_report_head(product_purchase_ac, entity_id):
+                purchase_ac = purchase_ac or int(product_purchase_ac)
+            purchase_ac = purchase_ac or default_purchase_ac or misc_exp_ac
             purchase_ac = int(purchase_ac)
 
             # base polarity: invoice/DN Dr, CN Cr
             base_is_debit = (sign > 0)
             posting_kwargs: Dict[str, Optional[int]] = {
                 "account_id": purchase_ac,
-                "ledger_id": int(getattr(getattr(ln, "product_purchase_account", None), "ledger_id", 0) or 0) or None,
+                "ledger_id": None,
             }
             if purchase_behavior == ProductPurchaseBehavior.ASSET:
                 accounthead_id, ledger_id = _resolve_asset_purchase_posting_target(

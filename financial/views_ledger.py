@@ -38,7 +38,10 @@ from financial.services import (
     ledger_should_be_party,
 )
 from rbac.access import assert_any_entity_permission
-from reports.services.financial.classification import is_sales_revenue_classification
+from reports.services.financial.classification import (
+    is_purchase_expense_classification,
+    is_sales_revenue_classification,
+)
 
 
 def _include_inactive(request):
@@ -1015,12 +1018,18 @@ class SimpleAccountsV2APIView(ListAPIView):
 
         qs = _apply_partytype_scope_filter(qs, self.request.query_params.get("partytype_scope"))
 
-        if str(self.request.query_params.get("usage") or "").strip().lower() == "sales_revenue":
+        usage = str(self.request.query_params.get("usage") or "").strip().lower()
+        if usage in {"sales_revenue", "purchase_expense"}:
+            eligibility_check = (
+                is_sales_revenue_classification
+                if usage == "sales_revenue"
+                else is_purchase_expense_classification
+            )
             eligible_ids = [
                 ledger.id
                 for ledger in qs
                 if ledger.accounthead_id
-                and is_sales_revenue_classification(
+                and eligibility_check(
                     ledger.accounthead,
                     ledger.accounthead.accounttype or ledger.accounttype,
                 )

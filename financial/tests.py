@@ -2395,6 +2395,20 @@ class FinancialEndpointAliasTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotIn(legacy.id, {row["id"] for row in response.data})
 
+    def test_simple_accounts_purchase_expense_usage_excludes_revenue_and_parties(self):
+        expense = self._create_simple_account(name="Purchase Expense", partytype="", ledger_code=4404)
+        self._create_simple_account(name="Sales Revenue", partytype="", ledger_code=4405)
+        self._create_simple_account(name="Vendor Alpha", partytype="Vendor", ledger_code=4406)
+        legacy = self._create_simple_account(name="Legacy Unclassified", partytype="", ledger_code=4407)
+        Ledger.objects.filter(pk=legacy.ledger_id).update(accounthead=None)
+
+        response = self.client.get(
+            f"/api/financial/accounts/simple-v2?entity={self.entity.id}&usage=purchase_expense"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertSetEqual({row["id"] for row in response.data}, {expense.id})
+
     def test_pure_ledger_create_does_not_auto_create_account_profile(self):
         head = accountHead.objects.create(
             entity=self.entity,

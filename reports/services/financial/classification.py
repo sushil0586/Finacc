@@ -184,3 +184,23 @@ def is_sales_revenue_classification(head, acc_type) -> bool:
         or type_name == "direct income"
         or _contains_any(head_name, ("sales", "sale", "revenue", "turnover"))
     )
+
+
+def is_purchase_expense_classification(head, acc_type) -> bool:
+    """Return whether a ledger classification is valid for purchase/expense posting."""
+    classification = classify_financial_head(head, acc_type)
+    if classification.include_in_profit_loss:
+        return classification.profit_loss_side == "expense"
+    if not classification.include_in_trading:
+        return False
+
+    head_name = _head_name(head)
+    head_code = _head_code(head)
+    type_name = _type_name(acc_type)
+    type_code = _type_code(acc_type)
+    return (
+        head_code == "1000"
+        or type_code == "5100"
+        or type_name == "direct expenses"
+        or _contains_any(head_name, ("purchase", "expense", "cost", "consumption", "material"))
+    )
