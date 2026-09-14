@@ -10,8 +10,13 @@ class TestModel(APITestCase):
         self.assertFalse(user.is_staff)
 
 
-    def test_user_when_nouser_is_supplied(self):
-        self.assertRaises(ValueError,User.objects.create_user,username = "", email = 'susshil@gmail.com',password = 'password@')
+    def test_user_allows_blank_display_username(self):
+        user = User.objects.create_user(username="", email="blank-name@example.com", password="password@")
+        self.assertEqual(user.username, "")
+        self.assertEqual(user.email, "blank-name@example.com")
+
+    def test_user_requires_email_login_identity(self):
+        self.assertRaises(ValueError, User.objects.create_user, username="sushil", email="", password="password@")
        
 
     def test_creates_Superuser(self):

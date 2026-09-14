@@ -1,6 +1,12 @@
 # HRMS And Payroll Product Backlog
 
-Status: Deferred until purchase-to-pay production certification is complete.
+Status: Prioritized as P1 after the P0 pilot and launch-hardening gate.
+
+Portfolio roadmap: [Product Expansion Priority Roadmap](../product/product-expansion-priority-roadmap-2026-09-14.md)
+
+Detailed delivery plan: [Product Expansion Detailed Delivery Plan](../product/product-expansion-detailed-delivery-plan-2026-09-14.md#p1-hrms-and-payroll-completion)
+
+Active launch plan: [P1 HRMS And Payroll Launch Readiness Plan](p1-hrms-payroll-launch-readiness-plan-2026-09-14.md)
 
 This backlog records product gaps identified during the HRMS and payroll end-user walkthrough. These items are deliberately excluded from the active purchase-to-pay release scope.
 
