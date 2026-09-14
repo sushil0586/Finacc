@@ -164,3 +164,23 @@ def classify_financial_head(head, acc_type) -> FinancialClassification:
         return FinancialClassification(include_in_balance_sheet=True, reason="structural_balance_sheet")
 
     return FinancialClassification(reason="unclassified")
+
+
+def is_sales_revenue_classification(head, acc_type) -> bool:
+    """Return whether a ledger classification is valid for sales revenue posting."""
+    classification = classify_financial_head(head, acc_type)
+    if classification.include_in_profit_loss:
+        return classification.profit_loss_side == "income"
+    if not classification.include_in_trading:
+        return False
+
+    head_name = _head_name(head)
+    head_code = _head_code(head)
+    type_name = _type_name(acc_type)
+    type_code = _type_code(acc_type)
+    return (
+        head_code == "3000"
+        or type_code == "4100"
+        or type_name == "direct income"
+        or _contains_any(head_name, ("sales", "sale", "revenue", "turnover"))
+    )

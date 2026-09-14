@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 from django.test import SimpleTestCase
 
-from reports.services.financial.classification import classify_financial_head
+from reports.services.financial.classification import classify_financial_head, is_sales_revenue_classification
 
 
 class FinancialClassificationTests(SimpleTestCase):
@@ -52,3 +52,16 @@ class FinancialClassificationTests(SimpleTestCase):
         self.assertTrue(classification.include_in_trading)
         self.assertFalse(classification.include_in_profit_loss)
         self.assertFalse(classification.include_in_balance_sheet)
+
+    def test_sales_revenue_eligibility_accepts_sales_trading_head(self):
+        head = self._head(detailsingroup=1)
+        head.name = "Sales Revenue"
+        head.accounttype.accounttypename = "Direct Income"
+        head.accounttype.accounttypecode = "4100"
+
+        self.assertTrue(is_sales_revenue_classification(head, head.accounttype))
+
+    def test_sales_revenue_eligibility_rejects_direct_expense(self):
+        head = self._head(detailsingroup=1)
+
+        self.assertFalse(is_sales_revenue_classification(head, head.accounttype))

@@ -38,6 +38,7 @@ from financial.services import (
     ledger_should_be_party,
 )
 from rbac.access import assert_any_entity_permission
+from reports.services.financial.classification import is_sales_revenue_classification
 
 
 def _include_inactive(request):
@@ -964,6 +965,8 @@ class SimpleAccountsV2APIView(ListAPIView):
             isactive=True,
         ).select_related(
             "accounthead",
+            "accounthead__accounttype",
+            "accounttype",
             "account_profile",
             "account_profile__compliance_profile",
         ).prefetch_related(
@@ -986,6 +989,19 @@ class SimpleAccountsV2APIView(ListAPIView):
             "ledger_code",
             "name",
             "accounthead_id",
+            "accounthead__name",
+            "accounthead__code",
+            "accounthead__detailsingroup",
+            "accounthead__drcreffect",
+            "accounthead__balanceType",
+            "accounthead__accounttype_id",
+            "accounthead__accounttype__accounttypename",
+            "accounthead__accounttype__accounttypecode",
+            "accounthead__accounttype__balanceType",
+            "accounttype_id",
+            "accounttype__accounttypename",
+            "accounttype__accounttypecode",
+            "accounttype__balanceType",
             "account_profile__id",
             "account_profile__accountname",
             "account_profile__compliance_profile__gstno",
@@ -998,6 +1014,17 @@ class SimpleAccountsV2APIView(ListAPIView):
             qs = qs.filter(accounthead__code__in=codes)
 
         qs = _apply_partytype_scope_filter(qs, self.request.query_params.get("partytype_scope"))
+
+        if str(self.request.query_params.get("usage") or "").strip().lower() == "sales_revenue":
+            eligible_ids = [
+                ledger.id
+                for ledger in qs
+                if is_sales_revenue_classification(
+                    ledger.accounthead,
+                    ledger.accounthead.accounttype or ledger.accounttype,
+                )
+            ]
+            qs = qs.filter(id__in=eligible_ids)
 
         return qs.order_by("name")
 

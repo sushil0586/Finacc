@@ -2373,6 +2373,17 @@ class FinancialEndpointAliasTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertSetEqual({row["id"] for row in response.data}, {both.id})
 
+    def test_simple_accounts_sales_revenue_usage_excludes_non_revenue_accounts(self):
+        sales = self._create_simple_account(name="Sales Revenue", partytype="", ledger_code=4401)
+        self._create_simple_account(name="Customer Alpha", partytype="Customer", ledger_code=4402)
+
+        response = self.client.get(
+            f"/api/financial/accounts/simple-v2?entity={self.entity.id}&usage=sales_revenue"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertSetEqual({row["id"] for row in response.data}, {sales.id})
+
     def test_pure_ledger_create_does_not_auto_create_account_profile(self):
         head = accountHead.objects.create(
             entity=self.entity,

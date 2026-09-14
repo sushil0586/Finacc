@@ -22,6 +22,7 @@ from catalog.models import Product
 from financial.models import account as FinancialAccount
 from catalog.lot_tracking import resolve_tracked_lot_number
 from catalog.uom_helpers import resolve_product_uom
+from reports.services.financial.classification import is_sales_revenue_classification
 
 
 # =========================
@@ -50,11 +51,19 @@ def q4(x) -> Decimal:
 def _sales_account_has_report_head(account_id: Optional[int], entity_id: int) -> bool:
     if not account_id:
         return False
-    return FinancialAccount.objects.filter(
+    account = FinancialAccount.objects.select_related(
+        "ledger__accounthead__accounttype",
+        "ledger__accounttype",
+    ).filter(
         id=int(account_id),
         entity_id=entity_id,
         ledger__accounthead_id__isnull=False,
-    ).exists()
+    ).first()
+    if not account or not account.ledger or not account.ledger.accounthead:
+        return False
+    head = account.ledger.accounthead
+    acc_type = head.accounttype or account.ledger.accounttype
+    return is_sales_revenue_classification(head, acc_type)
 
 
 # =========================
