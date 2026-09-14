@@ -1019,7 +1019,8 @@ class SimpleAccountsV2APIView(ListAPIView):
             eligible_ids = [
                 ledger.id
                 for ledger in qs
-                if is_sales_revenue_classification(
+                if ledger.accounthead_id
+                and is_sales_revenue_classification(
                     ledger.accounthead,
                     ledger.accounthead.accounttype or ledger.accounttype,
                 )

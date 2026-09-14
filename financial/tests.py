@@ -2384,6 +2384,17 @@ class FinancialEndpointAliasTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertSetEqual({row["id"] for row in response.data}, {sales.id})
 
+    def test_simple_accounts_sales_revenue_usage_ignores_legacy_account_without_head(self):
+        legacy = self._create_simple_account(name="Legacy Unclassified", partytype="", ledger_code=4403)
+        Ledger.objects.filter(pk=legacy.ledger_id).update(accounthead=None)
+
+        response = self.client.get(
+            f"/api/financial/accounts/simple-v2?entity={self.entity.id}&usage=sales_revenue"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn(legacy.id, {row["id"] for row in response.data})
+
     def test_pure_ledger_create_does_not_auto_create_account_profile(self):
         head = accountHead.objects.create(
             entity=self.entity,
