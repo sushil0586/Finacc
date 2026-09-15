@@ -2,7 +2,7 @@
 
 Status: In progress
 
-Last updated: 14 September 2026
+Last updated: 15 September 2026
 
 Parent roadmap: [Product Expansion Priority Roadmap](../product/product-expansion-priority-roadmap-2026-09-14.md)
 
@@ -96,7 +96,7 @@ Exit evidence:
 
 ### Phase 2: Core Accounting And Close Integrity
 
-Status: Not started
+Status: In progress; backend close invariants pass and the first three-browser controls certificate found one Posting Setup reset defect whose frontend correction awaits deployment
 
 Goal: certify the general ledger and financial statements as the common source of truth.
 
