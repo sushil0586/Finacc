@@ -96,7 +96,7 @@ Exit evidence:
 
 ### Phase 2: Core Accounting And Close Integrity
 
-Status: In progress; backend close invariants pass and the first three-browser controls certificate found one Posting Setup reset defect whose frontend correction awaits deployment
+Status: Complete for the pilot gate. Backend close invariants pass 37/37, the three-browser controls surface certificate passes 45/45, and the isolated self-cleaning destructive staging certificate passes 2/2. The cycle proves close, duplicate rejection, closed-period posting rejection, opening carry-forward, rollback ordering, opening purge, close rollback, restored readiness, and zero temporary user/entity residue. The source-FY retention UX correction passes 25/25 focused frontend tests and requires deployment verification.
 
 Goal: certify the general ledger and financial statements as the common source of truth.
 
