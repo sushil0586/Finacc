@@ -1394,6 +1394,100 @@ class InventoryReportAPITests(APITestCase):
         self.assertIn('available_exports', data)
         self.assertEqual(data['available_exports'], ['excel', 'pdf', 'csv', 'print'])
 
+    def test_inventory_stock_ledger_preserves_deficit_before_first_receipt(self):
+        sale_batch = PostingBatch.objects.create(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.SALES,
+            txn_id=3999,
+            voucher_no='SAL-DEFICIT-3999',
+            created_by=self.user,
+            is_active=True,
+        )
+        sale_entry = Entry.objects.create(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.SALES,
+            txn_id=3999,
+            voucher_no='SAL-DEFICIT-3999',
+            voucher_date='2025-04-05',
+            posting_date='2025-04-05',
+            status=EntryStatus.POSTED,
+            posted_at=timezone.now(),
+            posted_by=self.user,
+            posting_batch=sale_batch,
+            narration='Sale before first stock receipt',
+            created_by=self.user,
+        )
+        InventoryMove.objects.create(
+            entry=sale_entry,
+            posting_batch=sale_batch,
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.SALES,
+            txn_id=3999,
+            detail_id=1,
+            voucher_no='SAL-DEFICIT-3999',
+            product=self.product,
+            location=self.godown,
+            uom=self.uom,
+            base_uom=self.uom,
+            qty=Decimal('10.0000'),
+            uom_factor=Decimal('1'),
+            base_qty=Decimal('10.0000'),
+            unit_cost=Decimal('0.0000'),
+            ext_cost=Decimal('0.00'),
+            cost_source=InventoryMove.CostSource.MANUAL,
+            move_type=InventoryMove.MoveType.OUT,
+            posting_date='2025-04-05',
+            posted_at=timezone.now(),
+            created_by=self.user,
+        )
+
+        params = {
+            **self._scope(),
+            'from_date': '2025-04-01',
+            'to_date': '2025-04-30',
+            'product_ids': [self.product.id],
+            'include_zero': 'false',
+            'include_negative': 'true',
+        }
+        for valuation_method in ('fifo', 'lifo', 'mwa', 'wac', 'latest'):
+            with self.subTest(valuation_method=valuation_method):
+                method_params = {**params, 'valuation_method': valuation_method}
+                summary = self.client.get(reverse('reports_api:inventory-stock-summary'), method_params)
+                ledger = self.client.get(reverse('reports_api:inventory-stock-ledger'), method_params)
+
+                self.assertEqual(summary.status_code, 200)
+                self.assertEqual(ledger.status_code, 200)
+                self.assertEqual(summary.json()['rows'][0]['closing_qty'], '5.0000')
+                self.assertEqual(ledger.json()['summary']['closing_qty'], '5.0000')
+                self.assertEqual(ledger.json()['summary']['outward_qty'], '10.0000')
+                self.assertEqual(ledger.json()['summary']['movement_count'], 2)
+                deficit_row = next(
+                    row for row in ledger.json()['rows'] if row['voucher_no'] == 'SAL-DEFICIT-3999'
+                )
+                self.assertEqual(deficit_row['running_qty'], '-10.0000')
+
+    def test_inventory_stock_ledger_keeps_custom_period_opening_state_immutable(self):
+        report = self.client.get(
+            reverse('reports_api:inventory-stock-ledger'),
+            {
+                **self._scope(),
+                'from_date': '2025-04-11',
+                'to_date': '2025-04-30',
+                'product_ids': [self.product.id],
+            },
+        )
+
+        self.assertEqual(report.status_code, 200)
+        self.assertEqual(report.json()['summary']['opening_qty'], '15.0000')
+        self.assertEqual(report.json()['summary']['closing_qty'], '15.0000')
+        self.assertEqual(report.json()['summary']['movement_count'], 0)
+
     def test_inventory_stock_movement_respects_category_hsn_location_and_search_filters(self):
         alternate_category = ProductCategory.objects.create(
             entity=self.entity,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import date as date_cls
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -122,15 +123,24 @@ def _movement_rows(moves_qs):
             "location_id",
             "location__name",
             "location__code",
-        ).order_by("product_id", "posting_date", "txn_id", "detail_id", "id")
+            "batch_number",
+        ).order_by("product_id", "posting_date", "id")
+    )
+
+
+def _inventory_identity(move: dict) -> tuple[int, int | None, str]:
+    return (
+        int(move["product_id"]),
+        move.get("location_id"),
+        str(move.get("batch_number") or "").strip().upper(),
     )
 
 
 def _new_valuation_state(method: str):
     if method in {"fifo", "lifo"}:
-        return {"layers": []}
+        return {"layers": [], "deficit": ZERO}
     if method in {"mwa", "latest"}:
-        return {"qty": ZERO, "value": ZERO, "latest": ZERO}
+        return {"qty": ZERO, "value": ZERO, "latest": ZERO, "deficit": ZERO}
     if method == "wac":
         return {"sum_in_qty": ZERO, "sum_in_val": ZERO, "issues_qty": ZERO}
     return {"qty": ZERO, "value": ZERO}
@@ -138,15 +148,15 @@ def _new_valuation_state(method: str):
 
 def _snapshot_state(state: dict, method: str) -> tuple[Decimal, Decimal]:
     if method in {"fifo", "lifo"}:
-        qty = sum((layer["qty"] for layer in state["layers"]), ZERO)
+        qty = sum((layer["qty"] for layer in state["layers"]), ZERO) - state["deficit"]
         value = sum((layer["qty"] * layer["rate"] for layer in state["layers"]), ZERO)
         return qty, value
     if method in {"mwa", "latest"}:
-        return state["qty"], state["value"]
+        return state["qty"] - state["deficit"], state["value"]
     if method == "wac":
-        qty = max(state["sum_in_qty"] - state["issues_qty"], ZERO)
+        qty = state["sum_in_qty"] - state["issues_qty"]
         avg = (state["sum_in_val"] / state["sum_in_qty"]) if state["sum_in_qty"] > 0 else ZERO
-        return qty, qty * avg
+        return qty, max(qty, ZERO) * avg
     return ZERO, ZERO
 
 
@@ -156,7 +166,11 @@ def _apply_movement(state: dict, move: dict, method: str) -> tuple[Decimal, Deci
 
     if method == "fifo":
         if signed_qty > 0:
-            state["layers"].append({"qty": signed_qty, "rate": rate})
+            covered = min(signed_qty, state["deficit"])
+            state["deficit"] -= covered
+            remaining = signed_qty - covered
+            if remaining > 0:
+                state["layers"].append({"qty": remaining, "rate": rate})
             return signed_qty, signed_qty * rate
         if signed_qty < 0:
             need = abs(signed_qty)
@@ -170,11 +184,16 @@ def _apply_movement(state: dict, move: dict, method: str) -> tuple[Decimal, Deci
                 if state["layers"][idx]["qty"] == 0:
                     idx += 1
             state["layers"] = [layer for layer in state["layers"] if layer["qty"] > 0]
+            state["deficit"] += need
             return signed_qty, consumed
 
     if method == "lifo":
         if signed_qty > 0:
-            state["layers"].append({"qty": signed_qty, "rate": rate})
+            covered = min(signed_qty, state["deficit"])
+            state["deficit"] -= covered
+            remaining = signed_qty - covered
+            if remaining > 0:
+                state["layers"].append({"qty": remaining, "rate": rate})
             return signed_qty, signed_qty * rate
         if signed_qty < 0:
             need = abs(signed_qty)
@@ -188,12 +207,16 @@ def _apply_movement(state: dict, move: dict, method: str) -> tuple[Decimal, Deci
                 if state["layers"][idx]["qty"] == 0:
                     state["layers"].pop(idx)
                 idx -= 1
+            state["deficit"] += need
             return signed_qty, consumed
 
     if method == "mwa":
         if signed_qty > 0:
-            state["qty"] += signed_qty
-            state["value"] += signed_qty * rate
+            covered = min(signed_qty, state["deficit"])
+            state["deficit"] -= covered
+            remaining = signed_qty - covered
+            state["qty"] += remaining
+            state["value"] += remaining * rate
             return signed_qty, signed_qty * rate
         if signed_qty < 0:
             issue_qty = abs(signed_qty)
@@ -202,20 +225,26 @@ def _apply_movement(state: dict, move: dict, method: str) -> tuple[Decimal, Deci
             cost = take * avg
             state["value"] -= cost
             state["qty"] -= take
+            state["deficit"] += issue_qty - take
             return signed_qty, cost
 
     if method == "latest":
         if signed_qty > 0:
-            state["latest"] = rate
-            state["qty"] += signed_qty
-            state["value"] += signed_qty * state["latest"]
-            return signed_qty, signed_qty * state["latest"]
+            covered = min(signed_qty, state["deficit"])
+            state["deficit"] -= covered
+            remaining = signed_qty - covered
+            if remaining > 0:
+                state["latest"] = rate
+                state["qty"] += remaining
+                state["value"] += remaining * state["latest"]
+            return signed_qty, signed_qty * rate
         if signed_qty < 0:
             issue_qty = abs(signed_qty)
             take = min(state["qty"], issue_qty)
             cost = take * state["latest"]
             state["value"] -= cost
             state["qty"] -= take
+            state["deficit"] += issue_qty - take
             if state["qty"] == 0:
                 state["latest"] = ZERO
             return signed_qty, cost
@@ -231,7 +260,7 @@ def _apply_movement(state: dict, move: dict, method: str) -> tuple[Decimal, Deci
             take = min(available_qty, issue_qty)
             avg = (state["sum_in_val"] / state["sum_in_qty"]) if state["sum_in_qty"] > 0 else ZERO
             cost = take * avg
-            state["issues_qty"] += take
+            state["issues_qty"] += issue_qty
             return signed_qty, cost
 
     return signed_qty, signed_qty * rate
@@ -292,14 +321,14 @@ def build_inventory_stock_ledger(
 
     opening_state = {}
     for row in opening_rows:
-        pid = row["product_id"]
-        state = opening_state.setdefault(pid, _new_valuation_state(method))
+        identity = _inventory_identity(row)
+        state = opening_state.setdefault(identity, _new_valuation_state(method))
         _apply_movement(state, row, method)
 
     rows = []
     running_state = {
-        pid: opening_state.get(pid, _new_valuation_state(method))
-        for pid in product_ids_in_scope
+        identity: deepcopy(state)
+        for identity, state in opening_state.items()
     }
     for row in period_rows:
         pid = row["product_id"]
@@ -307,7 +336,8 @@ def build_inventory_stock_ledger(
         if product is None:
             continue
 
-        state = running_state.setdefault(pid, _new_valuation_state(method))
+        identity = _inventory_identity(row)
+        state = running_state.setdefault(identity, _new_valuation_state(method))
         opening_qty, opening_value = _snapshot_state(state, method)
         signed_qty, line_cost = _apply_movement(state, row, method)
         running_qty, running_value = _snapshot_state(state, method)
