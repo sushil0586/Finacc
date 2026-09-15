@@ -2734,6 +2734,45 @@ class FinancialGovernanceConfigTests(TestCase):
         series.refresh_from_db()
         self.assertEqual(series.next_code, 7002)
 
+    def test_allocate_from_series_skips_codes_already_used_by_entity(self):
+        series = FinancialCodeSeries.objects.create(
+            entity=self.entity,
+            series_key="VENDOR_PARTY",
+            label="Vendor Party",
+            account_type=self.party_type,
+            debit_head=self.vendor_debit,
+            credit_head=self.vendor_credit,
+            party_type="Vendor",
+            range_start=7001,
+            range_end=7999,
+            next_code=7001,
+            increment_step=1,
+            priority=10,
+            createdby=self.user,
+        )
+        Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=7001,
+            name="Existing vendor ledger",
+            accounttype=self.party_type,
+            accounthead=self.vendor_debit,
+            creditaccounthead=self.vendor_credit,
+            createdby=self.user,
+        )
+
+        code = allocate_from_series(
+            entity=self.entity,
+            allocated_by=self.user,
+            partytype="Vendor",
+            account_type_id=self.party_type.id,
+            debit_head_id=self.vendor_debit.id,
+            credit_head_id=self.vendor_credit.id,
+        )
+
+        self.assertEqual(code, 7002)
+        series.refresh_from_db()
+        self.assertEqual(series.next_code, 7003)
+
 
 class FinancialAccountsBulkCoverageTests(TestCase):
     def setUp(self):

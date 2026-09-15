@@ -3,7 +3,7 @@ from __future__ import annotations
 from django.db import transaction
 from django.db.models import Q
 
-from financial.models import FinancialCodeSeries, FinancialCodeSeriesAudit, FinancialMasterRule
+from financial.models import FinancialCodeSeries, FinancialCodeSeriesAudit, FinancialMasterRule, Ledger
 
 
 PARTY_MANAGED = "party_managed"
@@ -150,13 +150,20 @@ def allocate_from_series(*, entity, ledger=None, account=None, allocated_by=None
 
     locked_series = FinancialCodeSeries.objects.select_for_update().get(pk=series.pk)
     code = locked_series.next_code
+    entity_id = getattr(entity, "id", entity)
+    while code <= locked_series.range_end and Ledger.objects.filter(
+        entity_id=entity_id,
+        ledger_code=code,
+    ).exists():
+        code += locked_series.increment_step
+
     if code > locked_series.range_end:
         raise ValueError(f"Code series {locked_series.series_key} is exhausted.")
 
     locked_series.next_code = code + locked_series.increment_step
     locked_series.save(update_fields=["next_code"])
     FinancialCodeSeriesAudit.objects.create(
-        entity_id=getattr(entity, "id", entity),
+        entity_id=entity_id,
         series=locked_series,
         allocated_code=code,
         ledger=ledger,
