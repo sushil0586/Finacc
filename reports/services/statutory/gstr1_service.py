@@ -112,7 +112,6 @@ class Gstr1Service:
 
         return queryset.annotate(
             invoice_date=F("bill_date"),
-            posting_date=F("posting_date"),
             doc_type_name=Case(
                 *[
                     When(doc_type=choice.value, then=Value(str(choice.label)))

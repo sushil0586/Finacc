@@ -4248,6 +4248,151 @@ class PurchasePostingAdapterTests(SimpleTestCase):
         self.assertTrue(charge_entries, "Expected a charge journal line in PURCHASE_MISC_EXPENSE.")
         self.assertEqual(charge_entries[0].amount, Decimal("10.00"))
 
+    @patch("posting.adapters.purchase_invoice.resolve_posting_location_id", return_value=None)
+    @patch("posting.adapters.purchase_invoice.PostingService")
+    @patch("posting.adapters.purchase_invoice.Product.objects")
+    @patch("posting.adapters.purchase_invoice.ProductAccountResolver")
+    @patch("posting.adapters.purchase_invoice.StaticAccountResolver")
+    def test_capitalized_header_expense_balances_gl_and_increases_inventory_unit_cost(
+        self,
+        mock_static_resolver_cls,
+        mock_product_resolver_cls,
+        mock_product_objects,
+        mock_posting_service_cls,
+        _mock_location_resolver,
+    ):
+        code_map = {
+            StaticAccountCodes.PURCHASE_MISC_EXPENSE: 8100,
+            StaticAccountCodes.ROUND_OFF_INCOME: 8101,
+            StaticAccountCodes.ROUND_OFF_EXPENSE: 8102,
+            StaticAccountCodes.INPUT_CGST: 8103,
+            StaticAccountCodes.INPUT_SGST: 8104,
+            StaticAccountCodes.INPUT_IGST: 8105,
+            StaticAccountCodes.INPUT_CESS: 8106,
+            StaticAccountCodes.PURCHASE_DEFAULT: 8107,
+        }
+        resolver = mock_static_resolver_cls.return_value
+        resolver.get_account_id.side_effect = lambda code, required=False: code_map.get(code)
+        resolver.get_ledger_id.side_effect = lambda code, required=False: code_map.get(code)
+        mock_product_resolver_cls.return_value.purchase_account_id.return_value = 5000
+        product = SimpleNamespace(
+            id=99,
+            base_uom_id=1,
+            base_uom=SimpleNamespace(id=1, code="NOS"),
+            uom_conversions=[],
+            is_batch_managed=False,
+            is_expiry_tracked=False,
+        )
+        mock_product_objects.filter.return_value.select_related.return_value.prefetch_related.return_value = [product]
+        mock_posting_service_cls.return_value.post.return_value = SimpleNamespace(id=1000)
+
+        header = self._base_header(
+            grand_total=Decimal("110.00"),
+            total_expenses=Decimal("10.00"),
+        )
+        line = self._line(
+            product_id=99,
+            is_service=False,
+            purchase_behavior=ProductPurchaseBehavior.INVENTORY,
+            qty=Decimal("10.0000"),
+            taxable_value=Decimal("100.00"),
+            uom_id=1,
+        )
+
+        PurchaseInvoicePostingAdapter.post_purchase_invoice.__wrapped__(
+            header=header,
+            lines=[line],
+            user_id=1,
+            config=PurchaseInvoicePostingConfig(capitalize_header_expenses_to_inventory=True),
+        )
+
+        kwargs = mock_posting_service_cls.return_value.post.call_args.kwargs
+        debits = sum((row.amount for row in kwargs["jl_inputs"] if row.drcr), Decimal("0.00"))
+        credits = sum((row.amount for row in kwargs["jl_inputs"] if not row.drcr), Decimal("0.00"))
+        capitalized_expense = [
+            row for row in kwargs["jl_inputs"]
+            if row.account_id == 8100 and row.amount == Decimal("10.00")
+        ]
+
+        self.assertEqual(debits, Decimal("110.00"))
+        self.assertEqual(credits, Decimal("110.00"))
+        self.assertEqual(len(capitalized_expense), 1)
+        self.assertIn("capitalized", capitalized_expense[0].description)
+        self.assertEqual(kwargs["im_inputs"][0].unit_cost, Decimal("11.0000"))
+
+    @patch("posting.adapters.purchase_invoice.resolve_posting_location_id", return_value=None)
+    @patch("posting.adapters.purchase_invoice.PostingService")
+    @patch("posting.adapters.purchase_invoice.Product.objects")
+    @patch("posting.adapters.purchase_invoice.ProductAccountResolver")
+    @patch("posting.adapters.purchase_invoice.StaticAccountResolver")
+    def test_discounted_inclusive_cess_and_roundoff_post_to_balanced_accounts(
+        self,
+        mock_static_resolver_cls,
+        mock_product_resolver_cls,
+        mock_product_objects,
+        mock_posting_service_cls,
+        _mock_location_resolver,
+    ):
+        code_map = {
+            StaticAccountCodes.PURCHASE_MISC_EXPENSE: 8100,
+            StaticAccountCodes.ROUND_OFF_INCOME: 8101,
+            StaticAccountCodes.ROUND_OFF_EXPENSE: 8102,
+            StaticAccountCodes.INPUT_CGST: 8103,
+            StaticAccountCodes.INPUT_SGST: 8104,
+            StaticAccountCodes.INPUT_IGST: 8105,
+            StaticAccountCodes.INPUT_CESS: 8106,
+            StaticAccountCodes.PURCHASE_DEFAULT: 8107,
+        }
+        resolver = mock_static_resolver_cls.return_value
+        resolver.get_account_id.side_effect = lambda code, required=False: code_map.get(code)
+        resolver.get_ledger_id.side_effect = lambda code, required=False: code_map.get(code)
+        mock_product_resolver_cls.return_value.purchase_account_id.return_value = 5000
+        mock_product_objects.filter.return_value.select_related.return_value.prefetch_related.return_value = [
+            SimpleNamespace(
+                id=99,
+                base_uom_id=1,
+                base_uom=SimpleNamespace(id=1, code="NOS"),
+                uom_conversions=[],
+                is_batch_managed=False,
+                is_expiry_tracked=False,
+            )
+        ]
+        mock_posting_service_cls.return_value.post.return_value = SimpleNamespace(id=1001)
+
+        PurchaseInvoicePostingAdapter.post_purchase_invoice.__wrapped__(
+            header=self._base_header(
+                grand_total=Decimal("1090.25"),
+                round_off=Decimal("0.25"),
+            ),
+            lines=[
+                self._line(
+                    product_id=99,
+                    is_service=False,
+                    purchase_behavior=ProductPurchaseBehavior.INVENTORY,
+                    qty=Decimal("10.0000"),
+                    taxable_value=Decimal("900.00"),
+                    cgst_amount=Decimal("81.00"),
+                    sgst_amount=Decimal("81.00"),
+                    cess_amount=Decimal("28.00"),
+                    uom_id=1,
+                )
+            ],
+            user_id=1,
+            config=PurchaseInvoicePostingConfig(),
+        )
+
+        kwargs = mock_posting_service_cls.return_value.post.call_args.kwargs
+        rows = kwargs["jl_inputs"]
+        debits = sum((row.amount for row in rows if row.drcr), Decimal("0.00"))
+        credits = sum((row.amount for row in rows if not row.drcr), Decimal("0.00"))
+
+        self.assertEqual(debits, Decimal("1090.25"))
+        self.assertEqual(credits, Decimal("1090.25"))
+        self.assertTrue(any(row.account_id == 8106 and row.amount == Decimal("28.00") for row in rows))
+        self.assertTrue(any(row.account_id == 8102 and row.amount == Decimal("0.25") for row in rows))
+        self.assertTrue(any(row.account_id == 7001 and row.amount == Decimal("1090.25") for row in rows))
+        self.assertEqual(kwargs["im_inputs"][0].unit_cost, Decimal("90.0000"))
+
     @patch("posting.adapters.purchase_invoice.PostingService")
     @patch("posting.adapters.purchase_invoice.Product.objects")
     @patch("posting.adapters.purchase_invoice.ProductAccountResolver")
@@ -5171,7 +5316,17 @@ class PurchaseInventoryReturnSafetyTests(TestCase):
             is_itc_eligible=True,
         )
 
-    def _seed_inventory_move(self, *, txn_type: str, txn_id: int, move_type: str, qty: str, posting_day: date):
+    def _seed_inventory_move(
+        self,
+        *,
+        txn_type: str,
+        txn_id: int,
+        move_type: str,
+        qty: str,
+        posting_day: date,
+        location=None,
+    ):
+        location = location or self.location
         batch = PostingBatch.objects.create(
             entity=self.entity,
             entityfin=self.entityfin,
@@ -5210,16 +5365,16 @@ class PurchaseInventoryReturnSafetyTests(TestCase):
             voucher_no=f"{txn_type}-{txn_id}",
             product=self.product,
             batch_number="",
-            location=self.location,
-            source_location=self.location if move_type == InventoryMove.MoveType.OUT else None,
-            destination_location=self.location if move_type == InventoryMove.MoveType.IN_ else None,
+            location=location,
+            source_location=location if move_type == InventoryMove.MoveType.OUT else None,
+            destination_location=location if move_type == InventoryMove.MoveType.IN_ else None,
             uom=self.uom,
             base_uom=self.uom,
             qty=qty_decimal,
             uom_factor=Decimal("1.00000000"),
             base_qty=qty_decimal,
             unit_cost=Decimal("100.0000"),
-            ext_cost=Decimal("1000.00"),
+            ext_cost=qty_decimal * Decimal("100.00"),
             cost_source=InventoryMove.CostSource.PURCHASE,
             move_type=move_type,
             movement_nature=InventoryMove.MovementNature.PURCHASE if move_type == InventoryMove.MoveType.IN_ else InventoryMove.MovementNature.OTHER,
@@ -5324,6 +5479,48 @@ class PurchaseInventoryReturnSafetyTests(TestCase):
             PurchaseInvoiceService.validate_lines_structural(
                 self._return_attrs(),
                 self._return_lines("5.0000"),
+                SimpleNamespace(tax_regime=PurchaseInvoiceHeader.TaxRegime.INTRA),
+            )
+
+    def test_quantity_return_does_not_borrow_stock_from_another_location(self):
+        secondary_location = Godown.objects.create(
+            entity=self.entity,
+            subentity=self.subentity,
+            name="Secondary Godown",
+            code="SECONDARY",
+            address="Warehouse 2",
+            city="Mumbai",
+            state="MH",
+            pincode="400002",
+            is_active=True,
+        )
+        self._seed_inventory_move(
+            txn_type=TxnType.PURCHASE,
+            txn_id=self.header.id,
+            move_type=InventoryMove.MoveType.IN_,
+            qty="10.0000",
+            posting_day=date(2026, 4, 10),
+        )
+        self._seed_inventory_move(
+            txn_type=TxnType.INVENTORY_ADJUSTMENT,
+            txn_id=992,
+            move_type=InventoryMove.MoveType.OUT,
+            qty="10.0000",
+            posting_day=date(2026, 4, 12),
+        )
+        self._seed_inventory_move(
+            txn_type=TxnType.INVENTORY_ADJUSTMENT,
+            txn_id=993,
+            move_type=InventoryMove.MoveType.IN_,
+            qty="100.0000",
+            posting_day=date(2026, 4, 12),
+            location=secondary_location,
+        )
+
+        with self.assertRaisesMessage(ValueError, "no longer safely returnable"):
+            PurchaseInvoiceService.validate_lines_structural(
+                self._return_attrs(),
+                self._return_lines("1.0000"),
                 SimpleNamespace(tax_regime=PurchaseInvoiceHeader.TaxRegime.INTRA),
             )
 

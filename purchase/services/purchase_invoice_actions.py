@@ -35,6 +35,7 @@ from purchase.models.purchase_ap import VendorBillOpenItem
 from numbering.services.document_number_service import DocumentNumberService
 from numbering.models import DocumentType
 from core.gst_document_validation import gst_classification_error
+from core.concurrency import assert_expected_updated_at
 
 
 @dataclass(frozen=True)
@@ -352,7 +353,7 @@ class PurchaseInvoiceActions:
 
         h.doc_no = allocated.doc_no
         h.purchase_number = allocated.display_no
-        h.save(update_fields=["doc_no", "purchase_number"])
+        h.save(update_fields=["doc_no", "purchase_number", "updated_at"])
 
     # ----------------------------
     # Actions
@@ -360,7 +361,7 @@ class PurchaseInvoiceActions:
 
     @staticmethod
     @transaction.atomic
-    def confirm(pk: int, confirmed_by_id: Optional[int] = None) -> ActionResult:
+    def confirm(pk: int, confirmed_by_id: Optional[int] = None, expected_updated_at=None) -> ActionResult:
         h = PurchaseInvoiceActions._get_for_update(pk)
         policy = PurchaseSettingsService.get_policy(h.entity_id, h.subentity_id)
 
@@ -368,6 +369,16 @@ class PurchaseInvoiceActions:
             raise ValueError("Cannot confirm: document is cancelled.")
         if int(h.status) == int(Status.POSTED):
             return ActionResult(h, "Already posted.")
+        if int(h.status) == int(Status.CONFIRMED):
+            PurchaseInvoiceActions._allocate_final_number_if_missing(h)
+            if confirmed_by_id and not h.confirmed_by_id:
+                h.confirmed_by_id = confirmed_by_id
+                h.confirmed_at = timezone.now()
+                h.save(update_fields=["confirmed_by", "confirmed_at", "updated_at"])
+            GstTdsService.sync_contract_ledger_for_header(h)
+            return ActionResult(h, "Already confirmed (number ensured).")
+
+        assert_expected_updated_at(h, expected_updated_at)
 
         confirm_lock_level = policy.level("confirm_lock_check", "hard")
         if confirm_lock_level != "off":
@@ -389,30 +400,21 @@ class PurchaseInvoiceActions:
 
         PurchaseInvoiceActions._validate_gst_classification(h)
 
-        # If it was already confirmed, keep it confirmed and just return
-        if int(h.status) == int(Status.CONFIRMED):
-            if confirmed_by_id and not h.confirmed_by_id:
-                h.confirmed_by_id = confirmed_by_id
-                h.confirmed_at = timezone.now()
-                h.save(update_fields=["confirmed_by", "confirmed_at"])
-            GstTdsService.sync_contract_ledger_for_header(h)
-            return ActionResult(h, "Already confirmed (number ensured).")
-
         # Otherwise confirm now
         h.status = Status.CONFIRMED
         h.confirmed_at = timezone.now()
         if confirmed_by_id:
             h.confirmed_by_id = confirmed_by_id
-            h.save(update_fields=["status", "confirmed_at", "confirmed_by"])
+            h.save(update_fields=["status", "confirmed_at", "confirmed_by", "updated_at"])
         else:
-            h.save(update_fields=["status", "confirmed_at"])
+            h.save(update_fields=["status", "confirmed_at", "updated_at"])
         GstTdsService.sync_contract_ledger_for_header(h)
         return ActionResult(h, "Confirmed.")
 
 
     @staticmethod
     @transaction.atomic
-    def post(pk: int, posted_by_id: Optional[int] = None) -> ActionResult:
+    def post(pk: int, posted_by_id: Optional[int] = None, expected_updated_at=None) -> ActionResult:
         """
         Posting hook:
           - requires CONFIRMED
@@ -426,6 +428,7 @@ class PurchaseInvoiceActions:
             raise ValueError("Cannot post: document is cancelled.")
         if int(h.status) == int(Status.POSTED):
             return ActionResult(h, "Already posted.")
+        assert_expected_updated_at(h, expected_updated_at)
         if int(h.status) != int(Status.CONFIRMED):
             raise ValueError("Only CONFIRMED documents can be posted.")
 
@@ -458,9 +461,9 @@ class PurchaseInvoiceActions:
         h.posted_at = timezone.now()
         if posted_by_id:
             h.posted_by_id = posted_by_id
-            h.save(update_fields=["status", "posted_at", "posted_by"])
+            h.save(update_fields=["status", "posted_at", "posted_by", "updated_at"])
         else:
-            h.save(update_fields=["status", "posted_at"])
+            h.save(update_fields=["status", "posted_at", "updated_at"])
 
         # AP open-item sync for payable tracking (invoice/CN/DN).
         PurchaseAssetIntakeService.sync_asset_intakes_for_posted_header(
@@ -475,12 +478,25 @@ class PurchaseInvoiceActions:
 
     @staticmethod
     @transaction.atomic
-    def unpost(pk: int, unposted_by_id: Optional[int] = None, reason: Optional[str] = None) -> ActionResult:
+    def unpost(pk: int, unposted_by_id: Optional[int] = None, reason: Optional[str] = None, expected_updated_at=None) -> ActionResult:
         h = PurchaseInvoiceActions._get_for_update(pk)
         old_scope_key = GstTdsService._scope_key_for_header(h)
         purchase_doc = PurchaseInvoiceActions._purchase_doc_label(h)
         if int(h.status) != int(Status.POSTED):
+            txn_type = PurchaseInvoiceActions._txn_type_for_header(h)
+            already_reversed = Entry.objects.filter(
+                entity_id=h.entity_id,
+                entityfin_id=h.entityfinid_id,
+                subentity_id=h.subentity_id,
+                txn_type=txn_type,
+                txn_id=h.id,
+                status=EntryStatus.REVERSED,
+            ).exists()
+            if int(h.status) == int(Status.CONFIRMED) and already_reversed:
+                return ActionResult(h, "Already unposted.")
             raise ValueError("Only posted purchase documents can be unposted.")
+
+        assert_expected_updated_at(h, expected_updated_at)
 
         policy = PurchaseSettingsService.get_policy(h.entity_id, h.subentity_id)
         if str(policy.controls.get("allow_unpost_posted", "on")).lower().strip() == "off":
@@ -608,15 +624,19 @@ class PurchaseInvoiceActions:
         h.status = Status.CONFIRMED
         h.posted_at = None
         h.posted_by_id = None
-        h.save(update_fields=["status", "posted_at", "posted_by"])
+        h.save(update_fields=["status", "posted_at", "posted_by", "updated_at"])
         GstTdsService.sync_contract_ledger_for_header(h, old_scope_key=old_scope_key)
         return ActionResult(h, "Unposted successfully.")
 
     @staticmethod
     @transaction.atomic
-    def cancel(pk: int, cancelled_by_id: Optional[int] = None, reason: Optional[str] = None) -> ActionResult:
+    def cancel(pk: int, cancelled_by_id: Optional[int] = None, reason: Optional[str] = None, expected_updated_at=None) -> ActionResult:
         h = PurchaseInvoiceActions._get_for_update(pk)
         old_scope_key = GstTdsService._scope_key_for_header(h)
+
+        if int(h.status) == int(Status.CANCELLED):
+            return ActionResult(h, "Already cancelled.")
+        assert_expected_updated_at(h, expected_updated_at)
 
         if int(h.status) == int(Status.POSTED):
             if int(getattr(h, "doc_type", 0) or 0) != int(PurchaseInvoiceHeader.DocType.TAX_INVOICE):
@@ -641,17 +661,14 @@ class PurchaseInvoiceActions:
                 posted.header,
                 "Locked-period purchase cannot be cancelled directly. A current-period reversal credit note was created and posted.",
             )
-        if int(h.status) == int(Status.CANCELLED):
-            return ActionResult(h, "Already cancelled.")
-
         h.status = Status.CANCELLED
         h.cancelled_at = timezone.now()
         h.cancel_reason = (reason or "").strip()[:255] or None
         if cancelled_by_id:
             h.cancelled_by_id = cancelled_by_id
-            h.save(update_fields=["status", "cancelled_at", "cancelled_by", "cancel_reason"])
+            h.save(update_fields=["status", "cancelled_at", "cancelled_by", "cancel_reason", "updated_at"])
         else:
-            h.save(update_fields=["status", "cancelled_at", "cancel_reason"])
+            h.save(update_fields=["status", "cancelled_at", "cancel_reason", "updated_at"])
         GstTdsService.sync_contract_ledger_for_header(h, old_scope_key=old_scope_key)
         return ActionResult(h, "Cancelled.")
 

@@ -350,6 +350,7 @@ class SalesInvoiceLookupSerializer(serializers.ModelSerializer):
 
 
 class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
+    updated_at = serializers.DateTimeField(read_only=True, format="iso-8601")
     # nested
     lines = SalesInvoiceLineSerializer(many=True, required=False)
     charges = SalesChargeLineSerializer(many=True, required=False)
@@ -558,6 +559,8 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             "einvoice_artifact",
             "eway_artifact",
             "compliance_action_flags",
+            "created_at",
+            "updated_at",
         ]
         read_only_fields = [
             "status",

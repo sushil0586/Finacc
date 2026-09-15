@@ -239,6 +239,11 @@ EDITABLE_SETTINGS_FIELDS = {
 class _BaseManufacturingAPIView(ScopedEntitlementMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
 
+    def handle_exception(self, exc):
+        if isinstance(exc, ValueError):
+            exc = ValidationError({"detail": str(exc)})
+        return super().handle_exception(exc)
+
     def get_permission_codes(self, request, entity_id):
         return EffectivePermissionService.permission_codes_for_user(request.user, entity_id)
 

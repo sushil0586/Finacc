@@ -1019,6 +1019,39 @@ class BookReportAPITests(APITestCase):
         self.assertEqual(data["rows"][0]["drilldown_params"]["account_id"], self.cash_account.id)
         self.assertEqual(data["rows"][0]["drilldown_params"]["entry_id"], data["rows"][0]["entry_id"])
 
+    def test_ledger_book_branch_scope_inherits_entity_opening_and_keeps_branch_activity(self):
+        self._create_entry(
+            txn_type=TxnType.JOURNAL_CASH,
+            txn_id=9991,
+            voucher_no="CV-BRANCH-B",
+            posting_date="2025-04-06",
+            voucher_date="2025-04-06",
+            status=EntryStatus.POSTED,
+            narration="Other branch cash activity",
+            subentity=self.other_subentity,
+            lines=[
+                (self.cash_account, self.cash_ledger, True, "25.00", "Other branch cash"),
+                (self.income_account, self.income_ledger, False, "25.00", "Other branch income"),
+            ],
+        )
+        response = self.client.get(
+            reverse("reports_api:financial-ledger-book"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "ledger": self.cash_ledger.id,
+                "scope_mode": "financial_year",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["opening_balance"], "0.00")
+        self.assertEqual(data["totals"]["closing_balance"], "150.00")
+        self.assertEqual([row["voucher_number"] for row in data["rows"]], ["ACC-OPEN-CASH", "CV-001"])
+        self.assertEqual(data["rows"][0]["voucher_type"], TxnType.OPENING_BALANCE)
+        self.assertEqual(data["rows"][0]["running_balance"], "100.00")
+
     def test_ledger_book_custom_scope_keeps_brought_forward_opening_separate(self):
         response = self.client.get(
             reverse("reports_api:financial-ledger-book"),

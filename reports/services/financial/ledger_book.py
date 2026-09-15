@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from django.db.models import Q
+
 from financial.services_opening_balance import ACCOUNT_OPENING_TXN_ID_BASE
 from purchase.models.purchase_core import PurchaseInvoiceLine
 from sales.models.sales_core import SalesInvoiceLine
@@ -168,9 +170,15 @@ def build_ledger_book(
         else Decimal("0.00")
     )
 
-    lines_qs = journal_lines_for_scope(entity_id, entityfin_id, subentity_id, from_date, to_date)
+    query_subentity_id = subentity_id if separate_opening else None
+    lines_qs = journal_lines_for_scope(entity_id, entityfin_id, query_subentity_id, from_date, to_date)
     if separate_opening:
         lines_qs = lines_qs.exclude(txn_type=TxnType.OPENING_BALANCE)
+    elif subentity_id:
+        lines_qs = lines_qs.filter(
+            Q(subentity_id=subentity_id)
+            | Q(txn_type=TxnType.OPENING_BALANCE, subentity_id__isnull=True)
+        )
     lines_qs = lines_qs.filter(resolved_ledger_id=ledger_id).order_by("posting_date", "entry_id", "id")
     lines = list(lines_qs)
 

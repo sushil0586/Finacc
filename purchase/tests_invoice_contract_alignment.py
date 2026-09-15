@@ -465,6 +465,37 @@ class PurchaseInvoiceContractAlignmentTests(APITestCase):
         self.assertEqual(composite["cess_amount"], Decimal("7.00"))
         self.assertEqual(composite["line_total"], Decimal("243.00"))
 
+    def test_purchase_compute_line_sequences_discount_before_inclusive_gst_and_cess(self):
+        computed = PurchaseInvoiceService.compute_line_authoritative(
+            header_attrs={
+                "default_taxability": 1,
+                "is_reverse_charge": False,
+                "vendor_gstin": "27ABCDE1234F1Z5",
+            },
+            line={
+                "qty": Decimal("10.0000"),
+                "rate": Decimal("118.00"),
+                "is_rate_inclusive_of_tax": True,
+                "gst_rate": Decimal("18.00"),
+                "discount_type": "P",
+                "discount_percent": Decimal("10.00"),
+                "discount_amount": Decimal("0.00"),
+                "cess_type": "composite",
+                "cess_percent": Decimal("2.00"),
+                "cess_specific_amount": Decimal("1.00"),
+                "taxability": 1,
+            },
+            derived=DerivedRegime(tax_regime=1, is_igst=False),
+        )
+
+        self.assertEqual(computed["taxable_value"], Decimal("900.00"))
+        self.assertEqual(computed["cgst_amount"], Decimal("81.00"))
+        self.assertEqual(computed["sgst_amount"], Decimal("81.00"))
+        self.assertEqual(computed["cess_amount"], Decimal("28.00"))
+        self.assertEqual(computed["line_total"], Decimal("1090.00"))
+        self.assertEqual(computed["discount_percent"], Decimal("10.00"))
+        self.assertEqual(computed["discount_amount"], Decimal("0.00"))
+
     def test_purchase_compute_line_preserves_manual_interstate_gst_amount(self):
         manual = PurchaseInvoiceService.compute_line_authoritative(
             header_attrs={

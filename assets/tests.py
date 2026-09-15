@@ -11,12 +11,14 @@ from rest_framework.test import APITestCase
 
 from catalog.models import Product, ProductCategory, ProductPurchaseBehavior, UnitOfMeasure
 from entity.models import Entity, EntityFinancialYear, SubEntity
-from financial.models import Ledger, accountHead
+from financial.models import Ledger, accountHead, accounttype
 from posting.models import Entry, EntryStatus, JournalLine
 from purchase.models.purchase_core import PurchaseInvoiceHeader
 from rbac.models import Permission, Role, RolePermission, UserRoleAssignment
 from subscriptions.models import PlanLimit
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
+from reports.services.financial.statements import build_balance_sheet, build_profit_and_loss
+from reports.services.financial.trial_balance import build_trial_balance
 
 from .models import AssetBulkJob, AssetCategory, DepreciationRun, FixedAsset
 from .seeding import AssetSeedService
@@ -2070,6 +2072,158 @@ class AssetApiScopeTests(APITestCase):
         self.assertFalse(run.posting_batch.is_active)
         self.assertEqual(str(self.asset.accumulated_depreciation), "0.00")
         self.assertEqual(str(self.asset.net_book_value), "5000.00")
+
+    def test_dataset_c_depreciation_reconciles_subledger_statements_and_reversal(self):
+        """Depreciation must agree across the asset, books, statements, and cancellation."""
+        current_assets = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Current Assets",
+            accounttypecode="1100",
+            balanceType=True,
+            createdby=self.owner,
+        )
+        equity = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Capital and Equity",
+            accounttypecode="3100",
+            balanceType=False,
+            createdby=self.owner,
+        )
+        indirect_expense = accounttype.objects.create(
+            entity=self.entity,
+            accounttypename="Indirect Expenses",
+            accounttypecode="5200",
+            balanceType=True,
+            createdby=self.owner,
+        )
+        asset_head = accountHead.objects.create(
+            entity=self.entity,
+            name="Dataset C Fixed Assets",
+            code=301,
+            drcreffect="Debit",
+            balanceType="Debit",
+            detailsingroup=3,
+            accounttype=current_assets,
+            createdby=self.owner,
+        )
+        accumulated_head = accountHead.objects.create(
+            entity=self.entity,
+            name="Dataset C Accumulated Depreciation",
+            code=302,
+            drcreffect="Credit",
+            balanceType="Credit",
+            detailsingroup=3,
+            accounttype=current_assets,
+            createdby=self.owner,
+        )
+        expense_head = accountHead.objects.create(
+            entity=self.entity,
+            name="Dataset C Depreciation Expense",
+            code=303,
+            drcreffect="Debit",
+            balanceType="Debit",
+            detailsingroup=2,
+            accounttype=indirect_expense,
+            createdby=self.owner,
+        )
+        capital_head = accountHead.objects.create(
+            entity=self.entity,
+            name="Dataset C Capital",
+            code=304,
+            drcreffect="Credit",
+            balanceType="Credit",
+            detailsingroup=3,
+            accounttype=equity,
+            createdby=self.owner,
+        )
+        self.asset_ledger.accounthead = asset_head
+        self.asset_ledger.accounttype = current_assets
+        self.asset_ledger.save(update_fields=["accounthead", "accounttype"])
+        self.acc_dep_ledger.accounthead = accumulated_head
+        self.acc_dep_ledger.accounttype = current_assets
+        self.acc_dep_ledger.save(update_fields=["accounthead", "accounttype"])
+        self.dep_exp_ledger.accounthead = expense_head
+        self.dep_exp_ledger.accounttype = indirect_expense
+        self.dep_exp_ledger.save(update_fields=["accounthead", "accounttype"])
+        capital_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=1099,
+            name="Dataset C Capital",
+            accounthead=capital_head,
+            accounttype=equity,
+            createdby=self.owner,
+        )
+
+        capitalize_response = self.client.post(
+            reverse("assets_api:fixed-asset-capitalize", args=[self.asset.id]),
+            {
+                "counter_ledger_id": capital_ledger.id,
+                "capitalization_date": "2026-04-01",
+                "narration": "Dataset C asset capitalization",
+            },
+            format="json",
+        )
+        self.assertEqual(capitalize_response.status_code, status.HTTP_200_OK)
+        create_response = self.client.post(
+            reverse("assets_api:depreciation-run-list-create"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "run_code": "DATASET-C-DEP-APR",
+                "period_from": "2026-04-01",
+                "period_to": "2026-04-30",
+                "posting_date": "2026-04-30",
+                "depreciation_method": "SLM",
+                "note": "Dataset C April depreciation",
+            },
+            format="json",
+        )
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        run_id = create_response.data["id"]
+        calculate_response = self.client.post(
+            reverse("assets_api:depreciation-run-calculate", args=[run_id]), {}, format="json"
+        )
+        self.assertEqual(calculate_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(Decimal(calculate_response.data["total_amount"]), Decimal("83.33"))
+        post_response = self.client.post(
+            reverse("assets_api:depreciation-run-post", args=[run_id]), {}, format="json"
+        )
+        self.assertEqual(post_response.status_code, status.HTTP_200_OK)
+
+        self.asset.refresh_from_db()
+        self.assertEqual(self.asset.accumulated_depreciation, Decimal("83.33"))
+        self.assertEqual(self.asset.net_book_value, Decimal("4916.67"))
+        scope = {
+            "entity_id": self.entity.id,
+            "entityfin_id": self.entityfin.id,
+            "subentity_id": self.subentity.id,
+            "from_date": "2026-04-01",
+            "to_date": "2026-04-30",
+        }
+        trial_balance = build_trial_balance(**scope, account_group="ledger")
+        trial_rows = {row["ledger_name"]: Decimal(row["closing"]) for row in trial_balance["rows"]}
+        self.assertEqual(trial_rows["Asset Ledger"], Decimal("5000.00"))
+        self.assertEqual(trial_rows["Accum Dep Ledger"], Decimal("-83.33"))
+        self.assertEqual(trial_rows["Dep Exp Ledger"], Decimal("83.33"))
+        self.assertEqual(trial_rows["Dataset C Capital"], Decimal("-5000.00"))
+        profit_loss = build_profit_and_loss(**scope, group_by="ledger", stock_valuation_mode="none")
+        balance_sheet = build_balance_sheet(**scope, group_by="ledger", stock_valuation_mode="none")
+        self.assertEqual(profit_loss["totals"]["net_profit"], "-83.33")
+        self.assertEqual(balance_sheet["totals"]["assets"], "4916.67")
+        self.assertEqual(balance_sheet["totals"]["liabilities_and_equity"], "4916.67")
+
+        cancel_response = self.client.post(
+            reverse("assets_api:depreciation-run-cancel", args=[run_id]), {}, format="json"
+        )
+        self.assertEqual(cancel_response.status_code, status.HTTP_200_OK)
+        self.asset.refresh_from_db()
+        self.assertEqual(self.asset.accumulated_depreciation, Decimal("0.00"))
+        self.assertEqual(self.asset.net_book_value, Decimal("5000.00"))
+        reversed_trial = build_trial_balance(**scope, account_group="ledger")
+        reversed_rows = {row["ledger_name"]: Decimal(row["closing"]) for row in reversed_trial["rows"]}
+        self.assertNotIn("Accum Dep Ledger", reversed_rows)
+        self.assertNotIn("Dep Exp Ledger", reversed_rows)
 
     def test_update_posted_asset_rejects_immutable_field_changes(self):
         capitalize_response = self.client.post(

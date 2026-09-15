@@ -536,6 +536,34 @@ class ReceivablesRouteContractTests(TestCase):
         self.assertEqual(history_row["settlement_lines"][0]["invoice_number"], invoice.invoice_number)
         self.assertEqual(history_row["settlement_lines"][0]["applied_amount_signed"], "30.00")
 
+    def test_settlement_within_rounding_tolerance_caps_at_outstanding(self):
+        invoice = self._create_service_invoice()
+        open_item = CustomerBillOpenItem.objects.get(header=invoice)
+        settlement = SalesArService.create_settlement(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            customer_id=self.customer.id,
+            settlement_type="receipt",
+            settlement_date=datetime(2025, 4, 20).date(),
+            reference_no="SET-TOLERANCE-001",
+            external_voucher_no=None,
+            remarks="One-cent input tolerance",
+            lines=[{"open_item_id": open_item.id, "amount": Decimal("118.01")}],
+        ).settlement
+
+        result = SalesArService.post_settlement(settlement_id=settlement.id, posted_by_id=self.user.id)
+
+        open_item.refresh_from_db()
+        settlement.refresh_from_db()
+        line = settlement.lines.get()
+        self.assertEqual(result.applied_total, Decimal("118.00"))
+        self.assertEqual(settlement.total_amount, Decimal("118.00"))
+        self.assertEqual(line.applied_amount_signed, Decimal("118.00"))
+        self.assertEqual(open_item.settled_amount, Decimal("118.00"))
+        self.assertEqual(open_item.outstanding_amount, Decimal("0.00"))
+        self.assertFalse(open_item.is_open)
+
     def test_cancelled_settlement_stops_affecting_open_items_and_is_hidden_from_history(self):
         invoice = self._create_service_invoice()
         open_item = CustomerBillOpenItem.objects.get(header=invoice)

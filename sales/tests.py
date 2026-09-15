@@ -1402,6 +1402,123 @@ class MasterGSTClientUnitTests(SimpleTestCase):
     @patch("sales.services.sales_invoice_service.SalesInvoiceService._build_stock_balance_maps")
     @patch("sales.services.sales_invoice_service.SalesInvoiceService._stock_policy")
     @patch("sales.services.sales_invoice_service.Product.objects")
+    def test_validate_stock_policy_never_borrows_same_batch_from_another_location(
+        self,
+        mocked_product_objects,
+        mocked_stock_policy,
+        mocked_build_maps,
+        mocked_resolve_location,
+    ):
+        mocked_stock_policy.return_value = SimpleNamespace(
+            mode="STRICT",
+            allow_negative_stock=True,
+            expiry_validation_required=False,
+            fefo_required=False,
+            allow_manual_batch_override=True,
+        )
+        mocked_build_maps.return_value = (
+            {
+                (1, "B1", 5): Decimal("1.0000"),
+                (1, "B1", 6): Decimal("100.0000"),
+            },
+            {},
+        )
+        mocked_product_objects.filter.return_value.select_related.return_value.prefetch_related.return_value.only.return_value = [
+            SimpleNamespace(
+                id=1,
+                productname="Location-bound product",
+                is_service=False,
+                is_batch_managed=True,
+                is_expiry_tracked=False,
+                base_uom_id=None,
+                base_uom=None,
+                uom_conversions=[],
+            )
+        ]
+        header = SimpleNamespace(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=1,
+            doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+            bill_date=date(2026, 4, 13),
+            location_id=5,
+            godown_id=None,
+        )
+        lines = [
+            SimpleNamespace(
+                product_id=1,
+                qty=Decimal("2.0000"),
+                free_qty=Decimal("0.0000"),
+                batch_number="B1",
+                expiry_date=None,
+                line_no=1,
+            )
+        ]
+
+        with self.assertRaisesMessage(ValidationError, "available 1.0000"):
+            SalesInvoiceService._validate_stock_policy_on_post(header=header, lines=lines)
+
+        mocked_resolve_location.assert_called_once()
+
+    @patch("sales.services.sales_invoice_service.resolve_posting_location_id", return_value=5)
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._build_stock_balance_maps")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._stock_policy")
+    @patch("sales.services.sales_invoice_service.Product.objects")
+    def test_controlled_policy_explicitly_allows_negative_stock_when_configured(
+        self,
+        mocked_product_objects,
+        mocked_stock_policy,
+        mocked_build_maps,
+        mocked_resolve_location,
+    ):
+        mocked_stock_policy.return_value = SimpleNamespace(
+            mode="CONTROLLED",
+            allow_negative_stock=True,
+            expiry_validation_required=False,
+            fefo_required=False,
+            allow_manual_batch_override=True,
+        )
+        mocked_build_maps.return_value = ({(1, "", 5): Decimal("0.0000")}, {})
+        mocked_product_objects.filter.return_value.select_related.return_value.prefetch_related.return_value.only.return_value = [
+            SimpleNamespace(
+                id=1,
+                productname="Controlled negative product",
+                is_service=False,
+                is_batch_managed=False,
+                is_expiry_tracked=False,
+                base_uom_id=None,
+                base_uom=None,
+                uom_conversions=[],
+            )
+        ]
+        header = SimpleNamespace(
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=1,
+            doc_type=int(SalesInvoiceHeader.DocType.TAX_INVOICE),
+            bill_date=date(2026, 4, 13),
+            location_id=5,
+            godown_id=None,
+        )
+        lines = [
+            SimpleNamespace(
+                product_id=1,
+                qty=Decimal("2.0000"),
+                free_qty=Decimal("0.0000"),
+                batch_number="",
+                expiry_date=None,
+                line_no=1,
+            )
+        ]
+
+        SalesInvoiceService._validate_stock_policy_on_post(header=header, lines=lines)
+
+        mocked_resolve_location.assert_called_once()
+
+    @patch("sales.services.sales_invoice_service.resolve_posting_location_id", return_value=5)
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._build_stock_balance_maps")
+    @patch("sales.services.sales_invoice_service.SalesInvoiceService._stock_policy")
+    @patch("sales.services.sales_invoice_service.Product.objects")
     def test_validate_stock_policy_uses_base_qty_for_alternate_uom(
         self,
         mocked_product_objects,
@@ -1565,6 +1682,62 @@ class SalesPostingAdapterUnitTests(SimpleTestCase):
         self.assertEqual(len(revenue_lines), 1)
         self.assertEqual(revenue_lines[0].account_id, 8107)
         self.assertNotEqual(revenue_lines[0].account_id, 5000)
+
+    @patch("posting.adapters.sales_invoice.PostingService")
+    @patch("posting.adapters.sales_invoice.Product.objects")
+    @patch("posting.adapters.sales_invoice.ProductAccountResolver")
+    @patch("posting.adapters.sales_invoice.StaticAccountResolver")
+    def test_discounted_inclusive_cess_and_negative_roundoff_post_to_balanced_accounts(
+        self,
+        mock_static_resolver_cls,
+        mock_product_resolver_cls,
+        mock_product_objects,
+        mock_posting_service_cls,
+    ):
+        code_map = {
+            StaticAccountCodes.ROUND_OFF_INCOME: 8101,
+            StaticAccountCodes.ROUND_OFF_EXPENSE: 8102,
+            StaticAccountCodes.OUTPUT_CGST: 8103,
+            StaticAccountCodes.OUTPUT_SGST: 8104,
+            StaticAccountCodes.OUTPUT_IGST: 8105,
+            StaticAccountCodes.OUTPUT_CESS: 8106,
+            StaticAccountCodes.SALES_DEFAULT: 8107,
+            StaticAccountCodes.SALES_REVENUE: 8108,
+        }
+        resolver = mock_static_resolver_cls.return_value
+        resolver.get_account_id.side_effect = lambda code, required=False: code_map.get(code)
+        resolver.get_ledger_id.side_effect = lambda code, required=False: code_map.get(code)
+        mock_product_resolver_cls.return_value.sales_account_id.return_value = 5000
+        mock_product_objects.filter.return_value.select_related.return_value.prefetch_related.return_value = []
+        mock_posting_service_cls.return_value.post.return_value = SimpleNamespace(id=1001)
+
+        SalesInvoicePostingAdapter.post_sales_invoice.__wrapped__(
+            header=self._base_header(
+                grand_total=Decimal("1089.80"),
+                roundoff=Decimal("-0.20"),
+            ),
+            lines=[
+                self._line(
+                    taxable_value=Decimal("900.00"),
+                    cgst_amount=Decimal("81.00"),
+                    sgst_amount=Decimal("81.00"),
+                    cess_amount=Decimal("28.00"),
+                    qty=Decimal("10.0000"),
+                )
+            ],
+            user_id=1,
+            config=SalesInvoicePostingConfig(post_inventory=False),
+        )
+
+        rows = mock_posting_service_cls.return_value.post.call_args.kwargs["jl_inputs"]
+        debits = sum((row.amount for row in rows if row.drcr), Decimal("0.00"))
+        credits = sum((row.amount for row in rows if not row.drcr), Decimal("0.00"))
+
+        self.assertEqual(debits, Decimal("1090.00"))
+        self.assertEqual(credits, Decimal("1090.00"))
+        self.assertTrue(any(row.account_id == 8106 and row.amount == Decimal("28.00") for row in rows))
+        self.assertTrue(any(row.account_id == 8102 and row.amount == Decimal("0.20") for row in rows))
+        self.assertTrue(any(row.account_id == 7001 and row.amount == Decimal("1089.80") for row in rows))
 
     @patch("posting.adapters.sales_invoice.PostingService")
     @patch("posting.adapters.sales_invoice.Product.objects")
@@ -3004,15 +3177,24 @@ class SalesInvoiceAdditionalServiceUnitTests(SimpleTestCase):
     @patch("sales.services.sales_invoice_service.SalesInvoiceService.get_settings")
     @patch("sales.services.sales_invoice_service.ComplianceAuditService")
     @patch("sales.services.sales_invoice_service.SalesInvoiceService.reverse_posting")
-    def test_cancel_blocked_when_statutory_not_cancelled(self, mocked_reverse, mocked_audit, mocked_get_settings):
+    @patch("sales.services.sales_invoice_service.SalesInvoiceHeader.objects")
+    def test_cancel_blocked_when_statutory_not_cancelled(
+        self,
+        mocked_header_objects,
+        mocked_reverse,
+        mocked_audit,
+        mocked_get_settings,
+    ):
         mocked_get_settings.return_value = SimpleNamespace(enforce_statutory_cancel_before_business_cancel=True)
         header = SimpleNamespace(
+            pk=1,
             status=int(SalesInvoiceHeader.Status.CONFIRMED),
             entity_id=1,
             subentity_id=None,
             einvoice_artifact=SimpleNamespace(status=2, irn="x"),
             eway_artifact=SimpleNamespace(status=2, ewb_no="y"),
         )
+        mocked_header_objects.select_for_update.return_value.get.return_value = header
         with self.assertRaisesMessage(ValueError, "generated but not cancelled"):
             SalesInvoiceService.cancel.__func__.__wrapped__(SalesInvoiceService, header=header, user=None, reason="")
         mocked_reverse.assert_not_called()

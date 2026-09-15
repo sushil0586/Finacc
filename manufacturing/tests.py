@@ -21,7 +21,7 @@ from financial.models import Ledger, account
 from inventory_ops.services import InventoryAdjustmentService
 from numbering.models import DocumentNumberSeries
 from posting.common.static_accounts import StaticAccountCodes
-from posting.models import EntityStaticAccountMap, InventoryMove, JournalLine, StaticAccount, TxnType
+from posting.models import EntityStaticAccountMap, EntryStatus, InventoryMove, JournalLine, StaticAccount, TxnType
 from posting.services.posting_service import IMInput, PostingService
 from posting.services.static_accounts import StaticAccountService
 from rbac.models import (
@@ -2231,6 +2231,192 @@ class ManufacturingPhaseOneTests(APITestCase):
         self.assertEqual(
             InventoryMove.objects.get(txn_type=TxnType.SALES, txn_id=987655).ext_cost,
             Decimal("188.00"),
+        )
+
+    def test_dataset_c_actual_cost_byproduct_sale_and_reversal_truth_matrix(self):
+        """One fixed manufacturing story must reconcile stock, reports, GL, and reversal."""
+        bom = self.client.post(
+            reverse("manufacturing:manufacturing-boms"),
+            self._bom_payload(),
+            format="json",
+        ).json()
+        payload = self._work_order_payload(bom["id"])
+        payload["additional_costs"] = [
+            {"cost_type": "LABOUR", "amount": "30.0000", "note": "Packing labour"},
+            {"cost_type": "ELECTRICITY", "amount": "20.0000", "note": "Machine power"},
+        ]
+        payload["outputs"].append(
+            {
+                "finished_product": self.sugar_dust.id,
+                "output_type": "BYPRODUCT",
+                "planned_qty": "2.0000",
+                "actual_qty": "2.0000",
+                "estimated_recovery_unit_value": "5.0000",
+                "batch_number": "",
+                "expiry_date": None,
+            }
+        )
+        create_response = self.client.post(
+            reverse("manufacturing:manufacturing-work-orders"),
+            payload,
+            format="json",
+        )
+        self.assertEqual(create_response.status_code, 201)
+        work_order_id = create_response.json()["work_order"]["id"]
+
+        post_response = self.client.post(
+            reverse("manufacturing:manufacturing-work-order-post", kwargs={"pk": work_order_id}),
+            {},
+            format="json",
+        )
+        self.assertEqual(post_response.status_code, 200)
+        posted = post_response.json()["work_order"]
+        main_output = next(row for row in posted["outputs"] if row["output_type"] == "MAIN")
+        byproduct = next(row for row in posted["outputs"] if row["output_type"] == "BYPRODUCT")
+
+        self.assertEqual(Decimal(posted["actual_material_cost_snapshot"]), Decimal("470.0000"))
+        self.assertEqual(Decimal(posted["total_additional_cost_snapshot"]), Decimal("50.0000"))
+        self.assertEqual(Decimal(posted["actual_recovery_value_snapshot"]), Decimal("10.0000"))
+        self.assertEqual(Decimal(posted["net_production_cost_snapshot"]), Decimal("510.0000"))
+        self.assertEqual(Decimal(main_output["unit_cost"]), Decimal("51.0000"))
+        self.assertEqual(Decimal(byproduct["unit_cost"]), Decimal("5.0000"))
+
+        work_order = ManufacturingWorkOrder.objects.get(pk=work_order_id)
+        journal_lines = JournalLine.objects.filter(entry_id=work_order.posting_entry_id)
+        self.assertEqual(
+            journal_lines.filter(drcr=True).aggregate(total=Sum("amount"))["total"],
+            Decimal("1040.00"),
+        )
+        self.assertEqual(
+            journal_lines.filter(drcr=False).aggregate(total=Sum("amount"))["total"],
+            Decimal("1040.00"),
+        )
+
+        report_scope = {
+            "entity": self.entity.id,
+            "entityfinid": self.entityfin.id,
+            "subentity": self.subentity.id,
+        }
+        material_report = self.client.get(
+            reverse("manufacturing:manufacturing-material-consumption"), report_scope
+        ).json()
+        output_report = self.client.get(
+            reverse("manufacturing:manufacturing-output-yield"), report_scope
+        ).json()
+        posting_report = self.client.get(
+            reverse("manufacturing:manufacturing-posting-audit"), report_scope
+        ).json()
+        wip_report = self.client.get(
+            reverse("manufacturing:manufacturing-wip-cost-summary"), report_scope
+        ).json()
+        material_total = sum(
+            Decimal(str(row["line_value"]))
+            for row in material_report["rows"]
+            if row["work_order_id"] == work_order_id
+        )
+        output_row = next(row for row in output_report["rows"] if row["id"] == work_order_id)
+        posting_row = next(row for row in posting_report["rows"] if row["id"] == work_order_id)
+        wip_row = next(row for row in wip_report["rows"] if row["id"] == work_order_id)
+        self.assertEqual(material_total.quantize(Decimal("0.01")), Decimal("470.00"))
+        for row in (output_row, posting_row, wip_row):
+            self.assertEqual(
+                Decimal(str(row["net_production_cost_snapshot"])).quantize(Decimal("0.01")),
+                Decimal("510.00"),
+            )
+
+        report_args = {
+            "entity_id": self.entity.id,
+            "entityfin_id": self.entityfin.id,
+            "subentity_id": self.subentity.id,
+            "startdate": "2025-04-01",
+            "enddate": "2025-04-30",
+            "valuation_method": "fifo",
+        }
+        after_production = build_trading_account_dynamic(**report_args)
+        self.assertEqual(Decimal(str(after_production["closing_stock"])), Decimal("4750.0"))
+
+        sale_entry = PostingService(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            user_id=self.user.id,
+        ).post(
+            txn_type=TxnType.SALES,
+            txn_id=987656,
+            voucher_no="FG-SALE-DATASET-C",
+            voucher_date=datetime(2025, 4, 13).date(),
+            posting_date=datetime(2025, 4, 13).date(),
+            narration="Dataset C finished-goods sale",
+            jl_inputs=[],
+            im_inputs=[
+                IMInput(
+                    product_id=self.finished_pack.id,
+                    qty=Decimal("4.0000"),
+                    base_qty=Decimal("4.0000"),
+                    uom_id=self.finished_pack.base_uom_id,
+                    base_uom_id=self.finished_pack.base_uom_id,
+                    unit_cost=Decimal("51.0000"),
+                    move_type=InventoryMove.MoveType.OUT,
+                    cost_source=InventoryMove.CostSource.FIFO,
+                    location_id=self.finished_location.id,
+                    source_location_id=self.finished_location.id,
+                    movement_nature=InventoryMove.MovementNature.SALE,
+                    batch_number="FG-APR-001",
+                )
+            ],
+            mark_posted=True,
+        )
+        after_sale = build_trading_account_dynamic(**report_args)
+        self.assertEqual(Decimal(str(after_sale["closing_stock"])), Decimal("4546.0"))
+        self.assertEqual(Decimal(str(after_sale["cogs_from_issues"])), Decimal("204.0"))
+
+        blocked_unpost = self.client.post(
+            reverse("manufacturing:manufacturing-work-order-unpost", kwargs={"pk": work_order_id}),
+            {"reason": "Dataset C reversal proof"},
+            format="json",
+        )
+        self.assertEqual(blocked_unpost.status_code, 400)
+        self.assertIn("downstream movement", str(blocked_unpost.json()).lower())
+
+        sale_entry.posting_batch.is_active = False
+        sale_entry.posting_batch.save(update_fields=["is_active"])
+        sale_entry.status = EntryStatus.REVERSED
+        sale_entry.save(update_fields=["status"])
+        unpost_response = self.client.post(
+            reverse("manufacturing:manufacturing-work-order-unpost", kwargs={"pk": work_order_id}),
+            {"reason": "Dataset C reversal proof"},
+            format="json",
+        )
+        self.assertEqual(unpost_response.status_code, 200)
+        self.assertEqual(unpost_response.json()["work_order"]["status"], "DRAFT")
+        self.assertFalse(
+            InventoryMove.objects.filter(
+                txn_type=TxnType.MANUFACTURING_WORK_ORDER,
+                txn_id=work_order_id,
+                posting_batch__is_active=True,
+            ).exists()
+        )
+        after_reversal = build_trading_account_dynamic(**report_args)
+        self.assertEqual(Decimal(str(after_reversal["closing_stock"])), Decimal("4700.0"))
+        self.assertEqual(Decimal(str(after_reversal["cogs_from_issues"])), Decimal("0.0"))
+
+        self.entityfin.is_year_closed = True
+        self.entityfin.save(update_fields=["is_year_closed", "updated_at"])
+        closed_period_post = self.client.post(
+            reverse("manufacturing:manufacturing-work-order-post", kwargs={"pk": work_order_id}),
+            {},
+            format="json",
+        )
+        self.assertEqual(closed_period_post.status_code, 400)
+        self.assertIn("closed", str(closed_period_post.json()).lower())
+        work_order.refresh_from_db()
+        self.assertEqual(work_order.status, "DRAFT")
+        self.assertFalse(
+            InventoryMove.objects.filter(
+                txn_type=TxnType.MANUFACTURING_WORK_ORDER,
+                txn_id=work_order_id,
+                posting_batch__is_active=True,
+            ).exists()
         )
 
     def test_manufacturing_report_correctness_command_fails_on_snapshot_drift(self):

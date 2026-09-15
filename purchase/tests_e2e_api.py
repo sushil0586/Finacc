@@ -1841,6 +1841,43 @@ class PurchaseApiEndToEndTests(APITestCase):
         self.assertEqual(second_confirm_resp.json()["data"]["doc_no"], first_doc_no)
         self.assertEqual(second_confirm_resp.json()["data"]["purchase_number"], first_purchase_number)
 
+    def test_confirm_rejects_stale_purchase_invoice_but_accepts_completed_retry(self):
+        created = self._create_invoice(supplier_invoice_number="INV-CONFIRM-VERSION")
+        invoice_id = created["id"]
+        opened_at = created["updated_at"]
+
+        header = PurchaseInvoiceHeader.objects.get(pk=invoice_id)
+        header.po_reference_no = "Changed in another session"
+        header.save(update_fields=["po_reference_no", "updated_at"])
+
+        stale_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{invoice_id}/confirm/{self._scope_qs()}",
+            {"expected_updated_at": opened_at},
+            format="json",
+        )
+        self.assertEqual(stale_resp.status_code, status.HTTP_409_CONFLICT, stale_resp.json())
+        self.assertEqual(stale_resp.json()["code"], "stale_object")
+        header.refresh_from_db()
+        self.assertEqual(header.status, PurchaseInvoiceHeader.Status.DRAFT)
+
+        current_at = header.updated_at.isoformat().replace("+00:00", "Z")
+        confirm_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{invoice_id}/confirm/{self._scope_qs()}",
+            {"expected_updated_at": current_at},
+            format="json",
+        )
+        self.assertEqual(confirm_resp.status_code, status.HTTP_200_OK, confirm_resp.json())
+        confirmed_at = confirm_resp.json()["data"]["updated_at"]
+        self.assertNotEqual(confirmed_at, current_at)
+
+        retry_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{invoice_id}/confirm/{self._scope_qs()}",
+            {"expected_updated_at": current_at},
+            format="json",
+        )
+        self.assertEqual(retry_resp.status_code, status.HTTP_200_OK, retry_resp.json())
+        self.assertEqual(retry_resp.json()["message"], "Already confirmed (number ensured).")
+
     def test_cancel_marks_draft_invoice_cancelled(self):
         created = self._create_invoice(supplier_invoice_number="INV-CANCEL")
         invoice_id = created["id"]
@@ -2383,6 +2420,15 @@ class PurchaseApiEndToEndTests(APITestCase):
         self.assertEqual(entry.narration, "Reversed: Correction")
         self.assertTrue(mocked_unpost_sync_contract_ledger.called)
         self.assertTrue(mocked_scope_key.called)
+
+        retry_resp = self.client.post(
+            f"/api/purchase/purchase-invoices/{invoice_id}/unpost/{self._scope_qs()}",
+            {"reason": "Correction retry", "expected_updated_at": post_resp.json()["data"]["updated_at"]},
+            format="json",
+        )
+        self.assertEqual(retry_resp.status_code, status.HTTP_200_OK, retry_resp.json())
+        self.assertEqual(retry_resp.json()["message"], "Already unposted.")
+        mocked_posting_service_post.assert_called_once()
 
     @patch("purchase.services.purchase_invoice_actions.GstTdsService.sync_contract_ledger_for_header")
     @patch("purchase.services.purchase_invoice_actions.PurchaseApService.sync_open_item_for_header")

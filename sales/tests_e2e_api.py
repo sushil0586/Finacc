@@ -1654,6 +1654,43 @@ class SalesApiEndToEndTests(APITestCase):
         self.assertEqual(header.confirmed_at, first_confirmed_at)
         self.assertEqual(header.doc_no, first_doc_no)
 
+    def test_confirm_rejects_stale_sales_invoice_but_accepts_completed_retry(self):
+        created = self._create_invoice(reference="SO-CONFIRM-VERSION")
+        invoice_id = created["id"]
+        opened_at = created["updated_at"]
+
+        header = SalesInvoiceHeader.objects.get(pk=invoice_id)
+        header.reference = "Changed in another session"
+        header.save(update_fields=["reference", "updated_at"])
+
+        stale_resp = self.client.post(
+            f"/api/sales/invoices/{invoice_id}/confirm/{self._scope_qs()}",
+            {"expected_updated_at": opened_at},
+            format="json",
+        )
+        self.assertEqual(stale_resp.status_code, status.HTTP_409_CONFLICT, stale_resp.json())
+        self.assertEqual(stale_resp.json()["code"], "stale_object")
+        header.refresh_from_db()
+        self.assertEqual(header.status, SalesInvoiceHeader.Status.DRAFT)
+
+        current_at = header.updated_at.isoformat().replace("+00:00", "Z")
+        confirm_resp = self.client.post(
+            f"/api/sales/invoices/{invoice_id}/confirm/{self._scope_qs()}",
+            {"expected_updated_at": current_at},
+            format="json",
+        )
+        self.assertEqual(confirm_resp.status_code, status.HTTP_200_OK, confirm_resp.json())
+        confirmed_at = confirm_resp.json()["updated_at"]
+        self.assertNotEqual(confirmed_at, current_at)
+
+        retry_resp = self.client.post(
+            f"/api/sales/invoices/{invoice_id}/confirm/{self._scope_qs()}",
+            {"expected_updated_at": current_at},
+            format="json",
+        )
+        self.assertEqual(retry_resp.status_code, status.HTTP_200_OK, retry_resp.json())
+        self.assertEqual(retry_resp.json()["status"], int(SalesInvoiceHeader.Status.CONFIRMED))
+
     def test_confirm_locked_period_sales_is_blocked_when_policy_is_hard(self):
         created = self._create_invoice(
             reference="SO-CONF-LOCK-HARD",
@@ -3806,6 +3843,31 @@ class SalesApiEndToEndTests(APITestCase):
         self.assertTrue(header.is_posting_reversed)
         mocked_post_adapter.assert_called_once()
         self.assertTrue(mocked_auto_compliance.called)
+
+        reversal_batch_count = PostingBatch.objects.filter(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.SALES,
+            txn_id=invoice_id,
+        ).count()
+        retry_resp = self.client.post(
+            f"/api/sales/invoices/{invoice_id}/reverse/{self._scope_qs()}",
+            {"reason": "Open item reverse retry", "expected_updated_at": post_resp.json()["updated_at"]},
+            format="json",
+        )
+        self.assertEqual(retry_resp.status_code, status.HTTP_200_OK, retry_resp.json())
+        self.assertEqual(retry_resp.json()["status"], int(SalesInvoiceHeader.Status.CONFIRMED))
+        self.assertEqual(
+            PostingBatch.objects.filter(
+                entity=self.entity,
+                entityfin=self.entityfin,
+                subentity=self.subentity,
+                txn_type=TxnType.SALES,
+                txn_id=invoice_id,
+            ).count(),
+            reversal_batch_count,
+        )
 
     @patch("sales.services.sales_invoice_service.SalesInvoiceService._run_auto_compliance")
     @patch("sales.services.sales_invoice_service.SalesInvoicePostingAdapter.post_sales_invoice")

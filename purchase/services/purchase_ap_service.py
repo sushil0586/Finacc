@@ -517,16 +517,20 @@ class PurchaseApService:
                     raise ValueError(f"Line for open item {item.id} exceeds allocatable amount.")
                 warnings.append(f"Line for open item {item.id} exceeds allocatable amount.")
                 apply_abs = allocatable_abs
+            apply_abs = min(apply_abs, allocatable_abs)
             if requested_abs - remaining_abs > TOL and apply_abs > remaining_abs:
                 if over_rule == "block":
                     raise ValueError(f"Line for open item {item.id} exceeds outstanding.")
                 warnings.append(f"Line for open item {item.id} exceeds outstanding.")
                 apply_abs = min(apply_abs, remaining_abs)
+            apply_abs = min(apply_abs, remaining_abs)
             if advance_balance is not None and apply_abs - available_advance > TOL:
                 if over_rule == "block":
                     raise ValueError(f"Advance balance {advance_balance.id} is insufficient for line open item {item.id}.")
                 warnings.append(f"Advance balance {advance_balance.id} is insufficient for line open item {item.id}.")
                 apply_abs = available_advance
+            if advance_balance is not None:
+                apply_abs = min(apply_abs, available_advance)
 
             if apply_abs <= ZERO2:
                 continue

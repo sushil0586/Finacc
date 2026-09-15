@@ -1,6 +1,6 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework import permissions, status
+from rest_framework import permissions, serializers, status
 from rest_framework.exceptions import ValidationError
 from django.http import Http404
 
@@ -22,6 +22,15 @@ def _raise_validation_error(err: ValueError) -> None:
     if isinstance(payload, dict):
         raise ValidationError(payload)
     raise ValidationError({"non_field_errors": [str(payload)]})
+
+
+def _expected_updated_at(request):
+    payload = request.data
+    if not hasattr(payload, "get") or "expected_updated_at" not in payload:
+        return None
+    return serializers.DateTimeField(allow_null=True).run_validation(
+        payload.get("expected_updated_at")
+    )
 
 
 def _parse_scope(request, *, required: bool = True):
@@ -124,7 +133,15 @@ class PurchaseInvoiceConfirmAPIView(APIView):
             feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
         )
         try:
-            result = PurchaseInvoiceActions.confirm(pk, confirmed_by_id=request.user.id)
+            expected_updated_at = _expected_updated_at(request)
+            if expected_updated_at is None:
+                result = PurchaseInvoiceActions.confirm(pk, confirmed_by_id=request.user.id)
+            else:
+                result = PurchaseInvoiceActions.confirm(
+                    pk,
+                    confirmed_by_id=request.user.id,
+                    expected_updated_at=expected_updated_at,
+                )
         except ValueError as e:
             _raise_validation_error(e)
         return Response(_response_payload(result.message, result.header))
@@ -143,7 +160,15 @@ class PurchaseInvoicePostAPIView(APIView):
             feature_code=SubscriptionLimitCodes.FEATURE_PURCHASE,
         )
         try:
-            result = PurchaseInvoiceActions.post(pk, posted_by_id=request.user.id)
+            expected_updated_at = _expected_updated_at(request)
+            if expected_updated_at is None:
+                result = PurchaseInvoiceActions.post(pk, posted_by_id=request.user.id)
+            else:
+                result = PurchaseInvoiceActions.post(
+                    pk,
+                    posted_by_id=request.user.id,
+                    expected_updated_at=expected_updated_at,
+                )
         except ValueError as e:
             _raise_validation_error(e)
         return Response(_response_payload(result.message, result.header))
@@ -163,7 +188,16 @@ class PurchaseInvoiceUnpostAPIView(APIView):
         )
         reason = (request.data.get("reason") or "").strip() or None
         try:
-            result = PurchaseInvoiceActions.unpost(pk, unposted_by_id=request.user.id, reason=reason)
+            expected_updated_at = _expected_updated_at(request)
+            if expected_updated_at is None:
+                result = PurchaseInvoiceActions.unpost(pk, unposted_by_id=request.user.id, reason=reason)
+            else:
+                result = PurchaseInvoiceActions.unpost(
+                    pk,
+                    unposted_by_id=request.user.id,
+                    reason=reason,
+                    expected_updated_at=expected_updated_at,
+                )
         except ValueError as e:
             _raise_validation_error(e)
         return Response(_response_payload(result.message, result.header))
@@ -202,7 +236,16 @@ class PurchaseInvoiceCancelAPIView(APIView):
             )
         reason = (request.data.get("reason") or "").strip() or None
         try:
-            result = PurchaseInvoiceActions.cancel(pk, cancelled_by_id=request.user.id, reason=reason)
+            expected_updated_at = _expected_updated_at(request)
+            if expected_updated_at is None:
+                result = PurchaseInvoiceActions.cancel(pk, cancelled_by_id=request.user.id, reason=reason)
+            else:
+                result = PurchaseInvoiceActions.cancel(
+                    pk,
+                    cancelled_by_id=request.user.id,
+                    reason=reason,
+                    expected_updated_at=expected_updated_at,
+                )
         except ValueError as e:
             _raise_validation_error(e)
         return Response(_response_payload(result.message, result.header))

@@ -14,6 +14,7 @@ from financial.models import Ledger
 from posting.models import EntryStatus, InventoryMove, JournalLine, TxnType
 from entity.models import EntityFinancialYear
 from reports.services.financial.opening_balance_source import effective_opening_map_for_ledger_ids
+from reports.services.inventory.valuation import value_moves_by_inventory_identity
 
 
 # --------------------------- Common helpers ---------------------------
@@ -232,7 +233,10 @@ def _inventory_breakdown_asof(
 
     moves_qs = (InventoryMove.objects
                 .filter(entity_id=entity_id, posting_date__lte=enddate)
-                .values('product_id', 'posting_date', 'id', 'qty', 'base_qty', 'move_type', 'unit_cost', 'ext_cost')
+                .values(
+                    'product_id', 'posting_date', 'id', 'qty', 'base_qty', 'move_type',
+                    'unit_cost', 'ext_cost', 'location_id', 'batch_number',
+                )
                 .order_by('product_id', 'posting_date', 'id'))
     moves_qs = _apply_scope_filters(moves_qs, entityfin_id=entityfin_id, subentity_id=subentity_id)
 
@@ -249,33 +253,9 @@ def _inventory_breakdown_asof(
     else:
         prod_map = {p.id: p.productname for p in Product.objects.filter(entity_id=entity_id).only('id', 'productname')}
 
-    cur_pid = None
-
-    # State for each strategy
-    layers: List[Dict[str, Decimal]] = []     # fifo/lifo layers
-    q = Decimal('0'); v = Decimal('0')        # mwa/latest running qty/value
-    latest = Decimal('0')                     # latest cost
-    sum_in_qty = Decimal('0'); sum_in_val = Decimal('0'); issues_qty = Decimal('0')  # wac accumulators
-
-    def flush_product(pid):
-        nonlocal layers, q, v, latest, sum_in_qty, sum_in_val, issues_qty, total_qty, total_val
-        if pid is None:
-            return
-
-        if method in ("fifo", "lifo"):
-            qty = sum((l["qty"] for l in layers), Decimal('0'))
-            val = sum((l["qty"] * l["rate"] for l in layers), Decimal('0'))
-        elif method == "mwa":
-            qty, val = q, v
-        elif method == "latest":
-            qty, val = q, v
-        elif method == "wac":
-            avg = (sum_in_val / sum_in_qty) if sum_in_qty > 0 else Decimal('0')
-            qty = max(sum_in_qty - issues_qty, Decimal('0'))
-            val = qty * avg
-        else:
-            qty, val = Decimal('0'), Decimal('0')
-
+    valuations = value_moves_by_inventory_identity(list(moves_qs), method)
+    for pid in sorted(valuations):
+        qty, val = valuations[pid]
         qty = Q2(qty)
         val = Q2(val)
         if include_zero or qty != 0:
@@ -292,88 +272,21 @@ def _inventory_breakdown_asof(
         total_qty += qty
         total_val += val
 
-        # reset state
-        layers = []
-        q = Decimal('0'); v = Decimal('0')
-        latest = Decimal('0')
-        sum_in_qty = Decimal('0'); sum_in_val = Decimal('0'); issues_qty = Decimal('0')
-
-    for m in moves_qs:
-        pid = m['product_id']
-        if pid != cur_pid:
-            flush_product(cur_pid)
-            cur_pid = pid
-
-        qty = _signed_move_qty(m)
-        rate = _rate_from_move(qty, m['unit_cost'], m['ext_cost'])
-
-        if method == "fifo":
-            if qty > 0:
-                layers.append({"qty": qty, "rate": rate})
-            elif qty < 0:
-                need = -qty
-                i = 0
-                while need > 0 and i < len(layers):
-                    take = min(layers[i]["qty"], need)
-                    layers[i]["qty"] -= take
-                    need -= take
-                    if layers[i]["qty"] == 0:
-                        i += 1
-                layers = [l for l in layers if l["qty"] > 0]
-
-        elif method == "lifo":
-            if qty > 0:
-                layers.append({"qty": qty, "rate": rate})
-            elif qty < 0:
-                need = -qty
-                i = len(layers) - 1
-                while need > 0 and i >= 0:
-                    take = min(layers[i]["qty"], need)
-                    layers[i]["qty"] -= take
-                    need -= take
-                    if layers[i]["qty"] == 0:
-                        layers.pop(i)
-                        i -= 1
-
-        elif method == "mwa":
-            if qty > 0:
-                q += qty
-                v += qty * rate
-            elif qty < 0 and q > 0:
-                avg = v / q if q else Decimal('0')
-                take = min(q, -qty)
-                v -= take * avg
-                q -= take
-
-        elif method == "latest":
-            if qty > 0:
-                latest = rate
-                q += qty
-                v += qty * latest
-            elif qty < 0:
-                take = min(q, -qty)
-                v -= take * latest
-                q -= take
-                if q == 0:
-                    latest = Decimal('0')
-
-        elif method == "wac":
-            if qty > 0:
-                sum_in_qty += qty
-                sum_in_val += qty * rate
-            elif qty < 0:
-                issues_qty += -qty
-
-    # final product
-    flush_product(cur_pid)
-
     # Sort by value desc
     rows.sort(key=lambda r: r["value"], reverse=True)
     return rows, Q2(total_qty), Q2(total_val)
 
 
-def _period_inventory_inflow_value(*, entity_id, entityfin_id=None, subentity_id=None, start_date, end_date) -> Decimal:
-    inflow = _apply_scope_filters(
+def _period_inventory_inflow_value(
+    *,
+    entity_id,
+    entityfin_id=None,
+    subentity_id=None,
+    start_date,
+    end_date,
+    product_ids=None,
+) -> Decimal:
+    queryset = _apply_scope_filters(
         InventoryMove.objects.filter(
             entity_id=entity_id,
             posting_date__range=(start_date, end_date),
@@ -381,8 +294,39 @@ def _period_inventory_inflow_value(*, entity_id, entityfin_id=None, subentity_id
         ).exclude(movement_nature=InventoryMove.MovementNature.PRODUCTION),
         entityfin_id=entityfin_id,
         subentity_id=subentity_id,
-    ).aggregate(total=Sum("ext_cost"))["total"] or Decimal("0")
+    )
+    if product_ids:
+        queryset = queryset.filter(product_id__in=product_ids)
+    inflow = queryset.aggregate(total=Sum("ext_cost"))["total"] or Decimal("0")
     return Q2(inflow)
+
+
+def _period_production_value_delta(
+    *,
+    entity_id,
+    entityfin_id=None,
+    subentity_id=None,
+    start_date,
+    end_date,
+    product_ids=None,
+) -> Decimal:
+    queryset = _apply_scope_filters(
+        InventoryMove.objects.filter(
+            entity_id=entity_id,
+            posting_date__range=(start_date, end_date),
+            movement_nature=InventoryMove.MovementNature.PRODUCTION,
+        ),
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+    )
+    if product_ids:
+        queryset = queryset.filter(product_id__in=product_ids)
+    totals = queryset.values("move_type").annotate(total=Sum("ext_cost"))
+    by_type = {row["move_type"]: Decimal(row["total"] or 0) for row in totals}
+    return Q2(
+        by_type.get(InventoryMove.MoveType.IN_, Decimal("0"))
+        - by_type.get(InventoryMove.MoveType.OUT, Decimal("0"))
+    )
 
 
 def _value_by_inventory_identity(*, entity_id, entityfin_id=None, subentity_id=None, start_date, end_date, method: str) -> Tuple[Decimal, Decimal, Decimal]:
@@ -414,7 +358,14 @@ def _value_by_inventory_identity(*, entity_id, entityfin_id=None, subentity_id=N
         start_date=start_date,
         end_date=end_date,
     )
-    cogs_issues = Q2(opening_value + inflow_value - closing_value)
+    production_value_delta = _period_production_value_delta(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    cogs_issues = Q2(opening_value + inflow_value + production_value_delta - closing_value)
     return Q2(opening_value), cogs_issues, Q2(closing_value)
 
 
@@ -891,8 +842,17 @@ def build_trading_account_dynamic(
             subentity_id=subentity_id,
             start_date=start,
             end_date=end,
+            product_ids=inventory_product_ids,
         )
-        cogs_issues = Q2(opening_value + inflow_value - closing_value)
+        production_value_delta = _period_production_value_delta(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            start_date=start,
+            end_date=end,
+            product_ids=inventory_product_ids,
+        )
+        cogs_issues = Q2(opening_value + inflow_value + production_value_delta - closing_value)
     else:
         opening_value, cogs_issues, closing_value = STRATEGIES[method](entity_id, start, end, entityfin_id, subentity_id)
     opening_stock_source = "inventory_valuation"

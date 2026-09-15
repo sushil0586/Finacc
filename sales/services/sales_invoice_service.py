@@ -34,6 +34,7 @@ from posting.services.posting_service import PostingService, JLInput, IMInput, l
 from geography.gst_state_codes import normalize_india_state_code, normalize_state_code_for_country
 from geography.models import State
 from core.gst_document_validation import gst_classification_error
+from core.concurrency import assert_expected_updated_at
 from financial.gstin import validate_financial_gstin
 
 
@@ -3143,13 +3144,14 @@ class SalesInvoiceService:
     # -------------------------
     @classmethod
     @transaction.atomic
-    def confirm(cls, *, header: SalesInvoiceHeader, user) -> SalesInvoiceHeader:
+    def confirm(cls, *, header: SalesInvoiceHeader, user, expected_updated_at=None) -> SalesInvoiceHeader:
         header = SalesInvoiceHeader.objects.select_for_update().get(pk=header.pk)
         if header.status == SalesInvoiceHeader.Status.POSTED:
             return header
         if header.status == SalesInvoiceHeader.Status.CONFIRMED:
             cls.ensure_doc_number(header=header, user=user)
             return header
+        assert_expected_updated_at(header, expected_updated_at)
         if header.status == SalesInvoiceHeader.Status.CANCELLED:
             raise ValueError("Only Draft invoices can be confirmed.")
         if header.status != SalesInvoiceHeader.Status.DRAFT:
@@ -3254,7 +3256,7 @@ class SalesInvoiceService:
 
     @classmethod
     @transaction.atomic
-    def post(cls, *, header: SalesInvoiceHeader, user) -> SalesInvoiceHeader:
+    def post(cls, *, header: SalesInvoiceHeader, user, expected_updated_at=None) -> SalesInvoiceHeader:
         """
         Mirrors Purchase post hook:
           - auto-confirms valid drafts before posting
@@ -3272,6 +3274,7 @@ class SalesInvoiceService:
             raise ValueError("Cannot post: document is cancelled.")
         if int(header.status) == int(SalesInvoiceHeader.Status.POSTED):
             return header
+        assert_expected_updated_at(header, expected_updated_at)
         if int(header.status) == int(SalesInvoiceHeader.Status.DRAFT):
             header = cls.confirm(header=header, user=user)
         if int(header.status) != int(SalesInvoiceHeader.Status.CONFIRMED):
@@ -3392,11 +3395,24 @@ class SalesInvoiceService:
 
     @classmethod
     @transaction.atomic
-    def reverse_posting(cls, *, header: SalesInvoiceHeader, user, reason: str = "") -> SalesInvoiceHeader:
+    def reverse_posting(
+        cls,
+        *,
+        header: SalesInvoiceHeader,
+        user,
+        reason: str = "",
+        expected_updated_at=None,
+    ) -> SalesInvoiceHeader:
         header = SalesInvoiceHeader.objects.select_for_update().get(pk=header.pk)
 
         if int(header.status) != int(SalesInvoiceHeader.Status.POSTED):
+            if (
+                int(header.status) == int(SalesInvoiceHeader.Status.CONFIRMED)
+                and bool(header.is_posting_reversed)
+            ):
+                return header
             raise ValueError("Only posted invoices can be reversed.")
+        assert_expected_updated_at(header, expected_updated_at)
         controls = cls._policy_controls(header)
         allow_unpost = str(controls.get("allow_unpost_posted", "on")).lower().strip()
         if allow_unpost == "off":
@@ -3526,9 +3542,18 @@ class SalesInvoiceService:
 
     @classmethod
     @transaction.atomic
-    def cancel(cls, *, header: SalesInvoiceHeader, user, reason: str = "") -> SalesInvoiceHeader:
+    def cancel(
+        cls,
+        *,
+        header: SalesInvoiceHeader,
+        user,
+        reason: str = "",
+        expected_updated_at=None,
+    ) -> SalesInvoiceHeader:
+        header = SalesInvoiceHeader.objects.select_for_update().get(pk=header.pk)
         if header.status == SalesInvoiceHeader.Status.CANCELLED:
             return header
+        assert_expected_updated_at(header, expected_updated_at)
         settings_obj = cls.get_settings(header.entity_id, header.subentity_id, entityfinid_id=getattr(header, "entityfinid_id", None))
         if bool(getattr(settings_obj, "enforce_statutory_cancel_before_business_cancel", True)):
             einv = getattr(header, "einvoice_artifact", None)
@@ -3564,7 +3589,7 @@ class SalesInvoiceService:
             )
 
         if header.status == SalesInvoiceHeader.Status.POSTED:
-            cls.reverse_posting(header=header, user=user, reason=reason or "Cancelled")
+            header = cls.reverse_posting(header=header, user=user, reason=reason or "Cancelled")
 
         header.status = SalesInvoiceHeader.Status.CANCELLED
         header.cancelled_at = timezone.now()

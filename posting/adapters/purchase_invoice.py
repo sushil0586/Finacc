@@ -536,14 +536,20 @@ class PurchaseInvoicePostingAdapter:
                     blocked_tax["igst"] = q2(blocked_tax["igst"] + c_igst)
                     blocked_tax["cess"] = q2(blocked_tax["cess"] + c_cess)
 
-        # 1B) Header expenses (expense GL unless capitalized)
-        if header_expenses > ZERO2 and not cfg.capitalize_header_expenses_to_inventory:
+        # 1B) Header expenses remain in the periodic purchase GL. When the
+        # capitalization policy is enabled, the same cost is also spread into
+        # inventory valuation below so closing stock defers the unconsumed share.
+        if header_expenses > ZERO2:
             jl.append(JLInput(
                 account_id=misc_exp_ac,
                 ledger_id=misc_exp_ledger,
                 drcr=not is_credit_note,  # invoice/DN Dr, CN Cr
                 amount=header_expenses,
-                description=f"{narration} (header expenses)",
+                description=(
+                    f"{narration} (capitalized header expenses)"
+                    if cfg.capitalize_header_expenses_to_inventory
+                    else f"{narration} (header expenses)"
+                ),
             ))
 
         # 1C) Tax postings

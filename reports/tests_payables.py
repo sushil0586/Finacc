@@ -20,8 +20,10 @@ from financial.profile_access import account_gstno
 from financial.services import apply_normalized_profile_payload, create_account_with_synced_ledger
 from geography.models import City, Country, District, State
 from purchase.models.purchase_ap import VendorAdvanceBalance, VendorBillOpenItem, VendorSettlement, VendorSettlementLine
+from purchase.models.purchase_config import PurchaseSettings
 from posting.models import Entry, EntryStatus, JournalLine, PostingBatch, TxnType
 from purchase.models.purchase_core import PurchaseInvoiceHeader, PurchaseInvoiceLine
+from purchase.services.purchase_ap_service import PurchaseApService
 from rbac.models import Permission, Role, RolePermission, UserRoleAssignment
 from rbac.services import EffectiveMenuService
 from subscriptions.models import UserEntityAccess
@@ -356,6 +358,65 @@ class PayableReportAPITests(APITestCase):
         }
         params.update(extra)
         return params
+
+    def test_settlement_within_rounding_tolerance_caps_at_outstanding(self):
+        PurchaseSettings.objects.create(
+            entity=self.entity,
+            subentity=self.subentity,
+            policy_controls={
+                "settlement_mode": "basic",
+                "allocation_policy": "manual",
+                "over_settlement_rule": "block",
+            },
+        )
+        vendor = self._create_vendor("Tolerance Vendor", 5099)
+        invoice = self._create_purchase_header(
+            vendor=vendor,
+            vendor_ledger=vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 20),
+            due_date=date(2025, 4, 20),
+            doc_code="PINV",
+            doc_no=1099,
+            purchase_number="PI-TOLERANCE-1099",
+            supplier_invoice_number="SUP-TOLERANCE-1099",
+            amount=Decimal("100.00"),
+        )
+        open_item = self._create_open_item(
+            header=invoice,
+            vendor=vendor,
+            vendor_ledger=vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 20),
+            due_date=date(2025, 4, 20),
+            purchase_number=invoice.purchase_number,
+            supplier_invoice_number=invoice.supplier_invoice_number,
+            amount=Decimal("100.00"),
+        )
+        settlement = PurchaseApService.create_settlement(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            vendor_id=vendor.id,
+            settlement_type=VendorSettlement.SettlementType.PAYMENT,
+            settlement_date=date(2025, 4, 21),
+            reference_no="PAY-TOLERANCE-001",
+            external_voucher_no=None,
+            remarks="One-cent input tolerance",
+            lines=[{"open_item_id": open_item.id, "amount": Decimal("100.01")}],
+        ).settlement
+
+        result = PurchaseApService.post_settlement(settlement_id=settlement.id, posted_by_id=self.user.id)
+
+        open_item.refresh_from_db()
+        settlement.refresh_from_db()
+        line = settlement.lines.get()
+        self.assertEqual(result.applied_total, Decimal("100.00"))
+        self.assertEqual(settlement.total_amount, Decimal("100.00"))
+        self.assertEqual(line.applied_amount_signed, Decimal("100.00"))
+        self.assertEqual(open_item.settled_amount, Decimal("100.00"))
+        self.assertEqual(open_item.outstanding_amount, Decimal("0.00"))
+        self.assertFalse(open_item.is_open)
 
     def _create_limited_report_user(self, permission_code):
         suffix = uuid4().hex[:8]

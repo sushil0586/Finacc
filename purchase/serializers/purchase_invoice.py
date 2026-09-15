@@ -344,6 +344,7 @@ class PurchaseInvoiceLineSerializer(serializers.ModelSerializer):
 
 
 class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
+    updated_at = serializers.DateTimeField(read_only=True, format="iso-8601")
     lines = PurchaseInvoiceLineSerializer(many=True, required=False)
     charges = PurchaseChargeLineSerializer(many=True, required=False)
     custom_fields = serializers.JSONField(source="custom_fields_json", required=False)
@@ -621,6 +622,7 @@ class PurchaseInvoiceHeaderSerializer(serializers.ModelSerializer):
 
             "lines",
             "charges",
+            "updated_at",
         ]
 
         # Do NOT mark TDS fields read-only here; we control via validate() (manual vs auto).

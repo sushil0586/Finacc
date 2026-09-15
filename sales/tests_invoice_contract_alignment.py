@@ -1488,3 +1488,32 @@ class SalesInvoiceContractAlignmentTests(APITestCase):
         self.assertEqual(inclusive_line.igst_amount, Decimal("61.02"))
         self.assertEqual(inclusive_line.cess_amount, Decimal("3.39"))
         self.assertEqual(inclusive_line.line_total, Decimal("403.39"))
+
+    def test_sales_compute_line_sequences_discount_before_inclusive_gst_and_cess(self):
+        header = SalesInvoiceHeader(is_igst=False)
+        line = SalesInvoiceLine(
+            line_no=5,
+            product=self.product,
+            uom=self.uom,
+            qty=Decimal("10.0000"),
+            free_qty=Decimal("0.0000"),
+            rate=Decimal("118.0000"),
+            is_rate_inclusive_of_tax=True,
+            discount_type=SalesInvoiceLine.DiscountType.PERCENT,
+            discount_percent=Decimal("10.0000"),
+            discount_amount=Decimal("0.00"),
+            gst_rate=Decimal("18.0000"),
+            cess_type=SalesInvoiceLine.CessType.COMPOSITE,
+            cess_percent=Decimal("2.0000"),
+            cess_specific_amount=Decimal("1.00"),
+            hsn_sac_code="8471",
+        )
+
+        SalesInvoiceService.compute_line_amounts(header, line)
+
+        self.assertEqual(line.discount_amount, Decimal("118.00"))
+        self.assertEqual(line.taxable_value, Decimal("900.00"))
+        self.assertEqual(line.cgst_amount, Decimal("81.00"))
+        self.assertEqual(line.sgst_amount, Decimal("81.00"))
+        self.assertEqual(line.cess_amount, Decimal("28.00"))
+        self.assertEqual(line.line_total, Decimal("1090.00"))

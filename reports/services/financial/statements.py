@@ -111,6 +111,26 @@ def _balance_sheet_bucket_for_amount(amount, head, acc_type):
     return bucket
 
 
+def _is_asset_contra_ledger(ledger, head, acc_type) -> bool:
+    text = " ".join(
+        str(value or "").strip().lower()
+        for value in (
+            getattr(ledger, "name", None),
+            getattr(head, "name", None),
+            getattr(acc_type, "accounttypename", None),
+        )
+    )
+    return any(
+        token in text
+        for token in (
+            "accumulated depreciation",
+            "accum dep",
+            "accumulated amortization",
+            "accum amort",
+        )
+    )
+
+
 def _resolve_effective_head_and_type(ledger, amount):
     """
     Dynamic head selection:
@@ -338,6 +358,14 @@ def _raw_balance_rows(
         amount = item["amount"]
         head, acc_type = _resolve_effective_head_and_type(ledger, amount)
         classification_meta = _classification_details(head, acc_type, amount)
+        is_asset_contra = bool(
+            amount < 0
+            and _is_asset_contra_ledger(ledger, head, acc_type)
+            and classification_meta["include_in_balance_sheet"]
+        )
+        if is_asset_contra:
+            classification_meta["bucket"] = "asset"
+            classification_meta["is_contra_balance"] = True
         row = {
             "ledger_id": ledger.id,
             "ledger_code": ledger.ledger_code,
@@ -347,10 +375,11 @@ def _raw_balance_rows(
             "accounttype_id": acc_type.id if acc_type else None,
             "accounttype_name": acc_type.accounttypename if acc_type else None,
             "amount_decimal": amount,
-            "amount": f"{abs(amount):.2f}",
+            "amount": f"{amount if is_asset_contra else abs(amount):.2f}",
             "natural_bucket": classification_meta["natural_bucket"],
             "bucket": classification_meta["bucket"],
             "is_contra_balance": classification_meta["is_contra_balance"],
+            "is_contra_offset": is_asset_contra,
             "classification_reason": classification_meta["classification_reason"],
             **_ledger_drilldown_meta(ledger, entity_id, entityfin_id, subentity_id),
         }
@@ -1262,7 +1291,11 @@ def _build_grouped_rows(rows, group_by, sort_by, sort_order):
             item.pop("amount_decimal", None)
             item["amount_value"] = Decimal(item["amount"])
             child_rows.append(item)
-            total_amount += abs(child["amount_decimal"])
+            total_amount += (
+                -abs(child["amount_decimal"])
+                if child.get("is_contra_offset")
+                else abs(child["amount_decimal"])
+            )
         child_rows.sort(key=lambda item: _sort_key(item, sort_by), reverse=reverse)
         out.append(
             {
@@ -1532,8 +1565,19 @@ def _build_snapshot(
             else:
                 liabilities_source.append(inventory_row)
 
-    asset_total = sum((abs(row["amount_decimal"]) for row in assets_source), Decimal("0.00"))
-    liability_total = sum((abs(row["amount_decimal"]) for row in liabilities_source), Decimal("0.00"))
+    def _side_total(row_items):
+        return sum(
+            (
+                -abs(row["amount_decimal"])
+                if row.get("is_contra_offset")
+                else abs(row["amount_decimal"])
+                for row in row_items
+            ),
+            Decimal("0.00"),
+        )
+
+    asset_total = _side_total(assets_source)
+    liability_total = _side_total(liabilities_source)
     raw_asset_total = asset_total
     raw_liability_total = liability_total
     from reports.services.trading_account import build_trading_account_summary
@@ -1599,7 +1643,7 @@ def _build_snapshot(
         liability_total += net_profit
     elif net_profit < 0:
         loss_amount = abs(net_profit)
-        assets_source.append(
+        liabilities_source.append(
             {
                 "ledger_id": None,
                 "ledger_code": None,
@@ -1608,11 +1652,12 @@ def _build_snapshot(
                 "accounthead_name": "Equity",
                 "accounttype_id": None,
                 "accounttype_name": "Equity",
-                "amount_decimal": loss_amount,
-                "amount": f"{loss_amount:.2f}",
-                "natural_bucket": "asset",
-                "bucket": "asset",
-                "is_contra_balance": False,
+                "amount_decimal": -loss_amount,
+                "amount": f"{-loss_amount:.2f}",
+                "natural_bucket": "liability",
+                "bucket": "liability",
+                "is_contra_balance": True,
+                "is_contra_offset": True,
                 "classification_reason": "current_period_loss_transfer",
                 "source": "profit_transfer",
                 "can_drilldown": False,
@@ -1620,7 +1665,7 @@ def _build_snapshot(
                 "drilldown_params": None,
             }
         )
-        asset_total += loss_amount
+        liability_total -= loss_amount
 
     effective_page = 1 if not include_pagination else page
     effective_page_size = max(len(assets_source), len(liabilities_source), 1) if not include_pagination else page_size

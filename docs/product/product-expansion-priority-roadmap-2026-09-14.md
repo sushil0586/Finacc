@@ -10,6 +10,7 @@ Active launch plans:
 
 - [P0 Pilot And Launch Hardening Plan](../qa/p0-pilot-launch-hardening-plan-2026-09-14.md)
 - [P1 HRMS And Payroll Launch Readiness Plan](../payroll/p1-hrms-payroll-launch-readiness-plan-2026-09-14.md)
+- [Accounting-First Product Completion Plan](accounting-first-completion-plan-2026-09-14.md)
 
 ## Purpose
 
@@ -154,3 +155,4 @@ The existing finance, sales, purchase, withholding, assets, inventory/manufactur
 | 14 September 2026 | Created the initial priority-ordered product expansion roadmap and linked detailed delivery plan. |
 | 14 September 2026 | Added dedicated P0/P1 launch plans and froze P2-P10 implementation until both launch gates pass. |
 | 14 September 2026 | Completed P0/P1 machine inventory baselines and added scope/traceability registers; formal approvals remain open. |
+| 14 September 2026 | Added the accounting-first completion plan; core accounting is active, remaining HRMS/payroll enhancements are paused, and banking/GST discovery may continue. |

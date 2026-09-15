@@ -7,7 +7,7 @@ from typing import Any
 from django.db.models import Exists, OuterRef, Prefetch, Q
 from django.shortcuts import get_object_or_404
 from django.core.exceptions import ValidationError as DjangoValidationError
-from rest_framework import generics, status
+from rest_framework import generics, serializers, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import PermissionDenied, ValidationError as DRFValidationError
 from rest_framework.response import Response
@@ -30,6 +30,15 @@ from sales.services.sales_settings_service import SalesSettingsService
 from sales.services.performance import profile_sales_block
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 import qrcode
+
+
+def _expected_updated_at(request):
+    payload = request.data
+    if not hasattr(payload, "get") or "expected_updated_at" not in payload:
+        return None
+    return serializers.DateTimeField(allow_null=True).run_validation(
+        payload.get("expected_updated_at")
+    )
 
 
 def _resolve_sales_doc_type(raw_doc_type) -> int:
@@ -663,7 +672,15 @@ class SalesInvoiceConfirmAPIView(_SalesScopeMixin, APIView):
             feature_code=SubscriptionLimitCodes.FEATURE_SALES,
         )
         try:
-            header = SalesInvoiceService.confirm(header=header, user=request.user)
+            expected_updated_at = _expected_updated_at(request)
+            if expected_updated_at is None:
+                header = SalesInvoiceService.confirm(header=header, user=request.user)
+            else:
+                header = SalesInvoiceService.confirm(
+                    header=header,
+                    user=request.user,
+                    expected_updated_at=expected_updated_at,
+                )
         except (ValueError, DjangoValidationError, DRFValidationError) as e:
             return Response(self._error_payload(e), status=status.HTTP_400_BAD_REQUEST)
         return Response(self._serialize_invoice(header), status=status.HTTP_200_OK)
@@ -688,7 +705,15 @@ class SalesInvoicePostAPIView(_SalesScopeMixin, APIView):
             feature_code=SubscriptionLimitCodes.FEATURE_SALES,
         )
         try:
-            header = SalesInvoiceService.post(header=header, user=request.user)
+            expected_updated_at = _expected_updated_at(request)
+            if expected_updated_at is None:
+                header = SalesInvoiceService.post(header=header, user=request.user)
+            else:
+                header = SalesInvoiceService.post(
+                    header=header,
+                    user=request.user,
+                    expected_updated_at=expected_updated_at,
+                )
         except (ValueError, DjangoValidationError, DRFValidationError) as e:
             return Response(self._error_payload(e), status=status.HTTP_400_BAD_REQUEST)
         return Response(self._serialize_invoice(header), status=status.HTTP_200_OK)
@@ -721,7 +746,16 @@ class SalesInvoiceCancelAPIView(_SalesScopeMixin, APIView):
             )
         reason = (request.data or {}).get("reason", "")
         try:
-            header = SalesInvoiceService.cancel(header=header, user=request.user, reason=reason)
+            expected_updated_at = _expected_updated_at(request)
+            if expected_updated_at is None:
+                header = SalesInvoiceService.cancel(header=header, user=request.user, reason=reason)
+            else:
+                header = SalesInvoiceService.cancel(
+                    header=header,
+                    user=request.user,
+                    reason=reason,
+                    expected_updated_at=expected_updated_at,
+                )
         except (ValueError, DjangoValidationError, DRFValidationError) as e:
             return Response(self._error_payload(e), status=status.HTTP_400_BAD_REQUEST)
         return Response(self._serialize_invoice(header), status=status.HTTP_200_OK)
@@ -739,7 +773,16 @@ class SalesInvoiceReverseAPIView(_SalesScopeMixin, APIView):
         )
         reason = (request.data or {}).get("reason", "")
         try:
-            header = SalesInvoiceService.reverse_posting(header=header, user=request.user, reason=reason)
+            expected_updated_at = _expected_updated_at(request)
+            if expected_updated_at is None:
+                header = SalesInvoiceService.reverse_posting(header=header, user=request.user, reason=reason)
+            else:
+                header = SalesInvoiceService.reverse_posting(
+                    header=header,
+                    user=request.user,
+                    reason=reason,
+                    expected_updated_at=expected_updated_at,
+                )
         except (ValueError, DjangoValidationError, DRFValidationError) as e:
             return Response(self._error_payload(e), status=status.HTTP_400_BAD_REQUEST)
         return Response(self._serialize_invoice(header), status=status.HTTP_200_OK)

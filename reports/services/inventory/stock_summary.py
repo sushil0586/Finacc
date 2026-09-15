@@ -9,6 +9,7 @@ from django.utils import timezone
 
 from catalog.models import Product, ProductGstRate, ProductPlanning
 from posting.models import InventoryMove
+from reports.services.inventory.valuation import value_moves_by_inventory_identity
 
 
 ZERO = Decimal('0')
@@ -173,66 +174,35 @@ def _aggregate_product_rows(moves_qs, *, entity_id, valuation_method, include_ze
             'move_type',
             'unit_cost',
             'ext_cost',
+            'location_id',
+            'batch_number',
         ).order_by('product_id', 'posting_date', 'id')
     )
     product_ids = sorted({row['product_id'] for row in move_rows})
     product_map = _build_product_map(entity_id, product_ids) if product_ids else {}
-
     rows = []
     totals_qty = ZERO
     totals_value = ZERO
+    valuations = value_moves_by_inventory_identity(move_rows, valuation_method)
+    metadata = {}
+    for move in move_rows:
+        bucket = metadata.setdefault(
+            move['product_id'],
+            {'movement_count': 0, 'last_movement_date': None},
+        )
+        bucket['movement_count'] += 1
+        bucket['last_movement_date'] = move['posting_date']
 
-    cur_pid = None
-    layers: list[dict[str, Decimal]] = []
-    q = ZERO
-    v = ZERO
-    latest = ZERO
-    sum_in_qty = ZERO
-    sum_in_val = ZERO
-    issues_qty = ZERO
-    movement_count = 0
-    last_movement_date = None
-
-    def reset_state():
-        nonlocal layers, q, v, latest, sum_in_qty, sum_in_val, issues_qty, movement_count, last_movement_date
-        layers = []
-        q = ZERO
-        v = ZERO
-        latest = ZERO
-        sum_in_qty = ZERO
-        sum_in_val = ZERO
-        issues_qty = ZERO
-        movement_count = 0
-        last_movement_date = None
-
-    def flush_product(pid):
-        nonlocal layers, q, v, latest, sum_in_qty, sum_in_val, issues_qty
-        nonlocal totals_qty, totals_value, movement_count, last_movement_date
-        if pid is None:
-            return
-
-        if valuation_method in ('fifo', 'lifo'):
-            qty = sum((layer['qty'] for layer in layers), ZERO)
-            val = sum((layer['qty'] * layer['rate'] for layer in layers), ZERO)
-        elif valuation_method in ('mwa', 'latest'):
-            qty, val = q, v
-        elif valuation_method == 'wac':
-            avg = (sum_in_val / sum_in_qty) if sum_in_qty > 0 else ZERO
-            qty = max(sum_in_qty - issues_qty, ZERO)
-            val = qty * avg
-        else:
-            qty, val = ZERO, ZERO
-
+    for pid in product_ids:
+        qty, val = valuations.get(pid, (ZERO, ZERO))
         qty = _q4(qty)
         val = _q2(val)
         if not include_negative and qty < 0:
-            reset_state()
-            return
+            continue
         if include_zero or qty != 0:
             product = product_map.get(pid)
             if product is None:
-                reset_state()
-                return
+                continue
             planning = _planning_for_product(product)
             hsn = _product_hsn(product)
             rate = _q4((val / qty) if qty else ZERO)
@@ -256,82 +226,14 @@ def _aggregate_product_rows(moves_qs, *, entity_id, valuation_method, include_ze
                     'closing_qty': str(qty),
                     'closing_value': str(val),
                     'rate': str(rate),
-                    'movement_count': movement_count,
-                    'last_movement_date': last_movement_date.isoformat() if last_movement_date else None,
+                    'movement_count': metadata[pid]['movement_count'],
+                    'last_movement_date': metadata[pid]['last_movement_date'].isoformat() if metadata[pid]['last_movement_date'] else None,
                     'stock_status': stock_status,
                     'stock_gap': str(_q4(stock_gap)),
                 }
             )
             totals_qty += qty
             totals_value += val
-
-        reset_state()
-
-    for move in move_rows:
-        pid = move['product_id']
-        if pid != cur_pid:
-            flush_product(cur_pid)
-            cur_pid = pid
-
-        movement_count += 1
-        last_movement_date = move['posting_date']
-        qty = _signed_move_qty(move)
-        rate = _rate_from_move(qty, move['unit_cost'], move['ext_cost'])
-
-        if valuation_method == 'fifo':
-            if qty > 0:
-                layers.append({'qty': qty, 'rate': rate})
-            elif qty < 0:
-                need = -qty
-                i = 0
-                while need > 0 and i < len(layers):
-                    take = min(layers[i]['qty'], need)
-                    layers[i]['qty'] -= take
-                    need -= take
-                    if layers[i]['qty'] == 0:
-                        i += 1
-                layers = [layer for layer in layers if layer['qty'] > 0]
-        elif valuation_method == 'lifo':
-            if qty > 0:
-                layers.append({'qty': qty, 'rate': rate})
-            elif qty < 0:
-                need = -qty
-                i = len(layers) - 1
-                while need > 0 and i >= 0:
-                    take = min(layers[i]['qty'], need)
-                    layers[i]['qty'] -= take
-                    need -= take
-                    if layers[i]['qty'] == 0:
-                        layers.pop(i)
-                    i -= 1
-        elif valuation_method == 'mwa':
-            if qty > 0:
-                q += qty
-                v += qty * rate
-            elif qty < 0 and q > 0:
-                avg = v / q if q else ZERO
-                take = min(q, -qty)
-                v -= take * avg
-                q -= take
-        elif valuation_method == 'latest':
-            if qty > 0:
-                latest = rate
-                q += qty
-                v += qty * latest
-            elif qty < 0:
-                take = min(q, -qty)
-                v -= take * latest
-                q -= take
-                if q == 0:
-                    latest = ZERO
-        elif valuation_method == 'wac':
-            if qty > 0:
-                sum_in_qty += qty
-                sum_in_val += qty * rate
-            elif qty < 0:
-                issues_qty += -qty
-
-    flush_product(cur_pid)
     rows.sort(key=lambda row: (Decimal(row['closing_value']), row['product_name'] or ''), reverse=True)
     return rows, _q4(totals_qty), _q2(totals_value)
 
