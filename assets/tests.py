@@ -12,7 +12,7 @@ from rest_framework.test import APITestCase
 from catalog.models import Product, ProductCategory, ProductPurchaseBehavior, UnitOfMeasure
 from entity.models import Entity, EntityFinancialYear, SubEntity
 from financial.models import Ledger, accountHead, accounttype
-from posting.models import Entry, EntryStatus, JournalLine
+from posting.models import Entry, EntryStatus, JournalLine, TxnType
 from purchase.models.purchase_core import PurchaseInvoiceHeader
 from rbac.models import Permission, Role, RolePermission, UserRoleAssignment
 from subscriptions.models import PlanLimit
@@ -730,6 +730,54 @@ class AssetApiScopeTests(APITestCase):
         self.assertEqual(purchase_asset.custodian_name, "A. Kumar")
         self.assertEqual(purchase_asset.notes, "Reviewed during capitalization")
         self.assertEqual(purchase_asset.status, FixedAsset.AssetStatus.ACTIVE)
+
+    def test_purchase_intake_capitalization_moves_cwip_to_category_asset_ledger(self):
+        cwip_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=1008,
+            name="Capital Work In Progress",
+            accounthead=self.entity_head,
+            createdby=self.owner,
+        )
+        self.category.cwip_ledger = cwip_ledger
+        self.category.save(update_fields=["cwip_ledger", "updated_at"])
+        purchase_asset, _, _ = self._create_purchase_intake_asset_fixture()
+        purchase_asset.ledger = cwip_ledger
+        purchase_asset.save(update_fields=["ledger", "updated_at"])
+
+        response = self.client.post(
+            reverse("assets_api:fixed-asset-capitalize", args=[purchase_asset.id]),
+            {
+                "counter_ledger_id": cwip_ledger.id,
+                "capitalization_date": "2026-04-12",
+                "narration": "Transfer reviewed intake from CWIP",
+                "location_name": "Head Office",
+                "custodian_name": "A. Kumar",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        purchase_asset.refresh_from_db()
+        self.assertEqual(purchase_asset.status, FixedAsset.AssetStatus.ACTIVE)
+        self.assertEqual(purchase_asset.ledger_id, self.asset_ledger.id)
+        lines = JournalLine.objects.filter(
+            entity=self.entity,
+            txn_type=TxnType.FIXED_ASSET_CAPITALIZATION,
+            txn_id=purchase_asset.id,
+        )
+        self.assertTrue(lines.filter(ledger=self.asset_ledger, drcr=True, amount="75000.00").exists())
+        self.assertTrue(lines.filter(ledger=cwip_ledger, drcr=False, amount="75000.00").exists())
+
+        reverse_response = self.client.post(
+            reverse("assets_api:fixed-asset-reverse-capitalization", args=[purchase_asset.id]),
+            {"reason": "Regression cleanup"},
+            format="json",
+        )
+        self.assertEqual(reverse_response.status_code, status.HTTP_200_OK, reverse_response.data)
+        purchase_asset.refresh_from_db()
+        self.assertEqual(purchase_asset.status, FixedAsset.AssetStatus.CAPITAL_WIP)
+        self.assertEqual(purchase_asset.ledger_id, cwip_ledger.id)
 
     def test_create_rejects_system_managed_asset_fields(self):
         payload = {

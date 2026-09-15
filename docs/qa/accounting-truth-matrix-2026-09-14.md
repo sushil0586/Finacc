@@ -214,7 +214,7 @@ The expanded backend matrix passed 1,011/1,011 across purchase, sales, posting, 
 
 ## Dataset C: Manufacturing Entity
 
-Status: Local numeric oracle complete; staging certification pending.
+Status: Local numeric oracle complete; staging manufacturing certification passed. Asset capitalization retest awaits deployment of the CWIP transfer correction.
 
 The fixed actual-cost oracle uses opening raw-material stock of `4,700.00`, consumes
 `470.00`, absorbs `50.00` of production cost, recognizes a `10.00` by-product,
@@ -266,12 +266,13 @@ than supported behavior.
 | Dataset B Variant 5 | Complete locally | Inter-state purchases and sales plus exempt, nil-rated, and non-GST streams reconcile across operational registers, GSTR-1, GSTR-3B, GST control ledgers, inventory, Trial Balance, Trading Account, and P&L. The statutory/reporting pack passed 186/186 and the expanded purchase, sales, inventory, and accounting regression passed 571/571. |
 | Dataset B Variant 6 | Complete locally | Purchase and sales lifecycle transitions use row locks and optional server-version checks; stale clients receive HTTP 409, terminal retries remain successful, and repeated unpost/reverse does not create duplicate reversal batches. Backend passed 1,011/1,011; focused Angular lifecycle coverage passed 822 with one existing skip; the frontend development build passed. |
 | Dataset B remaining variants | Complete locally | All six planned trading-entity variants now have local automated evidence. Staging repetition remains part of the Phase 0 gate. |
-| Dataset C oracle | Complete locally | Manufacturing, finished-goods COGS, asset depreciation, statements, reversal, and closed-year controls pass fixed numeric oracles. Staging repetition remains open. |
+| Dataset C oracle | Staging partially complete | Manufacturing passed 24/24 on staging, including seeded posting reconciliation, concurrent posting, standard-cost variance, report filters, drilldowns, and API performance. Asset certification exposed a CWIP-to-fixed-asset capitalization defect; its local correction passes the 224-test affected regression and requires deployment/retest. |
 
 ## Update Log
 
 | Date | Change | Result |
 | --- | --- | --- |
+| 15 September 2026 | Ran Dataset C manufacturing and asset certification on staging after deployment. | Manufacturing passed 24/24 with report API p95 between 324 ms and 409 ms. Asset testing found that purchase-intake capitalization could debit and credit CWIP while marking the asset Active. The staging mutation was reversed, the backend now transfers CWIP into the category asset ledger and restores CWIP on reversal, and the affected local regression passes 224/224. |
 | 14 September 2026 | Defined Dataset A events, journal expectations, closing balances, report assertions, and required variants. | Phase 0 now has a fixed first accounting oracle. |
 | 14 September 2026 | Ran the focused posting, account-master, financial-book, opening, and year-end close baseline. | 250/250 tests passed; no Django system-check issue. Cross-report Dataset A automation remains the next task. |
 | 14 September 2026 | Corrected the Dataset A balance-sheet oracle before automation. | Input GST remains an asset and output GST a liability for presentation; both sides are 107,800.00 and net GST remains 1,080.00 payable. |

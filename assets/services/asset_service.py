@@ -46,6 +46,12 @@ def _resolve_entityfin_id(instance, fallback=None):
     return getattr(instance, "entityfinid_id", None) or fallback
 
 
+def _capitalization_asset_ledger_id(asset: FixedAsset) -> int | None:
+    if asset.status == FixedAsset.AssetStatus.CAPITAL_WIP and asset.category.asset_ledger_id:
+        return asset.category.asset_ledger_id
+    return asset.ledger_id or asset.category.asset_ledger_id
+
+
 def _validate_entity_scope(*, obj, entity_id: int, field_name: str) -> None:
     if obj is None:
         return
@@ -575,7 +581,7 @@ class AssetService:
             blocking_reasons.append("This asset is already capitalized.")
 
         settings, controls = _asset_settings_and_controls(entity_id=asset.entity_id, subentity_id=asset.subentity_id)
-        asset_ledger_id = asset.ledger_id or asset.category.asset_ledger_id
+        asset_ledger_id = _capitalization_asset_ledger_id(asset)
         if not asset_ledger_id:
             blocking_reasons.append("Asset ledger is required on asset or asset category before capitalization.")
         elif not blocking_reasons:
@@ -682,7 +688,7 @@ class AssetService:
         if notes is not None:
             asset.notes = notes
         settings, controls = _asset_settings_and_controls(entity_id=asset.entity_id, subentity_id=asset.subentity_id)
-        asset_ledger_id = asset.ledger_id or asset.category.asset_ledger_id
+        asset_ledger_id = _capitalization_asset_ledger_id(asset)
         if not asset_ledger_id:
             raise ValueError("Asset ledger is required on asset or asset category before capitalization.")
         if not counter_ledger_id:
@@ -727,6 +733,7 @@ class AssetService:
             ],
         )
         asset.status = FixedAsset.AssetStatus.ACTIVE
+        asset.ledger_id = asset_ledger_id
         asset.capitalization_date = capitalization_date
         asset.put_to_use_date = asset.put_to_use_date or capitalization_date
         asset.depreciation_start_date = asset.depreciation_start_date or capitalization_date
@@ -1367,7 +1374,10 @@ class AssetService:
         _reverse_entry_and_batch(entry=entry, posting_batch=asset.capitalization_posting_batch, reason=reason)
 
         prior_capitalization_date = asset.capitalization_date
-        asset.status = FixedAsset.AssetStatus.CAPITAL_WIP if (asset.purchase_document_no or asset.source_purchase_lines.exists()) else FixedAsset.AssetStatus.DRAFT
+        is_purchase_intake = bool(asset.purchase_document_no or asset.source_purchase_lines.exists())
+        asset.status = FixedAsset.AssetStatus.CAPITAL_WIP if is_purchase_intake else FixedAsset.AssetStatus.DRAFT
+        if is_purchase_intake and asset.category.cwip_ledger_id:
+            asset.ledger_id = asset.category.cwip_ledger_id
         asset.capitalization_date = None
         asset.depreciation_start_date = None
         if asset.put_to_use_date and asset.put_to_use_date == prior_capitalization_date:
@@ -1379,6 +1389,7 @@ class AssetService:
         asset.save(
             update_fields=[
                 "status",
+                "ledger",
                 "capitalization_date",
                 "depreciation_start_date",
                 "put_to_use_date",
