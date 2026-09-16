@@ -574,6 +574,72 @@ class ServiceEntityAccountingTruthMatrixTests(TestCase):
         )
         self.assertEqual(ledger_net_liability, output_tax - eligible_input_tax)
 
+    def test_dataset_a_launch_gate_source_to_report_consistency(self):
+        """Pilot gate: one service source set must agree across every accounting surface."""
+        scope = self._scope()
+        register_params = {
+            "entity": self.entity.id,
+            "entityfinid": self.entityfin.id,
+            "subentity": self.branch.id,
+            "from_date": "2026-04-01",
+            "to_date": "2026-04-30",
+        }
+
+        self.assertEqual(self.sales_invoice.status, SalesInvoiceHeader.Status.POSTED)
+        self.assertEqual(self.purchase_invoice.status, PurchaseInvoiceHeader.Status.POSTED)
+
+        daybook = build_daybook(**scope, page=1, page_size=100)
+        trial_balance = build_trial_balance(**scope, account_group="ledger")
+        profit_loss = build_profit_and_loss(**scope, group_by="ledger", stock_valuation_mode="none")
+        balance_sheet = build_balance_sheet(**scope, group_by="ledger", stock_valuation_mode="none")
+        receivables = build_customer_outstanding_report(
+            **scope,
+            customer_id=self.customer.id,
+        )
+        payables = build_vendor_outstanding_report(
+            **scope,
+            vendor_id=self.vendor.id,
+            show_settled=True,
+            include_zero_balance=True,
+        )
+
+        gstr1_service = Gstr1Service()
+        outward_qs, _ = gstr1_service.apply_filters(gstr1_service.get_base_queryset(), register_params)
+        outward_totals = gstr1_service.calculate_totals(gstr1_service.annotate_register_fields(outward_qs))
+        purchase_service = PurchaseRegisterService()
+        inward_qs, _ = purchase_service.apply_filters(
+            purchase_service.get_base_queryset(),
+            {**register_params, "itc_eligibility": True},
+        )
+        inward_totals = purchase_service.calculate_totals(purchase_service.annotate_register_fields(inward_qs))
+
+        tb_rows = {row["ledger_name"]: Decimal(row["closing"]) for row in trial_balance["rows"]}
+        output_tax = outward_totals["cgst_amount"] + outward_totals["sgst_amount"]
+        input_tax = inward_totals["cgst_amount"] + inward_totals["sgst_amount"]
+
+        self.assertEqual(daybook["totals"]["transaction_count"], 7)
+        self.assertEqual(daybook["totals"]["debit_total"], daybook["totals"]["credit_total"])
+        self.assertEqual(trial_balance["totals"]["closing_debit"], trial_balance["totals"]["closing_credit"])
+        self.assertEqual(profit_loss["totals"]["net_profit"], "6000.00")
+        self.assertEqual(balance_sheet["summary"]["balance_difference"], "0.00")
+        self.assertEqual(balance_sheet["summary"]["net_profit_brought_to_equity"], profit_loss["totals"]["net_profit"])
+
+        self.assertEqual(receivables["totals"]["invoice_amount"], "11800.00")
+        self.assertEqual(receivables["totals"]["net_outstanding"], "0.00")
+        self.assertEqual(payables["totals"]["bill_amount"], "4720.00")
+        self.assertEqual(payables["totals"]["outstanding"], "0.00")
+        self.assertEqual(tb_rows["Service Customer"], Decimal(receivables["totals"]["net_outstanding"]))
+        self.assertEqual(abs(tb_rows["Service Vendor"]), Decimal(payables["totals"]["outstanding"]))
+
+        self.assertEqual(outward_totals["taxable_amount"], Decimal("10000.00"))
+        self.assertEqual(inward_totals["taxable_amount"], Decimal("4000.00"))
+        self.assertEqual(output_tax, Decimal("1800.00"))
+        self.assertEqual(input_tax, Decimal("720.00"))
+        self.assertEqual(
+            abs(tb_rows["Output CGST"]) + abs(tb_rows["Output SGST"]) - tb_rows["Input CGST"] - tb_rows["Input SGST"],
+            Decimal("1080.00"),
+        )
+
 
 class TradingEntityAccountingTruthMatrixTests(TestCase):
     """Dataset B: trading activity, FIFO stock, GST, settlements, and statements agree."""
@@ -1022,6 +1088,74 @@ class TradingEntityAccountingTruthMatrixTests(TestCase):
         self.assertEqual(outward_totals["taxable_amount"], Decimal("15000.00"))
         self.assertEqual(outward_totals["cgst_amount"], Decimal("1350.00"))
         self.assertEqual(outward_totals["sgst_amount"], Decimal("1350.00"))
+
+    def test_dataset_b_launch_gate_inventory_tax_and_financial_statement_consistency(self):
+        """Pilot gate: goods flow must reconcile stock, tax, books, and financial statements."""
+        scope = self._scope()
+        register_params = {
+            "entity": self.entity.id,
+            "entityfinid": self.entityfin.id,
+            "subentity": self.branch.id,
+            "from_date": "2026-04-01",
+            "to_date": "2026-04-30",
+        }
+
+        daybook = build_daybook(**scope, page=1, page_size=100)
+        trial_balance = build_trial_balance(**scope, account_group="ledger")
+        trading = build_trading_account_dynamic(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.branch.id,
+            startdate="2026-04-01",
+            enddate="2026-04-30",
+            valuation_method="fifo",
+        )
+        profit_loss = build_profit_and_loss(**scope, group_by="ledger", stock_valuation_mode="fifo")
+        balance_sheet = build_balance_sheet(**scope, group_by="ledger", stock_valuation_mode="fifo")
+        inventory_rows, closing_qty, closing_value = inventory_breakdown_asof(
+            entity_id=self.entity.id,
+            entityfin_id=self.entityfin.id,
+            subentity_id=self.branch.id,
+            enddate="2026-04-30",
+            method="fifo",
+        )
+
+        purchase_service = PurchaseRegisterService()
+        purchase_qs, _ = purchase_service.apply_filters(purchase_service.get_base_queryset(), register_params)
+        purchase_totals = purchase_service.calculate_totals(purchase_service.annotate_register_fields(purchase_qs))
+        outward_service = Gstr1Service()
+        outward_qs, _ = outward_service.apply_filters(outward_service.get_base_queryset(), register_params)
+        outward_totals = outward_service.calculate_totals(outward_service.annotate_register_fields(outward_qs))
+
+        tb_rows = {row["ledger_name"]: Decimal(row["closing"]) for row in trial_balance["rows"]}
+        input_tax = purchase_totals["cgst_amount"] + purchase_totals["sgst_amount"]
+        output_tax = outward_totals["cgst_amount"] + outward_totals["sgst_amount"]
+
+        self.assertEqual(daybook["totals"]["transaction_count"], 7)
+        self.assertEqual(daybook["totals"]["debit_total"], daybook["totals"]["credit_total"])
+        self.assertEqual(trial_balance["totals"]["closing_debit"], trial_balance["totals"]["closing_credit"])
+
+        self.assertEqual(closing_qty, Decimal("15.00"))
+        self.assertEqual(closing_value, Decimal("1800.00"))
+        self.assertEqual(Decimal(str(inventory_rows[0]["value"])), closing_value)
+        self.assertEqual(Decimal(str(trading["closing_stock"])), closing_value)
+        self.assertEqual(Decimal(str(trading["gross_profit"])), Decimal("4800.0"))
+        self.assertEqual(profit_loss["totals"]["net_profit"], "4800.00")
+        self.assertEqual(balance_sheet["summary"]["net_profit_brought_to_equity"], profit_loss["totals"]["net_profit"])
+        self.assertEqual(balance_sheet["summary"]["balance_difference"], "0.00")
+
+        self.assertEqual(purchase_totals["taxable_amount"], Decimal("10800.00"))
+        self.assertEqual(outward_totals["taxable_amount"], Decimal("15000.00"))
+        self.assertEqual(input_tax, Decimal("1944.00"))
+        self.assertEqual(output_tax, Decimal("2700.00"))
+        self.assertEqual(output_tax - input_tax, Decimal("756.00"))
+        self.assertEqual(
+            abs(tb_rows["Trading Output CGST"]) + abs(tb_rows["Trading Output SGST"])
+            - tb_rows["Trading Input CGST"] - tb_rows["Trading Input SGST"],
+            Decimal("756.00"),
+        )
+        self.assertEqual(tb_rows["Trading Customer"], Decimal("0.00"))
+        self.assertEqual(tb_rows["Trading Vendor"], Decimal("0.00"))
 
     def test_dataset_b_variant_1_capitalized_landed_cost_reconciles_fifo_and_mwa(self):
         trading_type = self.purchases.ledger.accounttype
