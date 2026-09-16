@@ -87,7 +87,7 @@ def _workbook_styles():
 def _write_excel(title, subtitle, headers, rows, *, numeric_columns):
     wb = Workbook()
     ws = wb.active
-    ws.title = title[:31]
+    ws.title = "".join("_" if char in r'[]:*?/\\' else char for char in title)[:31] or "Report"
     header_font, header_fill, center, left, right, border = _workbook_styles()
     ws.append([title])
     ws.append([subtitle])

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone as dt_timezone
 from decimal import Decimal
+from io import BytesIO
 from unittest.mock import patch
 
 from Authentication.models import User
 from django.urls import reverse
+from openpyxl import load_workbook
 from rest_framework import status
 from rest_framework.test import APITestCase
 
@@ -590,6 +592,16 @@ class AssetApiScopeTests(APITestCase):
         self.assertEqual(response.data["summary"]["custodian_count"], 1)
         self.assertEqual(response.data["rows"][0]["location_name"], "Head Office")
         self.assertEqual(response.data["rows"][0]["custodian_name"], "A. Kumar")
+
+    def test_report_location_custodian_excel_export_uses_valid_sheet_title(self):
+        response = self.client.get(
+            reverse("reports:asset-location-custodian-excel"),
+            {"entity": self.entity.id, "entityfinid": self.entityfin.id},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        workbook = load_workbook(BytesIO(response.content), read_only=True)
+        self.assertIn("Asset Location _ Custodian", workbook.sheetnames)
 
     def test_asset_report_view_permission_does_not_grant_export_or_print(self):
         self._assign_asset_role("assets.fixed_asset_register.view")
