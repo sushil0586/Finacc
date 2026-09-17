@@ -35,6 +35,20 @@ def missing_in_books_reason(*, gstin: str, invoice_number: str) -> StructuredMis
     )
 
 
+def missing_in_return_reason(*, gstin: str, invoice_number: str, purchase_invoice_id: int | str) -> StructuredMismatch:
+    return StructuredMismatch(
+        code="MISSING_IN_RETURN",
+        category="matching",
+        severity=GstMismatchReason.Severity.ERROR,
+        message="Purchase invoice exists in books but was not found in the imported GST portal return.",
+        details_json={
+            "counterparty_gstin": gstin,
+            "invoice_number": invoice_number,
+            "purchase_invoice_id": str(purchase_invoice_id),
+        },
+    )
+
+
 def multiple_candidates_reason(*, candidate_ids: list[int]) -> StructuredMismatch:
     return StructuredMismatch(
         code="MULTIPLE_CANDIDATES",
@@ -42,6 +56,22 @@ def multiple_candidates_reason(*, candidate_ids: list[int]) -> StructuredMismatc
         severity=GstMismatchReason.Severity.ERROR,
         message="Multiple purchase invoices matched with similar confidence.",
         details_json={"candidate_ids": candidate_ids},
+    )
+
+
+def portal_context_reason(
+    *,
+    code: str,
+    message: str,
+    details: dict[str, Any],
+    severity: str = GstMismatchReason.Severity.WARNING,
+) -> StructuredMismatch:
+    return StructuredMismatch(
+        code=code,
+        category="portal_context",
+        severity=severity,
+        message=message,
+        details_json=details,
     )
 
 

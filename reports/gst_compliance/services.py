@@ -6,6 +6,7 @@ from typing import Any
 from django.utils import timezone
 
 from entity.models import EntityGstRegistration, SubEntityGstRegistration
+from gst_reconciliation.models import GstReconciliationItem, GstReconciliationRun
 from reports.gst_compliance.contracts import GstComplianceScope, build_gst_compliance_deep_link
 from reports.gst_compliance.itc_ledger import build_input_tax_ledger_reconciliation
 from reports.gstr3b.selectors import Gstr3bScope
@@ -45,6 +46,7 @@ class GstComplianceSnapshotService:
         ret_period = self._portal_return_period(scope)
         setup_warnings = self._setup_warnings(scope, resolved_gstin)
         input_tax_ledger_reconciliation = self._input_tax_ledger_reconciliation(scope)
+        itc_decision_summary = self._itc_decision_summary(scope=scope, gstin=resolved_gstin)
 
         cards = [
             self._card(
@@ -56,6 +58,7 @@ class GstComplianceSnapshotService:
                 ret_period=ret_period,
                 setup_warnings=setup_warnings,
                 input_tax_ledger_reconciliation=input_tax_ledger_reconciliation,
+                itc_decision_summary=itc_decision_summary,
             )
             for definition in GST_COMPLIANCE_CARD_DEFINITIONS
         ]
@@ -76,6 +79,7 @@ class GstComplianceSnapshotService:
             "next_actions": next_actions,
             "setup_warnings": setup_warnings,
             "input_tax_ledger_reconciliation": input_tax_ledger_reconciliation,
+            "itc_decision_summary": itc_decision_summary,
         }
 
     def _card(
@@ -89,6 +93,7 @@ class GstComplianceSnapshotService:
         ret_period: str | None,
         setup_warnings: list[dict[str, str]],
         input_tax_ledger_reconciliation: dict[str, Any] | None = None,
+        itc_decision_summary: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         link = build_gst_compliance_deep_link(definition.target, scope)
         has_permission = not link["permissions"] or any(code in permissions for code in link["permissions"])
@@ -170,13 +175,34 @@ class GstComplianceSnapshotService:
             ledger_reconciliation = input_tax_ledger_reconciliation or {}
             ledger_summary = ledger_reconciliation.get("summary") or {}
             ledger_warnings = ledger_reconciliation.get("warnings") or []
+            decision_summary = itc_decision_summary or {}
             mismatch_count = int(ledger_summary.get("mismatch_count") or 0)
             warning_count = len(ledger_warnings)
+            pending_items = int(decision_summary.get("pending_items") or 0)
+            deferred_items = int(decision_summary.get("deferred_items") or 0)
+            rejected_items = int(decision_summary.get("rejected_items") or 0)
+            blocked_items = int(decision_summary.get("blocked_items") or 0)
+            portal_context_summary = decision_summary.get("portal_context_summary") or {}
+            amended_rows = int(portal_context_summary.get("amended_rows") or 0)
+            vendor_revised_rows = int(portal_context_summary.get("vendor_revised_rows") or 0)
+            ims_pending_rows = int(portal_context_summary.get("ims_pending_rows") or 0)
+            ims_rejected_rows = int(portal_context_summary.get("ims_rejected_rows") or 0)
             signals.update(
                 {
                     "input_ledger_mismatch_count": mismatch_count,
                     "input_ledger_difference_total_itc": ledger_summary.get("difference_total_itc", 0),
                     "input_ledger_warning_count": warning_count,
+                    "itc_review_run_id": decision_summary.get("run_id"),
+                    "itc_decided_items": decision_summary.get("decided_items", 0),
+                    "itc_pending_items": pending_items,
+                    "itc_accepted_items": decision_summary.get("accepted_items", 0),
+                    "itc_deferred_items": deferred_items,
+                    "itc_rejected_items": rejected_items,
+                    "itc_blocked_items": blocked_items,
+                    "portal_amended_rows": amended_rows,
+                    "portal_vendor_revised_rows": vendor_revised_rows,
+                    "ims_pending_rows": ims_pending_rows,
+                    "ims_rejected_rows": ims_rejected_rows,
                 }
             )
             if mismatch_count:
@@ -184,6 +210,38 @@ class GstComplianceSnapshotService:
                     {
                         "code": "GST_INPUT_LEDGER_MISMATCH",
                         "message": f"{mismatch_count} input GST ledger component requires ITC tie-out review.",
+                    }
+                )
+                status = "needs_review"
+            if pending_items:
+                warnings.append(
+                    {
+                        "code": "GST_ITC_DECISION_PENDING",
+                        "message": f"{pending_items} GSTR-2B reconciliation item still needs an ITC decision.",
+                    }
+                )
+                status = "needs_review"
+            if deferred_items or rejected_items or blocked_items:
+                warnings.append(
+                    {
+                        "code": "GST_ITC_DECISION_EXCEPTION",
+                        "message": "Deferred, rejected, or blocked ITC decisions are present in the selected period.",
+                    }
+                )
+                status = "needs_review"
+            if amended_rows or vendor_revised_rows:
+                warnings.append(
+                    {
+                        "code": "GST_2B_AMENDED_OR_REVISED_ROWS",
+                        "message": f"{amended_rows + vendor_revised_rows} GSTR-2B portal row needs amended/vendor-revised review.",
+                    }
+                )
+                status = "needs_review"
+            if ims_pending_rows or ims_rejected_rows:
+                warnings.append(
+                    {
+                        "code": "GST_IMS_ACTION_REVIEW",
+                        "message": f"{ims_pending_rows + ims_rejected_rows} IMS row needs action/rejection review before ITC is finalized.",
                     }
                 )
                 status = "needs_review"
@@ -334,6 +392,111 @@ class GstComplianceSnapshotService:
                     }
                 ],
             }
+
+    def _itc_decision_summary(self, *, scope: GstComplianceScope, gstin: str | None) -> dict[str, Any]:
+        run = self._latest_gstr2b_run(scope=scope, gstin=gstin)
+        empty = {
+            "run_id": None,
+            "run_status": "",
+            "return_period": scope.return_period or "",
+            "total_items": 0,
+            "decided_items": 0,
+            "pending_items": 0,
+            "accepted_items": 0,
+            "deferred_items": 0,
+            "rejected_items": 0,
+            "blocked_items": 0,
+            "tax_by_decision": {
+                "ACCEPT": "0.00",
+                "DEFER": "0.00",
+                "REJECT": "0.00",
+                "BLOCK": "0.00",
+                "PENDING": "0.00",
+            },
+            "portal_context_summary": {
+                "amended_rows": 0,
+                "vendor_revised_rows": 0,
+                "ims_rows": 0,
+                "ims_pending_rows": 0,
+                "ims_rejected_rows": 0,
+            },
+        }
+        if not run:
+            return empty
+
+        summary = {**empty, "run_id": run.id, "run_status": run.status, "return_period": run.return_period}
+        items = GstReconciliationItem.objects.filter(run=run, is_active=True)
+        totals = {key: 0 for key in ("ACCEPT", "DEFER", "REJECT", "BLOCK", "PENDING")}
+        tax_by_decision = {key: 0 for key in totals}
+
+        for item in items.values(
+            "metadata_json",
+            "cgst_books",
+            "sgst_books",
+            "igst_books",
+            "cess_books",
+            "cgst_imported",
+            "sgst_imported",
+            "igst_imported",
+            "cess_imported",
+        ):
+            decision = ((item.get("metadata_json") or {}).get("itc_decision") or {}).get("decision") or "PENDING"
+            decision = str(decision).strip().upper()
+            if decision not in totals:
+                decision = "PENDING"
+            totals[decision] += 1
+            tax_by_decision[decision] += self._itc_item_tax_total(item)
+
+        summary.update(
+            {
+                "total_items": sum(totals.values()),
+                "decided_items": totals["ACCEPT"] + totals["DEFER"] + totals["REJECT"] + totals["BLOCK"],
+                "pending_items": totals["PENDING"],
+                "accepted_items": totals["ACCEPT"],
+                "deferred_items": totals["DEFER"],
+                "rejected_items": totals["REJECT"],
+                "blocked_items": totals["BLOCK"],
+                "tax_by_decision": {key: f"{value:.2f}" for key, value in tax_by_decision.items()},
+                "portal_context_summary": {
+                    **empty["portal_context_summary"],
+                    **((run.summary_json or {}).get("portal_context_summary") or {}),
+                },
+            }
+        )
+        return summary
+
+    def _latest_gstr2b_run(self, *, scope: GstComplianceScope, gstin: str | None):
+        qs = GstReconciliationRun.objects.filter(
+            entity_id=scope.entity_id,
+            reconciliation_type=GstReconciliationRun.ReconciliationType.GSTR2B_PURCHASE,
+            is_active=True,
+        )
+        if scope.entityfinid_id:
+            qs = qs.filter(entityfinid_id=scope.entityfinid_id)
+        if scope.subentity_id:
+            qs = qs.filter(subentity_id=scope.subentity_id)
+        if gstin:
+            qs = qs.filter(gst_registration_gstin__iexact=gstin)
+        if scope.return_period:
+            qs = qs.filter(return_period=scope.return_period)
+        elif scope.from_date and scope.to_date:
+            qs = qs.filter(period_from__gte=scope.from_date, period_to__lte=scope.to_date)
+        return qs.order_by("-revision_no", "-created_at", "-id").first()
+
+    def _itc_item_tax_total(self, item: dict[str, Any]):
+        books_total = (
+            (item.get("cgst_books") or 0)
+            + (item.get("sgst_books") or 0)
+            + (item.get("igst_books") or 0)
+            + (item.get("cess_books") or 0)
+        )
+        imported_total = (
+            (item.get("cgst_imported") or 0)
+            + (item.get("sgst_imported") or 0)
+            + (item.get("igst_imported") or 0)
+            + (item.get("cess_imported") or 0)
+        )
+        return books_total if books_total else imported_total
 
     def _period(self, scope: GstComplianceScope) -> dict[str, Any]:
         if scope.return_period:

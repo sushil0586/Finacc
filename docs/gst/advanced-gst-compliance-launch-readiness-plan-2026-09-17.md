@@ -417,23 +417,52 @@ Phase E implementation status on 17 Sep 2026:
 - Backend now supports a single-item `itc-decision` API plus a dedicated bulk ITC decision endpoint for reviewer queues.
 - Frontend reviewer toolbar now includes Accept ITC, Defer ITC, Reject ITC, and Block ITC actions with required reason and optional claim period.
 - Reconciliation item drawer now shows an `ITC Decision Evidence` panel so auditors can see decision, reason, claim period, decision timestamp, and match status at decision.
+- Third ITC hardening slice completed: GST Compliance Center now rolls up the latest GSTR-2B purchase reconciliation run for the selected GSTIN/period.
+- The ITC / 2B card now surfaces accepted, deferred, rejected, blocked, pending, decided item counts, and tax totals by decision bucket.
+- Pending, deferred, rejected, or blocked ITC decisions now become visible cockpit warnings, so the accountant does not need to open every reconciliation item to know the period is still under review.
+- GST Compliance Center now includes a compact `GSTR-2B decision summary` panel near the input GST ledger tie-out, showing review run status, decision counts, and accepted/deferred/blocked/pending ITC value buckets.
+- Fourth ITC hardening slice completed: GSTR-2B purchase matching now creates idempotent `Missing In Return` review rows for eligible purchase invoices present in books but absent from imported 2B/portal rows.
+- Missing-in-return rows preserve the purchase source document link, books-side tax values, structured mismatch reason, and document type, including purchase credit-note classification.
+- The missing-in-return scan follows the existing purchase source eligibility rules: entity/FY/subentity scope, registered GST vendors, non-cancelled documents, and no import/composition vendor noise.
+- Fifth ITC hardening slice completed: the GST reconciliation item detail API now exposes manual-match source document evidence and ledger impact for the linked books document.
+- The item drawer now shows a compact `Source Document Evidence` panel with purchase invoice metadata and a `Ledger Impact` panel with debit/credit totals and posting journal lines, so reviewers can verify the books side without leaving the reconciliation workspace.
+- Ledger impact lookup is additive and scoped by entity, FY, branch, source document type, and source document id. Existing reconciliation item/detail consumers remain compatible.
+- Sixth ITC hardening slice completed: GSTR-2B purchase matching now detects amended rows, vendor-revised rows, and IMS actions from imported portal row metadata.
+- Exact matches from amended/vendor-revised rows are routed to review instead of silent auto-match, preserving structured `PORTAL_ROW_AMENDED` and `PORTAL_ROW_VENDOR_REVISED` reasons.
+- IMS accepted rows can auto-match but keep an informational `IMS_ACTION_ACCEPTED` reason; IMS pending/rejected rows are routed to review with `IMS_ACTION_PENDING` or `IMS_ACTION_REJECTED` evidence.
+- Reconciliation run summaries now include `portal_context_summary` counts for amended, vendor-revised, IMS, IMS pending, and IMS rejected rows.
+- GST Compliance Center now rolls these portal-context counts into the ITC / 2B card signals, warning stack, and the `GSTR-2B decision summary` panel, so reviewers can see IMS/amendment risk before opening the full run.
 
 Phase E QA evidence:
 
 - Backend: `./venv/bin/python manage.py test reports.tests_gst_compliance_snapshot reports.tests_gst_compliance_contracts --keepdb --noinput --verbosity=1` - 11 tests passed.
 - Backend regression: `./venv/bin/python manage.py test reports.tests_gst_reconciliation reports.tests_gst_compliance_snapshot reports.tests_gst_compliance_contracts --keepdb --noinput --verbosity=1` - 20 tests passed.
 - Backend ITC decision workflow: `./venv/bin/python manage.py test gst_reconciliation.tests --keepdb --noinput --verbosity=1` - 34 tests passed.
+- Backend ITC decision cockpit roll-up: `./venv/bin/python manage.py test reports.tests_gst_compliance_snapshot --keepdb --noinput --verbosity=1` - 6 tests passed.
+- Backend contract/snapshot regression: `./venv/bin/python manage.py test reports.tests_gst_compliance_contracts reports.tests_gst_compliance_snapshot --keepdb --noinput --verbosity=1` - 12 tests passed.
+- Backend GSTR-2B missing-in-return matching: `./venv/bin/python manage.py test gst_reconciliation.tests --keepdb --noinput --verbosity=1` - 36 tests passed.
+- Backend GST reconciliation/cockpit regression: `./venv/bin/python manage.py test gst_reconciliation.tests reports.tests_gst_reconciliation reports.tests_gst_compliance_snapshot reports.tests_gst_compliance_contracts --keepdb --noinput --verbosity=1` - 57 tests passed.
+- Backend manual-match source and ledger evidence: `./venv/bin/python manage.py test gst_reconciliation.tests --keepdb --noinput --verbosity=1` - 37 tests passed.
+- Backend GST reconciliation/cockpit regression after evidence drawer: `./venv/bin/python manage.py test gst_reconciliation.tests reports.tests_gst_reconciliation reports.tests_gst_compliance_snapshot reports.tests_gst_compliance_contracts --keepdb --noinput --verbosity=1` - 58 tests passed.
+- Backend GSTR-2B portal-context/IMS hardening: `./venv/bin/python manage.py test gst_reconciliation.tests --keepdb --noinput --verbosity=1` - 39 tests passed.
+- Backend GST reconciliation/cockpit regression after IMS hardening: `./venv/bin/python manage.py test gst_reconciliation.tests reports.tests_gst_compliance_snapshot reports.tests_gst_compliance_contracts reports.tests_gst_reconciliation --keepdb --noinput --verbosity=1` - 60 tests passed.
 - Backend: `./venv/bin/python manage.py check` - no issues.
 - Frontend focused specs: `npx ng test --watch=false --browsers=ChromeHeadless --include='src/app/component/report/gst-compliance-center/gst-compliance-center.component.spec.ts' --include='src/app/model/gst-compliance.spec.ts'` - 7 tests passed.
+- Frontend ITC cockpit summary specs: `npx ng test --watch=false --browsers=ChromeHeadless --include='src/app/component/report/gst-compliance-center/gst-compliance-center.component.spec.ts' --include='src/app/model/gst-compliance.spec.ts'` - 8 tests passed.
 - Frontend ITC decision focused specs: `npx ng test --watch=false --browsers=ChromeHeadless --include='src/app/component/statutory/gst-reconciliation/gst-reconciliation-bulk-action-toolbar.component.spec.ts' --include='src/app/component/statutory/gst-reconciliation/gst-reconciliation-item-detail-drawer.component.spec.ts' --include='src/app/component/statutory/gst-reconciliation/gst-reconciliation-run-detail.component.spec.ts'` - 48 tests passed.
+- Frontend source/ledger evidence drawer specs: `npx ng test --watch=false --browsers=ChromeHeadless --include='src/app/component/statutory/gst-reconciliation/gst-reconciliation-item-detail-drawer.component.spec.ts' --include='src/app/component/report/gst-compliance-center/gst-compliance-center.component.spec.ts' --include='src/app/model/gst-compliance.spec.ts'` - 12 tests passed.
+- Frontend IMS/amendment cockpit specs: `npx ng test --watch=false --browsers=ChromeHeadless --include='src/app/component/report/gst-compliance-center/gst-compliance-center.component.spec.ts' --include='src/app/model/gst-compliance.spec.ts'` - 8 tests passed.
 - Frontend: `npm run typecheck` - passed.
 - Browser certification: `npx playwright test playwright/tests/gst-family-parity.spec.ts --project=chromium` - 8 tests passed, including GST Compliance Center ITC card signal, Input SGST mismatch evidence row, and reconciliation drawer ITC decision evidence.
+- Browser ITC cockpit summary certification: `npx playwright test playwright/tests/gst-family-parity.spec.ts --project=chromium` - 8 tests passed, including the GST Compliance Center `GSTR-2B decision summary` panel and decision-value buckets.
+- Browser manual-match evidence certification: `npx playwright test playwright/tests/gst-family-parity.spec.ts --project=chromium` - 8 tests passed, including reconciliation drawer source document evidence and ledger impact.
+- Browser IMS/amendment cockpit certification: `npx playwright test playwright/tests/gst-family-parity.spec.ts --project=chromium` - 8 tests passed, including Compliance Center amended-row, vendor-revised, and IMS-pending portal-context chips.
+- Stage live browser certification after RBAC/menu deployment: `PLAYWRIGHT_BASE_URL=https://accerio.in GST_BACKEND_URL=https://accerio.in TEST_USER_EMAIL='sushiljyotibansal@gmail.com' TEST_USER_PASSWORD='sushil' GST_LIVE_ENTITY_ID=3 GST_LIVE_ENTITY_FIN_ID=3 GST_LIVE_SUBENTITY_ID=3 npx playwright test playwright/tests/gst.live.spec.ts --project=chromium` - 9 tests passed, covering GSTR-1, GSTR-3B, GSTR-1 vs GSTR-3B, GST exception dashboard, GST Compliance Center navigation, GSTR-9, scope persistence, exports, and visual smoke.
 
 Phase E remaining:
 
-- Complete GSTR-2B/IMS import and matching hardening across exact, partial, duplicate, missing in books, missing in portal, amended, and credit-note outcomes.
-- Add manual match source drawer with purchase invoice and ledger impact.
-- Add decision summary roll-up into the GST Compliance Center card from reconciliation runs.
+- Add reviewer-facing IMS action workflow once live provider payload/actions are finalized: accept/reject/pending action sync, provider status refresh, and stage certification against real WhiteBooks/portal IMS data.
+- Stage-certify amended/vendor-revised/IMS datasets after deployment using a controlled imported return file or sandbox/provider payload.
 
 ### Phase F: E-Invoice And E-Way Period Monitoring
 

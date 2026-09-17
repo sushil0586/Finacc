@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 from datetime import datetime
+from decimal import Decimal
 from unittest.mock import patch
 
 from django.core.management import call_command
@@ -17,7 +18,7 @@ from rest_framework.test import APIClient, APITestCase
 
 from Authentication.models import User
 from entity.models import Entity, EntityFinancialYear, EntityPolicy, GstRegistrationType, SubEntity
-from financial.models import AccountComplianceProfile, account
+from financial.models import AccountComplianceProfile, Ledger, account
 from gst_reconciliation.models import (
     GstImportedReturn,
     GstImportedReturnRow,
@@ -29,11 +30,13 @@ from gst_reconciliation.models import (
 from gst_reconciliation.services.adapters import PurchaseGstr2bBatchAdapter
 from gst_reconciliation.services.importing import Gstr2bImportPipeline
 from gst_reconciliation.services.item_workflow_service import GstReconciliationItemWorkflowService
+from gst_reconciliation.services.matching.registry import MatcherRegistry
 from gst_reconciliation.services.normalization import normalize_doc_type, normalize_gstin, normalize_invoice_number
 from gst_reconciliation.services.run_service import GstReconciliationRunLifecycleService
 from gst_reconciliation.services.source_documents import SourceDocumentProviderRegistry
 from purchase.models.gstr2b_models import Gstr2bImportBatch, Gstr2bImportRow
 from purchase.models.purchase_core import PurchaseInvoiceHeader
+from posting.models import Entry, EntryStatus, JournalLine, PostingBatch, TxnType
 from rbac.models import Role, RolePermission, UserRoleAssignment
 from sales.models.sales_core import SalesInvoiceHeader
 from subscriptions.services import SubscriptionService
@@ -408,6 +411,8 @@ class GstReconciliationPhaseTwoTests(TestCase):
             create_run=True,
         )
         self.assertIsNotNone(imported_return)
+        run.status = GstReconciliationRun.Status.IMPORTED
+        run.save(update_fields=["status", "updated_at"])
         GstReconciliationRunLifecycleService.execute_matching(run=run, user=self.user)
         item = run.items.get()
         item.refresh_from_db()
@@ -460,6 +465,257 @@ class GstReconciliationPhaseTwoTests(TestCase):
         self.assertGreater(item.mismatch_reasons.count(), 0)
         codes = set(item.mismatch_reasons.values_list("code", flat=True))
         self.assertTrue({"INVOICE_NUMBER_MISMATCH", "INVOICE_DATE_MISMATCH", "TOTAL_AMOUNT_MISMATCH"} & codes)
+
+    def test_portal_matcher_creates_missing_in_return_items_for_books_only_purchase_documents(self):
+        PurchaseInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            vendor_gstin="29ABCDE1234F1Z5",
+            supplier_invoice_number="INV-2B-PRESENT",
+            supplier_invoice_date=datetime(2026, 4, 10).date(),
+            bill_date=datetime(2026, 4, 10).date(),
+            total_taxable="300.00",
+            total_cgst="27.00",
+            total_sgst="27.00",
+            created_by=self.user,
+        )
+        books_only = PurchaseInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            vendor_gstin="29ABCDE1234F1Z5",
+            supplier_invoice_number="INV-NOT-IN-2B",
+            supplier_invoice_date=datetime(2026, 4, 12).date(),
+            bill_date=datetime(2026, 4, 12).date(),
+            total_taxable="100.00",
+            total_cgst="9.00",
+            total_sgst="9.00",
+            created_by=self.user,
+        )
+        PurchaseInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            vendor_gstin="29ABCDE1234F1Z5",
+            supplier_invoice_number="INV-NEXT-MONTH",
+            supplier_invoice_date=datetime(2026, 5, 1).date(),
+            bill_date=datetime(2026, 5, 1).date(),
+            total_taxable="100.00",
+            total_cgst="9.00",
+            total_sgst="9.00",
+            created_by=self.user,
+        )
+        _, run = Gstr2bImportPipeline.import_json(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            user=self.user,
+            return_period="2026-04",
+            payload={
+                "rows": [
+                    {
+                        "supplier_gstin": "29ABCDE1234F1Z5",
+                        "supplier_invoice_number": "INV-2B-PRESENT",
+                        "supplier_invoice_date": "2026-04-10",
+                        "doc_type": "INV",
+                        "taxable_value": "300.00",
+                        "cgst": "27.00",
+                        "sgst": "27.00",
+                    }
+                ]
+            },
+            create_run=True,
+        )
+
+        MatcherRegistry.get_for_run(run).execute(run, user=self.user)
+        run.refresh_from_db()
+
+        self.assertEqual(run.summary_json["missing_in_return_items"], 1)
+        missing_item = run.items.get(source_document_type="purchase_invoice_header", source_document_id=str(books_only.id))
+        self.assertEqual(missing_item.match_status, GstReconciliationItem.MatchStatus.MISSING_IN_RETURN)
+        self.assertEqual(missing_item.linked_document_id, str(books_only.id))
+        self.assertEqual(missing_item.taxable_value_books, Decimal("100.00"))
+        self.assertEqual(missing_item.mismatch_reasons.get().code, "MISSING_IN_RETURN")
+        self.assertFalse(run.items.filter(invoice_number="INV-NEXT-MONTH").exists())
+
+        GstReconciliationRunLifecycleService.execute_matching(run=run, user=self.user)
+        run.refresh_from_db()
+        self.assertEqual(run.summary_json["missing_in_return_items"], 0)
+        self.assertEqual(run.items.filter(source_document_type="purchase_invoice_header", source_document_id=str(books_only.id)).count(), 1)
+
+    def test_portal_matcher_marks_books_only_purchase_credit_note_as_missing_in_return_credit_note(self):
+        base_invoice = PurchaseInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            vendor_gstin="29ABCDE1234F1Z5",
+            supplier_invoice_number="INV-FOR-CN",
+            supplier_invoice_date=datetime(2026, 4, 10).date(),
+            bill_date=datetime(2026, 4, 10).date(),
+            total_taxable="100.00",
+            total_cgst="9.00",
+            total_sgst="9.00",
+            created_by=self.user,
+        )
+        credit_note = PurchaseInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            doc_type=PurchaseInvoiceHeader.DocType.CREDIT_NOTE,
+            ref_document=base_invoice,
+            vendor_gstin="29ABCDE1234F1Z5",
+            supplier_invoice_number="CN-BOOKS-ONLY",
+            supplier_invoice_date=datetime(2026, 4, 16).date(),
+            bill_date=datetime(2026, 4, 16).date(),
+            total_taxable="50.00",
+            total_cgst="4.50",
+            total_sgst="4.50",
+            created_by=self.user,
+        )
+        _, run = Gstr2bImportPipeline.import_json(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            user=self.user,
+            return_period="2026-04",
+            payload={"rows": []},
+            create_run=True,
+        )
+
+        GstReconciliationRunLifecycleService.execute_matching(run=run, user=self.user)
+
+        item = run.items.get(source_document_type="purchase_invoice_header", source_document_id=str(credit_note.id))
+        self.assertEqual(item.match_status, GstReconciliationItem.MatchStatus.MISSING_IN_RETURN)
+        self.assertEqual(item.item_type, GstReconciliationItem.ItemType.CREDIT_NOTE)
+        self.assertEqual(item.doc_type_code, "CN")
+
+    def test_portal_matcher_routes_amended_vendor_revised_row_to_review_even_when_values_match(self):
+        PurchaseInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            vendor_gstin="29ABCDE1234F1Z5",
+            supplier_invoice_number="INV-AMEND-01",
+            supplier_invoice_date=datetime(2026, 4, 12).date(),
+            total_taxable="500.00",
+            total_cgst="45.00",
+            total_sgst="45.00",
+            created_by=self.user,
+        )
+        _, run = Gstr2bImportPipeline.import_json(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            user=self.user,
+            return_period="2026-04",
+            payload={
+                "rows": [
+                    {
+                        "source_section": "B2BA",
+                        "source_row_reference": "2B-AMEND-001",
+                        "supplier_action": "SUPPLIER_REVISED",
+                        "supplier_gstin": "29ABCDE1234F1Z5",
+                        "supplier_invoice_number": "INV-AMEND-01",
+                        "supplier_invoice_date": "2026-04-12",
+                        "doc_type": "INV",
+                        "taxable_value": "500.00",
+                        "cgst": "45.00",
+                        "sgst": "45.00",
+                    }
+                ]
+            },
+            create_run=True,
+        )
+
+        MatcherRegistry.get_for_run(run).execute(run, user=self.user)
+
+        item = run.items.get(source_document_type="gst_imported_return_row")
+        self.assertEqual(item.match_status, GstReconciliationItem.MatchStatus.PARTIAL)
+        self.assertEqual(item.resolution_status, GstReconciliationItem.ResolutionStatus.PARTIAL_MATCH)
+        self.assertGreaterEqual(item.match_confidence_score, Decimal("90.00"))
+        codes = set(item.mismatch_reasons.values_list("code", flat=True))
+        self.assertIn("PORTAL_ROW_AMENDED", codes)
+        self.assertIn("PORTAL_ROW_VENDOR_REVISED", codes)
+        self.assertTrue(item.metadata_json["portal_context"]["flags"]["is_amended"])
+        self.assertTrue(item.metadata_json["portal_context"]["flags"]["is_vendor_revised"])
+        run.refresh_from_db()
+        self.assertEqual(run.summary_json["portal_context_summary"]["amended_rows"], 1)
+        self.assertEqual(run.summary_json["portal_context_summary"]["vendor_revised_rows"], 1)
+
+    def test_portal_matcher_keeps_ims_accepted_auto_matched_but_pending_requires_review(self):
+        PurchaseInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            vendor_gstin="29ABCDE1234F1Z5",
+            supplier_invoice_number="INV-IMS-ACCEPT",
+            supplier_invoice_date=datetime(2026, 4, 15).date(),
+            total_taxable="200.00",
+            total_cgst="18.00",
+            total_sgst="18.00",
+            created_by=self.user,
+        )
+        PurchaseInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            vendor_gstin="29ABCDE1234F1Z5",
+            supplier_invoice_number="INV-IMS-PENDING",
+            supplier_invoice_date=datetime(2026, 4, 16).date(),
+            total_taxable="300.00",
+            total_cgst="27.00",
+            total_sgst="27.00",
+            created_by=self.user,
+        )
+        _, run = Gstr2bImportPipeline.import_json(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            user=self.user,
+            return_period="2026-04",
+            payload={
+                "rows": [
+                    {
+                        "source_section": "IMS",
+                        "ims_action": "ACCEPTED",
+                        "supplier_gstin": "29ABCDE1234F1Z5",
+                        "supplier_invoice_number": "INV-IMS-ACCEPT",
+                        "supplier_invoice_date": "2026-04-15",
+                        "doc_type": "INV",
+                        "taxable_value": "200.00",
+                        "cgst": "18.00",
+                        "sgst": "18.00",
+                    },
+                    {
+                        "source_section": "IMS",
+                        "ims_action": "PENDING",
+                        "supplier_gstin": "29ABCDE1234F1Z5",
+                        "supplier_invoice_number": "INV-IMS-PENDING",
+                        "supplier_invoice_date": "2026-04-16",
+                        "doc_type": "INV",
+                        "taxable_value": "300.00",
+                        "cgst": "27.00",
+                        "sgst": "27.00",
+                    },
+                ]
+            },
+            create_run=True,
+        )
+
+        MatcherRegistry.get_for_run(run).execute(run, user=self.user)
+
+        accepted = run.items.get(invoice_number="INV-IMS-ACCEPT")
+        pending = run.items.get(invoice_number="INV-IMS-PENDING")
+        self.assertEqual(accepted.match_status, GstReconciliationItem.MatchStatus.MATCHED)
+        self.assertEqual(accepted.resolution_status, GstReconciliationItem.ResolutionStatus.AUTO_MATCHED)
+        self.assertEqual(accepted.mismatch_reasons.get().code, "IMS_ACTION_ACCEPTED")
+        self.assertEqual(pending.match_status, GstReconciliationItem.MatchStatus.PARTIAL)
+        self.assertEqual(pending.resolution_status, GstReconciliationItem.ResolutionStatus.PARTIAL_MATCH)
+        self.assertEqual(pending.mismatch_reasons.get().code, "IMS_ACTION_PENDING")
+        run.refresh_from_db()
+        self.assertEqual(run.summary_json["portal_context_summary"]["ims_rows"], 2)
+        self.assertEqual(run.summary_json["portal_context_summary"]["ims_pending_rows"], 1)
 
 
 @override_settings(ROOT_URLCONF="FA.urls", AUTH_PASSWORD_VALIDATORS=[], RBAC_DEV_ALLOW_ALL_ACCESS=True)
@@ -947,6 +1203,134 @@ class GstReconciliationPhaseFourTests(APITestCase):
         )
         self.assertEqual(queue_response.status_code, 200)
         self.assertIn("summary", queue_response.json()["meta"])
+
+    def test_item_detail_exposes_source_document_and_ledger_impact_for_manual_match_review(self):
+        purchase_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=9401,
+            name="Purchase Input Ledger",
+            createdby=self.user,
+        )
+        vendor_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=9402,
+            name="Vendor Four Ledger",
+            createdby=self.user,
+        )
+        purchase_account = account.objects.create(
+            entity=self.entity,
+            ledger=purchase_ledger,
+            accountname="Purchase Input Ledger",
+            createdby=self.user,
+        )
+        vendor_account = account.objects.create(
+            entity=self.entity,
+            ledger=vendor_ledger,
+            accountname="Vendor Four Ledger",
+            createdby=self.user,
+        )
+        posting_batch = PostingBatch.objects.create(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.PURCHASE,
+            txn_id=self.purchase_invoice.id,
+            voucher_no=self.purchase_invoice.purchase_number,
+            created_by=self.user,
+        )
+        entry = Entry.objects.create(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.PURCHASE,
+            txn_id=self.purchase_invoice.id,
+            voucher_no=self.purchase_invoice.purchase_number,
+            voucher_date=self.purchase_invoice.bill_date,
+            posting_date=self.purchase_invoice.posting_date or self.purchase_invoice.bill_date,
+            status=EntryStatus.POSTED,
+            posted_at=timezone.now(),
+            posted_by=self.user,
+            posting_batch=posting_batch,
+            narration="Purchase invoice posting for GST review",
+            created_by=self.user,
+        )
+        JournalLine.objects.create(
+            entry=entry,
+            posting_batch=posting_batch,
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.PURCHASE,
+            txn_id=self.purchase_invoice.id,
+            voucher_no=self.purchase_invoice.purchase_number,
+            account=purchase_account,
+            ledger=purchase_ledger,
+            drcr=True,
+            amount=Decimal("590.00"),
+            description="Purchase debit",
+            posting_date=entry.posting_date,
+            posted_at=timezone.now(),
+            created_by=self.user,
+        )
+        JournalLine.objects.create(
+            entry=entry,
+            posting_batch=posting_batch,
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.PURCHASE,
+            txn_id=self.purchase_invoice.id,
+            voucher_no=self.purchase_invoice.purchase_number,
+            account=vendor_account,
+            ledger=vendor_ledger,
+            drcr=False,
+            amount=Decimal("590.00"),
+            description="Vendor credit",
+            posting_date=entry.posting_date,
+            posted_at=timezone.now(),
+            created_by=self.user,
+        )
+        item = GstReconciliationItem.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            run=GstReconciliationRun.objects.create(
+                entity=self.entity,
+                entityfinid=self.entityfin,
+                subentity=self.subentity,
+                reconciliation_type=GstReconciliationRun.ReconciliationType.GSTR2B_PURCHASE,
+                return_period="2026-04",
+                created_by=self.user,
+                updated_by=self.user,
+            ),
+            direction=GstReconciliationItem.Direction.PURCHASE,
+            match_key="GSTR2B|PINV-400",
+            source_document_type="gst_imported_return_row",
+            source_document_id=str(self.imported_row.id),
+            linked_document_type="purchase_invoice_header",
+            linked_document_id=str(self.purchase_invoice.id),
+            counterparty_gstin=self.purchase_invoice.vendor_gstin,
+            invoice_number=self.purchase_invoice.supplier_invoice_number,
+            match_status=GstReconciliationItem.MatchStatus.MISMATCHED,
+            resolution_status=GstReconciliationItem.ResolutionStatus.MANUAL_MATCHED,
+            created_by=self.user,
+            updated_by=self.user,
+        )
+
+        response = self.client.get(reverse("gst_reconciliation_api:item-detail", args=[item.id]))
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        evidence = payload["source_document_evidence"]
+        self.assertEqual(evidence["link_status"], "linked_document_available")
+        self.assertEqual(evidence["linked_document"]["source_document_type"], "purchase_invoice_header")
+        self.assertEqual(evidence["linked_document"]["document_number"], "PINV-400")
+        self.assertEqual(payload["ledger_impact"]["status"], "posted")
+        self.assertEqual(payload["ledger_impact"]["totals"]["debit"], "590.00")
+        self.assertEqual(payload["ledger_impact"]["totals"]["credit"], "590.00")
+        self.assertTrue(payload["ledger_impact"]["totals"]["balanced"])
+        self.assertEqual(len(payload["ledger_impact"]["journal_lines"]), 2)
+        self.assertEqual(payload["ledger_impact"]["journal_lines"][0]["ledger_name"], "Purchase Input Ledger")
 
     def test_run_summary_list_endpoint(self):
         response = self.client.get(

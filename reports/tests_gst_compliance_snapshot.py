@@ -12,6 +12,7 @@ from rest_framework.test import APIClient
 from Authentication.models import User
 from entity.models import Entity, EntityFinancialYear, EntityGstRegistration, GstRegistrationType, SubEntity
 from financial.models import Ledger, accountHead, accounttype
+from gst_reconciliation.models import GstReconciliationItem, GstReconciliationRun
 from reports.gst_compliance import GstComplianceSnapshotService, parse_gst_compliance_scope
 from reports.gst_compliance.views import GST_COMPLIANCE_CENTER_VIEW_PERMISSIONS
 from reports.models import GstPortalFilingRun, GstPortalProfile, ReportFilingRun, ReportFreezeSnapshot
@@ -231,6 +232,114 @@ class GstComplianceSnapshotTests(TestCase):
         self.assertEqual(cards["itc_2b"]["status"], "needs_review")
         self.assertEqual(cards["itc_2b"]["signals"]["input_ledger_mismatch_count"], 1)
         self.assertTrue(any(warning["code"] == "GST_INPUT_LEDGER_MISMATCH" for warning in cards["itc_2b"]["warnings"]))
+
+    def test_snapshot_rolls_up_itc_decisions_from_latest_gstr2b_run(self):
+        EntityGstRegistration.objects.create(
+            entity=self.entity,
+            gstin="29ABCDE1234F1Z5",
+            registration_type=self.gst_type,
+            is_primary=True,
+            createdby=self.user,
+        )
+        older_run = GstReconciliationRun.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            gst_registration_gstin="29ABCDE1234F1Z5",
+            reconciliation_type=GstReconciliationRun.ReconciliationType.GSTR2B_PURCHASE,
+            return_period="2026-06",
+            revision_no=1,
+            status=GstReconciliationRun.Status.CLOSED,
+            created_by=self.user,
+        )
+        latest_run = GstReconciliationRun.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            gst_registration_gstin="29ABCDE1234F1Z5",
+            reconciliation_type=GstReconciliationRun.ReconciliationType.GSTR2B_PURCHASE,
+            return_period="2026-06",
+            revision_no=2,
+            status=GstReconciliationRun.Status.IN_REVIEW,
+            summary_json={
+                "portal_context_summary": {
+                    "amended_rows": 1,
+                    "vendor_revised_rows": 1,
+                    "ims_rows": 2,
+                    "ims_pending_rows": 1,
+                    "ims_rejected_rows": 1,
+                }
+            },
+            created_by=self.user,
+        )
+        GstReconciliationItem.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            run=older_run,
+            match_key="older-accepted",
+            source_document_type="GSTR2B",
+            source_document_id="older-accepted",
+            match_status=GstReconciliationItem.MatchStatus.MATCHED,
+            cgst_imported=Decimal("999.00"),
+            metadata_json={"itc_decision": {"decision": "ACCEPT"}},
+            created_by=self.user,
+        )
+        for index, decision, taxes in (
+            (1, "ACCEPT", {"cgst_books": Decimal("18.00"), "sgst_books": Decimal("18.00")}),
+            (2, "DEFER", {"igst_imported": Decimal("40.00")}),
+            (3, "BLOCK", {"cgst_imported": Decimal("9.00"), "sgst_imported": Decimal("9.00")}),
+            (4, None, {"igst_imported": Decimal("12.00")}),
+        ):
+            metadata = {"itc_decision": {"decision": decision, "reason": "reviewed"}} if decision else {}
+            GstReconciliationItem.objects.create(
+                entity=self.entity,
+                entityfinid=self.entityfin,
+                subentity=self.subentity,
+                run=latest_run,
+                match_key=f"item-{index}",
+                source_document_type="GSTR2B",
+                source_document_id=f"item-{index}",
+                match_status=GstReconciliationItem.MatchStatus.MATCHED,
+                metadata_json=metadata,
+                created_by=self.user,
+                **taxes,
+            )
+
+        scope = parse_gst_compliance_scope(self.scope_params)
+        payload = GstComplianceSnapshotService().build(
+            scope=scope,
+            permission_codes=set(GST_COMPLIANCE_CENTER_VIEW_PERMISSIONS),
+        )
+
+        summary = payload["itc_decision_summary"]
+        self.assertEqual(summary["run_id"], latest_run.id)
+        self.assertEqual(summary["run_status"], GstReconciliationRun.Status.IN_REVIEW)
+        self.assertEqual(summary["total_items"], 4)
+        self.assertEqual(summary["decided_items"], 3)
+        self.assertEqual(summary["pending_items"], 1)
+        self.assertEqual(summary["accepted_items"], 1)
+        self.assertEqual(summary["deferred_items"], 1)
+        self.assertEqual(summary["blocked_items"], 1)
+        self.assertEqual(summary["tax_by_decision"]["ACCEPT"], "36.00")
+        self.assertEqual(summary["tax_by_decision"]["DEFER"], "40.00")
+        self.assertEqual(summary["tax_by_decision"]["BLOCK"], "18.00")
+        self.assertEqual(summary["tax_by_decision"]["PENDING"], "12.00")
+        self.assertEqual(summary["portal_context_summary"]["amended_rows"], 1)
+        self.assertEqual(summary["portal_context_summary"]["vendor_revised_rows"], 1)
+        self.assertEqual(summary["portal_context_summary"]["ims_pending_rows"], 1)
+        cards = {card["code"]: card for card in payload["cards"]}
+        self.assertEqual(cards["itc_2b"]["status"], "needs_review")
+        self.assertEqual(cards["itc_2b"]["signals"]["itc_review_run_id"], latest_run.id)
+        self.assertEqual(cards["itc_2b"]["signals"]["itc_decided_items"], 3)
+        self.assertEqual(cards["itc_2b"]["signals"]["itc_pending_items"], 1)
+        self.assertEqual(cards["itc_2b"]["signals"]["portal_amended_rows"], 1)
+        self.assertEqual(cards["itc_2b"]["signals"]["portal_vendor_revised_rows"], 1)
+        self.assertEqual(cards["itc_2b"]["signals"]["ims_pending_rows"], 1)
+        self.assertTrue(any(warning["code"] == "GST_2B_AMENDED_OR_REVISED_ROWS" for warning in cards["itc_2b"]["warnings"]))
+        self.assertTrue(any(warning["code"] == "GST_IMS_ACTION_REVIEW" for warning in cards["itc_2b"]["warnings"]))
+        self.assertTrue(any(warning["code"] == "GST_ITC_DECISION_PENDING" for warning in cards["itc_2b"]["warnings"]))
+        self.assertTrue(any(warning["code"] == "GST_ITC_DECISION_EXCEPTION" for warning in cards["itc_2b"]["warnings"]))
 
     @patch("reports.gst_compliance.views.GstComplianceSnapshotAPIView.enforce_scope")
     @patch("reports.gst_compliance.views.assert_any_report_permission")
