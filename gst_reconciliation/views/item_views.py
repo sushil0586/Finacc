@@ -14,6 +14,7 @@ from gst_reconciliation.serializers import (
     GstBulkItemActionSerializer,
     GstItemActionSerializer,
     GstItemAssignSerializer,
+    GstItemItcDecisionSerializer,
     GstItemManualMatchSerializer,
     GstItemNotesSerializer,
     GstReconciliationActionLogSerializer,
@@ -375,6 +376,25 @@ class GstReconciliationItemAcceptMismatchAPIView(_ItemActionBaseAPIView):
         return self.response_for_item(item)
 
 
+class GstReconciliationItemItcDecisionAPIView(_ItemActionBaseAPIView):
+    def post(self, request, pk: int):
+        item = self.get_item(pk)
+        GstReconciliationWorkflowAccess.assert_can_review_item(user=request.user, item=item)
+        serializer = GstItemItcDecisionSerializer(data=request.data or {})
+        serializer.is_valid(raise_exception=True)
+        try:
+            GstReconciliationItemWorkflowService.set_itc_decision(
+                item=item,
+                user=request.user,
+                decision=serializer.validated_data["decision"],
+                reason=serializer.validated_data["reason"],
+                claim_period=serializer.validated_data.get("claim_period"),
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return self.response_for_item(item)
+
+
 class _BulkItemActionBaseAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -409,6 +429,7 @@ class _BulkItemActionBaseAPIView(APIView):
                 user=request.user,
                 note=serializer.validated_data.get("note"),
                 reviewer=reviewer,
+                claim_period=serializer.validated_data.get("claim_period"),
             ),
             run_id=items[0].run_id,
             action=action_name,
@@ -463,6 +484,19 @@ class GstBulkUnmatchAPIView(_BulkItemActionBaseAPIView):
 
 class GstBulkMarkReviewedAPIView(_BulkItemActionBaseAPIView):
     action_name = "mark_reviewed"
+
+
+class GstBulkItcDecisionAPIView(_BulkItemActionBaseAPIView):
+    action_name = None
+
+    def post(self, request):
+        action = (request.data or {}).get("action")
+        if action not in {"accept_itc", "defer_itc", "reject_itc", "block_itc"}:
+            return Response(
+                {"detail": "Unsupported ITC bulk decision action."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return super().post(request)
 
 
 class GstReconciliationRunSummaryAPIView(APIView):

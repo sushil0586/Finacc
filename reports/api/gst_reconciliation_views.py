@@ -87,13 +87,15 @@ class Gstr1VsGstr3bReconciliationAPIView(ScopedEntitlementMixin, APIView):
                 "excel": f"/api/reports/gst-reconciliation/export/?format=xlsx&{encoded}",
                 "csv": f"/api/reports/gst-reconciliation/export/?format=csv&{encoded}",
                 "json": f"/api/reports/gst-reconciliation/export/?format=json&{encoded}",
+                "evidence_pack": f"/api/reports/gst-reconciliation/export/?format=evidence_json&{encoded}",
             }
             if can_export
             else {}
         )
-        response["available_exports"] = ["excel", "csv", "json"] if can_export else []
+        response["available_exports"] = ["excel", "csv", "json", "evidence_pack"] if can_export else []
         response["actions"]["can_export_excel"] = can_export
         response["actions"]["can_export_csv"] = can_export
+        response["actions"]["can_export_evidence_pack"] = can_export
         response["actions"]["can_export_pdf"] = False
         return Response(response)
 
@@ -147,6 +149,8 @@ class Gstr1VsGstr3bReconciliationExportAPIView(ScopedEntitlementMixin, APIView):
         )
         if export_format == "json":
             return Response(payload)
+        if export_format == "evidence_json":
+            return Response(payload.get("filing_evidence_pack") or {})
 
         headers = [
             "Check",
@@ -192,6 +196,24 @@ class Gstr1VsGstr3bReconciliationExportAPIView(ScopedEntitlementMixin, APIView):
             if total_row:
                 writer.writerow(total_row)
             return _file_response("GSTR1_vs_GSTR3B_Reconciliation.csv", stream.getvalue().encode("utf-8"), "text/csv")
+        if export_format == "evidence_csv":
+            stream = StringIO()
+            writer = csv.writer(stream)
+            evidence_pack = payload.get("filing_evidence_pack") or {}
+            writer.writerow(["Evidence Pack", evidence_pack.get("pack_name") or "GSTR-1 vs GSTR-3B Filing Evidence Pack"])
+            writer.writerow(["Status", evidence_pack.get("status") or "-"])
+            writer.writerow(["Period", f"{_format_export_date(gstr1_scope.from_date)} to {_format_export_date(gstr1_scope.to_date)}"])
+            writer.writerow(["Generated On", generated_on])
+            writer.writerow([])
+            writer.writerow(["Checklist Code", "Checklist Item", "Status", "Message"])
+            for item in evidence_pack.get("checklist") or []:
+                writer.writerow([item.get("code"), item.get("label"), item.get("status"), item.get("message")])
+            writer.writerow([])
+            writer.writerow(headers)
+            writer.writerows(rows)
+            if total_row:
+                writer.writerow(total_row)
+            return _file_response("GSTR1_vs_GSTR3B_Filing_Evidence.csv", stream.getvalue().encode("utf-8"), "text/csv")
         if export_format == "xlsx":
             content = _write_excel(
                 "GSTR-1 vs GSTR-3B Reconciliation",

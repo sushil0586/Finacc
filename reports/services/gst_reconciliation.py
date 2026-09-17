@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+from datetime import date, datetime
 from decimal import Decimal
+from typing import Any
 
-from posting.models import Entry
+from django.db.models import Q, Sum, Value
+from django.db.models.functions import Coalesce
+from django.utils import timezone
+
+from financial.models import Ledger
+from posting.models import Entry, EntryStatus, JournalLine
+from posting.services.static_accounts import StaticAccountService
 from reports.gstr1.selectors.queries import apply_scope_filters, base_queryset
 from reports.gstr1.services.classification import Gstr1ClassificationService
 from sales.models import SalesInvoiceLine
@@ -10,6 +18,12 @@ from sales.models import SalesInvoiceLine
 ZERO = Decimal("0.00")
 TOLERANCE = Decimal("0.05")
 ADVISORY_CODES = {"INTERSTATE_DISCLOSURE", "NON_GST_ONLY"}
+OUTPUT_TAX_LEDGER_CODES = (
+    ("OUTPUT_CGST", "cgst", "Output CGST"),
+    ("OUTPUT_SGST", "sgst", "Output SGST"),
+    ("OUTPUT_IGST", "igst", "Output IGST"),
+    ("OUTPUT_CESS", "cess", "Output CESS"),
+)
 
 
 def _q(value) -> Decimal:
@@ -161,6 +175,16 @@ def _resolve_source_document_route(*, invoice_id: int, has_service_lines: bool |
     return "/saleserviceinvoice" if has_service_lines else "/saleinvoice"
 
 
+def _normalize_scope_date(value):
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if value in (None, ""):
+        return None
+    return datetime.strptime(str(value), "%Y-%m-%d").date()
+
+
 def _build_posting_lookup_drilldown(*, invoice_id: int) -> dict:
     return {
         "target": "posting_detail_lookup",
@@ -271,6 +295,139 @@ def _build_outward_taxable_contributors(scope) -> list[dict]:
     return contributors
 
 
+def _output_tax_return_bucket(gstr3b_summary: dict) -> dict[str, Decimal]:
+    section_31 = gstr3b_summary.get("section_3_1", {})
+    return _add_bucket(
+        _bucket_from_gstr3b(section_31.get("outward_taxable_supplies")),
+        _bucket_from_gstr3b(section_31.get("outward_zero_rated_supplies")),
+    )
+
+
+def _output_tax_ledger_amounts(scope) -> tuple[dict[str, Decimal], dict[str, int | None], list[dict]]:
+    ledger_amounts = {component: ZERO for _, component, _ in OUTPUT_TAX_LEDGER_CODES}
+    ledger_ids = {component: None for _, component, _ in OUTPUT_TAX_LEDGER_CODES}
+    warnings = []
+    if not scope or not getattr(scope, "entity_id", None):
+        warnings.append(
+            {
+                "code": "GST_OUTPUT_LEDGER_SCOPE_MISSING",
+                "severity": "warning",
+                "message": "Output GST ledger comparison could not run because entity scope is missing.",
+            }
+        )
+        return ledger_amounts, ledger_ids, warnings
+
+    for static_code, component, label in OUTPUT_TAX_LEDGER_CODES:
+        ledger_id = StaticAccountService.get_ledger_id(scope.entity_id, static_code, required=False)
+        ledger_ids[component] = ledger_id
+        if not ledger_id:
+            warnings.append(
+                {
+                    "code": "GST_OUTPUT_LEDGER_MAPPING_MISSING",
+                    "severity": "warning",
+                    "message": f"{label} static ledger mapping is missing; books comparison for this tax component is unavailable.",
+                    "static_account_code": static_code,
+                    "component": component,
+                }
+            )
+
+    configured_ledger_ids = [ledger_id for ledger_id in ledger_ids.values() if ledger_id]
+    if not configured_ledger_ids:
+        return ledger_amounts, ledger_ids, warnings
+
+    filters = {
+        "entity_id": scope.entity_id,
+        "ledger_id__in": configured_ledger_ids,
+        "entry__status": EntryStatus.POSTED,
+    }
+    if getattr(scope, "entityfinid_id", None):
+        filters["entityfin_id"] = scope.entityfinid_id
+    if getattr(scope, "subentity_id", None) is not None:
+        filters["subentity_id"] = scope.subentity_id
+    from_date = _normalize_scope_date(getattr(scope, "from_date", None))
+    to_date = _normalize_scope_date(getattr(scope, "to_date", None))
+    if from_date:
+        filters["posting_date__gte"] = from_date
+    if to_date:
+        filters["posting_date__lte"] = to_date
+
+    aggregates = (
+        JournalLine.objects.filter(**filters)
+        .values("ledger_id")
+        .annotate(
+            debit=Coalesce(Sum("amount", filter=Q(drcr=True)), Value(ZERO)),
+            credit=Coalesce(Sum("amount", filter=Q(drcr=False)), Value(ZERO)),
+        )
+    )
+    net_credit_by_ledger = {int(row["ledger_id"]): _q(row["credit"]) - _q(row["debit"]) for row in aggregates}
+    for _, component, _ in OUTPUT_TAX_LEDGER_CODES:
+        ledger_id = ledger_ids.get(component)
+        if ledger_id:
+            ledger_amounts[component] = net_credit_by_ledger.get(int(ledger_id), ZERO)
+    return ledger_amounts, ledger_ids, warnings
+
+
+def _build_output_tax_ledger_reconciliation(*, gstr3b_summary: dict, scope) -> dict:
+    return_bucket = _output_tax_return_bucket(gstr3b_summary)
+    ledger_amounts, ledger_ids, warnings = _output_tax_ledger_amounts(scope)
+    ledger_names = {
+        row["id"]: row["name"]
+        for row in Ledger.objects.filter(id__in=[ledger_id for ledger_id in ledger_ids.values() if ledger_id]).values("id", "name")
+    }
+    rows = []
+    for static_code, component, label in OUTPUT_TAX_LEDGER_CODES:
+        return_tax = _q(return_bucket.get(component))
+        ledger_tax = _q(ledger_amounts.get(component))
+        difference = return_tax - ledger_tax
+        ledger_id = ledger_ids.get(component)
+        rows.append(
+            {
+                "code": static_code,
+                "component": component,
+                "label": label,
+                "status": "matched" if ledger_id and abs(difference) <= TOLERANCE else "mismatch",
+                "mapping_status": "configured" if ledger_id else "missing_mapping",
+                "return_tax": return_tax,
+                "ledger_tax": ledger_tax,
+                "difference": difference,
+                "ledger_id": ledger_id,
+                "ledger_name": ledger_names.get(ledger_id),
+                "drilldowns": (
+                    {
+                        "ledger_book": {
+                            "target": "ledger_book",
+                            "label": "Open ledger book",
+                            "kind": "report",
+                            "route": "/reports/financial/ledger-book",
+                            "params": {
+                                "ledger": ledger_id,
+                                "ledger_id": ledger_id,
+                                "entityfinid": getattr(scope, "entityfinid_id", None),
+                                "subentity": getattr(scope, "subentity_id", None),
+                                "from_date": getattr(scope, "from_date", None),
+                                "to_date": getattr(scope, "to_date", None),
+                            },
+                        }
+                    }
+                    if ledger_id
+                    else {}
+                ),
+            }
+        )
+    return {
+        "rows": rows,
+        "summary": {
+            "comparison_count": len(rows),
+            "matched_count": len([row for row in rows if row["status"] == "matched"]),
+            "mismatch_count": len([row for row in rows if row["status"] == "mismatch"]),
+            "return_total_tax": sum((_q(row["return_tax"]) for row in rows), ZERO),
+            "ledger_total_tax": sum((_q(row["ledger_tax"]) for row in rows), ZERO),
+            "difference_total_tax": sum((_q(row["difference"]) for row in rows), ZERO),
+        },
+        "warnings": warnings,
+    }
+
+
 def _same_reconciliation_signature(left: dict, right: dict) -> bool:
     comparable_fields = (
         "difference_taxable_value",
@@ -306,6 +463,117 @@ def _normalize_rollup_duplicate(rows: list[dict]) -> list[dict]:
         "Roll-up mirrors Outward Taxable Supplies variance and is shown as informational to avoid duplicate mismatch counting."
     )
     return rows
+
+
+def _status_for_filing_pack(payload: dict[str, Any]) -> str:
+    summary = payload.get("summary") or {}
+    ledger_summary = (payload.get("output_tax_ledger_reconciliation") or {}).get("summary") or {}
+    warnings = payload.get("warnings") or []
+    actionable_mismatch_count = int(summary.get("actionable_mismatch_count") or 0)
+    ledger_mismatch_count = int(ledger_summary.get("mismatch_count") or 0)
+    blocking_warning_count = len(
+        [
+            warning
+            for warning in warnings
+            if str(warning.get("severity") or "").lower() in {"error", "critical", "blocked"}
+        ]
+    )
+    if actionable_mismatch_count or ledger_mismatch_count or blocking_warning_count:
+        return "needs_review"
+    if warnings:
+        return "ready_with_advisories"
+    return "ready"
+
+
+def _filing_evidence_checklist(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    summary = payload.get("summary") or {}
+    ledger_summary = (payload.get("output_tax_ledger_reconciliation") or {}).get("summary") or {}
+    warnings = payload.get("warnings") or []
+    actionable_mismatch_count = int(summary.get("actionable_mismatch_count") or 0)
+    advisory_mismatch_count = int(summary.get("advisory_mismatch_count") or 0)
+    ledger_mismatch_count = int(ledger_summary.get("mismatch_count") or 0)
+    warning_count = len(warnings)
+    return [
+        {
+            "code": "RETURN_RECONCILIATION",
+            "label": "GSTR-1 and GSTR-3B return comparison",
+            "status": "passed" if actionable_mismatch_count == 0 else "needs_review",
+            "message": (
+                "No actionable return mismatch found."
+                if actionable_mismatch_count == 0
+                else f"{actionable_mismatch_count} actionable mismatch item requires review."
+            ),
+        },
+        {
+            "code": "ADVISORY_DISCLOSURES",
+            "label": "Advisory disclosure review",
+            "status": "informational" if advisory_mismatch_count else "passed",
+            "message": (
+                f"{advisory_mismatch_count} advisory mismatch item is informational."
+                if advisory_mismatch_count
+                else "No advisory mismatch found."
+            ),
+        },
+        {
+            "code": "OUTPUT_TAX_LEDGER",
+            "label": "Output GST ledger tie-out",
+            "status": "passed" if ledger_mismatch_count == 0 else "needs_review",
+            "message": (
+                "Output GST ledgers match the return tax liability."
+                if ledger_mismatch_count == 0
+                else f"{ledger_mismatch_count} output-tax ledger component requires review or static mapping."
+            ),
+        },
+        {
+            "code": "EVIDENCE_WARNINGS",
+            "label": "Evidence pack warnings",
+            "status": "passed" if warning_count == 0 else "informational",
+            "message": (
+                "No evidence warnings generated."
+                if warning_count == 0
+                else f"{warning_count} warning/advisory item included in the evidence pack."
+            ),
+        },
+    ]
+
+
+def build_gstr1_vs_gstr3b_evidence_pack(*, reconciliation_payload: dict[str, Any], scope_params: dict | None = None) -> dict[str, Any]:
+    cleaned_scope = _clean_scope_params(scope_params)
+    status = _status_for_filing_pack(reconciliation_payload)
+    checklist = _filing_evidence_checklist(reconciliation_payload)
+    return {
+        "pack_code": "gstr1-vs-gstr3b-filing-evidence",
+        "pack_name": "GSTR-1 vs GSTR-3B Filing Evidence Pack",
+        "generated_at": timezone.now().isoformat(),
+        "status": status,
+        "scope": cleaned_scope,
+        "summary": reconciliation_payload.get("summary") or {},
+        "output_tax_ledger_summary": (
+            reconciliation_payload.get("output_tax_ledger_reconciliation") or {}
+        ).get("summary")
+        or {},
+        "checklist": checklist,
+        "included_sections": [
+            {
+                "code": "comparison_grid",
+                "label": "Return comparison grid",
+                "row_count": len(reconciliation_payload.get("rows") or []),
+            },
+            {
+                "code": "output_tax_ledger",
+                "label": "Output GST ledger tie-out",
+                "row_count": len((reconciliation_payload.get("output_tax_ledger_reconciliation") or {}).get("rows") or []),
+            },
+            {
+                "code": "warnings",
+                "label": "Warnings and advisories",
+                "row_count": len(reconciliation_payload.get("warnings") or []),
+            },
+        ],
+        "rows": reconciliation_payload.get("rows") or [],
+        "output_tax_ledger_reconciliation": reconciliation_payload.get("output_tax_ledger_reconciliation") or {},
+        "warnings": reconciliation_payload.get("warnings") or [],
+    }
 
 
 def build_gstr1_vs_gstr3b_reconciliation(
@@ -403,7 +671,11 @@ def build_gstr1_vs_gstr3b_reconciliation(
     actionable_mismatch_count = len([row for row in rows if row["status"] == "mismatch" and not row["is_advisory"]])
     max_taxable_difference = max((abs(_q(row["difference_taxable_value"])) for row in rows), default=ZERO)
     max_total_tax_difference = max((abs(_q(row["difference_total_tax"])) for row in rows), default=ZERO)
-    return {
+    output_tax_ledger_reconciliation = _build_output_tax_ledger_reconciliation(
+        gstr3b_summary=gstr3b_summary,
+        scope=gstr1_scope,
+    )
+    payload = {
         "rows": rows,
         "summary": {
             "comparison_count": len(rows),
@@ -418,11 +690,18 @@ def build_gstr1_vs_gstr3b_reconciliation(
             "gstr1_total_tax": total_outward_gstr1["total_tax"],
             "gstr3b_total_tax": total_outward_gstr3b["total_tax"],
         },
+        "output_tax_ledger_reconciliation": output_tax_ledger_reconciliation,
         "warnings": [
             {
                 "code": "GST_RECON_SECTION32_ADVISORY",
                 "severity": "info",
                 "message": "Inter-state disclosure is advisory because GSTR-1 outward tables and GSTR-3B section 3.2 are grouped differently.",
             }
-        ],
+        ]
+        + output_tax_ledger_reconciliation["warnings"],
     }
+    payload["filing_evidence_pack"] = build_gstr1_vs_gstr3b_evidence_pack(
+        reconciliation_payload=payload,
+        scope_params=scope_params,
+    )
+    return payload

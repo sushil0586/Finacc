@@ -28,6 +28,7 @@ from gst_reconciliation.models import (
 )
 from gst_reconciliation.services.adapters import PurchaseGstr2bBatchAdapter
 from gst_reconciliation.services.importing import Gstr2bImportPipeline
+from gst_reconciliation.services.item_workflow_service import GstReconciliationItemWorkflowService
 from gst_reconciliation.services.normalization import normalize_doc_type, normalize_gstin, normalize_invoice_number
 from gst_reconciliation.services.run_service import GstReconciliationRunLifecycleService
 from gst_reconciliation.services.source_documents import SourceDocumentProviderRegistry
@@ -645,6 +646,76 @@ class GstReconciliationPhaseThreeTests(APITestCase):
         )
         self.assertEqual(bulk_unmatch.status_code, 200)
         self.assertEqual(bulk_unmatch.json()["failed_count"], 0)
+
+    def test_itc_decision_service_records_structured_evidence_and_audit_log(self):
+        item = self.items[0]
+
+        GstReconciliationItemWorkflowService.set_itc_decision(
+            item=item,
+            user=self.user,
+            decision="ACCEPT",
+            reason="2B matched after vendor follow-up",
+            claim_period="2026-04",
+        )
+
+        item.refresh_from_db()
+        decision = item.metadata_json["itc_decision"]
+        self.assertEqual(item.resolution_status, GstReconciliationItem.ResolutionStatus.RESOLVED)
+        self.assertEqual(item.resolved_by_id, self.user.id)
+        self.assertEqual(decision["decision"], "ACCEPT")
+        self.assertEqual(decision["claim_period"], "2026-04")
+        self.assertEqual(decision["match_status_at_decision"], item.match_status)
+        self.assertTrue(
+            GstReconciliationActionLog.objects.filter(
+                item=item,
+                action_type=GstReconciliationActionLog.ActionType.NOTE,
+                details_json__itc_decision__decision="ACCEPT",
+            ).exists()
+        )
+
+    def test_itc_decision_api_requires_reason_and_exposes_evidence(self):
+        item = self.items[0]
+        url = reverse("gst_reconciliation_api:item-itc-decision", args=[item.id])
+
+        missing_reason = self.client.post(url, {"decision": "DEFER", "claim_period": "2026-05"}, format="json")
+        self.assertEqual(missing_reason.status_code, 400)
+
+        response = self.client.post(
+            url,
+            {
+                "decision": "DEFER",
+                "reason": "Hold claim until vendor amends invoice number",
+                "claim_period": "2026-05",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["resolution_status"], GstReconciliationItem.ResolutionStatus.PENDING_REVIEW)
+        self.assertEqual(payload["itc_decision"]["decision"], "DEFER")
+        self.assertEqual(payload["itc_decision"]["reason"], "Hold claim until vendor amends invoice number")
+        self.assertEqual(payload["itc_decision"]["claim_period"], "2026-05")
+
+    def test_bulk_itc_decision_applies_to_selected_items(self):
+        response = self.client.post(
+            reverse("gst_reconciliation_api:items-bulk-itc-decision"),
+            {
+                "action": "block_itc",
+                "item_ids": [item.id for item in self.items],
+                "note": "Block ITC until source invoice is corrected",
+                "claim_period": "2026-04",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["success_count"], 2)
+        for item in self.items:
+            item.refresh_from_db()
+            self.assertEqual(item.metadata_json["itc_decision"]["decision"], "BLOCK")
+            self.assertEqual(item.metadata_json["itc_decision"]["claim_period"], "2026-04")
+            self.assertEqual(item.resolution_status, GstReconciliationItem.ResolutionStatus.MISMATCH)
 
 
 @override_settings(ROOT_URLCONF="FA.urls", AUTH_PASSWORD_VALIDATORS=[], RBAC_DEV_ALLOW_ALL_ACCESS=True)

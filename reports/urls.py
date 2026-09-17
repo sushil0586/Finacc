@@ -142,6 +142,7 @@ from reports.gst_portal.views import (
     GstPortalOtpVerifyAPIView,
     GstPortalProfileAPIView,
 )
+from reports.gst_compliance.views import GstComplianceSnapshotAPIView
 from reports.api.gst_reconciliation_views import (
     Gstr1VsGstr3bReconciliationAPIView,
     Gstr1VsGstr3bReconciliationExportAPIView,
@@ -453,6 +454,7 @@ urlpatterns = [
     path("gstr3b/validations/", Gstr3bValidationAPIView.as_view(), name="gstr3b-validations"),
     path("gstr3b/export/", Gstr3bExportAPIView.as_view(), name="gstr3b-export"),
     path("gstr3b/export", Gstr3bExportAPIView.as_view(), name="gstr3b-export-noslash"),
+    path("gst-compliance/snapshot/", GstComplianceSnapshotAPIView.as_view(), name="gst-compliance-snapshot"),
     path("gst-portal/filing/prepare/", GstPortalFilingPrepareAPIView.as_view(), name="gst-portal-filing-prepare"),
     path("gst-portal/filing/save/", GstPortalFilingSaveAPIView.as_view(), name="gst-portal-filing-save"),
     path("gst-portal/filing/status/", GstPortalFilingStatusAPIView.as_view(), name="gst-portal-filing-status"),

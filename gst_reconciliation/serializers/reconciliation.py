@@ -24,6 +24,7 @@ class GstReconciliationItemSerializer(serializers.ModelSerializer):
     assigned_to = serializers.IntegerField(source="assigned_reviewer_id", read_only=True)
     reviewer_notes = serializers.CharField(source="reviewer_note", read_only=True)
     resolution_notes = serializers.CharField(source="resolution_note", read_only=True)
+    itc_decision = serializers.SerializerMethodField()
 
     class Meta:
         model = GstReconciliationItem
@@ -73,15 +74,20 @@ class GstReconciliationItemSerializer(serializers.ModelSerializer):
             "resolved_by",
             "resolved_at",
             "metadata_json",
+            "itc_decision",
             "mismatch_reasons",
         )
         read_only_fields = fields
+
+    def get_itc_decision(self, obj):
+        return (obj.metadata_json or {}).get("itc_decision")
 
 
 class GstReconciliationItemGridSerializer(serializers.ModelSerializer):
     mismatch_reason_codes = serializers.SerializerMethodField()
     mismatch_reason_messages = serializers.SerializerMethodField()
     assigned_reviewer_name = serializers.SerializerMethodField()
+    itc_decision = serializers.SerializerMethodField()
 
     class Meta:
         model = GstReconciliationItem
@@ -123,6 +129,7 @@ class GstReconciliationItemGridSerializer(serializers.ModelSerializer):
             "cess_imported",
             "reviewer_note",
             "resolution_note",
+            "itc_decision",
             "created_at",
             "updated_at",
         )
@@ -139,6 +146,9 @@ class GstReconciliationItemGridSerializer(serializers.ModelSerializer):
         if not reviewer:
             return None
         return reviewer.username or getattr(reviewer, "email", None) or str(reviewer.id)
+
+    def get_itc_decision(self, obj):
+        return (obj.metadata_json or {}).get("itc_decision")
 
 
 class GstImportedReturnSerializer(serializers.ModelSerializer):
@@ -403,11 +413,16 @@ class GstBulkItemActionSerializer(serializers.Serializer):
             "accept_mismatch",
             "mark_reviewed",
             "unmatch",
+            "accept_itc",
+            "defer_itc",
+            "reject_itc",
+            "block_itc",
         )
     )
     item_ids = serializers.ListField(child=serializers.IntegerField(min_value=1), allow_empty=False)
     reviewer_id = serializers.IntegerField(required=False, allow_null=True, min_value=1)
     note = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    claim_period = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=7)
 
 
 class GstSourceDocumentMetadataSerializer(serializers.Serializer):
@@ -442,6 +457,21 @@ class GstSourceDocumentSearchSerializer(serializers.Serializer):
 
 class GstItemActionSerializer(serializers.Serializer):
     note = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+
+
+class GstItemItcDecisionSerializer(serializers.Serializer):
+    decision = serializers.ChoiceField(choices=("ACCEPT", "DEFER", "REJECT", "BLOCK"))
+    reason = serializers.CharField(required=True, allow_blank=False, max_length=500)
+    claim_period = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=7)
+
+    def validate_claim_period(self, value):
+        if not value:
+            return value
+        import re
+
+        if not re.match(r"^\d{4}-\d{2}$", str(value)):
+            raise serializers.ValidationError("claim_period must be in YYYY-MM format.")
+        return value
 
 
 class PurchaseGstr2bBatchAdapterSerializer(serializers.Serializer):

@@ -35,6 +35,12 @@ class GstReconciliationItemWorkflowService:
         GstReconciliationRun.Status.REJECTED,
         GstReconciliationRun.Status.FAILED,
     }
+    ITC_DECISION_RESOLUTION_STATUS = {
+        "ACCEPT": GstReconciliationItem.ResolutionStatus.RESOLVED,
+        "DEFER": GstReconciliationItem.ResolutionStatus.PENDING_REVIEW,
+        "REJECT": GstReconciliationItem.ResolutionStatus.IGNORED,
+        "BLOCK": GstReconciliationItem.ResolutionStatus.MISMATCH,
+    }
 
     @classmethod
     def _assert_run_is_mutable(cls, *, item: GstReconciliationItem) -> None:
@@ -402,6 +408,79 @@ class GstReconciliationItemWorkflowService:
 
     @classmethod
     @transaction.atomic
+    def set_itc_decision(
+        cls,
+        *,
+        item: GstReconciliationItem,
+        user,
+        decision: str,
+        reason: str,
+        claim_period: str | None = None,
+    ) -> GstReconciliationItem:
+        cls._assert_run_is_mutable(item=item)
+        GstReconciliationWorkflowAccess.assert_can_review_item(user=user, item=item)
+        normalized_decision = (decision or "").strip().upper()
+        normalized_reason = (reason or "").strip()
+        if normalized_decision not in cls.ITC_DECISION_RESOLUTION_STATUS:
+            raise ValueError("Unsupported ITC decision.")
+        if not normalized_reason:
+            raise ValueError("ITC decision reason is required.")
+
+        old_resolution = item.resolution_status
+        metadata_json = dict(item.metadata_json or {})
+        decided_at = timezone.now()
+        evidence = {
+            "decision": normalized_decision,
+            "reason": normalized_reason,
+            "claim_period": claim_period or None,
+            "decided_by_id": getattr(user, "id", None),
+            "decided_at": decided_at.isoformat(),
+            "match_status_at_decision": item.match_status,
+            "resolution_status_before": old_resolution,
+            "source": "gst_reconciliation_review",
+        }
+        metadata_json["itc_decision"] = evidence
+
+        item.metadata_json = metadata_json
+        item.reviewer_note = normalized_reason
+        item.resolution_note = normalized_reason
+        item.reviewed_by = user
+        item.reviewed_at = decided_at
+        item.updated_by = user
+        item.resolution_status = cls.ITC_DECISION_RESOLUTION_STATUS[normalized_decision]
+        update_fields = [
+            "metadata_json",
+            "reviewer_note",
+            "resolution_note",
+            "reviewed_by",
+            "reviewed_at",
+            "resolution_status",
+            "updated_by",
+            "updated_at",
+        ]
+        if normalized_decision in {"ACCEPT", "REJECT", "BLOCK"}:
+            item.resolved_by = user
+            item.resolved_at = decided_at
+        else:
+            item.resolved_by = None
+            item.resolved_at = None
+        update_fields.extend(["resolved_by", "resolved_at"])
+        item.save(update_fields=update_fields)
+
+        cls._log(
+            item=item,
+            user=user,
+            action_type=GstReconciliationActionLog.ActionType.NOTE,
+            comment=normalized_reason,
+            from_status=old_resolution,
+            to_status=item.resolution_status,
+            details_json={"itc_decision": evidence},
+        )
+        cls._touch_run(item=item, user=user)
+        return item
+
+    @classmethod
+    @transaction.atomic
     def bulk_action(
         cls,
         *,
@@ -410,6 +489,7 @@ class GstReconciliationItemWorkflowService:
         user,
         note: str | None = None,
         reviewer=None,
+        claim_period: str | None = None,
     ) -> tuple[BulkActionResult, list[dict]]:
         items = list(items)
         processed_ids: list[int] = []
@@ -435,6 +515,20 @@ class GstReconciliationItemWorkflowService:
                         cls.mark_reviewed(item=item, user=user, note=note)
                     elif action == "unmatch":
                         cls.manual_unmatch(item=item, user=user, note=note)
+                    elif action in {"accept_itc", "defer_itc", "reject_itc", "block_itc"}:
+                        decision_map = {
+                            "accept_itc": "ACCEPT",
+                            "defer_itc": "DEFER",
+                            "reject_itc": "REJECT",
+                            "block_itc": "BLOCK",
+                        }
+                        cls.set_itc_decision(
+                            item=item,
+                            user=user,
+                            decision=decision_map[action],
+                            reason=note or "",
+                            claim_period=claim_period,
+                        )
                     else:
                         raise ValueError("Unsupported bulk reconciliation action.")
                     processed_ids.append(item.id)
@@ -460,6 +554,7 @@ class GstReconciliationItemWorkflowService:
                 "action": action,
                 "item_ids_sample": processed_ids[:50],
                 "reviewer_id": getattr(reviewer, "id", None),
+                "claim_period": claim_period,
                 "processed_count": len(processed_ids),
                 "failed_count": len(errors),
                 "duration_ms": timed.duration_ms,

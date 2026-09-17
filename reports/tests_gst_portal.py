@@ -457,7 +457,14 @@ class GstPortalPreviewExportAPITests(TestCase):
         self.client.force_authenticate(user=self.user)
         self.permission_patch = patch(
             "reports.api.report_permissions.EffectivePermissionService.permission_codes_for_user",
-            return_value=["reports.gst.view", "reports.gstr1report.view", "reports.gstr3b.view", "reports.gst.file"],
+            return_value=[
+                "reports.gst.view",
+                "reports.gst.export",
+                "reports.gstr1report.view",
+                "reports.gstr3b.view",
+                "reports.gstr3b.export",
+                "reports.gst.file",
+            ],
         )
         self.permission_patch.start()
         self.addCleanup(self.permission_patch.stop)
