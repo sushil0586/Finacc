@@ -20,6 +20,8 @@ from posting.models import Entry, EntryStatus, JournalLine, PostingBatch, TxnTyp
 from purchase.models.purchase_ap import VendorBillOpenItem, VendorSettlement
 from purchase.models.purchase_core import PurchaseInvoiceHeader
 from purchase.services.purchase_settings_service import PurchaseSettingsService
+from sales.models.sales_ar import CustomerBillOpenItem
+from sales.models.sales_core import SalesInvoiceHeader
 from vouchers.models import VoucherHeader, VoucherLine
 
 from .models import TreasuryCashMovement, TreasuryChequeBook, TreasuryChequeLeaf, TreasuryPaymentBatch, TreasuryPaymentBatchLine, TreasuryPaymentInstrument
@@ -51,10 +53,12 @@ class TreasuryPaymentBatchServiceTests(TestCase):
             updates={"policy_controls": {"settlement_mode": "basic", "allocation_policy": "manual"}},
         )
         self.vendor_ledger = Ledger.objects.create(entity=self.entity, ledger_code=9001, name="Vendor One", is_party=True, createdby=self.user)
+        self.customer_ledger = Ledger.objects.create(entity=self.entity, ledger_code=8001, name="Customer One", is_party=True, createdby=self.user)
         self.bank_ledger = Ledger.objects.create(entity=self.entity, ledger_code=1001, name="Main Bank", createdby=self.user)
         self.cash_ledger = Ledger.objects.create(entity=self.entity, ledger_code=1002, name="Cash In Hand", createdby=self.user)
         self.transfer_bank_ledger = Ledger.objects.create(entity=self.entity, ledger_code=1003, name="Reserve Bank", createdby=self.user)
         self.vendor = account.objects.create(entity=self.entity, ledger=self.vendor_ledger, accountname="Vendor One", createdby=self.user)
+        self.customer = account.objects.create(entity=self.entity, ledger=self.customer_ledger, accountname="Customer One", createdby=self.user)
         self.bank_account = account.objects.create(entity=self.entity, ledger=self.bank_ledger, accountname="Main Bank", createdby=self.user)
         self.cash_account = account.objects.create(entity=self.entity, ledger=self.cash_ledger, accountname="Cash In Hand", createdby=self.user)
         self.reserve_bank_account = account.objects.create(entity=self.entity, ledger=self.transfer_bank_ledger, accountname="Reserve Bank", createdby=self.user)
@@ -116,6 +120,43 @@ class TreasuryPaymentBatchServiceTests(TestCase):
             original_amount=amount,
             gross_amount=amount,
             net_payable_amount=amount,
+            outstanding_amount=amount,
+            is_open=True,
+        )
+
+    def _customer_open_item(self, *, amount=Decimal("900.00"), due_date=date(2026, 9, 20), number="SI/SINV/2026/1001"):
+        doc_no_match = re.search(r"(\d+)$", number)
+        doc_no = int(doc_no_match.group(1)) if doc_no_match else 1001
+        header = SalesInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            customer=self.customer,
+            customer_ledger=self.customer_ledger,
+            customer_name=self.customer.accountname,
+            bill_date=date(2026, 9, 1),
+            posting_date=date(2026, 9, 1),
+            doc_type=SalesInvoiceHeader.DocType.TAX_INVOICE,
+            doc_code="SINV",
+            doc_no=doc_no,
+            invoice_number=number,
+            status=SalesInvoiceHeader.Status.POSTED,
+            grand_total=amount,
+        )
+        return CustomerBillOpenItem.objects.create(
+            header=header,
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            customer=self.customer,
+            customer_ledger=self.customer_ledger,
+            doc_type=header.doc_type,
+            bill_date=header.bill_date,
+            due_date=due_date,
+            invoice_number=header.invoice_number,
+            original_amount=amount,
+            gross_amount=amount,
+            net_receivable_amount=amount,
             outstanding_amount=amount,
             is_open=True,
         )
@@ -268,6 +309,7 @@ class TreasuryPaymentBatchServiceTests(TestCase):
         self._posted_bank_balance(amount=Decimal("5000.00"))
         active_item = self._open_item(amount=Decimal("1180.00"), number="PI/PINV/2026/9001")
         self._open_item(amount=Decimal("300.00"), number="PI/PINV/2026/9002")
+        self._customer_open_item(amount=Decimal("900.00"), due_date=date(2026, 9, 20), number="SI/SINV/2026/9001")
         TreasuryPaymentBatchService.create_from_vendor_open_items(
             entity_id=self.entity.id,
             entityfinid_id=self.entityfin.id,
@@ -289,11 +331,19 @@ class TreasuryPaymentBatchServiceTests(TestCase):
         self.assertEqual(forecast["book_cash_balance"], "5000.00")
         self.assertEqual(forecast["active_batch_outflow"], "1180.00")
         self.assertEqual(forecast["unbatched_ap_due"], "300.00")
+        self.assertEqual(forecast["expected_ar_inflow"], "900.00")
+        self.assertEqual(forecast["payroll_commitment_outflow"], "0.00")
         self.assertEqual(forecast["planned_outflow"], "1480.00")
-        self.assertEqual(forecast["projected_balance"], "3520.00")
+        self.assertEqual(forecast["projected_balance"], "4420.00")
         overdue_bucket = next(row for row in forecast["buckets"] if row["key"] == "overdue")
         self.assertEqual(overdue_bucket["count"], 1)
         self.assertEqual(overdue_bucket["amount"], "300.00")
+        collection_bucket = next(row for row in forecast["collection_buckets"] if row["key"] == "next_7_days")
+        self.assertEqual(collection_bucket["count"], 1)
+        self.assertEqual(collection_bucket["amount"], "900.00")
+        commitment_bucket = next(row for row in forecast["commitment_buckets"] if row["key"] == "next_7_days")
+        self.assertEqual(commitment_bucket["count"], 0)
+        self.assertEqual(commitment_bucket["amount"], "0.00")
         self.assertEqual(forecast["pending_instrument_count"], 1)
 
     @patch("core.entitlements.SubscriptionService.assert_entity_access")

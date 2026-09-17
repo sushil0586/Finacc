@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
 
+from django.apps import apps
 from django.db import transaction
 from django.db.models import Count, Q, Sum
 from django.utils import timezone
@@ -19,6 +20,7 @@ from posting.services.balances import ledger_balance_map
 from payments.services.payment_voucher_service import PaymentVoucherService
 from purchase.models.purchase_ap import VendorBillOpenItem, VendorSettlement
 from purchase.services.purchase_ap_service import PurchaseApService
+from sales.models.sales_ar import CustomerBillOpenItem
 from vouchers.models import VoucherHeader
 from vouchers.services.voucher_service import VoucherService
 from vouchers.services.voucher_settings_service import VoucherSettingsService
@@ -41,6 +43,12 @@ ACTIVE_BATCH_STATUSES = (
     TreasuryPaymentBatch.Status.VALIDATED,
     TreasuryPaymentBatch.Status.APPROVED,
     TreasuryPaymentBatch.Status.EXPORTED,
+)
+ACTIVE_PAYROLL_BATCH_STATUSES = (
+    "DRAFT",
+    "VALIDATED",
+    "APPROVED",
+    "EXPORTED",
 )
 
 
@@ -236,6 +244,20 @@ class TreasuryPaymentBatchService:
             "next_30_days": {"label": "Next 30 Days", "amount": ZERO2, "count": 0},
             "horizon": {"label": f"Next {horizon_days} Days", "amount": ZERO2, "count": 0},
         }
+        collection_buckets = {
+            "overdue": {"label": "Overdue Collections", "amount": ZERO2, "count": 0},
+            "today": {"label": "Collect Today", "amount": ZERO2, "count": 0},
+            "next_7_days": {"label": "Next 7 Days", "amount": ZERO2, "count": 0},
+            "next_30_days": {"label": "Next 30 Days", "amount": ZERO2, "count": 0},
+            "horizon": {"label": f"Next {horizon_days} Days", "amount": ZERO2, "count": 0},
+        }
+        commitment_buckets = {
+            "overdue": {"label": "Overdue Payroll", "amount": ZERO2, "count": 0},
+            "today": {"label": "Payroll Today", "amount": ZERO2, "count": 0},
+            "next_7_days": {"label": "Next 7 Days", "amount": ZERO2, "count": 0},
+            "next_30_days": {"label": "Next 30 Days", "amount": ZERO2, "count": 0},
+            "horizon": {"label": f"Next {horizon_days} Days", "amount": ZERO2, "count": 0},
+        }
         unbatched_due_total = ZERO2
         for item in payable_qs.filter(due_date__lte=horizon_end).only("due_date", "outstanding_amount"):
             amount = cls._q2(item.outstanding_amount)
@@ -253,6 +275,69 @@ class TreasuryPaymentBatchService:
                 key = "horizon"
             buckets[key]["amount"] += amount
             buckets[key]["count"] += 1
+
+        receivable_qs = CustomerBillOpenItem.objects.filter(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            is_open=True,
+            outstanding_amount__gt=ZERO2,
+        )
+        if subentity_id:
+            receivable_qs = receivable_qs.filter(subentity_id=subentity_id)
+
+        expected_inflow_total = ZERO2
+        for item in receivable_qs.filter(due_date__lte=horizon_end).only("due_date", "outstanding_amount"):
+            amount = cls._q2(item.outstanding_amount)
+            due_date = item.due_date or as_of
+            expected_inflow_total += amount
+            if due_date < as_of:
+                key = "overdue"
+            elif due_date == as_of:
+                key = "today"
+            elif due_date <= as_of + timedelta(days=7):
+                key = "next_7_days"
+            elif due_date <= as_of + timedelta(days=30):
+                key = "next_30_days"
+            else:
+                key = "horizon"
+            collection_buckets[key]["amount"] += amount
+            collection_buckets[key]["count"] += 1
+
+        payroll_commitment_total = ZERO2
+        payroll_invalid_batch_count = 0
+        PayrollPaymentBatch = cls._payroll_payment_batch_model()
+        if PayrollPaymentBatch is not None:
+            payroll_qs = PayrollPaymentBatch.objects.filter(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                status__in=ACTIVE_PAYROLL_BATCH_STATUSES,
+                total_amount__gt=ZERO2,
+            )
+            if subentity_id:
+                payroll_qs = payroll_qs.filter(subentity_id=subentity_id)
+
+            for batch in payroll_qs.filter(payout_date__lte=horizon_end).only(
+                "payout_date",
+                "total_amount",
+                "invalid_line_count",
+            ):
+                amount = cls._q2(batch.total_amount)
+                payout_date = batch.payout_date or as_of
+                payroll_commitment_total += amount
+                if batch.invalid_line_count:
+                    payroll_invalid_batch_count += 1
+                if payout_date < as_of:
+                    key = "overdue"
+                elif payout_date == as_of:
+                    key = "today"
+                elif payout_date <= as_of + timedelta(days=7):
+                    key = "next_7_days"
+                elif payout_date <= as_of + timedelta(days=30):
+                    key = "next_30_days"
+                else:
+                    key = "horizon"
+                commitment_buckets[key]["amount"] += amount
+                commitment_buckets[key]["count"] += 1
 
         pending_instrument_qs = TreasuryPaymentInstrument.objects.filter(
             batch__entity_id=entity_id,
@@ -283,13 +368,15 @@ class TreasuryPaymentBatchService:
         movement_total = cls._q2(movement_qs.aggregate(total=Sum("amount"))["total"] or ZERO2)
         movement_count = movement_qs.count()
 
-        planned_outflow = active_batch_total + unbatched_due_total
-        projected_balance = book_balance - planned_outflow
+        planned_outflow = active_batch_total + unbatched_due_total + payroll_commitment_total
+        projected_balance = book_balance + expected_inflow_total - planned_outflow
         exceptions = []
         if not account_positions:
             exceptions.append("No active cash or bank ledger is available for treasury balance projection.")
         if invalid_batch_count:
             exceptions.append(f"{invalid_batch_count} active payment batch needs beneficiary correction before approval/export.")
+        if payroll_invalid_batch_count:
+            exceptions.append(f"{payroll_invalid_batch_count} active payroll payment batch needs employee bank correction before payout.")
         if projected_balance < ZERO2:
             exceptions.append("Projected cash/bank balance is negative within the selected horizon.")
         if pending_instrument_count:
@@ -302,6 +389,8 @@ class TreasuryPaymentBatchService:
             "book_cash_balance": f"{book_balance:.2f}",
             "active_batch_outflow": f"{active_batch_total:.2f}",
             "unbatched_ap_due": f"{unbatched_due_total:.2f}",
+            "expected_ar_inflow": f"{expected_inflow_total:.2f}",
+            "payroll_commitment_outflow": f"{payroll_commitment_total:.2f}",
             "planned_outflow": f"{planned_outflow:.2f}",
             "projected_balance": f"{projected_balance:.2f}",
             "active_batch_count": len(active_batches),
@@ -314,6 +403,14 @@ class TreasuryPaymentBatchService:
             "buckets": [
                 {"key": key, "label": value["label"], "amount": f"{cls._q2(value['amount']):.2f}", "count": value["count"]}
                 for key, value in buckets.items()
+            ],
+            "collection_buckets": [
+                {"key": key, "label": value["label"], "amount": f"{cls._q2(value['amount']):.2f}", "count": value["count"]}
+                for key, value in collection_buckets.items()
+            ],
+            "commitment_buckets": [
+                {"key": key, "label": value["label"], "amount": f"{cls._q2(value['amount']):.2f}", "count": value["count"]}
+                for key, value in commitment_buckets.items()
             ],
             "exceptions": exceptions,
         }
@@ -492,6 +589,15 @@ class TreasuryPaymentBatchService:
     @staticmethod
     def _q2(value) -> Decimal:
         return Decimal(str(value or "0")).quantize(Decimal("0.01"))
+
+    @staticmethod
+    def _payroll_payment_batch_model():
+        if not apps.is_installed("payroll"):
+            return None
+        try:
+            return apps.get_model("payroll", "PayrollPaymentBatch")
+        except LookupError:
+            return None
 
     @staticmethod
     def _normalize_text(value) -> str:
