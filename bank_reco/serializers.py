@@ -268,6 +268,7 @@ class VoucherCreationRequestSerializer(serializers.Serializer):
         choices=[
             "bank_charges",
             "interest_received",
+            "interest_paid",
             "direct_customer_receipt",
             "direct_vendor_payment",
             "bank_transfer",
@@ -276,6 +277,7 @@ class VoucherCreationRequestSerializer(serializers.Serializer):
             "tds_payment",
             "tcs_payment",
             "cheque_bounce",
+            "suspense_entry",
             "reversal_adjustment",
         ]
     )
@@ -286,6 +288,16 @@ class VoucherCreationRequestSerializer(serializers.Serializer):
     narration = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     instrument_no = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=50)
     instrument_date = serializers.DateField(required=False, allow_null=True)
+
+
+class AutoPostingSuggestionRequestSerializer(serializers.Serializer):
+    run_id = serializers.IntegerField()
+    bank_line_ids = serializers.ListField(child=serializers.IntegerField(), required=False, allow_empty=True)
+    bank_charges_account_id = serializers.IntegerField(required=False, allow_null=True)
+    interest_income_account_id = serializers.IntegerField(required=False, allow_null=True)
+    interest_expense_account_id = serializers.IntegerField(required=False, allow_null=True)
+    suspense_account_id = serializers.IntegerField(required=False, allow_null=True)
+    limit = serializers.IntegerField(required=False, min_value=1, max_value=400, default=200)
 
 
 class ExceptionActionRequestSerializer(serializers.Serializer):
@@ -349,6 +361,12 @@ class WorkspaceBankLineSerializer(serializers.Serializer):
     statement_import_code = serializers.CharField(required=False, allow_blank=True)
     is_opening_item = serializers.BooleanField(required=False)
     created_voucher_id = serializers.IntegerField(required=False, allow_null=True)
+    suggested_voucher_kind = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    suggested_counterpart_account_id = serializers.IntegerField(required=False, allow_null=True)
+    suggested_counterpart_account_name = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    suggestion_confidence = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    suggestion_reason = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    suggestion_status = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
 
 class WorkspaceBookLineSerializer(serializers.Serializer):

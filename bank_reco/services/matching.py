@@ -40,6 +40,7 @@ OPEN_BANK_LINE_STATUSES = {
     BankStatementLine.ReconciliationStatus.SUGGESTED,
     BankStatementLine.ReconciliationStatus.CANCELLED,
 }
+AUTO_POSTING_SUGGESTION_KEY = "treasury_auto_posting_suggestion"
 
 
 @dataclass
@@ -80,6 +81,18 @@ def _bank_to_book_drcr(direction: str) -> bool:
 
 def bank_line_signed_amount(line: BankStatementLine) -> Decimal:
     return _statement_amount(line) if _bank_direction(line) == "credit" else (_statement_amount(line) * Decimal("-1"))
+
+
+def _bank_line_suggestion_fields(line: BankStatementLine) -> dict:
+    suggestion = (line.metadata or {}).get(AUTO_POSTING_SUGGESTION_KEY) or {}
+    return {
+        "suggested_voucher_kind": suggestion.get("voucher_kind") or "",
+        "suggested_counterpart_account_id": suggestion.get("counterpart_account_id"),
+        "suggested_counterpart_account_name": suggestion.get("counterpart_account_name") or "",
+        "suggestion_confidence": suggestion.get("confidence_score") or "",
+        "suggestion_reason": suggestion.get("reason") or "",
+        "suggestion_status": suggestion.get("status") or "",
+    }
 
 
 def _journal_descriptor(line: JournalLine) -> str:
@@ -264,6 +277,7 @@ def build_unmatched_bank_rows_from_queryset(*, bank_lines, current_from, limit: 
         "statement_import__import_code",
         "statement_import__statement_to",
         "created_voucher_id",
+        "metadata",
     )
     for line in row_queryset[offset:stop]:
         rows.append(
@@ -289,6 +303,7 @@ def build_unmatched_bank_rows_from_queryset(*, bank_lines, current_from, limit: 
                     and line.statement_import.statement_to < current_from
                 ),
                 "created_voucher_id": line.created_voucher_id,
+                **_bank_line_suggestion_fields(line),
             }
         )
     return rows
@@ -977,6 +992,7 @@ def build_workspace_payload(
             "statement_import_code": statement_import.import_code,
             "is_opening_item": False,
             "created_voucher_id": line.created_voucher_id,
+            **_bank_line_suggestion_fields(line),
         }
         for line in unmatched_bank_queryset[:200]
     ])

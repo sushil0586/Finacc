@@ -2,6 +2,7 @@ from django.urls import path
 
 from .views import (
     BankRecoAuditTrailReportAPIView,
+    BankRecoAutoPostingSuggestionAPIView,
     BankRecoBrsReportAPIView,
     BankRecoCreateVoucherFromBankLineAPIView,
     BankRecoExceptionActionAPIView,
@@ -43,6 +44,7 @@ urlpatterns = [
     path("group-match/", BankRecoGroupMatchAPIView.as_view(), name="bank-reco-group-match"),
     path("unmatch/", BankRecoUnmatchAPIView.as_view(), name="bank-reco-unmatch"),
     path("create-voucher-from-bank-line/", BankRecoCreateVoucherFromBankLineAPIView.as_view(), name="bank-reco-create-voucher-from-bank-line"),
+    path("auto-posting-suggestions/", BankRecoAutoPostingSuggestionAPIView.as_view(), name="bank-reco-auto-posting-suggestions"),
     path("exception-action/", BankRecoExceptionActionAPIView.as_view(), name="bank-reco-exception-action"),
     path("runs/<int:run_id>/action/", BankRecoRunActionAPIView.as_view(), name="bank-reco-run-action"),
     path("reports/unmatched-bank/", BankRecoUnmatchedBankReportAPIView.as_view(), name="bank-reco-report-unmatched-bank"),

@@ -14,6 +14,7 @@ from subscriptions.models import UserEntityAccess
 from .models import BankReconciliationMatch, BankReconciliationRun, BankStatementImport
 from .serializers import (
     AutoMatchResponseSerializer,
+    AutoPostingSuggestionRequestSerializer,
     AuditTrailRowSerializer,
     BankRecoRunReportScopeSerializer,
     BankRecoScopeSerializer,
@@ -38,6 +39,7 @@ from .serializers import (
     WorkspaceBookLineSerializer,
     resolve_scope_models,
 )
+from .services.auto_posting import suggest_auto_posting_rules
 from .services.imports import (
     archive_statement_import,
     build_workspace_summary,
@@ -557,6 +559,29 @@ class BankRecoCreateVoucherFromBankLineAPIView(BankRecoBaseAPIView):
             audit_context=self.build_audit_context(request),
         )
         return Response(result, status=status.HTTP_201_CREATED)
+
+
+class BankRecoAutoPostingSuggestionAPIView(BankRecoBaseAPIView):
+    def post(self, request):
+        serializer = AutoPostingSuggestionRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
+        run = self.get_scoped_run(request, payload["run_id"])
+        self.ensure_run_mutable(run)
+        result = suggest_auto_posting_rules(
+            run=run,
+            actor=request.user,
+            bank_line_ids=payload.get("bank_line_ids") or None,
+            mappings={
+                "bank_charges_account_id": payload.get("bank_charges_account_id"),
+                "interest_income_account_id": payload.get("interest_income_account_id"),
+                "interest_expense_account_id": payload.get("interest_expense_account_id"),
+                "suspense_account_id": payload.get("suspense_account_id"),
+            },
+            limit=payload.get("limit") or 200,
+            audit_context=self.build_audit_context(request),
+        )
+        return Response(result)
 
 
 class BankRecoExceptionActionAPIView(BankRecoBaseAPIView):

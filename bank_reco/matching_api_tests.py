@@ -752,6 +752,88 @@ class BankRecoMatchingAPITests(APITestCase):
         line.refresh_from_db()
         self.assertEqual(line.reconciliation_status, BankStatementLine.ReconciliationStatus.CONFIRMED)
 
+    def test_auto_posting_suggestions_detect_bank_charges_and_interest_without_posting(self):
+        statement_import, run = self._create_import_and_run(
+            [
+                "2026-04-15,Bank charges monthly,BC001,,120.00,0,3480",
+                "2026-04-16,Interest credit,INT001,,0,75.00,3555",
+            ],
+            closing="3555.00",
+        )
+        response = self.client.post(
+            reverse("bank_reco_api:bank-reco-auto-posting-suggestions"),
+            {
+                "run_id": run.id,
+                "bank_charges_account_id": self.bank_charges_account.id,
+                "interest_income_account_id": self.interest_income_account.id,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.json())
+        payload = response.json()
+        self.assertEqual(payload["suggested_count"], 2)
+        self.assertTrue(payload["review_required"])
+        self.assertFalse(payload["direct_post_allowed"])
+        suggestions_by_kind = {row["voucher_kind"]: row for row in payload["suggestions"]}
+        self.assertEqual(suggestions_by_kind["bank_charges"]["counterpart_account_id"], self.bank_charges_account.id)
+        self.assertEqual(suggestions_by_kind["interest_received"]["counterpart_account_id"], self.interest_income_account.id)
+
+        for line in statement_import.lines.order_by("line_no"):
+            line.refresh_from_db()
+            self.assertEqual(line.reconciliation_status, BankStatementLine.ReconciliationStatus.UNMATCHED)
+            self.assertIsNone(line.created_voucher_id)
+            self.assertIn("treasury_auto_posting_suggestion", line.metadata)
+
+        self.assertEqual(
+            BankReconciliationAuditLog.objects.filter(run=run, action="auto_posting_suggestion_created").count(),
+            2,
+        )
+        workspace = self.client.get(
+            reverse("bank_reco_api:bank-reco-workspace"),
+            {"entity": self.entity.id, "entityfinid": self.entityfin.id, "run_id": run.id},
+        )
+        self.assertEqual(workspace.status_code, 200, workspace.json())
+        workspace_kinds = {row["suggested_voucher_kind"] for row in workspace.json()["unmatched_bank_lines"]}
+        self.assertIn("bank_charges", workspace_kinds)
+        self.assertIn("interest_received", workspace_kinds)
+
+    def test_auto_posting_suggestions_hold_unknown_line_as_suspense_when_configured(self):
+        statement_import, run = self._create_import_and_run(["2026-04-17,Unclear debit,X001,,222.00,0,3333"], closing="3333.00")
+        line = statement_import.lines.first()
+        response = self.client.post(
+            reverse("bank_reco_api:bank-reco-auto-posting-suggestions"),
+            {
+                "run_id": run.id,
+                "bank_line_ids": [line.id],
+                "suspense_account_id": self.transfer_account.id,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.json())
+        payload = response.json()
+        self.assertEqual(payload["suggested_count"], 1)
+        self.assertEqual(payload["suggestions"][0]["voucher_kind"], "suspense_entry")
+        self.assertEqual(payload["suggestions"][0]["counterpart_account_id"], self.transfer_account.id)
+        line.refresh_from_db()
+        self.assertEqual(line.reconciliation_status, BankStatementLine.ReconciliationStatus.UNMATCHED)
+        self.assertIsNone(line.created_voucher_id)
+
+    def test_auto_posting_suggestions_reject_cross_entity_account(self):
+        statement_import, run = self._create_import_and_run(["2026-04-15,Bank charges,BC001,,120.00,0,3480"], closing="3480.00")
+        response = self.client.post(
+            reverse("bank_reco_api:bank-reco-auto-posting-suggestions"),
+            {
+                "run_id": run.id,
+                "bank_charges_account_id": self.foreign_account.id,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400, response.json())
+        self.assertIn("bank_charges_account_id", response.json())
+        line = statement_import.lines.first()
+        line.refresh_from_db()
+        self.assertNotIn("treasury_auto_posting_suggestion", line.metadata)
+
     def test_direct_customer_receipt_voucher_creation(self):
         statement_import, run = self._create_import_and_run(["2026-04-17,Direct customer receipt,RC001,,0,2500,6055"], closing="6055.00")
         line = statement_import.lines.first()

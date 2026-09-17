@@ -29,6 +29,7 @@ from .matching import (
 VOUCHER_KIND_LABELS = {
     "bank_charges": "Bank charges",
     "interest_received": "Interest received",
+    "interest_paid": "Interest paid",
     "direct_customer_receipt": "Direct customer receipt",
     "direct_vendor_payment": "Direct vendor payment",
     "bank_transfer": "Bank transfer",
@@ -37,6 +38,7 @@ VOUCHER_KIND_LABELS = {
     "tds_payment": "TDS payment",
     "tcs_payment": "TCS payment",
     "cheque_bounce": "Cheque bounce",
+    "suspense_entry": "Suspense entry",
     "reversal_adjustment": "Reversal adjustment",
 }
 
