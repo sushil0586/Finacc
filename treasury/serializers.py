@@ -424,5 +424,8 @@ class TreasuryPaymentBatchDetailSerializer(TreasuryPaymentBatchListSerializer):
 class TreasuryVendorPayableCandidateSerializer(VendorBillOpenItemSerializer):
     is_selected_in_active_batch = serializers.SerializerMethodField()
 
+    class Meta(VendorBillOpenItemSerializer.Meta):
+        fields = VendorBillOpenItemSerializer.Meta.fields + ["is_selected_in_active_batch"]
+
     def get_is_selected_in_active_batch(self, obj):
         return False

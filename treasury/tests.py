@@ -23,6 +23,7 @@ from purchase.services.purchase_settings_service import PurchaseSettingsService
 from vouchers.models import VoucherHeader, VoucherLine
 
 from .models import TreasuryCashMovement, TreasuryChequeBook, TreasuryChequeLeaf, TreasuryPaymentBatch, TreasuryPaymentBatchLine, TreasuryPaymentInstrument
+from .serializers import TreasuryVendorPayableCandidateSerializer
 from .services import TreasuryPaymentBatchService
 
 
@@ -264,6 +265,21 @@ class TreasuryPaymentBatchServiceTests(TestCase):
         settlement = VendorSettlement.objects.get(pk=handoff["settlement_ids"][0])
         self.assertEqual(settlement.status, VendorSettlement.Status.POSTED)
         self.assertEqual(settlement.reference_no, "UTR123")
+
+    def test_vendor_payable_candidates_serialize_active_batch_flag(self):
+        self._open_item(amount=Decimal("875.00"), number="PI/PINV/2026/1099")
+
+        candidates = TreasuryPaymentBatchService.list_vendor_payable_candidates(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+        )
+
+        data = TreasuryVendorPayableCandidateSerializer(candidates, many=True).data
+
+        self.assertEqual(len(data), 1)
+        self.assertIn("is_selected_in_active_batch", data[0])
+        self.assertFalse(data[0]["is_selected_in_active_batch"])
 
     def test_vendor_payable_batch_can_mark_paid_through_payment_voucher(self):
         item = self._open_item(amount=Decimal("590.00"))
