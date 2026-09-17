@@ -1,6 +1,6 @@
 # Accounting Truth Matrix
 
-Status: Phase 0 baseline in progress
+Status: Phase 0 baseline complete; staging launch gates in progress
 
 Last updated: 16 September 2026
 
@@ -290,6 +290,7 @@ than supported behavior.
 | Dataset A AR/AP allocation proof | Complete locally | Real sales/purchase headers, open items, and posted settlement lines prove pre-settlement exposure, full settlement, and zero AR/AP control-ledger balances |
 | Dataset A GST register and control-ledger proof | Complete locally | GSTR-1 output 1,800.00, eligible purchase-register input 720.00, and net GST liability 1,080.00 reconcile to the four GST control ledgers |
 | Dataset A launch cross-report gate | Complete locally | `ServiceEntityAccountingTruthMatrixTests.test_dataset_a_launch_gate_source_to_report_consistency` ties posted source status, Daybook, Trial Balance, P&L, Balance Sheet, AR, AP, GSTR-1, purchase register, and GST control ledgers to the same oracle. Focused gate passed locally on 16 September 2026. |
+| Core financial staging reconciliation gates | Complete on staging | `financial.live.spec.ts` now honors `PLAYWRIGHT_BACKEND_URL` and samples a real Trial Balance ledger for Ledger Book checks instead of the old fixed local ledger id. Staging Chromium passed `financial family totals reconcile across core live reports` and `core financial live report APIs reconcile row totals and sampled book rows` 2/2 on 16 September 2026 against `https://accerio.in` using entity 3 / FY 3 / subentity 3. |
 | Dataset A Playwright presentation contract | Complete locally | `tests/p1/accounting-truth-matrix.p1.spec.ts` in `finacc-ui-tests` renders the fixed Dataset A oracle through Daybook, Trial Balance, Ledger Summary, P&L, and Balance Sheet; 6/6 setup/browser projects passed across Chromium, Firefox, and WebKit |
 | Existing seeded financial browser regression | Complete locally | `tests/p1/financial-data-integrity-seeded.p1.spec.ts` passed 13/13 on Chromium after aligning the closing-balance assertion with the UI's normalized balance format |
 | Dataset A live source-document browser workflow | Complete locally | Real opening-balance masters, cash, bank, journal, sales-to-receipt, purchase-to-payment, capital introduction, named-ledger accrual/reversal, and bank-to-cash contra flows pass. |
@@ -321,6 +322,7 @@ than supported behavior.
 
 | Date | Change | Result |
 | --- | --- | --- |
+| 16 September 2026 | Made the live financial report certificate stage-addressable and reran the core reconciliation gates on staging. | `financial.live.spec.ts` now resolves API calls through `PLAYWRIGHT_BACKEND_URL` and chooses a live Trial Balance ledger for Ledger Book sampling. The two focused Chromium staging gates passed 2/2, covering Trial Balance, Ledger Summary, Trading Account, P&L, Balance Sheet, Daybook, Cashbook, and Ledger Book row/totals integrity. |
 | 16 September 2026 | Added launch-level cross-report consistency gates for Dataset A and Dataset B. | Dataset A now ties posted source status, Daybook, Trial Balance, P&L, Balance Sheet, AR, AP, GSTR-1, purchase register, and GST control ledgers to one service oracle. Dataset B now ties Daybook, Trial Balance, FIFO inventory valuation, Trading Account, P&L, Balance Sheet, purchase register, GSTR-1, GST control ledgers, and zero party ledgers to one trading oracle. Focused backend gate passed 2/2 locally. |
 | 16 September 2026 | Reran the asset-family direct export certification gate after backend deployment. | Stage now contains the sanitized worksheet-title code at commit `f066d3e2`. The focused Chromium staging run passed 1/1, certifying fixed asset register, depreciation schedule, asset location/custodian, and asset events outputs across Excel, CSV, PDF, and print. |
 | 16 September 2026 | Added the asset-family direct export certification gate and fixed the first export blocker. | `assets.live.spec.ts` now validates fixed asset register, depreciation schedule, asset location/custodian, and asset events outputs across Excel, CSV, PDF, and print. The first staging Chromium run found a real 500 on location/custodian Excel; local backend regression passed after sanitizing invalid Excel worksheet-title characters. The later rerun row records the completed staging pass. |

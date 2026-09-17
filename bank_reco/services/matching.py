@@ -665,6 +665,10 @@ def _create_match(
             "request_context": audit_context or {},
         },
     )
+    if status_value in FINAL_MATCH_STATUSES:
+        from treasury.reconciliation import link_treasury_instruments_for_match
+
+        link_treasury_instruments_for_match(match)
     return match
 
 
@@ -846,6 +850,9 @@ def unmatch(*, match: BankReconciliationMatch, actor=None, notes: str = "", audi
             "request_context": audit_context or {},
         },
     )
+    from treasury.reconciliation import clear_treasury_instrument_links_for_match
+
+    clear_treasury_instrument_links_for_match(match)
     return match
 
 

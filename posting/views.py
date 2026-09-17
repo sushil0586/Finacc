@@ -46,18 +46,25 @@ class _BaseStaticAccountSettingsAPIView(ScopedEntitlementMixin, APIView):
     subscription_feature_code = SubscriptionLimitCodes.FEATURE_FINANCIAL
     subscription_access_mode = SubscriptionService.ACCESS_MODE_SETUP
 
-    def _enforce_access(self, request, *, entity_id: int, permission_code: str):
+    def _enforce_any_access(self, request, *, entity_id: int, permission_codes: tuple[str, ...]):
         self.enforce_scope(request, entity_id=entity_id)
-        permission_codes = EffectivePermissionService.permission_codes_for_user(request.user, entity_id)
-        if permission_code not in permission_codes:
-            raise PermissionDenied(f"Missing permission: {permission_code}")
+        user_permission_codes = set(EffectivePermissionService.permission_codes_for_user(request.user, entity_id))
+        if not any(permission_code in user_permission_codes for permission_code in permission_codes):
+            raise PermissionDenied(f"Missing permission: one of {', '.join(permission_codes)}")
+
+    def _enforce_access(self, request, *, entity_id: int, permission_code: str):
+        self._enforce_any_access(request, entity_id=entity_id, permission_codes=(permission_code,))
 
 
 class StaticAccountSettingsView(_BaseStaticAccountSettingsAPIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, entity_id: int):
-        self._enforce_access(request, entity_id=entity_id, permission_code="posting.static_account_settings.view")
+        self._enforce_any_access(
+            request,
+            entity_id=entity_id,
+            permission_codes=("posting.static_account_settings.view", "treasury.setup.view"),
+        )
         sub_entity_id = _parse_int(request.query_params.get("sub_entity_id"), "sub_entity_id")
         effective_on = _parse_date(request.query_params.get("effective_on"))
 
@@ -166,7 +173,11 @@ class BankAccountMappingDetailView(_BaseStaticAccountSettingsAPIView):
     permission_classes = [IsAuthenticated]
 
     def put(self, request, entity_id: int, bank_account_id: int):
-        self._enforce_access(request, entity_id=entity_id, permission_code="posting.static_account_settings.update")
+        self._enforce_any_access(
+            request,
+            entity_id=entity_id,
+            permission_codes=("posting.static_account_settings.update", "treasury.setup.update"),
+        )
         serializer = BankAccountMappingUpsertSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         row = EntityBankAccountMappingService.update_mapping(

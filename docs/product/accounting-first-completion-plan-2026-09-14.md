@@ -1,8 +1,8 @@
 # Accounting-First Product Completion Plan
 
-Status: Phase 0 in progress
+Status: Phase 0 baseline complete; Phase 1 staging launch gates in progress
 
-Last updated: 14 September 2026
+Last updated: 16 September 2026
 
 Parent roadmap: [Product Expansion Priority Roadmap](product-expansion-priority-roadmap-2026-09-14.md)
 
@@ -172,8 +172,8 @@ A phase is complete only when:
 
 | Phase | Status | Current action | Blocking decision |
 | --- | --- | --- | --- |
-| 0. Scope and truth matrix | Local complete; staging pending | Dataset A, all six Dataset B variants, and Dataset C manufacturing/assets now pass fixed local oracles. Repeat decisive evidence on staging. | Staging scope and execution window |
-| 1. Core accounting and close | In progress | Certify the completed truth matrix on staging, then run close/reopen and repeated launch gates | Phase 0 staging evidence |
+| 0. Scope and truth matrix | Baseline complete; staging evidence in progress | Dataset A, all six Dataset B variants, and Dataset C manufacturing/assets pass fixed local oracles. Core financial/report reconciliation now has passing staging evidence. | Remaining output/accessibility/restore evidence |
+| 1. Core accounting and close | In progress | Continue staging launch gates around output/accessibility, repeated runs, and backup/restore rehearsal after the core report reconciliation pass | Remaining operational launch evidence |
 | 2. Banking and treasury | Discovery allowed | Reuse current bank-reconciliation foundation; inventory missing payment/treasury workflows | Phase 1 accounting gate |
 | 3. Advanced GST | Discovery allowed | Reconcile current report/provider implementation against the required lifecycle | Stable accounting and banking controls |
 | 4. Procurement | Planned | Charter and domain design only | Phases 1-2 launch ready |
@@ -184,6 +184,7 @@ A phase is complete only when:
 
 | Date | Change | Result |
 | --- | --- | --- |
+| 16 September 2026 | Added stage-addressable core financial reconciliation evidence to Phase 0/1. | The financial live spec now honors `PLAYWRIGHT_BACKEND_URL` and samples live Trial Balance ledger ids for Ledger Book checks. Two focused Chromium staging gates passed 2/2 against `https://accerio.in`, reconciling Trial Balance, Ledger Summary, Trading Account, P&L, Balance Sheet, Daybook, Cashbook, and Ledger Book totals/rows. |
 | 14 September 2026 | Created the accounting-first completion program and began Phase 0. | Core accounting is the active workstream; HRMS/payroll completion is paused; banking and GST discovery may proceed. |
 | 14 September 2026 | Defined the service-entity accounting oracle and ran the focused accounting baseline. | 250/250 local tests passed; dedicated source-to-report reconciliation automation is next. |
 | 14 September 2026 | Implemented Dataset A as an isolated cross-report integration test and reran the full focused baseline. | 251/251 passed; lifecycle, subledger, and GST extensions are the next Phase 0 slice. |
