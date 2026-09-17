@@ -219,6 +219,115 @@ class TreasuryPaymentBatchServiceTests(TestCase):
             created_by=self.user,
         )
 
+    def _posted_bank_balance(self, *, amount=Decimal("5000.00"), drcr=True, reference_no="BANKBAL"):
+        batch = PostingBatch.objects.create(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.JOURNAL,
+            txn_id=9901,
+            voucher_no=f"JV-{reference_no}",
+            created_by=self.user,
+        )
+        entry = Entry.objects.create(
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.JOURNAL,
+            txn_id=9901,
+            voucher_no=f"JV-{reference_no}",
+            voucher_date=date(2026, 9, 16),
+            posting_date=date(2026, 9, 16),
+            status=EntryStatus.POSTED,
+            posted_at=timezone.now(),
+            posted_by=self.user,
+            posting_batch=batch,
+            narration=f"Treasury forecast seed {reference_no}",
+            created_by=self.user,
+        )
+        return JournalLine.objects.create(
+            entry=entry,
+            posting_batch=batch,
+            entity=self.entity,
+            entityfin=self.entityfin,
+            subentity=self.subentity,
+            txn_type=TxnType.JOURNAL,
+            txn_id=9901,
+            voucher_no=f"JV-{reference_no}",
+            account=self.bank_account,
+            ledger=self.bank_account.ledger,
+            drcr=drcr,
+            amount=amount,
+            description=f"Treasury forecast seed {reference_no}",
+            posting_date=date(2026, 9, 16),
+            posted_at=timezone.now(),
+            created_by=self.user,
+        )
+
+    def test_cash_forecast_summarizes_bank_balance_batches_and_unbatched_ap(self):
+        self._posted_bank_balance(amount=Decimal("5000.00"))
+        active_item = self._open_item(amount=Decimal("1180.00"), number="PI/PINV/2026/9001")
+        self._open_item(amount=Decimal("300.00"), number="PI/PINV/2026/9002")
+        TreasuryPaymentBatchService.create_from_vendor_open_items(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            open_item_ids=[active_item.id],
+            paid_from_id=self.bank_account.id,
+            payment_mode_id=self.payment_mode.id,
+            user_id=self.user.id,
+        )
+
+        forecast = TreasuryPaymentBatchService.build_cash_forecast(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            as_of=date(2026, 9, 16),
+            horizon_days=30,
+        )
+
+        self.assertEqual(forecast["book_cash_balance"], "5000.00")
+        self.assertEqual(forecast["active_batch_outflow"], "1180.00")
+        self.assertEqual(forecast["unbatched_ap_due"], "300.00")
+        self.assertEqual(forecast["planned_outflow"], "1480.00")
+        self.assertEqual(forecast["projected_balance"], "3520.00")
+        overdue_bucket = next(row for row in forecast["buckets"] if row["key"] == "overdue")
+        self.assertEqual(overdue_bucket["count"], 1)
+        self.assertEqual(overdue_bucket["amount"], "300.00")
+        self.assertEqual(forecast["pending_instrument_count"], 1)
+
+    @patch("core.entitlements.SubscriptionService.assert_entity_access")
+    @patch("core.entitlements.EffectivePermissionService.has_data_scope_access", return_value=True)
+    @patch("core.entitlements.EffectivePermissionService.has_scope_access", return_value=True)
+    @patch("treasury.views.EffectivePermissionService.permission_codes_for_user", return_value={"treasury.payment_batch.view"})
+    @patch("treasury.views.EffectivePermissionService.entity_for_user")
+    def test_cash_forecast_api_uses_treasury_scope_and_permissions(
+        self,
+        mock_entity_for_user,
+        mock_permission_codes,
+        mock_scope_access,
+        mock_data_scope_access,
+        mock_subscription_access,
+    ):
+        mock_entity_for_user.return_value = self.entity
+        self._posted_bank_balance(amount=Decimal("2500.00"))
+
+        response = self.client.get(
+            "/api/treasury/cash-forecast/",
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "as_of": "2026-09-16",
+                "horizon_days": "45",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["book_cash_balance"], "2500.00")
+        self.assertEqual(response.data["horizon_days"], 45)
+        self.assertIn("Main Bank", {row["account_name"] for row in response.data["accounts"]})
+
     def test_vendor_payable_batch_validates_approves_exports_and_marks_paid(self):
         item = self._open_item()
 

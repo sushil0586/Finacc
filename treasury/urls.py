@@ -3,6 +3,7 @@ from django.urls import path
 from .views import (
     TreasuryChequeBookListCreateAPIView,
     TreasuryChequeLeafListAPIView,
+    TreasuryCashForecastAPIView,
     TreasuryCashMovementCancelAPIView,
     TreasuryCashMovementListCreateAPIView,
     TreasuryPaymentBatchApproveAPIView,
@@ -21,6 +22,7 @@ from .views import (
 app_name = "treasury"
 
 urlpatterns = [
+    path("cash-forecast/", TreasuryCashForecastAPIView.as_view(), name="cash-forecast"),
     path("cheque-books/", TreasuryChequeBookListCreateAPIView.as_view(), name="cheque-book-list-create"),
     path("cheque-leaves/", TreasuryChequeLeafListAPIView.as_view(), name="cheque-leaf-list"),
     path("cash-movements/", TreasuryCashMovementListCreateAPIView.as_view(), name="cash-movement-list-create"),

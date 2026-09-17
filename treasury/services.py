@@ -5,6 +5,7 @@ import io
 import re
 import uuid
 from dataclasses import dataclass
+from datetime import timedelta
 from decimal import Decimal
 
 from django.db import transaction
@@ -14,6 +15,7 @@ from django.utils import timezone
 from numbering.seeding import NumberingSeedService
 from financial.models import account
 from payments.models import PaymentVoucherHeader
+from posting.services.balances import ledger_balance_map
 from payments.services.payment_voucher_service import PaymentVoucherService
 from purchase.models.purchase_ap import VendorBillOpenItem, VendorSettlement
 from purchase.services.purchase_ap_service import PurchaseApService
@@ -140,6 +142,181 @@ class TreasuryPaymentBatchService:
             "default_reason": "Instrument reissued.",
         },
     }
+
+    @classmethod
+    def build_cash_forecast(
+        cls,
+        *,
+        entity_id: int,
+        entityfinid_id: int,
+        subentity_id: int | None = None,
+        as_of=None,
+        horizon_days: int = 30,
+    ) -> dict:
+        as_of = as_of or timezone.localdate()
+        horizon_days = max(1, min(int(horizon_days or 30), 180))
+        horizon_end = as_of + timedelta(days=horizon_days)
+        entityfin = None
+        try:
+            from entity.models import EntityFinancialYear
+
+            entityfin = EntityFinancialYear.objects.get(pk=entityfinid_id, entity_id=entity_id)
+        except Exception:
+            entityfin = None
+
+        cash_accounts = list(
+            account.objects.select_related("ledger")
+            .filter(entity_id=entity_id, isactive=True)
+            .filter(
+                Q(accountname__icontains="bank")
+                | Q(accountname__icontains="cash")
+                | Q(ledger__name__icontains="bank")
+                | Q(ledger__name__icontains="cash")
+            )
+            .exclude(Q(accountname__icontains="charge") | Q(accountname__icontains="interest") | Q(ledger__name__icontains="charge") | Q(ledger__name__icontains="interest"))
+            .exclude(ledger_id__isnull=True)
+            .order_by("accountname", "id")
+        )
+        ledger_ids = [item.ledger_id for item in cash_accounts if item.ledger_id]
+        balances = {}
+        if entityfin is not None and ledger_ids:
+            balances = ledger_balance_map(
+                entity_id=entity_id,
+                fin_start=entityfin.finstartyear,
+                fin_end=min(as_of, entityfin.finendyear.date() if hasattr(entityfin.finendyear, "date") else entityfin.finendyear),
+                ledger_ids=ledger_ids,
+            )
+
+        account_positions = []
+        book_balance = ZERO2
+        for item in cash_accounts:
+            balance = cls._q2(balances.get(item.ledger_id, {}).get("balance", ZERO2))
+            book_balance += balance
+            account_positions.append(
+                {
+                    "account_id": item.id,
+                    "account_name": item.accountname,
+                    "ledger_id": item.ledger_id,
+                    "ledger_name": getattr(item.ledger, "name", "") if item.ledger else "",
+                    "balance": f"{balance:.2f}",
+                    "direction": "DR" if balance >= ZERO2 else "CR",
+                }
+            )
+
+        batch_qs = TreasuryPaymentBatch.objects.filter(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            status__in=ACTIVE_BATCH_STATUSES,
+        )
+        if subentity_id:
+            batch_qs = batch_qs.filter(subentity_id=subentity_id)
+        active_batches = list(batch_qs.order_by("payout_date", "created_at"))
+        active_batch_total = sum((cls._q2(batch.total_amount) for batch in active_batches), ZERO2)
+        invalid_batch_count = sum(1 for batch in active_batches if batch.invalid_line_count)
+
+        active_vendor_item_ids = set(
+            TreasuryPaymentBatchLine.objects.filter(
+                batch__in=active_batches,
+                vendor_open_item_id__isnull=False,
+            ).values_list("vendor_open_item_id", flat=True)
+        )
+        payable_qs = VendorBillOpenItem.objects.filter(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            is_open=True,
+            outstanding_amount__gt=ZERO2,
+        ).exclude(pk__in=active_vendor_item_ids)
+        if subentity_id:
+            payable_qs = payable_qs.filter(subentity_id=subentity_id)
+
+        buckets = {
+            "overdue": {"label": "Overdue", "amount": ZERO2, "count": 0},
+            "today": {"label": "Due Today", "amount": ZERO2, "count": 0},
+            "next_7_days": {"label": "Next 7 Days", "amount": ZERO2, "count": 0},
+            "next_30_days": {"label": "Next 30 Days", "amount": ZERO2, "count": 0},
+            "horizon": {"label": f"Next {horizon_days} Days", "amount": ZERO2, "count": 0},
+        }
+        unbatched_due_total = ZERO2
+        for item in payable_qs.filter(due_date__lte=horizon_end).only("due_date", "outstanding_amount"):
+            amount = cls._q2(item.outstanding_amount)
+            due_date = item.due_date or as_of
+            unbatched_due_total += amount
+            if due_date < as_of:
+                key = "overdue"
+            elif due_date == as_of:
+                key = "today"
+            elif due_date <= as_of + timedelta(days=7):
+                key = "next_7_days"
+            elif due_date <= as_of + timedelta(days=30):
+                key = "next_30_days"
+            else:
+                key = "horizon"
+            buckets[key]["amount"] += amount
+            buckets[key]["count"] += 1
+
+        pending_instrument_qs = TreasuryPaymentInstrument.objects.filter(
+            batch__entity_id=entity_id,
+            batch__entityfinid_id=entityfinid_id,
+            status__in=[
+                TreasuryPaymentInstrument.Status.PREPARED,
+                TreasuryPaymentInstrument.Status.EXPORTED,
+                TreasuryPaymentInstrument.Status.SENT_TO_BANK,
+                TreasuryPaymentInstrument.Status.FAILED,
+                TreasuryPaymentInstrument.Status.BOUNCED,
+                TreasuryPaymentInstrument.Status.STALE,
+            ],
+        )
+        if subentity_id:
+            pending_instrument_qs = pending_instrument_qs.filter(batch__subentity_id=subentity_id)
+        pending_instrument_total = cls._q2(pending_instrument_qs.aggregate(total=Sum("amount"))["total"] or ZERO2)
+        pending_instrument_count = pending_instrument_qs.count()
+
+        movement_qs = TreasuryCashMovement.objects.filter(
+            entity_id=entity_id,
+            entityfinid_id=entityfinid_id,
+            movement_date__gte=as_of - timedelta(days=30),
+            movement_date__lte=as_of,
+            status=TreasuryCashMovement.Status.POSTED,
+        )
+        if subentity_id:
+            movement_qs = movement_qs.filter(subentity_id=subentity_id)
+        movement_total = cls._q2(movement_qs.aggregate(total=Sum("amount"))["total"] or ZERO2)
+        movement_count = movement_qs.count()
+
+        planned_outflow = active_batch_total + unbatched_due_total
+        projected_balance = book_balance - planned_outflow
+        exceptions = []
+        if not account_positions:
+            exceptions.append("No active cash or bank ledger is available for treasury balance projection.")
+        if invalid_batch_count:
+            exceptions.append(f"{invalid_batch_count} active payment batch needs beneficiary correction before approval/export.")
+        if projected_balance < ZERO2:
+            exceptions.append("Projected cash/bank balance is negative within the selected horizon.")
+        if pending_instrument_count:
+            exceptions.append(f"{pending_instrument_count} payment instrument is waiting for bank outcome or retry.")
+
+        return {
+            "as_of": as_of.isoformat(),
+            "horizon_days": horizon_days,
+            "horizon_end": horizon_end.isoformat(),
+            "book_cash_balance": f"{book_balance:.2f}",
+            "active_batch_outflow": f"{active_batch_total:.2f}",
+            "unbatched_ap_due": f"{unbatched_due_total:.2f}",
+            "planned_outflow": f"{planned_outflow:.2f}",
+            "projected_balance": f"{projected_balance:.2f}",
+            "active_batch_count": len(active_batches),
+            "invalid_batch_count": invalid_batch_count,
+            "pending_instrument_count": pending_instrument_count,
+            "pending_instrument_amount": f"{pending_instrument_total:.2f}",
+            "recent_cash_movement_count": movement_count,
+            "recent_cash_movement_amount": f"{movement_total:.2f}",
+            "accounts": account_positions,
+            "buckets": [
+                {"key": key, "label": value["label"], "amount": f"{cls._q2(value['amount']):.2f}", "count": value["count"]}
+                for key, value in buckets.items()
+            ],
+            "exceptions": exceptions,
+        }
 
     @classmethod
     def _generate_leaf_numbers(cls, *, start_leaf: str, end_leaf: str) -> list[str]:

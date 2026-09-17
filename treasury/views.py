@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 from django.db import models
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
@@ -55,6 +57,15 @@ def _parse_int(value, label: str, *, required: bool = True):
     except (TypeError, ValueError):
         raise ValidationError({"detail": f"{label} must be an integer."})
     return parsed or None
+
+
+def _parse_date(value, label: str):
+    if value in (None, "", "null"):
+        return None
+    try:
+        return date.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        raise ValidationError({"detail": f"{label} must be a valid YYYY-MM-DD date."})
 
 
 class TreasuryPermissionMixin:
@@ -156,6 +167,30 @@ class TreasuryVendorPayableCandidateListAPIView(ScopedEntitlementMixin, Treasury
             subentity_id=subentity_id,
         )
         return Response(TreasuryVendorPayableCandidateSerializer(qs, many=True).data)
+
+
+class TreasuryCashForecastAPIView(ScopedEntitlementMixin, TreasuryPermissionMixin, APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    subscription_feature_code = SubscriptionLimitCodes.FEATURE_FINANCIAL
+    subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
+
+    def get(self, request):
+        entity_id = _parse_int(request.query_params.get("entity"), "entity")
+        entityfinid_id = _parse_int(request.query_params.get("entityfinid"), "entityfinid")
+        subentity_id = _parse_int(request.query_params.get("subentity"), "subentity", required=False)
+        as_of = _parse_date(request.query_params.get("as_of"), "as_of")
+        horizon_days = _parse_int(request.query_params.get("horizon_days"), "horizon_days", required=False) or 30
+        self.enforce_scope(request, entity_id=entity_id, entityfinid_id=entityfinid_id, subentity_id=subentity_id)
+        self.require_any_permission(request, entity_id, VIEW_PERMISSION_CODES)
+        return Response(
+            TreasuryPaymentBatchService.build_cash_forecast(
+                entity_id=entity_id,
+                entityfinid_id=entityfinid_id,
+                subentity_id=subentity_id,
+                as_of=as_of,
+                horizon_days=horizon_days,
+            )
+        )
 
 
 class TreasuryPaymentInstrumentListAPIView(ScopedEntitlementMixin, TreasuryPermissionMixin, generics.ListAPIView):
