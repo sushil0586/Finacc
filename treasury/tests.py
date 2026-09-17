@@ -24,7 +24,15 @@ from sales.models.sales_ar import CustomerBillOpenItem
 from sales.models.sales_core import SalesInvoiceHeader
 from vouchers.models import VoucherHeader, VoucherLine
 
-from .models import TreasuryCashMovement, TreasuryChequeBook, TreasuryChequeLeaf, TreasuryPaymentBatch, TreasuryPaymentBatchLine, TreasuryPaymentInstrument
+from .models import (
+    TreasuryCashMovement,
+    TreasuryChequeBook,
+    TreasuryChequeLeaf,
+    TreasuryPaymentBatch,
+    TreasuryPaymentBatchLine,
+    TreasuryPaymentInstrument,
+    TreasuryPaymentStatusLog,
+)
 from .serializers import TreasuryVendorPayableCandidateSerializer
 from .services import TreasuryPaymentBatchService
 
@@ -87,14 +95,15 @@ class TreasuryPaymentBatchServiceTests(TestCase):
             createdby=self.user,
         )
 
-    def _open_item(self, *, amount=Decimal("1180.00"), vendor=None, number="PI/PINV/2026/1001"):
+    def _open_item(self, *, amount=Decimal("1180.00"), vendor=None, number="PI/PINV/2026/1001", subentity=None):
         vendor = vendor or self.vendor
+        subentity = subentity or self.subentity
         doc_no_match = re.search(r"(\d+)$", number)
         doc_no = int(doc_no_match.group(1)) if doc_no_match else 1001
         header = PurchaseInvoiceHeader.objects.create(
             entity=self.entity,
             entityfinid=self.entityfin,
-            subentity=self.subentity,
+            subentity=subentity,
             vendor=vendor,
             bill_date=date(2026, 9, 1),
             due_date=date(2026, 9, 15),
@@ -111,7 +120,7 @@ class TreasuryPaymentBatchServiceTests(TestCase):
             header=header,
             entity=self.entity,
             entityfinid=self.entityfin,
-            subentity=self.subentity,
+            subentity=subentity,
             vendor=vendor,
             doc_type=header.doc_type,
             bill_date=header.bill_date,
@@ -378,6 +387,92 @@ class TreasuryPaymentBatchServiceTests(TestCase):
         self.assertEqual(response.data["horizon_days"], 45)
         self.assertIn("Main Bank", {row["account_name"] for row in response.data["accounts"]})
 
+    @patch("core.entitlements.SubscriptionService.assert_entity_access")
+    @patch("core.entitlements.EffectivePermissionService.has_data_scope_access", return_value=True)
+    @patch("core.entitlements.EffectivePermissionService.has_scope_access", return_value=True)
+    @patch("treasury.views.EffectivePermissionService.permission_codes_for_user", return_value=set())
+    @patch("treasury.views.EffectivePermissionService.entity_for_user")
+    def test_cash_forecast_api_rejects_user_without_treasury_view_permission(
+        self,
+        mock_entity_for_user,
+        mock_permission_codes,
+        mock_scope_access,
+        mock_data_scope_access,
+        mock_subscription_access,
+    ):
+        mock_entity_for_user.return_value = self.entity
+
+        response = self.client.get(
+            "/api/treasury/cash-forecast/",
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+            },
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    @patch("core.entitlements.SubscriptionService.assert_entity_access")
+    @patch("core.entitlements.EffectivePermissionService.has_data_scope_access", return_value=True)
+    @patch("core.entitlements.EffectivePermissionService.has_scope_access", return_value=True)
+    @patch("treasury.views.EffectivePermissionService.permission_codes_for_user", return_value={"treasury.payment_batch.view"})
+    @patch("treasury.views.EffectivePermissionService.entity_for_user")
+    def test_payment_batch_approve_api_rejects_view_only_user(
+        self,
+        mock_entity_for_user,
+        mock_permission_codes,
+        mock_scope_access,
+        mock_data_scope_access,
+        mock_subscription_access,
+    ):
+        mock_entity_for_user.return_value = self.entity
+        item = self._open_item(amount=Decimal("590.00"), number="PI/PINV/2026/9101")
+        batch = TreasuryPaymentBatchService.create_from_vendor_open_items(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            open_item_ids=[item.id],
+            user_id=self.user.id,
+        )
+
+        response = self.client.post(f"/api/treasury/payment-batches/{batch.id}/approve/", {"comment": "not allowed"}, format="json")
+
+        self.assertEqual(response.status_code, 403)
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, TreasuryPaymentBatch.Status.VALIDATED)
+
+    @patch("core.entitlements.SubscriptionService.assert_entity_access")
+    @patch("core.entitlements.EffectivePermissionService.has_data_scope_access", return_value=True)
+    @patch("core.entitlements.EffectivePermissionService.has_scope_access", return_value=True)
+    @patch("treasury.views.EffectivePermissionService.permission_codes_for_user", return_value={"treasury.payment_batch.view"})
+    @patch("treasury.views.EffectivePermissionService.entity_for_user")
+    def test_vendor_payable_candidates_api_is_subentity_scoped(
+        self,
+        mock_entity_for_user,
+        mock_permission_codes,
+        mock_scope_access,
+        mock_data_scope_access,
+        mock_subscription_access,
+    ):
+        mock_entity_for_user.return_value = self.entity
+        other_subentity = SubEntity.objects.create(entity=self.entity, subentityname="Branch Two")
+        self._open_item(amount=Decimal("590.00"), number="PI/PINV/2026/9201", subentity=self.subentity)
+        self._open_item(amount=Decimal("780.00"), number="PI/PINV/2026/9202", subentity=other_subentity)
+
+        response = self.client.get(
+            "/api/treasury/payment-batches/vendor-payables/",
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["purchase_number"], "PI/PINV/2026/9201")
+
     def test_vendor_payable_batch_validates_approves_exports_and_marks_paid(self):
         item = self._open_item()
 
@@ -424,6 +519,45 @@ class TreasuryPaymentBatchServiceTests(TestCase):
         settlement = VendorSettlement.objects.get(pk=handoff["settlement_ids"][0])
         self.assertEqual(settlement.status, VendorSettlement.Status.POSTED)
         self.assertEqual(settlement.reference_no, "UTR123")
+
+    def test_vendor_payable_batch_lifecycle_writes_audit_status_logs(self):
+        item = self._open_item(amount=Decimal("640.00"), number="PI/PINV/2026/6401")
+
+        batch = TreasuryPaymentBatchService.create_from_vendor_open_items(
+            entity_id=self.entity.id,
+            entityfinid_id=self.entityfin.id,
+            subentity_id=self.subentity.id,
+            open_item_ids=[item.id],
+            batch_name="Audit proof vendor run",
+            payout_date=date(2026, 9, 17),
+            paid_from_id=self.bank_account.id,
+            payment_mode_id=self.payment_mode.id,
+            instrument_no="NEFT-640",
+            user_id=self.user.id,
+        )
+        batch = TreasuryPaymentBatchService.approve_batch(batch=batch, user_id=self.user.id, comment="Approved by treasury lead")
+        export_result = TreasuryPaymentBatchService.export_batch(batch=batch, user_id=self.user.id, comment="Exported after approval")
+        batch = TreasuryPaymentBatchService.mark_paid(
+            batch=export_result.batch,
+            user_id=self.user.id,
+            payment_reference="UTR640",
+            comment="Bank marked payment successful",
+        )
+
+        logs = list(TreasuryPaymentStatusLog.objects.filter(batch=batch).order_by("created_at", "id"))
+        self.assertGreaterEqual(len(logs), 5)
+        self.assertEqual([log.new_status for log in logs[:5]], [
+            TreasuryPaymentBatch.Status.DRAFT,
+            TreasuryPaymentBatch.Status.VALIDATED,
+            TreasuryPaymentBatch.Status.APPROVED,
+            TreasuryPaymentBatch.Status.EXPORTED,
+            TreasuryPaymentBatch.Status.PAID,
+        ])
+        self.assertTrue(all(log.acted_by_id == self.user.id for log in logs[:5]))
+        self.assertEqual(logs[2].comment, "Approved by treasury lead")
+        self.assertEqual(logs[3].payload["export_file_name"], export_result.file_name)
+        self.assertEqual(logs[4].payload["payment_reference"], "UTR640")
+        self.assertEqual(logs[4].payload["ap_handoff"]["mode"], "vendor_payables_payment_voucher")
 
     def test_vendor_payable_candidates_serialize_active_batch_flag(self):
         self._open_item(amount=Decimal("875.00"), number="PI/PINV/2026/1099")
@@ -673,6 +807,11 @@ class TreasuryPaymentBatchServiceTests(TestCase):
         self.assertEqual(instrument.status, TreasuryPaymentInstrument.Status.CLEARED)
         self.assertEqual(instrument.reference_no, "UTR720")
         self.assertIsNotNone(instrument.cleared_at)
+        lifecycle_logs = list(TreasuryPaymentStatusLog.objects.filter(batch=instrument.batch, payload__scope="instrument").order_by("created_at", "id"))
+        self.assertEqual([log.payload["action"] for log in lifecycle_logs[-2:]], ["sent-to-bank", "cleared"])
+        self.assertEqual(lifecycle_logs[-2].payload["reason"], "Uploaded to bank portal")
+        self.assertEqual(lifecycle_logs[-1].payload["instrument_id"], str(instrument.id))
+        self.assertEqual(lifecycle_logs[-1].acted_by_id, self.user.id)
 
         with self.assertRaisesMessage(ValueError, "Cannot move instrument"):
             TreasuryPaymentBatchService.transition_instrument(
