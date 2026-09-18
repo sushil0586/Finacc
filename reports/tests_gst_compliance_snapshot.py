@@ -981,6 +981,31 @@ class GstComplianceTaskApiTests(TestCase):
 
     @patch("reports.gst_compliance.views.GstComplianceTaskListCreateAPIView.enforce_scope")
     @patch("reports.gst_compliance.views.assert_any_report_permission")
+    def test_task_register_accepts_operations_task_without_return_type(self, mock_permissions, mock_enforce_scope):
+        mock_permissions.return_value = set(GST_COMPLIANCE_CENTER_VIEW_PERMISSIONS)
+
+        response = self.client.post(
+            reverse("reports_api:gst-compliance-task-list"),
+            {
+                **self.scope_params,
+                "return_type": None,
+                "source": "compliance_operations",
+                "source_code": "task_portal",
+                "title": "Review GST Portal",
+                "description": "GST portal profile is not configured for this GSTIN.",
+                "priority": "warning",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        task = GstComplianceTask.objects.get(pk=response.data["id"])
+        self.assertEqual(task.return_type, "")
+        self.assertEqual(task.source, "compliance_operations")
+        self.assertEqual(task.source_code, "task_portal")
+
+    @patch("reports.gst_compliance.views.GstComplianceTaskListCreateAPIView.enforce_scope")
+    @patch("reports.gst_compliance.views.assert_any_report_permission")
     def test_task_register_filters_by_scope(self, mock_permissions, mock_enforce_scope):
         mock_permissions.return_value = set(GST_COMPLIANCE_CENTER_VIEW_PERMISSIONS)
         GstComplianceTask.objects.create(

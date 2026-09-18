@@ -121,6 +121,9 @@ class GstComplianceTaskSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         )
+        extra_kwargs = {
+            "return_type": {"allow_blank": True, "allow_null": True, "required": False},
+        }
 
     def validate_gstin(self, value):
         value = (value or "").strip().upper()
@@ -143,4 +146,3 @@ class GstComplianceTaskDetailSerializer(GstComplianceTaskSerializer):
 
     class Meta(GstComplianceTaskSerializer.Meta):
         fields = GstComplianceTaskSerializer.Meta.fields + ("comments", "attachments", "audit_logs")
-
