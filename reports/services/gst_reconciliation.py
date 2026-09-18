@@ -128,7 +128,7 @@ def _difference_row(*, code: str, label: str, gstr1_row: dict[str, Decimal], gst
 
 def _clean_scope_params(scope_params: dict | None) -> dict:
     params = {}
-    for key in ("entityfinid", "subentity", "from_date", "to_date"):
+    for key in ("entity", "entityfinid", "subentity", "gstin", "return_period", "from_date", "to_date"):
         value = (scope_params or {}).get(key)
         if value not in (None, ""):
             params[key] = value

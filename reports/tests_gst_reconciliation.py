@@ -42,6 +42,8 @@ class GstReconciliationAPITests(APITestCase):
         self.summary_url = reverse("reports_api:gst-reconciliation-summary")
         self.export_url = reverse("reports_api:gst-reconciliation-export")
         self.params = golden.params
+        self.params["gstin"] = "03APXPB5892F1Z3"
+        self.params["return_period"] = "2025-04"
         self.scope = golden.scope
         self.gstr1_summary = {
             "sections": [
@@ -100,8 +102,14 @@ class GstReconciliationAPITests(APITestCase):
         self.assertTrue(payload["rows"][4]["is_advisory"])
         self.assertEqual(payload["rows"][0]["drilldowns"]["gstr1_workspace"]["route"], "/gstreport")
         self.assertEqual(payload["rows"][0]["drilldowns"]["gstr3b_workspace"]["route"], "/gstr3breport")
+        self.assertEqual(payload["rows"][0]["drilldowns"]["gstr1_workspace"]["params"]["entity"], self.entity.id)
+        self.assertEqual(payload["rows"][0]["drilldowns"]["gstr3b_workspace"]["params"]["entity"], self.entity.id)
         self.assertEqual(payload["rows"][0]["drilldowns"]["gstr1_workspace"]["params"]["entityfinid"], self.entityfin.id)
         self.assertEqual(payload["rows"][0]["drilldowns"]["gstr3b_workspace"]["params"]["entityfinid"], self.entityfin.id)
+        self.assertEqual(payload["rows"][0]["drilldowns"]["gstr1_workspace"]["params"]["gstin"], self.params["gstin"])
+        self.assertEqual(payload["rows"][0]["drilldowns"]["gstr3b_workspace"]["params"]["gstin"], self.params["gstin"])
+        self.assertEqual(payload["rows"][0]["drilldowns"]["gstr1_workspace"]["params"]["return_period"], self.params["return_period"])
+        self.assertEqual(payload["rows"][0]["drilldowns"]["gstr3b_workspace"]["params"]["return_period"], self.params["return_period"])
         self.assertEqual(payload["rows"][0]["drilldowns"]["gstr3b_workspace"]["params"]["from_date"], self.params["from_date"])
         self.assertEqual(payload["rows"][0]["drilldowns"]["gstr3b_workspace"]["params"]["to_date"], self.params["to_date"])
 

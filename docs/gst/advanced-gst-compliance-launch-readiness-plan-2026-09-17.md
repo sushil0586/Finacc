@@ -728,6 +728,19 @@ Phase H.2 frontend QA evidence:
 - Frontend focused Angular: `npx ng test --watch=false --include src/app/component/report/gst-compliance-center/gst-compliance-center.component.spec.ts` - 18 tests passed.
 - Covered task persistence from generated operations items, persisted task drawer loading, reviewer save, comment, close/reopen controls, comment/attachment count rendering, and raw-object leak prevention.
 
+Phase H.2 stage certification after deployment on 18 Sep 2026:
+
+- Stage browser certification: `TEST_USER_EMAIL='...' TEST_USER_PASSWORD='...' npx playwright test playwright/tests/gst-compliance-certification.live.spec.ts --project=chromium -g "Phase H.2 persisted task"` - 1 test passed.
+- Covered task creation from Operations, persisted task ID creation, reviewer save, note, evidence upload, close, reopen, reload retention, return-period scope isolation, no raw-object rendering, and layout sanity.
+- Stage deployment check found and resolved two certification blockers before pass:
+  - Missing deployed task API route returned 404 until backend deployment caught up.
+  - Operations tasks can send `return_type=null`; backend serializer now accepts null and normalizes it to blank for non-return-specific task sources.
+
+Phase H.3 stage filing lifecycle certification on 18 Sep 2026:
+
+- Stage browser certification: `TEST_USER_EMAIL='...' TEST_USER_PASSWORD='...' npx playwright test playwright/tests/gst-compliance-certification.live.spec.ts --project=chromium -g "Phase H.3 filing lifecycle"` - 1 test passed.
+- Covered lifecycle strip status, GSTIN, return period, portal period, lock state, lifecycle evidence rows, blocker/warning rendering, GSTR-1/GSTR-3B/GSTR-9/GST Portal workspace drilldowns, route scope preservation, browser back return, reload retention, no unauthorized/page-not-found transitions, no raw-object rendering, and layout sanity.
+
 ### Phase I: Full Certification And Launch Matrix
 
 Purpose: certify the GST umbrella for pilot/public launch.
@@ -760,6 +773,40 @@ Certification coverage:
 Launch gate:
 
 - Final GST launch matrix is updated with evidence, residual risks, and confidence score.
+
+Phase I live certification progress on 18 Sep 2026:
+
+- Stage browser sweep: 19 GST umbrella/scope/card/report tests passed before focused reruns; GSTR-1, GSTR-3B, GSTR-1 vs GSTR-3B, GST exception dashboard, GSTR-9, scope persistence, rapid scope switching, stale-data protection, workspace drilldowns, and TCS live launch contract were covered.
+- Focused rerun after environment correction: GST Compliance Center loading/API failure/empty/permission state test passed; GST-TDS shell/tabs/drilldown/config/smoke tests passed; TCS live contract passed.
+- Certification found a real frontend defect in the GST-TDS and TDS compliance facades: lazy operational tab loading requested `include_datasets=0`, and TDS return filing requested `include_return_datasets=0`, so export/print could render the shell but fail to load the active dataset for action execution.
+- Fix prepared in frontend: operational tab lazy-load now requests datasets, and return-filing lazy-load now requests return datasets for both GST-TDS and regular TDS compliance centers.
+- Local QA after fix: `npm run typecheck` passed; targeted Angular facade specs passed (6 tests); mocked GST-TDS Playwright suite passed (6 tests).
+- Shared TDS regression QA after fix: mocked TDS Compliance Center Playwright suite passed (18 tests), including Excel/PDF exports, return-filing exports, bulk actions, drilldowns, and certificate workflow.
+- Stage rerun after frontend deployment: full GST live certification pack passed with 30 tests passed and 2 skipped. Covered GST Compliance Center card/state/scope certification, Phase H/H.2/H.3 operations, GSTR-1, GSTR-3B, GSTR-1 vs GSTR-3B reconciliation, GST exception dashboard, scope refresh/cross-report drilldowns, desktop/tablet/mobile layout smoke, GSTR-9, GST-TDS shell/tabs/config/smoke, and TCS live launch contract.
+- GST-TDS export/print follow-up: stage scan found operational GST-TDS data in Manav-T (`entity=2`, `entityfinid=2`, `subentity=2`, `Q2`, `2026-07-01` to `2026-09-30`). Focused stage Playwright rerun passed 2 tests, certifying live GST-TDS Excel export, PDF export, CA-pack export, and print flow.
+- CA-pack note: no accessible stage scope currently exposes GST-TDS GSTR-7 return-filing rows, but the live CA-pack endpoint generated a valid filing workbook from the operational GST-TDS scope and the browser test verified workbook title and KPI contents.
+- Shared GST Compliance Center scope certification: stage browser run passed 21 tests across `gst-compliance-card-states.live.spec.ts`, `gst-compliance-scope.live.spec.ts`, `gst-compliance-certification.live.spec.ts`, and `gst.live.spec.ts`.
+- Shared scope evidence: initial load, visible heading/scope controls, selected/default states, card loading lifecycle, no final stale values, no raw object rendering, empty/error state handling, and loading-state cleanup were verified.
+- Scope refresh evidence: entity, FY, subentity, GSTIN, return period, and applicable date-scope behavior were exercised individually and in combinations; card values, readiness summary, work queue, reconciliation values, and drilldown URLs stayed aligned to the latest selected scope.
+- Race-condition evidence: rapid GSTIN/period/entity switching was exercised and old API responses did not overwrite newer selections; no mixed-scope card data was accepted as final.
+- Navigation evidence: scoped direct URLs, browser refresh, browser back/forward, card drilldowns, workspace refresh, and return navigation preserved scope and did not leak data from prior entity/GSTIN/period selections.
+- Invalid-combination evidence: unavailable GSTIN/period/no-data/API-failure/permission-restricted states were represented as recoverable states, not as valid silent zero data or blank/broken screens.
+- Card coverage evidence: GSTR-1, GSTR-3B, GSTR-1 vs GSTR-3B reconciliation, GSTR-9, GST Exception Dashboard, GST Portal, ITC / 2B, E-Invoice / E-Way, GST-TDS, and TCS cards/routes were included through card-state, drilldown, and live GST certification coverage where stage data and permissions allowed.
+- Responsive evidence: desktop, tablet, and mobile layouts were checked for card overlap, badge fit, long-value wrapping, action usability, scope toolbar placement, and horizontal overflow safety.
+
+Phase 2 GSTR-1, GSTR-3B, and reconciliation certification progress on 18 Sep 2026:
+
+- New focused Playwright live spec prepared: `playwright/tests/gst-phase2-reports.live.spec.ts`.
+- Scope: connected browser certification of GSTR-1 outward review, GSTR-3B summary review, GSTR-1 vs GSTR-3B reconciliation, report-level deep links, refresh/back-forward, exports, reconciliation math, output GST ledger tie-out, drilldowns, responsive smoke, and representative error handling.
+- First stage run result before fix: 1 passed, 3 failed.
+- Passed evidence: GSTR-1 opened from the GST Compliance Center card, retained the selected GST scope, rendered readiness/section/warning context, and completed repeated Excel/JSON export actions.
+- Product defect found: GSTR-1 vs GSTR-3B reconciliation drilldown links into GSTR-1/GSTR-3B did not retain the full GST scope in the URL. The API drilldown params only carried `entityfinid`, `subentity`, `from_date`, and `to_date`; `entity`, `gstin`, and `return_period` were missing.
+- Impact: browser navigation could still infer some context from session, but copied links, refreshes, and report-level deep-link certification could lose the exact GST umbrella scope. This is a launch-blocking certification defect for Phase 2 until deployed and rerun.
+- Backend fix prepared: reconciliation drilldown params now include `entity`, `gstin`, and `return_period` when present, while preserving existing date/FY/subentity params.
+- Frontend hardening prepared: the reconciliation component now merges the current report route scope into outgoing GSTR-1/GSTR-3B drilldowns, so older/incomplete API responses cannot drop current scope fields.
+- Regression evidence prepared: backend reconciliation test now asserts entity/GSTIN/return-period drilldown params; frontend reconciliation component spec now asserts full-scope navigation params.
+- Local verification: frontend TypeScript check passed, reconciliation Angular spec passed with 25 tests, backend changed Python files compiled successfully, and `git diff --check` passed for both frontend and backend.
+- Remaining certification action: deploy backend and frontend fixes to stage, then rerun `playwright/tests/gst-phase2-reports.live.spec.ts` and the supporting GST live report spec before closing Phase 2.
 
 ## Launch Definition
 

@@ -50,8 +50,11 @@ class Gstr1VsGstr3bReconciliationAPIView(ScopedEntitlementMixin, APIView):
             gstr1_summary=gstr1_service.summary(gstr1_scope),
             gstr3b_summary=gstr3b_service.build(gstr3b_scope),
             scope_params={
+                "entity": gstr1_scope.entity_id,
                 "entityfinid": gstr1_scope.entityfinid_id,
                 "subentity": gstr1_scope.subentity_id,
+                "gstin": request.query_params.get("gstin"),
+                "return_period": request.query_params.get("return_period"),
                 "from_date": gstr1_scope.from_date,
                 "to_date": gstr1_scope.to_date,
             },
