@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -81,6 +81,15 @@ class GstComplianceSnapshotService:
             gstin=resolved_gstin,
             itc_decision_summary=itc_decision_summary,
         )
+        compliance_operations = self._compliance_operations_summary(
+            scope=scope,
+            gstin=resolved_gstin,
+            period=period,
+            ret_period=ret_period,
+            cards=cards,
+            period_lifecycle=period_lifecycle,
+            amendment_queue=amendment_queue,
+        )
         return {
             "report_code": self.report_code,
             "report_name": self.report_name,
@@ -97,6 +106,7 @@ class GstComplianceSnapshotService:
             "setup_warnings": setup_warnings,
             "period_lifecycle": period_lifecycle,
             "amendment_queue": amendment_queue,
+            "compliance_operations": compliance_operations,
             "input_tax_ledger_reconciliation": input_tax_ledger_reconciliation,
             "itc_decision_summary": itc_decision_summary,
         }
@@ -591,6 +601,262 @@ class GstComplianceSnapshotService:
             "warnings": warnings,
             "status": "needs_review" if impact_count else "ready",
         }
+
+    def _compliance_operations_summary(
+        self,
+        *,
+        scope: GstComplianceScope,
+        gstin: str | None,
+        period: dict[str, Any],
+        ret_period: str | None,
+        cards: list[dict[str, Any]],
+        period_lifecycle: dict[str, Any],
+        amendment_queue: dict[str, Any],
+    ) -> dict[str, Any]:
+        today = timezone.localdate()
+        calendar_items = self._compliance_calendar_items(
+            scope=scope,
+            gstin=gstin,
+            period=period,
+            ret_period=ret_period,
+            cards=cards,
+            today=today,
+        )
+        tasks = self._compliance_task_items(
+            cards=cards,
+            period_lifecycle=period_lifecycle,
+            amendment_queue=amendment_queue,
+            calendar_items=calendar_items,
+        )
+        alerts = self._compliance_alert_items(calendar_items=calendar_items, tasks=tasks)
+        by_calendar_status: dict[str, int] = {}
+        for item in calendar_items:
+            by_calendar_status[item["status"]] = by_calendar_status.get(item["status"], 0) + 1
+        by_task_status: dict[str, int] = {}
+        for task in tasks:
+            by_task_status[task["status"]] = by_task_status.get(task["status"], 0) + 1
+        return {
+            "summary": {
+                "calendar_count": len(calendar_items),
+                "task_count": len(tasks),
+                "alert_count": len(alerts),
+                "overdue_count": by_calendar_status.get("overdue", 0),
+                "due_soon_count": by_calendar_status.get("due_soon", 0) + by_calendar_status.get("due_today", 0),
+                "blocked_task_count": by_task_status.get("blocked", 0),
+                "needs_owner_count": sum(1 for task in tasks if not task.get("owner")),
+                "by_calendar_status": by_calendar_status,
+                "by_task_status": by_task_status,
+            },
+            "calendar": calendar_items,
+            "tasks": tasks,
+            "alerts": alerts,
+            "status": "blocked" if by_task_status.get("blocked") else "needs_review" if tasks or alerts else "ready",
+        }
+
+    def _compliance_calendar_items(
+        self,
+        *,
+        scope: GstComplianceScope,
+        gstin: str | None,
+        period: dict[str, Any],
+        ret_period: str | None,
+        cards: list[dict[str, Any]],
+        today: date,
+    ) -> list[dict[str, Any]]:
+        start_date, end_date = self._scope_period_dates(scope)
+        if not start_date:
+            return []
+        cards_by_code = {card["code"]: card for card in cards}
+        next_month = self._add_months(start_date, 1)
+        annual_due_year = (scope.year or start_date.year) + 1
+        definitions = [
+            ("gstr1", "GSTR-1", date(next_month.year, next_month.month, 11), "Outward supplies return"),
+            ("gstr3b", "GSTR-3B", date(next_month.year, next_month.month, 20), "Monthly summary return and tax payment"),
+            ("itc_2b", "ITC / 2B", date(next_month.year, next_month.month, 20), "Input tax credit review before GSTR-3B"),
+            ("gst_tds", "GST-TDS", date(next_month.year, next_month.month, 10), "GST-TDS return/payment follow-up"),
+            ("tcs", "TCS", date(next_month.year, next_month.month, 15), "TCS compliance follow-up"),
+            ("gstr9", "GSTR-9", date(annual_due_year, 12, 31), "Annual return review and filing pack"),
+        ]
+        items = []
+        for code, label, due_date, description in definitions:
+            card = cards_by_code.get(code) or {}
+            card_status = card.get("status") or "ready"
+            status = self._calendar_status(card_status=card_status, due_date=due_date, today=today)
+            items.append(
+                {
+                    "code": code,
+                    "return_type": label,
+                    "title": label,
+                    "description": description,
+                    "period": period["label"],
+                    "return_period": scope.return_period,
+                    "portal_return_period": ret_period,
+                    "gstin": gstin,
+                    "due_date": due_date.isoformat(),
+                    "days_to_due": (due_date - today).days,
+                    "status": status,
+                    "source_status": card_status,
+                    "owner": None,
+                    "owner_label": "Unassigned",
+                    "link": card.get("link"),
+                }
+            )
+        if end_date:
+            eway_due = min(today + timedelta(days=3), end_date)
+            eway_card = cards_by_code.get("einvoice_eway") or {}
+            items.append(
+                {
+                    "code": "einvoice_eway",
+                    "return_type": "E-Invoice / E-Way",
+                    "title": "E-Invoice / E-Way",
+                    "description": "IRN/EWB retry, expiry, cancellation, and transport-detail follow-up",
+                    "period": period["label"],
+                    "return_period": scope.return_period,
+                    "portal_return_period": ret_period,
+                    "gstin": gstin,
+                    "due_date": eway_due.isoformat(),
+                    "days_to_due": (eway_due - today).days,
+                    "status": self._calendar_status(card_status=eway_card.get("status") or "ready", due_date=eway_due, today=today),
+                    "source_status": eway_card.get("status") or "ready",
+                    "owner": None,
+                    "owner_label": "Unassigned",
+                    "link": eway_card.get("link"),
+                }
+            )
+        return items
+
+    def _compliance_task_items(
+        self,
+        *,
+        cards: list[dict[str, Any]],
+        period_lifecycle: dict[str, Any],
+        amendment_queue: dict[str, Any],
+        calendar_items: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        calendar_by_code = {item["code"]: item for item in calendar_items}
+        tasks: list[dict[str, Any]] = []
+        for card in cards:
+            if card.get("status") not in {"blocked", "needs_review", "amendment_needed", "overdue"}:
+                continue
+            messages = [*card.get("blockers", []), *card.get("warnings", [])]
+            message = self._alert_text(messages[0]) if messages else f"{card['title']} needs review before filing."
+            due_item = calendar_by_code.get(card["code"]) or {}
+            tasks.append(
+                {
+                    "code": f"task_{card['code']}",
+                    "title": f"Review {card['title']}",
+                    "description": message,
+                    "status": "blocked" if card.get("status") == "blocked" else "open",
+                    "priority": "high" if card.get("status") == "blocked" else "medium",
+                    "owner": None,
+                    "owner_label": "Unassigned",
+                    "due_date": due_item.get("due_date"),
+                    "source": card["code"],
+                    "link": card.get("link"),
+                }
+            )
+        for item in period_lifecycle.get("blockers", []):
+            tasks.append(
+                {
+                    "code": f"task_lifecycle_{item.get('code', 'blocked').lower()}",
+                    "title": "Resolve filing lifecycle blocker",
+                    "description": self._alert_text(item),
+                    "status": "blocked",
+                    "priority": "high",
+                    "owner": None,
+                    "owner_label": "Unassigned",
+                    "due_date": None,
+                    "source": "period_lifecycle",
+                    "link": None,
+                }
+            )
+        if (amendment_queue.get("summary") or {}).get("impact_count"):
+            tasks.append(
+                {
+                    "code": "task_amendment_queue",
+                    "title": "Review amendment queue",
+                    "description": "Prior-period GST impact is waiting for review and filing treatment.",
+                    "status": "open",
+                    "priority": "medium",
+                    "owner": None,
+                    "owner_label": "Unassigned",
+                    "due_date": None,
+                    "source": "amendment_queue",
+                    "link": None,
+                }
+            )
+        return tasks[:12]
+
+    def _compliance_alert_items(self, *, calendar_items: list[dict[str, Any]], tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        alerts: list[dict[str, Any]] = []
+        for item in calendar_items:
+            if item["status"] in {"overdue", "due_today", "due_soon", "blocked"}:
+                severity = "error" if item["status"] in {"overdue", "blocked"} else "warning"
+                alerts.append(
+                    {
+                        "code": f"calendar_{item['code']}_{item['status']}",
+                        "severity": severity,
+                        "message": f"{item['title']} is {item['status'].replace('_', ' ')} for {item['period']}.",
+                        "source": "calendar",
+                        "link": item.get("link"),
+                    }
+                )
+        unassigned = sum(1 for task in tasks if not task.get("owner"))
+        if unassigned:
+            alerts.append(
+                {
+                    "code": "gst_tasks_unassigned",
+                    "severity": "warning",
+                    "message": f"{unassigned} GST compliance task is unassigned.",
+                    "source": "tasks",
+                    "link": None,
+                }
+            )
+        return alerts[:10]
+
+    def _calendar_status(self, *, card_status: str, due_date: date, today: date) -> str:
+        if card_status in {"filed", "frozen"}:
+            return "complete"
+        if card_status == "blocked":
+            return "blocked"
+        days = (due_date - today).days
+        if days < 0:
+            return "overdue"
+        if days == 0:
+            return "due_today"
+        if days <= 7:
+            return "due_soon"
+        if card_status == "needs_review":
+            return "needs_review"
+        return "upcoming"
+
+    def _scope_period_dates(self, scope: GstComplianceScope) -> tuple[date | None, date | None]:
+        if scope.from_date and scope.to_date:
+            return scope.from_date, scope.to_date
+        if scope.year and scope.month:
+            start = date(scope.year, scope.month, 1)
+            return start, self._add_months(start, 1) - timedelta(days=1)
+        if scope.return_period:
+            try:
+                year, month = [int(part) for part in scope.return_period.split("-", 1)]
+            except (TypeError, ValueError):
+                return None, None
+            start = date(year, month, 1)
+            return start, self._add_months(start, 1) - timedelta(days=1)
+        return None, None
+
+    def _add_months(self, value: date, months: int) -> date:
+        month_index = value.month - 1 + months
+        year = value.year + month_index // 12
+        month = month_index % 12 + 1
+        return date(year, month, 1)
+
+    def _alert_text(self, item: Any) -> str:
+        if isinstance(item, str):
+            return item
+        if isinstance(item, dict):
+            return str(item.get("message") or item.get("label") or item.get("title") or item.get("code") or "Review GST compliance item.")
+        return "Review GST compliance item."
 
     def _sales_amendment_queryset(self, *, scope: GstComplianceScope, gstin: str | None):
         qs = (

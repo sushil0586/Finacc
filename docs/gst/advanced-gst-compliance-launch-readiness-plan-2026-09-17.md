@@ -598,6 +598,50 @@ Phase G QA evidence:
 - Browser focused certification: `npx playwright test playwright/tests/gst-period-lifecycle-cockpit.spec.ts --project=chromium --reporter=line` - 2 tests passed, covering filed lifecycle evidence, lock state, stable period metadata, not-configured state, no stale evidence, amendment queue rendering, no-impact hidden state, and no raw object rendering.
 - Covered states: missing GSTIN/not configured, prepared annual lifecycle with freeze evidence, monthly filed lifecycle when both GSTR-1 and GSTR-3B are filed, linked sales note amendment impact, and GSTR-2B amended/vendor-revised portal context.
 
+Phase G stage certification note on 18 Sep 2026:
+
+- Stage browser run identified one scope-retention issue before sign-off.
+- Symptom: URL contained `return_period=2026-09`, but the frontend also sent fallback FY-start/today `from_date` and `to_date` values to the snapshot API.
+- Impact: the header looked month-scoped while the backend evaluated a wider date range, producing a readiness mismatch between direct API and UI-rendered summary.
+- Fix prepared in frontend: GST Compliance Center now keeps a return-period route as a pure monthly scope unless date parameters are explicitly present in the URL.
+- Regression added: component test asserts that a return-period-only route sends `from_date=null` and `to_date=null`.
+- Local verification after fix: frontend typecheck passed, GST Compliance Center component tests passed, and focused lifecycle/amendment Playwright tests passed.
+- Required before final stage sign-off: redeploy frontend with this scope fix, then rerun `playwright/tests/gst-compliance-certification.live.spec.ts`.
+
+Phase G stage rerun on 18 Sep 2026 after deployment:
+
+- Stage browser certification: `playwright/tests/gst-compliance-certification.live.spec.ts` - 2 tests passed, covering center scope/card/work-queue/drilldown/navigation/accessibility/responsive layout and slow/API-failure fallback.
+- Stage card-state certification: `playwright/tests/gst-compliance-card-states.live.spec.ts` - 3 tests passed, covering all card statuses, warnings, blockers, summaries, signals, action states, workspace links, loading, API failure, empty, and permission-restricted states.
+- Stage scope certification: `playwright/tests/gst-compliance-scope.live.spec.ts` - 1 test still failed because the backend snapshot exposes `input_tax_ledger_reconciliation.summary.comparison_count`, but the UI did not render that count in the ITC Evidence panel.
+- Fix prepared in frontend: ITC Evidence now renders Components checked and Matched components alongside mismatch count and ITC amounts.
+- Local verification after this UI fix: `npm run typecheck` passed and `npx ng test --watch=false --include src/app/component/report/gst-compliance-center/gst-compliance-center.component.spec.ts` passed with 14 tests.
+- Required before rerun: redeploy frontend with the ITC Evidence metric fix, then rerun `playwright/tests/gst-compliance-scope.live.spec.ts`.
+
+Second stage rerun on 18 Sep 2026:
+
+- The ITC metric failure no longer appeared on the focused path, confirming the certification moved past the missing comparison-count display.
+- A new scope-history issue was identified: when browser history landed on a partial date URL containing only `from_date`, the UI filled missing `to_date` from the default current date.
+- Impact: the displayed scope could show a date bound not present in the URL, and a snapshot could be requested with a broader range than the user intended.
+- Fix prepared in frontend: partial date URLs now preserve only explicitly supplied date bounds; missing `from_date` or `to_date` remains blank/null.
+- Browser certification test updated to validate back/forward against the current URL scope rather than assuming a fixed intermediate browser history entry after reload.
+- Local verification after this fix: `npm run typecheck` passed and `npx ng test --watch=false --include src/app/component/report/gst-compliance-center/gst-compliance-center.component.spec.ts` passed with 15 tests.
+- Required before final rerun: redeploy frontend with the partial-date scope fix and updated browser certification.
+
+Third stage rerun on 18 Sep 2026:
+
+- Stage scope certification passed invalid-scope prevention and rapid-switch race-condition checks.
+- Remaining failure occurred when the valid-flow test attempted a `from_date`-only snapshot request; backend correctly returned HTTP 400 with `from_date/to_date, month/year, or return_period is required.`
+- Product decision: partial custom date ranges are invalid and must be prevented in the UI instead of sent to the backend.
+- Fix prepared in frontend: applying a custom date range now requires both From date and To date; partial ranges show a validation error and do not call the snapshot API.
+- Browser certification updated to cover partial-date prevention explicitly, then use a full From/To range for valid scope refresh.
+- Local verification after this fix: `npm run typecheck` passed and GST Compliance Center focused Angular tests passed with 15 tests.
+- Required before final rerun: redeploy frontend with the partial-date validation fix and updated Playwright certification.
+
+Final Phase G scope stage rerun on 18 Sep 2026:
+
+- Stage scope certification: `playwright/tests/gst-compliance-scope.live.spec.ts` - 3 tests passed.
+- Covered entity/FY/subentity/GSTIN/return-period/date scope changes, refresh retention, workspace drilldown scope preservation, browser back/forward navigation, invalid scope prevention, unavailable GSTIN/period handling, no stale prior-scope data, and rapid scope switching with latest-response wins.
+
 ### Phase H: Calendar, Notices, Task Ownership
 
 Purpose: turn GST from reporting into an operational compliance workspace.
@@ -623,6 +667,28 @@ Frontend work:
 Certification gate:
 
 - User can see what is due, who owns it, and whether it is blocked.
+
+Phase H.1 implementation status on 18 Sep 2026:
+
+- Backend GST Compliance Center snapshot now includes a `compliance_operations` section.
+- Calendar rows are generated for GSTR-1, GSTR-3B, GSTR-9, ITC/2B, GST-TDS, TCS, and e-invoice/e-way monitoring for the selected GSTIN and return period.
+- Calendar statuses classify complete, blocked, overdue, due today, due soon, needs review, and upcoming states from filing lifecycle/card status.
+- Open compliance tasks are generated from blocked/review/amendment/overdue cards, filing lifecycle blockers, and amendment queue warnings.
+- Alerts are generated from overdue/due-soon/blocked calendar items and unassigned compliance tasks.
+- Frontend GST Compliance Center now renders the operational panel with metrics, calendar rows, tasks, owner labels, and alerts without leaking raw backend objects.
+
+Phase H.1 QA evidence:
+
+- Backend: `./venv/bin/python manage.py test reports.tests_gst_compliance_snapshot --keepdb --noinput --verbosity=1` - 13 tests passed.
+- Frontend typecheck: `npm run typecheck` - passed.
+- Frontend focused Angular: `npx ng test --watch=false --include src/app/component/report/gst-compliance-center/gst-compliance-center.component.spec.ts` - 16 tests passed.
+- Browser mocked certification: `npx playwright test playwright/tests/gst-period-lifecycle-cockpit.spec.ts --project=chromium` - 2 tests passed, covering lifecycle, amendment queue, operations calendar/tasks/alerts, not-configured blocked task, and raw-object leak prevention.
+
+Phase H.1 remaining:
+
+- Persisted notice/task register with assignment, comments, attachments, closure, and audit history.
+- Stage browser certification of the operations panel after deployment.
+- Stage validation that calendar/task/alert rows preserve entity, GSTIN, FY, return period, and subentity scope across refresh and workspace navigation.
 
 ### Phase I: Full Certification And Launch Matrix
 

@@ -236,6 +236,75 @@ class GstComplianceSnapshotTests(TestCase):
         self.assertEqual(evidence["gstr1_portal"]["reference"], "GSTR1-ARN-062026")
         self.assertEqual(evidence["gstr3b_portal"]["reference"], "GSTR3B-ARN-062026")
 
+    def test_snapshot_compliance_operations_builds_calendar_tasks_and_alerts(self):
+        EntityGstRegistration.objects.create(
+            entity=self.entity,
+            gstin="29ABCDE1234F1Z5",
+            registration_type=self.gst_type,
+            is_primary=True,
+            createdby=self.user,
+        )
+        scope = parse_gst_compliance_scope(self.scope_params)
+
+        with patch("reports.gst_compliance.services.timezone.localdate", return_value=datetime(2026, 7, 19).date()):
+            payload = GstComplianceSnapshotService().build(
+                scope=scope,
+                permission_codes=set(GST_COMPLIANCE_CENTER_VIEW_PERMISSIONS),
+            )
+
+        operations = payload["compliance_operations"]
+        self.assertEqual(operations["summary"]["calendar_count"], 7)
+        self.assertGreaterEqual(operations["summary"]["task_count"], 1)
+        calendar = {item["code"]: item for item in operations["calendar"]}
+        self.assertEqual(calendar["gstr1"]["due_date"], "2026-07-11")
+        self.assertEqual(calendar["gstr3b"]["due_date"], "2026-07-20")
+        self.assertEqual(calendar["gstr1"]["status"], "overdue")
+        self.assertEqual(calendar["gstr3b"]["status"], "due_soon")
+        self.assertEqual(calendar["gstr9"]["due_date"], "2027-12-31")
+        self.assertTrue(all(item["owner_label"] == "Unassigned" for item in operations["calendar"]))
+        self.assertTrue(any(task["source"] == "itc_2b" for task in operations["tasks"]))
+        self.assertTrue(any(alert["source"] == "calendar" for alert in operations["alerts"]))
+        self.assertEqual(operations["status"], "needs_review")
+
+    def test_snapshot_compliance_operations_marks_filed_calendar_items_complete(self):
+        EntityGstRegistration.objects.create(
+            entity=self.entity,
+            gstin="29ABCDE1234F1Z5",
+            registration_type=self.gst_type,
+            is_primary=True,
+            createdby=self.user,
+        )
+        for return_type, reference in (
+            (GstPortalFilingRun.ReturnType.GSTR1, "GSTR1-ARN-062026"),
+            (GstPortalFilingRun.ReturnType.GSTR3B, "GSTR3B-ARN-062026"),
+        ):
+            GstPortalFilingRun.objects.create(
+                return_type=return_type,
+                entity=self.entity,
+                entityfinid=self.entityfin,
+                subentity=self.subentity,
+                gstin="29ABCDE1234F1Z5",
+                state_cd="29",
+                ret_period="062026",
+                status=GstPortalFilingRun.Status.FILED,
+                portal_reference=reference,
+                prepared_by=self.user,
+                submitted_by=self.user,
+            )
+
+        scope = parse_gst_compliance_scope(self.scope_params)
+        with patch("reports.gst_compliance.services.timezone.localdate", return_value=datetime(2026, 7, 25).date()):
+            payload = GstComplianceSnapshotService().build(
+                scope=scope,
+                permission_codes=set(GST_COMPLIANCE_CENTER_VIEW_PERMISSIONS),
+            )
+
+        calendar = {item["code"]: item for item in payload["compliance_operations"]["calendar"]}
+        self.assertEqual(calendar["gstr1"]["status"], "complete")
+        self.assertEqual(calendar["gstr3b"]["status"], "complete")
+        self.assertEqual(calendar["gstr1"]["source_status"], "filed")
+        self.assertEqual(calendar["gstr3b"]["source_status"], "filed")
+
     def test_snapshot_amendment_queue_summarizes_linked_sales_notes_from_prior_period(self):
         EntityGstRegistration.objects.create(
             entity=self.entity,
