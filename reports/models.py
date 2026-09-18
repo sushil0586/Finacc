@@ -500,3 +500,125 @@ class GstComplianceTaskAudit(TrackingModel):
 
     def __str__(self):
         return f"{self.task_id}:{self.action}:{self.created_at}"
+
+
+class GstCompliancePeriodLifecycle(TrackingModel):
+    class Status(models.TextChoices):
+        OPEN = "open", "Open"
+        PREPARED = "prepared", "Prepared"
+        IN_REVIEW = "in_review", "In Review"
+        FROZEN = "frozen", "Frozen"
+        FILED = "filed", "Filed"
+        AMENDMENT_OPEN = "amendment_open", "Amendment Open"
+
+    entity = models.ForeignKey(Entity, on_delete=CASCADE, related_name="gst_compliance_period_lifecycles")
+    entityfinid = models.ForeignKey(
+        EntityFinancialYear,
+        on_delete=CASCADE,
+        related_name="gst_compliance_period_lifecycles",
+    )
+    subentity = models.ForeignKey(
+        SubEntity,
+        on_delete=CASCADE,
+        null=True,
+        blank=True,
+        related_name="gst_compliance_period_lifecycles",
+    )
+    gstin = models.CharField(max_length=15, db_index=True)
+    return_period = models.CharField(max_length=7, db_index=True)
+    portal_return_period = models.CharField(max_length=6, blank=True, default="", db_index=True)
+    status = models.CharField(max_length=24, choices=Status.choices, default=Status.OPEN, db_index=True)
+    locked = models.BooleanField(default=False, db_index=True)
+    checklist = JSONField(default=dict, blank=True)
+    evidence = JSONField(default=list, blank=True)
+    notes = models.TextField(blank=True, default="")
+    portal_reference = models.CharField(max_length=120, blank=True, default="")
+    prepared_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="prepared_gst_period_lifecycles",
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reviewed_gst_period_lifecycles",
+    )
+    frozen_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="frozen_gst_period_lifecycles",
+    )
+    filed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="filed_gst_period_lifecycles",
+    )
+    reopened_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reopened_gst_period_lifecycles",
+    )
+    prepared_at = models.DateTimeField(null=True, blank=True)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    frozen_at = models.DateTimeField(null=True, blank=True)
+    filed_at = models.DateTimeField(null=True, blank=True)
+    reopened_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ("-updated_at", "-id")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("entity", "entityfinid", "subentity", "gstin", "return_period"),
+                name="reports_gst_period_lifecycle_unique",
+            )
+        ]
+        indexes = [
+            models.Index(fields=("entity", "entityfinid", "gstin", "return_period", "status"), name="ix_gst_period_life_scope"),
+            models.Index(fields=("entity", "entityfinid", "subentity", "locked"), name="ix_gst_period_life_locked"),
+        ]
+
+    def __str__(self):
+        scope = f"{self.entity_id}:{self.entityfinid_id}:{self.subentity_id or 'all'}"
+        return f"{scope}:{self.gstin}:{self.return_period}:{self.status}"
+
+    def save(self, *args, **kwargs):
+        self.gstin = (self.gstin or "").strip().upper()
+        self.return_period = (self.return_period or "").strip()
+        self.portal_return_period = (self.portal_return_period or "").strip()
+        self.portal_reference = (self.portal_reference or "").strip()
+        super().save(*args, **kwargs)
+
+
+class GstCompliancePeriodLifecycleAudit(TrackingModel):
+    lifecycle = models.ForeignKey(GstCompliancePeriodLifecycle, on_delete=CASCADE, related_name="audit_logs")
+    action = models.CharField(max_length=40, db_index=True)
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="gst_period_lifecycle_audit_logs",
+    )
+    old_data = JSONField(default=dict, blank=True)
+    new_data = JSONField(default=dict, blank=True)
+    note = models.TextField(blank=True, default="")
+
+    class Meta:
+        ordering = ("-created_at", "-id")
+        indexes = [
+            models.Index(fields=("lifecycle", "action", "created_at"), name="ix_gst_life_audit_action"),
+            models.Index(fields=("actor", "created_at"), name="ix_gst_life_audit_actor"),
+        ]
+
+    def __str__(self):
+        return f"{self.lifecycle_id}:{self.action}:{self.created_at}"

@@ -12,6 +12,7 @@ from entity.models import EntityGstRegistration, SubEntityGstRegistration
 from gst_reconciliation.models import GstReconciliationItem, GstReconciliationRun
 from reports.gst_compliance.contracts import GstComplianceScope, build_gst_compliance_deep_link
 from reports.gst_compliance.itc_ledger import build_input_tax_ledger_reconciliation
+from reports.gst_compliance.lifecycle import GstCompliancePeriodLifecycleService
 from reports.gstr3b.selectors import Gstr3bScope
 from reports.gstr3b.services import Gstr3bSummaryService
 from reports.models import GstComplianceTask, GstPortalFilingRun, GstPortalProfile, ReportFilingRun, ReportFreezeSnapshot
@@ -43,6 +44,7 @@ GST_COMPLIANCE_CARD_DEFINITIONS: tuple[GstComplianceCardDefinition, ...] = (
 class GstComplianceSnapshotService:
     report_code = "gst-compliance-snapshot"
     report_name = "GST Compliance Center Snapshot"
+    lifecycle_service_class = GstCompliancePeriodLifecycleService
 
     def build(self, *, scope: GstComplianceScope, permission_codes: set[str] | None = None) -> dict[str, Any]:
         permissions = set(permission_codes or ())
@@ -402,6 +404,8 @@ class GstComplianceSnapshotService:
         gstr3b_run = self._latest_portal_filing(scope=scope, gstin=gstin, return_type="gstr3b", ret_period=ret_period)
         gstr9_freeze = self._latest_gstr9_freeze(scope)
         gstr9_run = self._latest_gstr9_filing(scope)
+        persisted_lifecycle = self.lifecycle_service_class().get(scope=scope, gstin=gstin)
+        persisted_payload = self.lifecycle_service_class().serialize(persisted_lifecycle)
 
         if gstr1_run:
             evidence.append(self._portal_lifecycle_evidence("gstr1_portal", "GSTR-1 portal", gstr1_run))
@@ -446,7 +450,22 @@ class GstComplianceSnapshotService:
         frozen = bool(gstr9_freeze)
         prepared = any(item["status"] in {"prepared", "saved", "proceeded", "summary_fetched", "offset", "evc_requested"} for item in evidence)
 
-        if blockers:
+        if persisted_payload:
+            status = persisted_payload["status"]
+            label = persisted_payload["label"]
+            if persisted_payload.get("evidence"):
+                evidence.extend(
+                    {
+                        "code": item.get("code") or f"lifecycle_evidence_{index + 1}",
+                        "label": item.get("label") or "Lifecycle evidence",
+                        "status": item.get("status") or status,
+                        "reference": item.get("reference") or "",
+                        "updated_at": item.get("updated_at"),
+                    }
+                    for index, item in enumerate(persisted_payload["evidence"])
+                    if isinstance(item, dict)
+                )
+        elif blockers:
             status = "blocked"
             label = "Blocked"
         elif monthly_filed or annual_filed:
@@ -471,8 +490,17 @@ class GstComplianceSnapshotService:
             "period": period["label"],
             "portal_return_period": ret_period,
             "gstin": gstin,
-            "locked": status in {"filed", "frozen"},
-            "can_reopen": status in {"filed", "frozen"},
+            "locked": bool(persisted_payload["locked"]) if persisted_payload else status in {"filed", "frozen"},
+            "can_reopen": bool(persisted_payload["can_reopen"]) if persisted_payload else status in {"filed", "frozen"},
+            "lifecycle_id": persisted_payload["id"] if persisted_payload else None,
+            "checklist": persisted_payload["checklist"] if persisted_payload else {},
+            "notes": persisted_payload["notes"] if persisted_payload else "",
+            "portal_reference": persisted_payload["portal_reference"] if persisted_payload else "",
+            "prepared_at": persisted_payload["prepared_at"] if persisted_payload else None,
+            "reviewed_at": persisted_payload["reviewed_at"] if persisted_payload else None,
+            "frozen_at": persisted_payload["frozen_at"] if persisted_payload else None,
+            "filed_at": persisted_payload["filed_at"] if persisted_payload else None,
+            "reopened_at": persisted_payload["reopened_at"] if persisted_payload else None,
             "evidence": evidence,
             "warnings": warnings,
             "blockers": blockers,

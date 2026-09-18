@@ -143,6 +143,7 @@ from reports.gst_portal.views import (
     GstPortalProfileAPIView,
 )
 from reports.gst_compliance.views import (
+    GstCompliancePeriodLifecycleAPIView,
     GstComplianceSnapshotAPIView,
     GstComplianceTaskAttachmentAPIView,
     GstComplianceTaskCloseAPIView,
@@ -463,6 +464,7 @@ urlpatterns = [
     path("gstr3b/export/", Gstr3bExportAPIView.as_view(), name="gstr3b-export"),
     path("gstr3b/export", Gstr3bExportAPIView.as_view(), name="gstr3b-export-noslash"),
     path("gst-compliance/snapshot/", GstComplianceSnapshotAPIView.as_view(), name="gst-compliance-snapshot"),
+    path("gst-compliance/lifecycle/", GstCompliancePeriodLifecycleAPIView.as_view(), name="gst-compliance-lifecycle"),
     path("gst-compliance/tasks/", GstComplianceTaskListCreateAPIView.as_view(), name="gst-compliance-task-list"),
     path("gst-compliance/tasks/<int:pk>/", GstComplianceTaskDetailAPIView.as_view(), name="gst-compliance-task-detail"),
     path("gst-compliance/tasks/<int:pk>/comments/", GstComplianceTaskCommentAPIView.as_view(), name="gst-compliance-task-comment"),

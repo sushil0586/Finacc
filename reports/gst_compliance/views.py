@@ -12,6 +12,7 @@ from rest_framework.views import APIView
 from core.entitlements import ScopedEntitlementMixin
 from reports.api.report_permissions import assert_any_report_permission
 from reports.gst_compliance.contracts import parse_gst_compliance_scope
+from reports.gst_compliance.lifecycle import GstCompliancePeriodLifecycleService
 from reports.gst_compliance.services import GstComplianceSnapshotService
 from reports.gst_compliance.task_serializers import (
     GstComplianceTaskAttachmentSerializer,
@@ -84,6 +85,79 @@ class GstComplianceSnapshotAPIView(ScopedEntitlementMixin, APIView):
             message="You do not have permission to access the GST Compliance Center.",
         )
         return Response(self.service_class().build(scope=scope, permission_codes=permission_codes))
+
+
+class GstCompliancePeriodLifecycleAPIView(ScopedEntitlementMixin, APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    subscription_feature_code = SubscriptionLimitCodes.FEATURE_REPORTING
+    subscription_access_mode = SubscriptionService.ACCESS_MODE_OPERATIONAL
+    service_class = GstCompliancePeriodLifecycleService
+
+    def _scope(self, request):
+        try:
+            scope = parse_gst_compliance_scope(request.query_params if request.method == "GET" else request.data)
+        except ValidationError as exc:
+            return None, Response(exc.message_dict, status=400)
+        self.enforce_scope(
+            request,
+            entity_id=scope.entity_id,
+            entityfinid_id=scope.entityfinid_id,
+            subentity_id=scope.subentity_id,
+        )
+        assert_any_report_permission(
+            user=request.user,
+            entity_id=scope.entity_id,
+            required_permissions=GST_COMPLIANCE_CENTER_VIEW_PERMISSIONS,
+            message="You do not have permission to manage GST compliance lifecycle.",
+        )
+        return scope, None
+
+    def _resolved_gstin(self, scope):
+        return GstComplianceSnapshotService()._resolve_gstin(scope)
+
+    def get(self, request):
+        scope, error = self._scope(request)
+        if error:
+            return error
+        gstin = self._resolved_gstin(scope)
+        lifecycle = self.service_class().get(scope=scope, gstin=gstin)
+        return Response(
+            {
+                "scope": scope.as_filters(),
+                "resolved_gstin": gstin,
+                "lifecycle": self.service_class().serialize(lifecycle),
+            }
+        )
+
+    @transaction.atomic
+    def post(self, request):
+        scope, error = self._scope(request)
+        if error:
+            return error
+        gstin = self._resolved_gstin(scope)
+        if not gstin:
+            return Response({"gstin": ["No active GSTIN is configured for this compliance scope."]}, status=400)
+        try:
+            lifecycle = self.service_class().transition(
+                scope=scope,
+                gstin=gstin,
+                action=request.data.get("action"),
+                actor=request.user,
+                portal_return_period=request.data.get("portal_return_period"),
+                checklist=request.data.get("checklist") if "checklist" in request.data else None,
+                evidence=request.data.get("evidence") if "evidence" in request.data else None,
+                note=request.data.get("note") or request.data.get("reason") or "",
+                portal_reference=request.data.get("portal_reference") or "",
+            )
+        except ValidationError as exc:
+            return Response(exc.message_dict, status=400)
+        return Response(
+            {
+                "scope": scope.as_filters(),
+                "resolved_gstin": gstin,
+                "lifecycle": self.service_class().serialize(lifecycle),
+            }
+        )
 
 
 class GstComplianceTaskListCreateAPIView(ScopedEntitlementMixin, APIView):

@@ -541,6 +541,8 @@ Phase F QA evidence:
 - Backend focused tests: `./venv/bin/python manage.py test reports.tests_gst_compliance_snapshot --keepdb --noinput --verbosity=1` - 8 tests passed.
 - Frontend typecheck: `npm run typecheck` - passed.
 - Browser focused certification: `npx playwright test playwright/tests/gst-einvoice-eway-cockpit.spec.ts --project=chromium --reporter=line` - 1 test passed, covering the E-Invoice/E-Way cockpit card counts, warnings/blockers, next action, sales compliance drilldown, scope query preservation, and browser back return.
+- Stage browser certification: `playwright/tests/gst-phase4-einvoice-eway.live.spec.ts --project=chromium` - 1 test passed against `https://accerio.in`, covering the umbrella `E-Invoice / E-Way` card, scoped snapshot request parameters, Sales Register E-Invoice/E-Way columns, source invoice drilldown, router-state/session scope preservation, invoice compliance launcher, compliance workspace overview/E-Way Ops/Audit tabs, transport details dialog, and raw error guardrails.
+- Certification finding closed during test authoring: Sales Register document drilldown intentionally uses Angular router state for transaction/entity/FY/subentity while the invoice screen uses global workspace session for active scope. The live certification now validates that architecture instead of requiring entity/FY/subentity query parameters on the invoice route.
 
 ### Phase G: Filing Lifecycle, Freeze, Amendments, And Portal Status
 
@@ -741,6 +743,27 @@ Phase H.3 stage filing lifecycle certification on 18 Sep 2026:
 - Stage browser certification: `TEST_USER_EMAIL='...' TEST_USER_PASSWORD='...' npx playwright test playwright/tests/gst-compliance-certification.live.spec.ts --project=chromium -g "Phase H.3 filing lifecycle"` - 1 test passed.
 - Covered lifecycle strip status, GSTIN, return period, portal period, lock state, lifecycle evidence rows, blocker/warning rendering, GSTR-1/GSTR-3B/GSTR-9/GST Portal workspace drilldowns, route scope preservation, browser back return, reload retention, no unauthorized/page-not-found transitions, no raw-object rendering, and layout sanity.
 
+Phase G.2 persisted filing lifecycle implementation status on 18 Sep 2026:
+
+- Added persisted GST period lifecycle records through `GstCompliancePeriodLifecycle` and lifecycle audit rows through `GstCompliancePeriodLifecycleAudit`.
+- Lifecycle scope is entity, financial year, subentity, GSTIN, and return period, with portal return period retained for GSTN/WhiteBooks alignment.
+- Supported lifecycle actions now include prepare, submit review, freeze, file, and reopen for amendment/rework.
+- Freeze and reopen require an explicit note/reason; filing is allowed only after freeze.
+- Lifecycle records retain checklist payload, evidence payload, portal reference, actor fields, timestamps, lock state, and audit history.
+- GST Compliance Center snapshot now prefers the persisted lifecycle status where present, so frozen/filed/amendment-open status is visible in the umbrella response instead of being inferred only from portal runs.
+- Added `GET/POST /api/reports/gst-compliance/lifecycle/` for current lifecycle state and controlled transitions.
+- GST Compliance Center frontend now renders lifecycle action controls, note capture, portal reference capture, disabled-action hints, and success/error feedback in the existing report-shell style.
+
+Phase G.2 QA evidence:
+
+- Backend focused tests: `./venv/bin/python manage.py test reports.tests_gst_compliance_snapshot --keepdb --noinput --verbosity=1` - 19 tests passed.
+- Backend migration consistency: `./venv/bin/python manage.py makemigrations --check --dry-run` - no changes detected.
+- Frontend typecheck: `npm run typecheck` - passed.
+- Frontend focused Angular: `npx ng test --watch=false --browsers=ChromeHeadless --include='src/app/component/report/gst-compliance-center/gst-compliance-center.component.spec.ts' --include='src/app/service/gst-compliance/gst-compliance-center.service.spec.ts'` - 22 tests passed.
+- Stage mutation certification is prepared in `playwright/tests/gst-compliance-certification.live.spec.ts` and is intentionally opt-in with `GST_LIFECYCLE_MUTATION=1` plus `GST_LIFECYCLE_RETURN_PERIOD=<YYYY-MM>`.
+- Prepared browser flow covers reopen when needed, prepare, submit review, freeze-without-reason prevention, freeze-with-reason, file-with-portal-reference, browser reload retention, persisted API status, no raw-object rendering, and layout sanity.
+- Local frontend verification for the new browser coverage: `npm run typecheck` passed and `npx playwright test playwright/tests/gst-compliance-certification.live.spec.ts --list` listed 6 tests including `certifies Phase G.2 persisted filing lifecycle actions on stage`.
+
 ### Phase I: Full Certification And Launch Matrix
 
 Purpose: certify the GST umbrella for pilot/public launch.
@@ -801,12 +824,32 @@ Phase 2 GSTR-1, GSTR-3B, and reconciliation certification progress on 18 Sep 202
 - First stage run result before fix: 1 passed, 3 failed.
 - Passed evidence: GSTR-1 opened from the GST Compliance Center card, retained the selected GST scope, rendered readiness/section/warning context, and completed repeated Excel/JSON export actions.
 - Product defect found: GSTR-1 vs GSTR-3B reconciliation drilldown links into GSTR-1/GSTR-3B did not retain the full GST scope in the URL. The API drilldown params only carried `entityfinid`, `subentity`, `from_date`, and `to_date`; `entity`, `gstin`, and `return_period` were missing.
-- Impact: browser navigation could still infer some context from session, but copied links, refreshes, and report-level deep-link certification could lose the exact GST umbrella scope. This is a launch-blocking certification defect for Phase 2 until deployed and rerun.
+- Impact: browser navigation could still infer some context from session, but copied links, refreshes, and report-level deep-link certification could lose the exact GST umbrella scope.
 - Backend fix prepared: reconciliation drilldown params now include `entity`, `gstin`, and `return_period` when present, while preserving existing date/FY/subentity params.
 - Frontend hardening prepared: the reconciliation component now merges the current report route scope into outgoing GSTR-1/GSTR-3B drilldowns, so older/incomplete API responses cannot drop current scope fields.
 - Regression evidence prepared: backend reconciliation test now asserts entity/GSTIN/return-period drilldown params; frontend reconciliation component spec now asserts full-scope navigation params.
 - Local verification: frontend TypeScript check passed, reconciliation Angular spec passed with 25 tests, backend changed Python files compiled successfully, and `git diff --check` passed for both frontend and backend.
-- Remaining certification action: deploy backend and frontend fixes to stage, then rerun `playwright/tests/gst-phase2-reports.live.spec.ts` and the supporting GST live report spec before closing Phase 2.
+- Stage rerun after deployment: `playwright/tests/gst-phase2-reports.live.spec.ts` passed with 4 tests in 1.1 minutes.
+- Supporting stage GST report regression after deployment: `playwright/tests/gst.live.spec.ts -g "GSTR-1|GSTR-3B|reconciliation|routes preserve active scope"` passed with 6 tests in 1.1 minutes.
+- Final Phase 2 certification conclusion: GSTR-1 / GSTR-3B / Reconciliation stage certification passed after the scope-preserving drilldown fix was deployed.
+
+Phase 3 ITC / 2B reconciliation certification progress on 18 Sep 2026:
+
+- New focused Playwright live spec prepared: `playwright/tests/gst-phase3-itc-2b.live.spec.ts`.
+- Scope: GST Compliance Center ITC / 2B card, Input GST ledger vs GSTR-3B ITC tie-out, GSTR-2B decision summary, reconciliation drilldown, Purchase Statutory ITC Register, GSTR-2B Match, Reconciliation workspace, reviewer queue, and evidence surfaces.
+- Certification validates summary math, zero-state handling, scoped drilldown URLs, workspace scope preservation, run-list API filters, reviewer-queue API filters, and available transaction/evidence details.
+- Product defect found: GST Reconciliation drilldown did not pass the umbrella GST scope into reconciliation run-list and reviewer-queue requests. The UI route had `return_period` and `gstin`, but the run-list API omitted `return_period` and `gst_registration_gstin`.
+- Impact: a copied/refreshed ITC / 2B drilldown could render using the broader reconciliation dataset instead of the exact GST Compliance Center scope.
+- Frontend fix prepared: GST Reconciliation dashboard now reads `return_period` and `gstin` from route params, normalizes GSTIN to uppercase, passes the scope into the run list, and includes the same scope in summary/reviewer queue requests.
+- Product defect found: Purchase Statutory generated dynamic card/checklist arrays with object-identity tracking, causing browser runtime instability during certification after refresh/change detection.
+- Frontend fix prepared: Purchase Statutory card/checklist loops now track stable labels/titles/keys and use boolean-safe done state binding.
+- Product defect found: reviewer evidence loaded a legacy entity-user endpoint that returned 404 in the certified stage-backed flow.
+- Frontend fix prepared: reviewer user lookup now uses the authenticated current-user plus entity context and avoids the legacy endpoint.
+- Local verification: targeted Angular specs passed with 46 tests, covering user-service fallback and GST reconciliation scoped filters.
+- Browser certification against local frontend with stage backend data: `playwright/tests/gst-phase3-itc-2b.live.spec.ts --project=chromium` passed with 2 tests.
+- Final Phase 3 local certification conclusion: ITC / 2B umbrella values, drilldowns, scoped run/reviewer requests, Purchase Statutory ITC register, GSTR-2B match, reconciliation, and evidence surfaces passed after the frontend fixes.
+- Stage rerun after frontend deployment: `playwright/tests/gst-phase3-itc-2b.live.spec.ts --project=chromium` passed with 2 tests against `https://accerio.in`.
+- Final Phase 3 certification conclusion: ITC / 2B reconciliation, Purchase Statutory ITC register, GSTR-2B match, reviewer queue, evidence surfaces, and GST scope-preserving drilldowns are stage-certified.
 
 ## Launch Definition
 
@@ -982,6 +1025,21 @@ Testing:
 Launch gate:
 
 - A filed period cannot accidentally change without explicit amendment workflow.
+
+Phase 5 implementation status on 18 Sep 2026:
+
+- Backend GST period lifecycle persistence added through `GstCompliancePeriodLifecycle` and `GstCompliancePeriodLifecycleAudit`.
+- Lifecycle scope is entity, financial year, subentity, GSTIN, and return period, with portal return period retained for GSTN/WhiteBooks alignment.
+- Supported lifecycle actions now include prepare, submit review, freeze, file, and reopen for amendment.
+- Freeze and reopen require an explicit note/reason; filing is allowed only after freeze.
+- Lifecycle records retain checklist payload, evidence payload, portal reference, actor fields, timestamps, lock state, and audit history.
+- GST Compliance Center snapshot now prefers the persisted lifecycle status where present, so frozen/filed/amendment-open status is visible in the umbrella response instead of being inferred only from portal runs.
+- API endpoint added: `GET/POST /api/reports/gst-compliance/lifecycle/`.
+
+Phase 5 QA evidence:
+
+- Backend focused tests: `./venv/bin/python manage.py test reports.tests_gst_compliance_snapshot --keepdb --noinput --verbosity=1` - 19 tests passed.
+- Migration consistency: `./venv/bin/python manage.py makemigrations --check --dry-run` - no changes detected.
 
 ### Phase 6: Notices, Calendar, And Operational Controls
 

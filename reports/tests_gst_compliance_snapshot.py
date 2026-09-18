@@ -17,6 +17,8 @@ from gst_reconciliation.models import GstReconciliationItem, GstReconciliationRu
 from reports.gst_compliance import GstComplianceSnapshotService, parse_gst_compliance_scope
 from reports.gst_compliance.views import GST_COMPLIANCE_CENTER_VIEW_PERMISSIONS
 from reports.models import (
+    GstCompliancePeriodLifecycle,
+    GstCompliancePeriodLifecycleAudit,
     GstComplianceTask,
     GstComplianceTaskAttachment,
     GstComplianceTaskAudit,
@@ -245,6 +247,46 @@ class GstComplianceSnapshotTests(TestCase):
         evidence = {item["code"]: item for item in payload["period_lifecycle"]["evidence"]}
         self.assertEqual(evidence["gstr1_portal"]["reference"], "GSTR1-ARN-062026")
         self.assertEqual(evidence["gstr3b_portal"]["reference"], "GSTR3B-ARN-062026")
+
+    def test_snapshot_period_lifecycle_prefers_persisted_freeze_state(self):
+        EntityGstRegistration.objects.create(
+            entity=self.entity,
+            gstin="29ABCDE1234F1Z5",
+            registration_type=self.gst_type,
+            is_primary=True,
+            createdby=self.user,
+        )
+        lifecycle = GstCompliancePeriodLifecycle.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            gstin="29ABCDE1234F1Z5",
+            return_period="2026-06",
+            portal_return_period="062026",
+            status=GstCompliancePeriodLifecycle.Status.FROZEN,
+            locked=True,
+            checklist={"gstr1_ready": True, "gstr3b_ready": True},
+            evidence=[{"code": "review_pack", "label": "Reviewer pack", "status": "frozen", "reference": "PK-1"}],
+            notes="Frozen after review.",
+            frozen_by=self.user,
+            frozen_at=timezone.now(),
+        )
+
+        scope = parse_gst_compliance_scope(self.scope_params)
+        payload = GstComplianceSnapshotService().build(
+            scope=scope,
+            permission_codes=set(GST_COMPLIANCE_CENTER_VIEW_PERMISSIONS),
+        )
+
+        self.assertEqual(payload["period_lifecycle"]["lifecycle_id"], lifecycle.id)
+        self.assertEqual(payload["period_lifecycle"]["status"], "frozen")
+        self.assertEqual(payload["period_lifecycle"]["label"], "Frozen")
+        self.assertTrue(payload["period_lifecycle"]["locked"])
+        self.assertTrue(payload["period_lifecycle"]["can_reopen"])
+        self.assertEqual(payload["period_lifecycle"]["checklist"]["gstr1_ready"], True)
+        self.assertEqual(payload["period_lifecycle"]["notes"], "Frozen after review.")
+        evidence = {item["code"]: item for item in payload["period_lifecycle"]["evidence"]}
+        self.assertEqual(evidence["review_pack"]["reference"], "PK-1")
 
     def test_snapshot_compliance_operations_builds_calendar_tasks_and_alerts(self):
         EntityGstRegistration.objects.create(
@@ -879,6 +921,80 @@ class GstComplianceTaskApiTests(TestCase):
         }
         self.client = APIClient()
         self.client.force_authenticate(self.user)
+
+    @patch("reports.gst_compliance.views.GstCompliancePeriodLifecycleAPIView.enforce_scope")
+    @patch("reports.gst_compliance.views.assert_any_report_permission")
+    def test_period_lifecycle_api_transitions_and_audits_period_lock(self, mock_permissions, mock_enforce_scope):
+        mock_permissions.return_value = set(GST_COMPLIANCE_CENTER_VIEW_PERMISSIONS)
+        EntityGstRegistration.objects.create(
+            entity=self.entity,
+            gstin="29ABCDE1234F1Z5",
+            registration_type=self.gst_type,
+            is_primary=True,
+            createdby=self.user,
+        )
+
+        prepare_response = self.client.post(
+            reverse("reports_api:gst-compliance-lifecycle"),
+            {
+                **self.scope_params,
+                "action": "prepare",
+                "portal_return_period": "062026",
+                "checklist": {"gstr1_ready": True},
+                "evidence": [{"code": "draft_pack", "label": "Draft pack", "status": "prepared", "reference": "DRAFT-1"}],
+            },
+            format="json",
+        )
+        self.assertEqual(prepare_response.status_code, 200)
+        self.assertEqual(prepare_response.data["lifecycle"]["status"], "prepared")
+        self.assertFalse(prepare_response.data["lifecycle"]["locked"])
+
+        freeze_without_note = self.client.post(
+            reverse("reports_api:gst-compliance-lifecycle"),
+            {**self.scope_params, "action": "freeze"},
+            format="json",
+        )
+        self.assertEqual(freeze_without_note.status_code, 400)
+        self.assertIn("note", freeze_without_note.data)
+
+        freeze_response = self.client.post(
+            reverse("reports_api:gst-compliance-lifecycle"),
+            {**self.scope_params, "action": "freeze", "note": "Reviewer approved June filing pack."},
+            format="json",
+        )
+        self.assertEqual(freeze_response.status_code, 200)
+        self.assertEqual(freeze_response.data["lifecycle"]["status"], "frozen")
+        self.assertTrue(freeze_response.data["lifecycle"]["locked"])
+        self.assertTrue(freeze_response.data["lifecycle"]["can_reopen"])
+
+        file_response = self.client.post(
+            reverse("reports_api:gst-compliance-lifecycle"),
+            {**self.scope_params, "action": "file", "portal_reference": "ARN-GST-062026"},
+            format="json",
+        )
+        self.assertEqual(file_response.status_code, 200)
+        self.assertEqual(file_response.data["lifecycle"]["status"], "filed")
+        self.assertEqual(file_response.data["lifecycle"]["portal_reference"], "ARN-GST-062026")
+
+        reopen_response = self.client.post(
+            reverse("reports_api:gst-compliance-lifecycle"),
+            {**self.scope_params, "action": "reopen", "note": "Credit note received after filing."},
+            format="json",
+        )
+        self.assertEqual(reopen_response.status_code, 200)
+        self.assertEqual(reopen_response.data["lifecycle"]["status"], "amendment_open")
+        self.assertFalse(reopen_response.data["lifecycle"]["locked"])
+
+        lifecycle = GstCompliancePeriodLifecycle.objects.get(entity=self.entity, gstin="29ABCDE1234F1Z5", return_period="2026-06")
+        self.assertEqual(lifecycle.reopened_by_id, self.user.id)
+        self.assertEqual(
+            list(GstCompliancePeriodLifecycleAudit.objects.filter(lifecycle=lifecycle).order_by("created_at").values_list("action", flat=True)),
+            ["prepare", "freeze", "file", "reopen"],
+        )
+
+        get_response = self.client.get(reverse("reports_api:gst-compliance-lifecycle"), self.scope_params)
+        self.assertEqual(get_response.status_code, 200)
+        self.assertEqual(get_response.data["lifecycle"]["status"], "amendment_open")
 
     @patch("reports.gst_compliance.views.GstComplianceTaskListCreateAPIView.enforce_scope")
     @patch("reports.gst_compliance.views.assert_any_report_permission")
