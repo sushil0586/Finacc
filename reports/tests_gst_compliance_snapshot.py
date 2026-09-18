@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -18,6 +18,8 @@ from reports.gst_compliance.views import GST_COMPLIANCE_CENTER_VIEW_PERMISSIONS
 from reports.models import GstPortalFilingRun, GstPortalProfile, ReportFilingRun, ReportFreezeSnapshot
 from posting.models import Entry, EntryStatus, EntityStaticAccountMap, JournalLine, PostingBatch, StaticAccount, TxnType
 from posting.services.static_accounts import StaticAccountService
+from sales.models import SalesInvoiceHeader
+from sales.models.sales_compliance import SalesEInvoice, SalesEInvoiceStatus, SalesEWayBill, SalesEWayStatus
 
 
 class GstComplianceSnapshotTests(TestCase):
@@ -48,6 +50,47 @@ class GstComplianceSnapshotTests(TestCase):
             "subentity": self.subentity.id,
             "return_period": "2026-06",
         }
+
+    def _create_sales_invoice(
+        self,
+        *,
+        doc_no: int,
+        bill_date,
+        seller_gstin: str = "29ABCDE1234F1Z5",
+        subentity=None,
+        einvoice_applicable: bool = True,
+        eway_applicable: bool = True,
+        status=SalesInvoiceHeader.Status.POSTED,
+    ) -> SalesInvoiceHeader:
+        return SalesInvoiceHeader.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity if subentity is None else subentity,
+            doc_type=SalesInvoiceHeader.DocType.TAX_INVOICE,
+            status=status,
+            bill_date=bill_date,
+            posting_date=bill_date,
+            doc_code="SI",
+            doc_no=doc_no,
+            invoice_number=f"SI/{doc_no}",
+            customer_name=f"Customer {doc_no}",
+            customer_gstin="29ABCDE1234F2Z6",
+            customer_state_code="29",
+            seller_gstin=seller_gstin,
+            seller_state_code="29",
+            place_of_supply_state_code="29",
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B,
+            taxability=SalesInvoiceHeader.Taxability.TAXABLE,
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTRA_STATE,
+            gst_compliance_mode=SalesInvoiceHeader.GstComplianceMode.EINVOICE_AND_EWAY,
+            is_einvoice_applicable=einvoice_applicable,
+            is_eway_applicable=eway_applicable,
+            total_taxable_value=Decimal("100.00"),
+            total_cgst=Decimal("9.00"),
+            total_sgst=Decimal("9.00"),
+            grand_total=Decimal("118.00"),
+            created_by=self.user,
+        )
 
     def test_snapshot_builds_all_cards_with_resolved_gstin_and_portal_status(self):
         EntityGstRegistration.objects.create(
@@ -132,6 +175,146 @@ class GstComplianceSnapshotTests(TestCase):
         self.assertEqual(cards["itc_2b"]["status"], "needs_review")
         self.assertEqual(payload["summary"]["blocked_count"], 3)
         self.assertFalse(cards["gstr3b"]["access"]["has_permission"])
+
+    def test_snapshot_aggregates_einvoice_eway_period_health(self):
+        EntityGstRegistration.objects.create(
+            entity=self.entity,
+            gstin="29ABCDE1234F1Z5",
+            registration_type=self.gst_type,
+            is_primary=True,
+            createdby=self.user,
+        )
+        generated = self._create_sales_invoice(doc_no=501, bill_date=datetime(2026, 6, 5).date())
+        SalesEInvoice.objects.create(
+            invoice=generated,
+            status=SalesEInvoiceStatus.GENERATED,
+            irn="IRN-GEN-501",
+            provider_name="whitebooks",
+            provider_environment=1,
+            credential_gstin="29ABCDE1234F1Z5",
+            created_by=self.user,
+        )
+        SalesEWayBill.objects.create(
+            invoice=generated,
+            status=SalesEWayStatus.GENERATED,
+            ewb_no="171001234501",
+            valid_upto=timezone.now() + timedelta(days=2),
+            vehicle_no="KA01AB1234",
+            provider_name="whitebooks",
+            provider_environment=1,
+            credential_gstin="29ABCDE1234F1Z5",
+            created_by=self.user,
+        )
+        failed = self._create_sales_invoice(doc_no=502, bill_date=datetime(2026, 6, 10).date())
+        SalesEInvoice.objects.create(
+            invoice=failed,
+            status=SalesEInvoiceStatus.FAILED,
+            last_error_code="DUPIRN",
+            last_error_message="Duplicate IRN",
+            credential_gstin="29ABCDE1234F1Z5",
+            created_by=self.user,
+        )
+        SalesEWayBill.objects.create(
+            invoice=failed,
+            status=SalesEWayStatus.FAILED,
+            last_error_message="Distance is invalid",
+            credential_gstin="29ABCDE1234F1Z5",
+            created_by=self.user,
+        )
+        expired = self._create_sales_invoice(doc_no=503, bill_date=datetime(2026, 6, 20).date())
+        SalesEInvoice.objects.create(
+            invoice=expired,
+            status=SalesEInvoiceStatus.GENERATED,
+            irn="IRN-GEN-503",
+            credential_gstin="29ABCDE1234F1Z5",
+            created_by=self.user,
+        )
+        SalesEWayBill.objects.create(
+            invoice=expired,
+            status=SalesEWayStatus.GENERATED,
+            ewb_no="171001234503",
+            valid_upto=timezone.now() - timedelta(days=1),
+            credential_gstin="29ABCDE1234F1Z5",
+            created_by=self.user,
+        )
+        outside_period = self._create_sales_invoice(doc_no=504, bill_date=datetime(2026, 7, 5).date())
+        SalesEInvoice.objects.create(
+            invoice=outside_period,
+            status=SalesEInvoiceStatus.FAILED,
+            credential_gstin="29ABCDE1234F1Z5",
+            created_by=self.user,
+        )
+        other_gstin = self._create_sales_invoice(
+            doc_no=505,
+            bill_date=datetime(2026, 6, 12).date(),
+            seller_gstin="27ABCDE1234F1Z5",
+        )
+        SalesEInvoice.objects.create(
+            invoice=other_gstin,
+            status=SalesEInvoiceStatus.FAILED,
+            credential_gstin="27ABCDE1234F1Z5",
+            created_by=self.user,
+        )
+
+        scope = parse_gst_compliance_scope(self.scope_params)
+        payload = GstComplianceSnapshotService().build(
+            scope=scope,
+            permission_codes=set(GST_COMPLIANCE_CENTER_VIEW_PERMISSIONS),
+        )
+        card = {item["code"]: item for item in payload["cards"]}["einvoice_eway"]
+
+        self.assertEqual(card["status"], "blocked")
+        self.assertEqual(card["summary"]["invoices"], 3)
+        self.assertEqual(card["summary"]["irn_failed"], 1)
+        self.assertEqual(card["summary"]["ewb_failed"], 1)
+        self.assertEqual(card["summary"]["ewb_expired"], 1)
+        self.assertEqual(card["signals"]["irn_generated"], 2)
+        self.assertEqual(card["signals"]["ewb_generated"], 2)
+        self.assertEqual(card["signals"]["retry_ready"], 2)
+        self.assertEqual(card["signals"]["ewb_expiring_soon"], 1)
+        self.assertEqual(card["signals"]["provider_names"], "whitebooks")
+        self.assertTrue(any(item["code"] == "EWAY_EXPIRED" for item in card["blockers"]))
+        self.assertTrue(any(item["code"] == "EINVOICE_EWAY_FAILED_ITEMS" for item in card["warnings"]))
+
+    def test_snapshot_einvoice_eway_card_respects_subentity_and_not_applicable_counts(self):
+        EntityGstRegistration.objects.create(
+            entity=self.entity,
+            gstin="29ABCDE1234F1Z5",
+            registration_type=self.gst_type,
+            is_primary=True,
+            createdby=self.user,
+        )
+        branch = SubEntity.objects.create(entity=self.entity, subentityname="Branch", is_head_office=False)
+        in_scope = self._create_sales_invoice(
+            doc_no=601,
+            bill_date=datetime(2026, 6, 6).date(),
+            einvoice_applicable=False,
+            eway_applicable=False,
+        )
+        out_scope_branch = self._create_sales_invoice(
+            doc_no=602,
+            bill_date=datetime(2026, 6, 6).date(),
+            subentity=branch,
+        )
+        SalesEInvoice.objects.create(
+            invoice=out_scope_branch,
+            status=SalesEInvoiceStatus.FAILED,
+            credential_gstin="29ABCDE1234F1Z5",
+            created_by=self.user,
+        )
+
+        scope = parse_gst_compliance_scope(self.scope_params)
+        payload = GstComplianceSnapshotService().build(
+            scope=scope,
+            permission_codes=set(GST_COMPLIANCE_CENTER_VIEW_PERMISSIONS),
+        )
+        card = {item["code"]: item for item in payload["cards"]}["einvoice_eway"]
+
+        self.assertEqual(card["status"], "ready")
+        self.assertEqual(card["summary"]["invoices"], 1)
+        self.assertEqual(card["summary"]["irn_failed"], 0)
+        self.assertEqual(card["signals"]["not_applicable"], 2)
+        self.assertEqual(card["warning_count"], 0)
 
     @patch("reports.gst_compliance.services.Gstr3bSummaryService.build")
     def test_snapshot_surfaces_input_tax_ledger_tie_out_on_itc_card(self, mock_gstr3b):

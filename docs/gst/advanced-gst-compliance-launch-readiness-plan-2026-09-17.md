@@ -489,6 +489,57 @@ Certification gate:
 - User can find all failed or pending e-invoice/e-way items from the GST cockpit.
 - Existing sales invoice compliance workflow remains unchanged.
 
+Phase F gap audit on 18 Sep 2026:
+
+What is already implemented:
+
+- Sales invoice compliance has mature invoice-level APIs and UI actions for IRN generation, combined IRN plus E-Way generation, B2B E-Way generation, B2C E-Way generation, IRN cancellation, E-Way cancellation, E-Way by IRN lookup, GSTIN sync, transporter lookup, HSN lookup, trip sheet, consolidated E-Way, multi-vehicle actions, vehicle update, transporter update, and validity extension.
+- Sales compliance artifact models persist IRN/EWB status, numbers, acknowledgement dates, valid-up-to dates, request/response JSON, provider provenance, credential GSTIN, last error code/message, attempt count, and success timestamps.
+- Backend state guards exist for generated/cancelled/not-applicable flows, including blocking IRN cancellation while an active E-Way exists.
+- Existing frontend unit tests and browser tests cover many invoice-level flows: B2B/B2C generation, partial success, retry, duplicate IRN, E-Way timeout recovery, stale guidance clearing, reload stability, RBAC, and action payloads.
+- The GST Compliance Center already exposes an `E-Invoice / E-Way` card and deep-link target into the sales compliance surface.
+
+Confirmed gaps before Phase F implementation:
+
+| Gap | Current behavior | Required behavior |
+| --- | --- | --- |
+| Period-level aggregation | The GST Compliance Center card only shows generic GSTIN/scope signals and permission/deep-link status. | Aggregate sales invoices for the selected entity, FY, subentity, GSTIN, and period/date range. |
+| IRN health | Generated, pending, failed, cancelled, not-applicable, duplicate/error, and retry-ready IRN counts are not summarized in the umbrella. | Show IRN counts and status severity in the cockpit card. |
+| E-Way health | Generated, pending, failed, cancelled, expired, expiring soon, not-applicable, missing transport data, and retry-ready EWB counts are not summarized in the umbrella. | Show EWB counts and expiry/transport warnings in the cockpit card. |
+| Provider readiness | Provider name/environment exists on artifacts, but the cockpit does not summarize credential readiness, last provider error, or live/sandbox mode. | Add provider readiness signals and warnings. |
+| Drilldown list | The cockpit opens the general sales compliance route, not a filtered list of affected invoices for this GSTIN/period. | Add a period-filtered drilldown or deep link carrying compliance filters. |
+| Umbrella/workspace reconciliation | The cockpit card does not prove its counts agree with the invoice workspace artifacts. | Browser tests must compare card counts against mocked/controlled invoice-level detail data. |
+| Stale/race safety | GST scope race tests exist for the center generally, but not for E-Invoice/E-Way aggregation changes. | Rapid GSTIN/period switching must prove stale IRN/EWB counts do not remain visible. |
+| Certification data states | Invoice browser specs cover many flows, but the umbrella card lacks exhaustive ready/warning/error/blocked/not-configured/filed-like state coverage for this area. | Add deterministic Playwright states for normal, zero, warning, error, blocked, not configured, API failure, and permission restricted. |
+
+Phase F development plan:
+
+1. Backend aggregation service: query `SalesInvoiceHeader` joined to `SalesEInvoice` and `SalesEWayBill` using GST compliance scope.
+2. Status classifier: convert artifact states into cockpit signals: ready, needs review, blocked, not configured, expired, expiring soon, retry-ready, and not applicable.
+3. Snapshot integration: enrich the `einvoice_eway` card with IRN/EWB counts, warning/blocker messages, provider readiness, and a drilldown link.
+4. Frontend presentation: render compact count chips on the card without disturbing the existing GST Compliance Center layout.
+5. Browser certification: add Playwright tests that mock period datasets and validate summary counts, warnings, drilldowns, scope persistence, API payloads, permission restricted states, and stale-data/race behavior.
+
+Phase F definition of done:
+
+- The GST Compliance Center card can answer: how many invoices in this GSTIN/period are IRN-ready, IRN-generated, IRN-failed, EWB-generated, EWB-failed, cancelled, expired, expiring, retry-ready, and not applicable.
+- Every warning on the card can be drilled back to the affected sales invoice/compliance workspace.
+- Backend tests prove entity/FY/subentity/GSTIN/period scoping and cross-entity isolation.
+- Playwright tests prove the cockpit card and workspace drilldowns remain aligned after scope changes, refresh, browser back/forward, and API failure.
+
+Phase F implementation status on 18 Sep 2026:
+
+- Backend aggregation added to the GST Compliance Center snapshot for the `E-Invoice / E-Way` card.
+- The card now summarizes scoped sales invoices by entity, financial year, subentity, GSTIN, and return period/date range.
+- Signals now include IRN generated/pending/cancelled, EWB generated/pending/cancelled, retry-ready count, not-applicable count, EWB expiring soon, missing transport detail, provider names, provider environments, and last provider error.
+- Summary values now expose invoice count, IRN failed count, EWB failed count, and expired EWB count.
+- Warnings/blockers are raised for failed items, pending items, expired EWB, expiring EWB, and incomplete transport detail.
+- Existing invoice-level sales compliance workflow remains unchanged.
+
+Phase F QA evidence:
+
+- Backend focused tests: `./venv/bin/python manage.py test reports.tests_gst_compliance_snapshot --keepdb --noinput --verbosity=1` - 8 tests passed.
+
 ### Phase G: Filing Lifecycle, Freeze, Amendments, And Portal Status
 
 Purpose: control the return period from preparation to filing and amendment.

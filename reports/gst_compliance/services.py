@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 
+from django.db.models import Q
 from django.utils import timezone
 
 from entity.models import EntityGstRegistration, SubEntityGstRegistration
@@ -12,6 +14,8 @@ from reports.gst_compliance.itc_ledger import build_input_tax_ledger_reconciliat
 from reports.gstr3b.selectors import Gstr3bScope
 from reports.gstr3b.services import Gstr3bSummaryService
 from reports.models import GstPortalFilingRun, GstPortalProfile, ReportFilingRun, ReportFreezeSnapshot
+from sales.models import SalesInvoiceHeader
+from sales.models.sales_compliance import SalesEInvoiceStatus, SalesEWayStatus
 
 
 @dataclass(frozen=True)
@@ -264,6 +268,18 @@ class GstComplianceSnapshotService:
                 )
                 status = "needs_review"
 
+        summary: dict[str, Any] | None = None
+        if definition.code == "einvoice_eway":
+            compliance_summary = self._einvoice_eway_summary(scope=scope, gstin=resolved_gstin)
+            summary = compliance_summary["summary"]
+            signals.update(compliance_summary["signals"])
+            warnings.extend(compliance_summary["warnings"])
+            blockers.extend(compliance_summary["blockers"])
+            if compliance_summary["status"] == "blocked":
+                status = "blocked"
+            elif compliance_summary["status"] == "needs_review" and status == "ready":
+                status = "needs_review"
+
         if blockers:
             status = "blocked"
         elif warnings and status == "ready":
@@ -279,6 +295,7 @@ class GstComplianceSnapshotService:
             "info_count": len(signals),
             "blockers": blockers,
             "warnings": warnings,
+            "summary": summary or {},
             "signals": signals,
             "link": link,
             "links": {"primary": link},
@@ -498,6 +515,191 @@ class GstComplianceSnapshotService:
             + (item.get("cess_imported") or 0)
         )
         return books_total if books_total else imported_total
+
+    def _einvoice_eway_summary(self, *, scope: GstComplianceScope, gstin: str | None) -> dict[str, Any]:
+        empty = {
+            "summary": {
+                "invoices": 0,
+                "irn_failed": 0,
+                "ewb_failed": 0,
+                "ewb_expired": 0,
+            },
+            "signals": {
+                "irn_generated": 0,
+                "irn_pending": 0,
+                "irn_cancelled": 0,
+                "ewb_generated": 0,
+                "ewb_pending": 0,
+                "ewb_cancelled": 0,
+                "retry_ready": 0,
+                "not_applicable": 0,
+            },
+            "warnings": [],
+            "blockers": [],
+            "status": "ready",
+        }
+
+        qs = (
+            SalesInvoiceHeader.objects.filter(entity_id=scope.entity_id)
+            .filter(status__in=[SalesInvoiceHeader.Status.CONFIRMED, SalesInvoiceHeader.Status.POSTED])
+            .select_related("einvoice_artifact", "eway_artifact")
+        )
+        if hasattr(SalesInvoiceHeader, "is_active"):
+            qs = qs.filter(is_active=True)
+        if scope.entityfinid_id:
+            qs = qs.filter(entityfinid_id=scope.entityfinid_id)
+        if scope.subentity_id is not None:
+            qs = qs.filter(subentity_id=scope.subentity_id)
+        if scope.from_date:
+            qs = qs.filter(bill_date__gte=scope.from_date)
+        if scope.to_date:
+            qs = qs.filter(bill_date__lte=scope.to_date)
+        if gstin:
+            qs = qs.filter(
+                Q(seller_gstin__iexact=gstin)
+                | Q(einvoice_artifact__credential_gstin__iexact=gstin)
+                | Q(eway_artifact__credential_gstin__iexact=gstin)
+            )
+
+        counters = {
+            "invoices": 0,
+            "irn_generated": 0,
+            "irn_pending": 0,
+            "irn_failed": 0,
+            "irn_cancelled": 0,
+            "irn_not_applicable": 0,
+            "ewb_generated": 0,
+            "ewb_pending": 0,
+            "ewb_failed": 0,
+            "ewb_cancelled": 0,
+            "ewb_not_applicable": 0,
+            "ewb_expired": 0,
+            "ewb_expiring_soon": 0,
+            "ewb_missing_transport": 0,
+            "retry_ready": 0,
+        }
+        provider_names: set[str] = set()
+        provider_environments: set[str] = set()
+        last_error = ""
+        now = timezone.now()
+        expiry_cutoff = now + timedelta(days=3)
+
+        for invoice in qs:
+            counters["invoices"] += 1
+            einv = getattr(invoice, "einvoice_artifact", None)
+            eway = getattr(invoice, "eway_artifact", None)
+
+            if bool(getattr(invoice, "is_einvoice_applicable", False)):
+                einv_status = int(getattr(einv, "status", 0) or 0) if einv else int(SalesEInvoiceStatus.PENDING)
+                if einv_status == int(SalesEInvoiceStatus.GENERATED) and getattr(einv, "irn", None):
+                    counters["irn_generated"] += 1
+                elif einv_status == int(SalesEInvoiceStatus.CANCELLED):
+                    counters["irn_cancelled"] += 1
+                elif einv_status == int(SalesEInvoiceStatus.FAILED):
+                    counters["irn_failed"] += 1
+                    counters["retry_ready"] += 1
+                else:
+                    counters["irn_pending"] += 1
+            else:
+                counters["irn_not_applicable"] += 1
+
+            if bool(getattr(invoice, "is_eway_applicable", False)):
+                eway_status = int(getattr(eway, "status", 0) or 0) if eway else int(SalesEWayStatus.PENDING)
+                if eway_status == int(SalesEWayStatus.GENERATED) and getattr(eway, "ewb_no", None):
+                    counters["ewb_generated"] += 1
+                    valid_upto = getattr(eway, "valid_upto", None)
+                    if valid_upto and valid_upto < now:
+                        counters["ewb_expired"] += 1
+                    elif valid_upto and valid_upto <= expiry_cutoff:
+                        counters["ewb_expiring_soon"] += 1
+                    if not (getattr(eway, "vehicle_no", None) or getattr(eway, "transporter_id", None) or getattr(eway, "transporter_name", None)):
+                        counters["ewb_missing_transport"] += 1
+                elif eway_status == int(SalesEWayStatus.CANCELLED):
+                    counters["ewb_cancelled"] += 1
+                elif eway_status == int(SalesEWayStatus.FAILED):
+                    counters["ewb_failed"] += 1
+                    counters["retry_ready"] += 1
+                else:
+                    counters["ewb_pending"] += 1
+            else:
+                counters["ewb_not_applicable"] += 1
+
+            for artifact in (einv, eway):
+                provider_name = str(getattr(artifact, "provider_name", "") or "").strip()
+                if provider_name:
+                    provider_names.add(provider_name)
+                provider_environment = getattr(artifact, "provider_environment", None)
+                if provider_environment not in (None, ""):
+                    provider_environments.add(str(provider_environment))
+                error_message = str(getattr(artifact, "last_error_message", "") or "").strip()
+                error_code = str(getattr(artifact, "last_error_code", "") or "").strip()
+                if error_message or error_code:
+                    last_error = error_message or error_code
+
+        warnings: list[dict[str, str]] = []
+        blockers: list[dict[str, str]] = []
+        if counters["irn_failed"] or counters["ewb_failed"]:
+            warnings.append(
+                {
+                    "code": "EINVOICE_EWAY_FAILED_ITEMS",
+                    "message": f"{counters['irn_failed'] + counters['ewb_failed']} e-invoice/e-way item needs retry or correction.",
+                }
+            )
+        if counters["irn_pending"] or counters["ewb_pending"]:
+            warnings.append(
+                {
+                    "code": "EINVOICE_EWAY_PENDING_ITEMS",
+                    "message": f"{counters['irn_pending'] + counters['ewb_pending']} e-invoice/e-way item is still pending for this period.",
+                }
+            )
+        if counters["ewb_expired"]:
+            blockers.append(
+                {
+                    "code": "EWAY_EXPIRED",
+                    "message": f"{counters['ewb_expired']} generated e-way bill has expired in this period.",
+                }
+            )
+        elif counters["ewb_expiring_soon"]:
+            warnings.append(
+                {
+                    "code": "EWAY_EXPIRING_SOON",
+                    "message": f"{counters['ewb_expiring_soon']} e-way bill expires within 3 days.",
+                }
+            )
+        if counters["ewb_missing_transport"]:
+            warnings.append(
+                {
+                    "code": "EWAY_TRANSPORT_DETAILS_INCOMPLETE",
+                    "message": f"{counters['ewb_missing_transport']} generated e-way bill is missing vehicle/transporter detail.",
+                }
+            )
+
+        return {
+            "summary": {
+                "invoices": counters["invoices"],
+                "irn_failed": counters["irn_failed"],
+                "ewb_failed": counters["ewb_failed"],
+                "ewb_expired": counters["ewb_expired"],
+            },
+            "signals": {
+                "irn_generated": counters["irn_generated"],
+                "irn_pending": counters["irn_pending"],
+                "irn_cancelled": counters["irn_cancelled"],
+                "ewb_generated": counters["ewb_generated"],
+                "ewb_pending": counters["ewb_pending"],
+                "ewb_cancelled": counters["ewb_cancelled"],
+                "retry_ready": counters["retry_ready"],
+                "not_applicable": counters["irn_not_applicable"] + counters["ewb_not_applicable"],
+                "ewb_expiring_soon": counters["ewb_expiring_soon"],
+                "ewb_missing_transport": counters["ewb_missing_transport"],
+                "provider_names": ", ".join(sorted(provider_names)),
+                "provider_environments": ", ".join(sorted(provider_environments)),
+                "last_provider_error": last_error,
+            },
+            "warnings": warnings,
+            "blockers": blockers,
+            "status": "blocked" if blockers else "needs_review" if warnings else "ready",
+        }
 
     def _period(self, scope: GstComplianceScope) -> dict[str, Any]:
         if scope.return_period:
