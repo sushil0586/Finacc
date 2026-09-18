@@ -61,18 +61,27 @@ class GstComplianceSnapshotTests(TestCase):
         einvoice_applicable: bool = True,
         eway_applicable: bool = True,
         status=SalesInvoiceHeader.Status.POSTED,
+        doc_type=SalesInvoiceHeader.DocType.TAX_INVOICE,
+        original_invoice=None,
+        total_taxable_value=Decimal("100.00"),
+        total_cgst=Decimal("9.00"),
+        total_sgst=Decimal("9.00"),
+        total_igst=Decimal("0.00"),
+        total_cess=Decimal("0.00"),
+        grand_total=Decimal("118.00"),
     ) -> SalesInvoiceHeader:
         return SalesInvoiceHeader.objects.create(
             entity=self.entity,
             entityfinid=self.entityfin,
             subentity=self.subentity if subentity is None else subentity,
-            doc_type=SalesInvoiceHeader.DocType.TAX_INVOICE,
+            doc_type=doc_type,
             status=status,
             bill_date=bill_date,
             posting_date=bill_date,
             doc_code="SI",
             doc_no=doc_no,
             invoice_number=f"SI/{doc_no}",
+            original_invoice=original_invoice,
             customer_name=f"Customer {doc_no}",
             customer_gstin="29ABCDE1234F2Z6",
             customer_state_code="29",
@@ -85,10 +94,12 @@ class GstComplianceSnapshotTests(TestCase):
             gst_compliance_mode=SalesInvoiceHeader.GstComplianceMode.EINVOICE_AND_EWAY,
             is_einvoice_applicable=einvoice_applicable,
             is_eway_applicable=eway_applicable,
-            total_taxable_value=Decimal("100.00"),
-            total_cgst=Decimal("9.00"),
-            total_sgst=Decimal("9.00"),
-            grand_total=Decimal("118.00"),
+            total_taxable_value=total_taxable_value,
+            total_cgst=total_cgst,
+            total_sgst=total_sgst,
+            total_igst=total_igst,
+            total_cess=total_cess,
+            grand_total=grand_total,
             created_by=self.user,
         )
 
@@ -163,6 +174,13 @@ class GstComplianceSnapshotTests(TestCase):
         self.assertEqual(cards["portal"]["links"]["primary"]["route"], "/gstreport")
         self.assertTrue(cards["gstr3b"]["access"]["has_permission"])
         self.assertGreaterEqual(len(payload["next_actions"]), 1)
+        self.assertEqual(payload["period_lifecycle"]["status"], "prepared")
+        self.assertFalse(payload["period_lifecycle"]["locked"])
+        self.assertEqual(payload["period_lifecycle"]["portal_return_period"], "062026")
+        lifecycle_evidence = {item["code"]: item for item in payload["period_lifecycle"]["evidence"]}
+        self.assertEqual(lifecycle_evidence["gstr1_portal"]["reference"], "ARN-1")
+        self.assertEqual(lifecycle_evidence["gstr9_freeze"]["reference"], "v3")
+        self.assertEqual(lifecycle_evidence["gstr9_filing"]["reference"], "GSTR9-PREP")
 
     def test_snapshot_surfaces_missing_gstin_as_setup_warning_without_crashing(self):
         scope = parse_gst_compliance_scope(self.scope_params)
@@ -175,6 +193,139 @@ class GstComplianceSnapshotTests(TestCase):
         self.assertEqual(cards["itc_2b"]["status"], "needs_review")
         self.assertEqual(payload["summary"]["blocked_count"], 3)
         self.assertFalse(cards["gstr3b"]["access"]["has_permission"])
+        self.assertEqual(payload["period_lifecycle"]["status"], "not_configured")
+        self.assertEqual(payload["period_lifecycle"]["blockers"][0]["code"], "GSTIN_NOT_CONFIGURED")
+        self.assertEqual(payload["period_lifecycle"]["evidence"], [])
+
+    def test_snapshot_period_lifecycle_marks_monthly_period_filed_when_gstr1_and_gstr3b_are_filed(self):
+        EntityGstRegistration.objects.create(
+            entity=self.entity,
+            gstin="29ABCDE1234F1Z5",
+            registration_type=self.gst_type,
+            is_primary=True,
+            createdby=self.user,
+        )
+        for return_type, reference in (
+            (GstPortalFilingRun.ReturnType.GSTR1, "GSTR1-ARN-062026"),
+            (GstPortalFilingRun.ReturnType.GSTR3B, "GSTR3B-ARN-062026"),
+        ):
+            GstPortalFilingRun.objects.create(
+                return_type=return_type,
+                entity=self.entity,
+                entityfinid=self.entityfin,
+                subentity=self.subentity,
+                gstin="29ABCDE1234F1Z5",
+                state_cd="29",
+                ret_period="062026",
+                status=GstPortalFilingRun.Status.FILED,
+                portal_reference=reference,
+                prepared_by=self.user,
+                submitted_by=self.user,
+            )
+
+        scope = parse_gst_compliance_scope(self.scope_params)
+        payload = GstComplianceSnapshotService().build(
+            scope=scope,
+            permission_codes=set(GST_COMPLIANCE_CENTER_VIEW_PERMISSIONS),
+        )
+
+        self.assertEqual(payload["period_lifecycle"]["status"], "filed")
+        self.assertTrue(payload["period_lifecycle"]["locked"])
+        self.assertTrue(payload["period_lifecycle"]["can_reopen"])
+        evidence = {item["code"]: item for item in payload["period_lifecycle"]["evidence"]}
+        self.assertEqual(evidence["gstr1_portal"]["reference"], "GSTR1-ARN-062026")
+        self.assertEqual(evidence["gstr3b_portal"]["reference"], "GSTR3B-ARN-062026")
+
+    def test_snapshot_amendment_queue_summarizes_linked_sales_notes_from_prior_period(self):
+        EntityGstRegistration.objects.create(
+            entity=self.entity,
+            gstin="29ABCDE1234F1Z5",
+            registration_type=self.gst_type,
+            is_primary=True,
+            createdby=self.user,
+        )
+        original = self._create_sales_invoice(doc_no=701, bill_date=datetime(2026, 5, 20).date())
+        self._create_sales_invoice(
+            doc_no=702,
+            bill_date=datetime(2026, 6, 8).date(),
+            doc_type=SalesInvoiceHeader.DocType.CREDIT_NOTE,
+            original_invoice=original,
+            total_taxable_value=Decimal("40.00"),
+            total_cgst=Decimal("3.60"),
+            total_sgst=Decimal("3.60"),
+            grand_total=Decimal("47.20"),
+        )
+        same_period_original = self._create_sales_invoice(doc_no=703, bill_date=datetime(2026, 6, 2).date())
+        self._create_sales_invoice(
+            doc_no=704,
+            bill_date=datetime(2026, 6, 12).date(),
+            doc_type=SalesInvoiceHeader.DocType.DEBIT_NOTE,
+            original_invoice=same_period_original,
+            total_taxable_value=Decimal("10.00"),
+            total_cgst=Decimal("0.90"),
+            total_sgst=Decimal("0.90"),
+            grand_total=Decimal("11.80"),
+        )
+
+        scope = parse_gst_compliance_scope(self.scope_params)
+        payload = GstComplianceSnapshotService().build(
+            scope=scope,
+            permission_codes=set(GST_COMPLIANCE_CENTER_VIEW_PERMISSIONS),
+        )
+
+        queue = payload["amendment_queue"]
+        self.assertEqual(queue["status"], "needs_review")
+        self.assertEqual(queue["summary"]["impact_count"], 1)
+        self.assertEqual(queue["summary"]["sales_note_count"], 1)
+        self.assertEqual(queue["summary"]["taxable_impact"], "-40.00")
+        self.assertEqual(queue["summary"]["tax_impact"], "-7.20")
+        self.assertEqual(queue["summary"]["net_impact"], "-47.20")
+        self.assertEqual(queue["rows"][0]["document_type"], "Credit Note")
+        self.assertEqual(queue["rows"][0]["original_period"], "2026-05")
+        self.assertEqual(queue["rows"][0]["impact_period"], "2026-06")
+
+    def test_snapshot_amendment_queue_includes_gstr2b_portal_revised_context(self):
+        EntityGstRegistration.objects.create(
+            entity=self.entity,
+            gstin="29ABCDE1234F1Z5",
+            registration_type=self.gst_type,
+            is_primary=True,
+            createdby=self.user,
+        )
+        GstReconciliationRun.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            reconciliation_type=GstReconciliationRun.ReconciliationType.GSTR2B_PURCHASE,
+            gst_registration_gstin="29ABCDE1234F1Z5",
+            return_period="2026-06",
+            period_from=datetime(2026, 6, 1).date(),
+            period_to=datetime(2026, 6, 30).date(),
+            status=GstReconciliationRun.Status.IN_REVIEW,
+            summary_json={
+                "portal_context_summary": {
+                    "amended_rows": 2,
+                    "vendor_revised_rows": 1,
+                    "ims_rows": 0,
+                    "ims_pending_rows": 0,
+                    "ims_rejected_rows": 0,
+                }
+            },
+            created_by=self.user,
+        )
+
+        scope = parse_gst_compliance_scope(self.scope_params)
+        payload = GstComplianceSnapshotService().build(
+            scope=scope,
+            permission_codes=set(GST_COMPLIANCE_CENTER_VIEW_PERMISSIONS),
+        )
+
+        queue = payload["amendment_queue"]
+        self.assertEqual(queue["status"], "needs_review")
+        self.assertEqual(queue["summary"]["impact_count"], 3)
+        self.assertEqual(queue["summary"]["portal_context_count"], 3)
+        self.assertEqual(queue["rows"][0]["source"], "gstr2b_portal")
+        self.assertIn("2 amended row(s), 1 vendor revised row(s)", queue["rows"][0]["reason"])
 
     def test_snapshot_aggregates_einvoice_eway_period_health(self):
         EntityGstRegistration.objects.create(

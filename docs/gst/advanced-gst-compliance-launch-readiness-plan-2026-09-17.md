@@ -539,6 +539,8 @@ Phase F implementation status on 18 Sep 2026:
 Phase F QA evidence:
 
 - Backend focused tests: `./venv/bin/python manage.py test reports.tests_gst_compliance_snapshot --keepdb --noinput --verbosity=1` - 8 tests passed.
+- Frontend typecheck: `npm run typecheck` - passed.
+- Browser focused certification: `npx playwright test playwright/tests/gst-einvoice-eway-cockpit.spec.ts --project=chromium --reporter=line` - 1 test passed, covering the E-Invoice/E-Way cockpit card counts, warnings/blockers, next action, sales compliance drilldown, scope query preservation, and browser back return.
 
 ### Phase G: Filing Lifecycle, Freeze, Amendments, And Portal Status
 
@@ -567,6 +569,34 @@ Certification gate:
 
 - A filed/frozen period cannot change silently.
 - Amendment entries are traceable to source document and affected return period.
+
+Phase G implementation status on 18 Sep 2026:
+
+- Added a read-only `period_lifecycle` object to the GST Compliance Center snapshot.
+- The lifecycle now resolves status from existing GST evidence instead of creating a parallel filing engine.
+- Covered evidence sources:
+  - GSTR-1 portal filing run.
+  - GSTR-3B portal filing run.
+  - GSTR-9 freeze snapshot.
+  - GSTR-9 filing run.
+- Lifecycle output includes status, label, GSTIN, period, portal return period, lock state, reopen eligibility, evidence rows, warnings, and blockers.
+- Missing GSTIN now produces a lifecycle-level `not_configured` state with a blocker.
+- Monthly periods become `filed` only when both GSTR-1 and GSTR-3B portal runs are filed for the selected GSTIN and return period.
+- Prepared filing evidence takes precedence over an older freeze snapshot, matching existing GSTR-9 card behavior.
+- Frontend cockpit now renders a compact filing lifecycle strip with status, GSTIN, return period, portal period, lock state, evidence rows, and blocker/warning messages.
+- Added a read-only `amendment_queue` to the snapshot for prior-period impact review.
+- Amendment queue sources now include current-period sales credit/debit notes linked to earlier-period invoices and GSTR-2B amended/vendor-revised portal context.
+- Frontend cockpit now renders amendment item count, sales note count, portal revised count, tax impact, net impact, and top review rows.
+- No existing filing, freeze, portal, GSTR-1, GSTR-3B, or GSTR-9 mutation workflow was changed.
+
+Phase G QA evidence:
+
+- Backend focused tests: `./venv/bin/python manage.py test reports.tests_gst_compliance_snapshot --keepdb --noinput --verbosity=1` - 11 tests passed.
+- Django system check: `./venv/bin/python manage.py check` - passed.
+- Frontend typecheck: `npm run typecheck` - passed.
+- Angular focused unit tests: `npx ng test --watch=false --include src/app/component/report/gst-compliance-center/gst-compliance-center.component.spec.ts` - 14 tests passed.
+- Browser focused certification: `npx playwright test playwright/tests/gst-period-lifecycle-cockpit.spec.ts --project=chromium --reporter=line` - 2 tests passed, covering filed lifecycle evidence, lock state, stable period metadata, not-configured state, no stale evidence, amendment queue rendering, no-impact hidden state, and no raw object rendering.
+- Covered states: missing GSTIN/not configured, prepared annual lifecycle with freeze evidence, monthly filed lifecycle when both GSTR-1 and GSTR-3B are filed, linked sales note amendment impact, and GSTR-2B amended/vendor-revised portal context.
 
 ### Phase H: Calendar, Notices, Task Ownership
 

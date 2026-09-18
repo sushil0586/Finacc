@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import timedelta
+from decimal import Decimal
 from typing import Any
 
 from django.db.models import Q
@@ -68,6 +69,18 @@ class GstComplianceSnapshotService:
         ]
         summary = self._summary(cards)
         next_actions = self._next_actions(cards)
+        period_lifecycle = self._period_lifecycle_summary(
+            scope=scope,
+            gstin=resolved_gstin,
+            period=period,
+            ret_period=ret_period,
+            cards=cards,
+        )
+        amendment_queue = self._amendment_queue_summary(
+            scope=scope,
+            gstin=resolved_gstin,
+            itc_decision_summary=itc_decision_summary,
+        )
         return {
             "report_code": self.report_code,
             "report_name": self.report_name,
@@ -82,6 +95,8 @@ class GstComplianceSnapshotService:
             "cards": cards,
             "next_actions": next_actions,
             "setup_warnings": setup_warnings,
+            "period_lifecycle": period_lifecycle,
+            "amendment_queue": amendment_queue,
             "input_tax_ledger_reconciliation": input_tax_ledger_reconciliation,
             "itc_decision_summary": itc_decision_summary,
         }
@@ -339,6 +354,270 @@ class GstComplianceSnapshotService:
                 }
             )
         return actions
+
+    def _period_lifecycle_summary(
+        self,
+        *,
+        scope: GstComplianceScope,
+        gstin: str | None,
+        period: dict[str, Any],
+        ret_period: str | None,
+        cards: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        blockers: list[dict[str, str]] = []
+        warnings: list[dict[str, str]] = []
+        evidence: list[dict[str, Any]] = []
+
+        if not gstin:
+            blockers.append(
+                {
+                    "code": "GSTIN_NOT_CONFIGURED",
+                    "message": "No active GSTIN is configured for this compliance scope.",
+                }
+            )
+            return {
+                "status": "not_configured",
+                "label": "GSTIN not configured",
+                "period": period["label"],
+                "portal_return_period": ret_period,
+                "gstin": None,
+                "locked": False,
+                "can_reopen": False,
+                "evidence": evidence,
+                "warnings": warnings,
+                "blockers": blockers,
+            }
+
+        gstr1_run = self._latest_portal_filing(scope=scope, gstin=gstin, return_type="gstr1", ret_period=ret_period)
+        gstr3b_run = self._latest_portal_filing(scope=scope, gstin=gstin, return_type="gstr3b", ret_period=ret_period)
+        gstr9_freeze = self._latest_gstr9_freeze(scope)
+        gstr9_run = self._latest_gstr9_filing(scope)
+
+        if gstr1_run:
+            evidence.append(self._portal_lifecycle_evidence("gstr1_portal", "GSTR-1 portal", gstr1_run))
+        if gstr3b_run:
+            evidence.append(self._portal_lifecycle_evidence("gstr3b_portal", "GSTR-3B portal", gstr3b_run))
+        if gstr9_freeze:
+            evidence.append(
+                {
+                    "code": "gstr9_freeze",
+                    "label": "GSTR-9 freeze",
+                    "status": "frozen",
+                    "reference": f"v{gstr9_freeze.version}",
+                    "updated_at": self._isoformat(getattr(gstr9_freeze, "updated_at", None) or getattr(gstr9_freeze, "created_at", None)),
+                }
+            )
+        if gstr9_run:
+            evidence.append(self._annual_lifecycle_evidence("gstr9_filing", "GSTR-9 filing", gstr9_run))
+
+        for card in cards:
+            if card["status"] == "blocked":
+                blockers.append(
+                    {
+                        "code": f"{card['code'].upper()}_BLOCKED",
+                        "message": f"{card['title']} is blocked for this GST scope.",
+                    }
+                )
+            elif card["status"] == "needs_review":
+                warnings.append(
+                    {
+                        "code": f"{card['code'].upper()}_NEEDS_REVIEW",
+                        "message": f"{card['title']} needs review before filing.",
+                    }
+                )
+
+        monthly_filed = bool(
+            gstr1_run
+            and gstr3b_run
+            and gstr1_run.status == GstPortalFilingRun.Status.FILED
+            and gstr3b_run.status == GstPortalFilingRun.Status.FILED
+        )
+        annual_filed = bool(gstr9_run and gstr9_run.status == ReportFilingRun.Status.SUBMITTED)
+        frozen = bool(gstr9_freeze)
+        prepared = any(item["status"] in {"prepared", "saved", "proceeded", "summary_fetched", "offset", "evc_requested"} for item in evidence)
+
+        if blockers:
+            status = "blocked"
+            label = "Blocked"
+        elif monthly_filed or annual_filed:
+            status = "filed"
+            label = "Filed"
+        elif prepared:
+            status = "prepared"
+            label = "Prepared"
+        elif frozen:
+            status = "frozen"
+            label = "Frozen"
+        elif warnings:
+            status = "needs_review"
+            label = "Needs review"
+        else:
+            status = "ready"
+            label = "Ready"
+
+        return {
+            "status": status,
+            "label": label,
+            "period": period["label"],
+            "portal_return_period": ret_period,
+            "gstin": gstin,
+            "locked": status in {"filed", "frozen"},
+            "can_reopen": status in {"filed", "frozen"},
+            "evidence": evidence,
+            "warnings": warnings,
+            "blockers": blockers,
+        }
+
+    def _portal_lifecycle_evidence(self, code: str, label: str, filing_run) -> dict[str, Any]:
+        return {
+            "code": code,
+            "label": label,
+            "status": filing_run.status,
+            "stage": filing_run.stage,
+            "reference": filing_run.portal_reference,
+            "return_period": filing_run.ret_period,
+            "updated_at": self._isoformat(getattr(filing_run, "updated_at", None) or getattr(filing_run, "created_at", None)),
+        }
+
+    def _annual_lifecycle_evidence(self, code: str, label: str, filing_run) -> dict[str, Any]:
+        return {
+            "code": code,
+            "label": label,
+            "status": filing_run.status,
+            "reference": filing_run.portal_reference,
+            "updated_at": self._isoformat(getattr(filing_run, "updated_at", None) or getattr(filing_run, "created_at", None)),
+        }
+
+    def _isoformat(self, value) -> str | None:
+        return value.isoformat() if value else None
+
+    def _amendment_queue_summary(
+        self,
+        *,
+        scope: GstComplianceScope,
+        gstin: str | None,
+        itc_decision_summary: dict[str, Any],
+    ) -> dict[str, Any]:
+        rows: list[dict[str, Any]] = []
+        totals = {
+            "sales_note_count": 0,
+            "portal_context_count": 0,
+            "taxable_impact": Decimal("0.00"),
+            "tax_impact": Decimal("0.00"),
+            "net_impact": Decimal("0.00"),
+        }
+
+        sales_notes = self._sales_amendment_queryset(scope=scope, gstin=gstin)
+        for note in sales_notes[:25]:
+            original = getattr(note, "original_invoice", None)
+            sign = Decimal("-1") if note.doc_type == SalesInvoiceHeader.DocType.CREDIT_NOTE else Decimal("1")
+            taxable_impact = sign * Decimal(note.total_taxable_value or 0)
+            tax_impact = sign * (
+                Decimal(note.total_cgst or 0)
+                + Decimal(note.total_sgst or 0)
+                + Decimal(note.total_igst or 0)
+                + Decimal(note.total_cess or 0)
+            )
+            net_impact = sign * Decimal(note.grand_total or 0)
+            totals["sales_note_count"] += 1
+            totals["taxable_impact"] += taxable_impact
+            totals["tax_impact"] += tax_impact
+            totals["net_impact"] += net_impact
+            rows.append(
+                {
+                    "source": "sales_note",
+                    "status": "needs_review",
+                    "document_id": note.id,
+                    "document_number": note.invoice_number or note.doc_code or str(note.id),
+                    "document_type": note.get_doc_type_display(),
+                    "document_date": note.bill_date.isoformat() if note.bill_date else None,
+                    "original_document_id": getattr(original, "id", None),
+                    "original_document_number": getattr(original, "invoice_number", "") or getattr(original, "doc_code", "") or "",
+                    "original_document_date": original.bill_date.isoformat() if original and original.bill_date else None,
+                    "original_period": original.bill_date.strftime("%Y-%m") if original and original.bill_date else "",
+                    "impact_period": scope.return_period or (note.bill_date.strftime("%Y-%m") if note.bill_date else ""),
+                    "taxable_impact": f"{taxable_impact:.2f}",
+                    "tax_impact": f"{tax_impact:.2f}",
+                    "net_impact": f"{net_impact:.2f}",
+                    "reason": note.note_reason or "linked_note",
+                }
+            )
+
+        portal_context = (itc_decision_summary or {}).get("portal_context_summary") or {}
+        amended_rows = int(portal_context.get("amended_rows") or 0)
+        vendor_revised_rows = int(portal_context.get("vendor_revised_rows") or 0)
+        totals["portal_context_count"] = amended_rows + vendor_revised_rows
+        if amended_rows or vendor_revised_rows:
+            rows.append(
+                {
+                    "source": "gstr2b_portal",
+                    "status": "needs_review",
+                    "document_id": itc_decision_summary.get("run_id"),
+                    "document_number": f"GSTR-2B run {itc_decision_summary.get('run_id') or '-'}",
+                    "document_type": "GSTR-2B portal context",
+                    "document_date": None,
+                    "original_document_id": None,
+                    "original_document_number": "",
+                    "original_document_date": None,
+                    "original_period": "",
+                    "impact_period": itc_decision_summary.get("return_period") or scope.return_period or "",
+                    "taxable_impact": "0.00",
+                    "tax_impact": "0.00",
+                    "net_impact": "0.00",
+                    "reason": f"{amended_rows} amended row(s), {vendor_revised_rows} vendor revised row(s)",
+                }
+            )
+
+        impact_count = totals["sales_note_count"] + totals["portal_context_count"]
+        warnings = []
+        if impact_count:
+            warnings.append(
+                {
+                    "code": "GST_AMENDMENT_REVIEW_REQUIRED",
+                    "message": f"{impact_count} amendment or revised portal item needs review for this GST scope.",
+                }
+            )
+
+        return {
+            "summary": {
+                "impact_count": impact_count,
+                "sales_note_count": totals["sales_note_count"],
+                "portal_context_count": totals["portal_context_count"],
+                "taxable_impact": f"{totals['taxable_impact']:.2f}",
+                "tax_impact": f"{totals['tax_impact']:.2f}",
+                "net_impact": f"{totals['net_impact']:.2f}",
+            },
+            "rows": rows,
+            "warnings": warnings,
+            "status": "needs_review" if impact_count else "ready",
+        }
+
+    def _sales_amendment_queryset(self, *, scope: GstComplianceScope, gstin: str | None):
+        qs = (
+            SalesInvoiceHeader.objects.filter(
+                entity_id=scope.entity_id,
+                doc_type__in=[SalesInvoiceHeader.DocType.CREDIT_NOTE, SalesInvoiceHeader.DocType.DEBIT_NOTE],
+                original_invoice__isnull=False,
+                status__in=[SalesInvoiceHeader.Status.CONFIRMED, SalesInvoiceHeader.Status.POSTED],
+            )
+            .select_related("original_invoice")
+            .order_by("bill_date", "id")
+        )
+        if hasattr(SalesInvoiceHeader, "is_active"):
+            qs = qs.filter(is_active=True)
+        if scope.entityfinid_id:
+            qs = qs.filter(entityfinid_id=scope.entityfinid_id)
+        if scope.subentity_id is not None:
+            qs = qs.filter(subentity_id=scope.subentity_id)
+        if scope.from_date:
+            qs = qs.filter(bill_date__gte=scope.from_date)
+        if scope.to_date:
+            qs = qs.filter(bill_date__lte=scope.to_date)
+        if scope.from_date:
+            qs = qs.filter(original_invoice__bill_date__lt=scope.from_date)
+        if gstin:
+            qs = qs.filter(seller_gstin__iexact=gstin)
+        return qs
 
     def _resolve_gstin(self, scope: GstComplianceScope) -> str | None:
         if scope.gstin:
