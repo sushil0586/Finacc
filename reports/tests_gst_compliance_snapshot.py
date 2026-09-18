@@ -115,7 +115,9 @@ class GstComplianceSnapshotTests(TestCase):
         self.assertEqual(cards["gstr9"]["status"], "prepared")
         self.assertEqual(cards["gstr9"]["signals"]["freeze_version"], 3)
         self.assertEqual(cards["gstr1"]["link"]["route"], "/gstreport")
+        self.assertEqual(cards["gstr1"]["links"]["primary"]["route"], "/gstreport")
         self.assertEqual(cards["itc_2b"]["link"]["route"], "/gst-reconciliation")
+        self.assertEqual(cards["portal"]["links"]["primary"]["route"], "/gstreport")
         self.assertTrue(cards["gstr3b"]["access"]["has_permission"])
         self.assertGreaterEqual(len(payload["next_actions"]), 1)
 

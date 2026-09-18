@@ -281,6 +281,7 @@ class GstComplianceSnapshotService:
             "warnings": warnings,
             "signals": signals,
             "link": link,
+            "links": {"primary": link},
             "access": {
                 "has_permission": has_permission,
                 "required_permissions": link["permissions"],
