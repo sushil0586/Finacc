@@ -5,7 +5,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
 
-from django.db.models import Q
+from django.db.models import Count, Q
 from django.utils import timezone
 
 from entity.models import EntityGstRegistration, SubEntityGstRegistration
@@ -14,7 +14,7 @@ from reports.gst_compliance.contracts import GstComplianceScope, build_gst_compl
 from reports.gst_compliance.itc_ledger import build_input_tax_ledger_reconciliation
 from reports.gstr3b.selectors import Gstr3bScope
 from reports.gstr3b.services import Gstr3bSummaryService
-from reports.models import GstPortalFilingRun, GstPortalProfile, ReportFilingRun, ReportFreezeSnapshot
+from reports.models import GstComplianceTask, GstPortalFilingRun, GstPortalProfile, ReportFilingRun, ReportFreezeSnapshot
 from sales.models import SalesInvoiceHeader
 from sales.models.sales_compliance import SalesEInvoiceStatus, SalesEWayStatus
 
@@ -622,11 +622,13 @@ class GstComplianceSnapshotService:
             cards=cards,
             today=today,
         )
+        persisted_tasks = self._persisted_task_map(scope=scope, gstin=gstin)
         tasks = self._compliance_task_items(
             cards=cards,
             period_lifecycle=period_lifecycle,
             amendment_queue=amendment_queue,
             calendar_items=calendar_items,
+            persisted_tasks=persisted_tasks,
         )
         alerts = self._compliance_alert_items(calendar_items=calendar_items, tasks=tasks)
         by_calendar_status: dict[str, int] = {}
@@ -651,6 +653,76 @@ class GstComplianceSnapshotService:
             "tasks": tasks,
             "alerts": alerts,
             "status": "blocked" if by_task_status.get("blocked") else "needs_review" if tasks or alerts else "ready",
+        }
+
+    def _persisted_task_map(self, *, scope: GstComplianceScope, gstin: str | None) -> dict[str, GstComplianceTask]:
+        if not gstin or not scope.return_period:
+            return {}
+        queryset = (
+            GstComplianceTask.objects.select_related("owner")
+            .annotate(comment_count=Count("comments", distinct=True), attachment_count=Count("attachments", distinct=True))
+            .filter(
+                entity_id=scope.entity_id,
+                entityfinid_id=scope.entityfinid_id,
+                gstin=gstin,
+                return_period=scope.return_period,
+                isactive=True,
+            )
+        )
+        if scope.subentity_id:
+            queryset = queryset.filter(subentity_id=scope.subentity_id)
+        tasks: dict[str, GstComplianceTask] = {}
+        for task in queryset:
+            key = task.source_code or f"manual_{task.pk}"
+            tasks[key] = task
+        return tasks
+
+    def _owner_label(self, user) -> str:
+        if not user:
+            return "Unassigned"
+        full_name = f"{getattr(user, 'first_name', '') or ''} {getattr(user, 'last_name', '') or ''}".strip()
+        return full_name or getattr(user, "email", "") or getattr(user, "username", "") or f"User {user.pk}"
+
+    def _merge_persisted_task(self, task: dict[str, Any], persisted: GstComplianceTask | None) -> dict[str, Any]:
+        if not persisted:
+            return task
+        merged = {**task}
+        merged.update(
+            {
+                "id": persisted.pk,
+                "status": persisted.status,
+                "priority": persisted.priority,
+                "owner": persisted.owner_id,
+                "owner_label": self._owner_label(persisted.owner),
+                "due_date": persisted.due_date.isoformat() if persisted.due_date else task.get("due_date"),
+                "source": persisted.source or task.get("source"),
+                "source_code": persisted.source_code or task.get("code"),
+                "comment_count": getattr(persisted, "comment_count", 0),
+                "attachment_count": getattr(persisted, "attachment_count", 0),
+                "closed_at": persisted.closed_at.isoformat() if persisted.closed_at else None,
+            }
+        )
+        if persisted.description:
+            merged["description"] = persisted.description
+        return merged
+
+    def _persisted_task_to_item(self, task: GstComplianceTask) -> dict[str, Any]:
+        return {
+            "id": task.pk,
+            "code": task.source_code or f"manual_{task.pk}",
+            "title": task.title,
+            "description": task.description,
+            "status": task.status,
+            "priority": task.priority,
+            "owner": task.owner_id,
+            "owner_label": self._owner_label(task.owner),
+            "due_date": task.due_date.isoformat() if task.due_date else None,
+            "source": task.source or "manual",
+            "source_code": task.source_code,
+            "comment_count": getattr(task, "comment_count", 0),
+            "attachment_count": getattr(task, "attachment_count", 0),
+            "closed_at": task.closed_at.isoformat() if task.closed_at else None,
+            "link": None,
         }
 
     def _compliance_calendar_items(
@@ -732,18 +804,25 @@ class GstComplianceSnapshotService:
         period_lifecycle: dict[str, Any],
         amendment_queue: dict[str, Any],
         calendar_items: list[dict[str, Any]],
+        persisted_tasks: dict[str, GstComplianceTask],
     ) -> list[dict[str, Any]]:
         calendar_by_code = {item["code"]: item for item in calendar_items}
         tasks: list[dict[str, Any]] = []
+        used_persisted_keys: set[str] = set()
         for card in cards:
             if card.get("status") not in {"blocked", "needs_review", "amendment_needed", "overdue"}:
                 continue
             messages = [*card.get("blockers", []), *card.get("warnings", [])]
             message = self._alert_text(messages[0]) if messages else f"{card['title']} needs review before filing."
             due_item = calendar_by_code.get(card["code"]) or {}
+            code = f"task_{card['code']}"
+            persisted = persisted_tasks.get(code)
+            if persisted:
+                used_persisted_keys.add(code)
             tasks.append(
-                {
-                    "code": f"task_{card['code']}",
+                self._merge_persisted_task(
+                    {
+                    "code": code,
                     "title": f"Review {card['title']}",
                     "description": message,
                     "status": "blocked" if card.get("status") == "blocked" else "open",
@@ -752,13 +831,21 @@ class GstComplianceSnapshotService:
                     "owner_label": "Unassigned",
                     "due_date": due_item.get("due_date"),
                     "source": card["code"],
+                    "source_code": code,
                     "link": card.get("link"),
-                }
+                    },
+                    persisted,
+                )
             )
         for item in period_lifecycle.get("blockers", []):
+            code = f"task_lifecycle_{item.get('code', 'blocked').lower()}"
+            persisted = persisted_tasks.get(code)
+            if persisted:
+                used_persisted_keys.add(code)
             tasks.append(
-                {
-                    "code": f"task_lifecycle_{item.get('code', 'blocked').lower()}",
+                self._merge_persisted_task(
+                    {
+                    "code": code,
                     "title": "Resolve filing lifecycle blocker",
                     "description": self._alert_text(item),
                     "status": "blocked",
@@ -767,13 +854,21 @@ class GstComplianceSnapshotService:
                     "owner_label": "Unassigned",
                     "due_date": None,
                     "source": "period_lifecycle",
+                    "source_code": code,
                     "link": None,
-                }
+                    },
+                    persisted,
+                )
             )
         if (amendment_queue.get("summary") or {}).get("impact_count"):
+            code = "task_amendment_queue"
+            persisted = persisted_tasks.get(code)
+            if persisted:
+                used_persisted_keys.add(code)
             tasks.append(
-                {
-                    "code": "task_amendment_queue",
+                self._merge_persisted_task(
+                    {
+                    "code": code,
                     "title": "Review amendment queue",
                     "description": "Prior-period GST impact is waiting for review and filing treatment.",
                     "status": "open",
@@ -782,9 +877,16 @@ class GstComplianceSnapshotService:
                     "owner_label": "Unassigned",
                     "due_date": None,
                     "source": "amendment_queue",
+                    "source_code": code,
                     "link": None,
-                }
+                    },
+                    persisted,
+                )
             )
+        for key, persisted in persisted_tasks.items():
+            if key in used_persisted_keys or persisted.status == GstComplianceTask.Status.CLOSED:
+                continue
+            tasks.append(self._persisted_task_to_item(persisted))
         return tasks[:12]
 
     def _compliance_alert_items(self, *, calendar_items: list[dict[str, Any]], tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:

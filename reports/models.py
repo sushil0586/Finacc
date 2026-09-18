@@ -340,3 +340,163 @@ class GstPortalProfile(TrackingModel):
         self.registered_mobile_masked = (self.registered_mobile_masked or "").strip()
         self.registered_email_masked = (self.registered_email_masked or "").strip().lower()
         super().save(*args, **kwargs)
+
+
+def _gst_compliance_task_attachment_upload_to(instance: "GstComplianceTaskAttachment", filename: str) -> str:
+    return f"gst/compliance/tasks/{instance.task_id or 'new'}/{filename}"
+
+
+class GstComplianceTask(TrackingModel):
+    class Status(models.TextChoices):
+        OPEN = "open", "Open"
+        IN_REVIEW = "in_review", "In Review"
+        BLOCKED = "blocked", "Blocked"
+        CLOSED = "closed", "Closed"
+
+    class Priority(models.TextChoices):
+        INFO = "info", "Info"
+        WARNING = "warning", "Warning"
+        ERROR = "error", "Error"
+
+    entity = models.ForeignKey(Entity, on_delete=CASCADE, related_name="gst_compliance_tasks")
+    entityfinid = models.ForeignKey(
+        EntityFinancialYear,
+        on_delete=CASCADE,
+        related_name="gst_compliance_tasks",
+    )
+    subentity = models.ForeignKey(
+        SubEntity,
+        on_delete=CASCADE,
+        null=True,
+        blank=True,
+        related_name="gst_compliance_tasks",
+    )
+    gstin = models.CharField(max_length=15, db_index=True)
+    return_period = models.CharField(max_length=7, db_index=True)
+    return_type = models.CharField(max_length=24, blank=True, default="", db_index=True)
+    source = models.CharField(max_length=80, blank=True, default="", db_index=True)
+    source_code = models.CharField(max_length=120, blank=True, default="", db_index=True)
+    title = models.CharField(max_length=240)
+    description = models.TextField(blank=True, default="")
+    status = models.CharField(max_length=24, choices=Status.choices, default=Status.OPEN, db_index=True)
+    priority = models.CharField(max_length=16, choices=Priority.choices, default=Priority.WARNING, db_index=True)
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="owned_gst_compliance_tasks",
+    )
+    due_date = models.DateField(null=True, blank=True, db_index=True)
+    closed_at = models.DateTimeField(null=True, blank=True)
+    closed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="closed_gst_compliance_tasks",
+    )
+    closure_note = models.TextField(blank=True, default="")
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_gst_compliance_tasks",
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="updated_gst_compliance_tasks",
+    )
+
+    class Meta:
+        ordering = ("status", "due_date", "-updated_at", "-id")
+        indexes = [
+            models.Index(fields=("entity", "entityfinid", "subentity", "gstin", "return_period", "status"), name="ix_gst_task_scope_status"),
+            models.Index(fields=("entity", "owner", "status", "due_date"), name="ix_gst_task_owner_due"),
+        ]
+
+    def __str__(self):
+        return f"{self.entity_id}:{self.gstin}:{self.return_period}:{self.source_code}:{self.status}"
+
+    def save(self, *args, **kwargs):
+        self.gstin = (self.gstin or "").strip().upper()
+        self.return_period = (self.return_period or "").strip()
+        self.return_type = (self.return_type or "").strip().upper()
+        self.source = (self.source or "").strip()
+        self.source_code = (self.source_code or "").strip()
+        self.title = (self.title or "").strip()
+        super().save(*args, **kwargs)
+
+
+class GstComplianceTaskComment(TrackingModel):
+    task = models.ForeignKey(GstComplianceTask, on_delete=CASCADE, related_name="comments")
+    comment = models.TextField()
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="gst_compliance_task_comments",
+    )
+
+    class Meta:
+        ordering = ("created_at", "id")
+        indexes = [
+            models.Index(fields=("task", "created_at"), name="ix_gst_task_comment_task_dt"),
+        ]
+
+    def __str__(self):
+        return f"{self.task_id}:comment:{self.id}"
+
+
+class GstComplianceTaskAttachment(TrackingModel):
+    task = models.ForeignKey(GstComplianceTask, on_delete=CASCADE, related_name="attachments")
+    file = models.FileField(upload_to=_gst_compliance_task_attachment_upload_to, max_length=255)
+    original_name = models.CharField(max_length=255, blank=True, default="")
+    content_type = models.CharField(max_length=120, blank=True, default="")
+    size = models.PositiveIntegerField(default=0)
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="gst_compliance_task_attachments",
+    )
+
+    class Meta:
+        ordering = ("-created_at", "-id")
+        indexes = [
+            models.Index(fields=("task", "created_at"), name="ix_gst_task_attach_task_dt"),
+        ]
+
+    def __str__(self):
+        return f"{self.task_id}:{self.original_name or self.file.name}"
+
+
+class GstComplianceTaskAudit(TrackingModel):
+    task = models.ForeignKey(GstComplianceTask, on_delete=CASCADE, related_name="audit_logs")
+    action = models.CharField(max_length=40, db_index=True)
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="gst_compliance_task_audit_logs",
+    )
+    old_data = JSONField(default=dict, blank=True)
+    new_data = JSONField(default=dict, blank=True)
+    note = models.TextField(blank=True, default="")
+
+    class Meta:
+        ordering = ("-created_at", "-id")
+        indexes = [
+            models.Index(fields=("task", "action", "created_at"), name="ix_gst_task_audit_task_action"),
+            models.Index(fields=("actor", "created_at"), name="ix_gst_task_audit_actor_dt"),
+        ]
+
+    def __str__(self):
+        return f"{self.task_id}:{self.action}:{self.created_at}"

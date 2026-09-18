@@ -142,7 +142,15 @@ from reports.gst_portal.views import (
     GstPortalOtpVerifyAPIView,
     GstPortalProfileAPIView,
 )
-from reports.gst_compliance.views import GstComplianceSnapshotAPIView
+from reports.gst_compliance.views import (
+    GstComplianceSnapshotAPIView,
+    GstComplianceTaskAttachmentAPIView,
+    GstComplianceTaskCloseAPIView,
+    GstComplianceTaskCommentAPIView,
+    GstComplianceTaskDetailAPIView,
+    GstComplianceTaskListCreateAPIView,
+    GstComplianceTaskReopenAPIView,
+)
 from reports.api.gst_reconciliation_views import (
     Gstr1VsGstr3bReconciliationAPIView,
     Gstr1VsGstr3bReconciliationExportAPIView,
@@ -455,6 +463,12 @@ urlpatterns = [
     path("gstr3b/export/", Gstr3bExportAPIView.as_view(), name="gstr3b-export"),
     path("gstr3b/export", Gstr3bExportAPIView.as_view(), name="gstr3b-export-noslash"),
     path("gst-compliance/snapshot/", GstComplianceSnapshotAPIView.as_view(), name="gst-compliance-snapshot"),
+    path("gst-compliance/tasks/", GstComplianceTaskListCreateAPIView.as_view(), name="gst-compliance-task-list"),
+    path("gst-compliance/tasks/<int:pk>/", GstComplianceTaskDetailAPIView.as_view(), name="gst-compliance-task-detail"),
+    path("gst-compliance/tasks/<int:pk>/comments/", GstComplianceTaskCommentAPIView.as_view(), name="gst-compliance-task-comment"),
+    path("gst-compliance/tasks/<int:pk>/attachments/", GstComplianceTaskAttachmentAPIView.as_view(), name="gst-compliance-task-attachment"),
+    path("gst-compliance/tasks/<int:pk>/close/", GstComplianceTaskCloseAPIView.as_view(), name="gst-compliance-task-close"),
+    path("gst-compliance/tasks/<int:pk>/reopen/", GstComplianceTaskReopenAPIView.as_view(), name="gst-compliance-task-reopen"),
     path("gst-portal/filing/prepare/", GstPortalFilingPrepareAPIView.as_view(), name="gst-portal-filing-prepare"),
     path("gst-portal/filing/save/", GstPortalFilingSaveAPIView.as_view(), name="gst-portal-filing-save"),
     path("gst-portal/filing/status/", GstPortalFilingStatusAPIView.as_view(), name="gst-portal-filing-status"),

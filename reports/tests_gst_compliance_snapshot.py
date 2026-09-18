@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
@@ -15,7 +16,16 @@ from financial.models import Ledger, accountHead, accounttype
 from gst_reconciliation.models import GstReconciliationItem, GstReconciliationRun
 from reports.gst_compliance import GstComplianceSnapshotService, parse_gst_compliance_scope
 from reports.gst_compliance.views import GST_COMPLIANCE_CENTER_VIEW_PERMISSIONS
-from reports.models import GstPortalFilingRun, GstPortalProfile, ReportFilingRun, ReportFreezeSnapshot
+from reports.models import (
+    GstComplianceTask,
+    GstComplianceTaskAttachment,
+    GstComplianceTaskAudit,
+    GstComplianceTaskComment,
+    GstPortalFilingRun,
+    GstPortalProfile,
+    ReportFilingRun,
+    ReportFreezeSnapshot,
+)
 from posting.models import Entry, EntryStatus, EntityStaticAccountMap, JournalLine, PostingBatch, StaticAccount, TxnType
 from posting.services.static_accounts import StaticAccountService
 from sales.models import SalesInvoiceHeader
@@ -304,6 +314,61 @@ class GstComplianceSnapshotTests(TestCase):
         self.assertEqual(calendar["gstr3b"]["status"], "complete")
         self.assertEqual(calendar["gstr1"]["source_status"], "filed")
         self.assertEqual(calendar["gstr3b"]["source_status"], "filed")
+
+    def test_snapshot_compliance_operations_merges_persisted_task_ownership(self):
+        EntityGstRegistration.objects.create(
+            entity=self.entity,
+            gstin="29ABCDE1234F1Z5",
+            registration_type=self.gst_type,
+            is_primary=True,
+            createdby=self.user,
+        )
+        owner = User.objects.create_user(username="gst-review-owner", email="gst-review-owner@example.com", password="pass123", first_name="GST", last_name="Owner")
+        task = GstComplianceTask.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            gstin="29ABCDE1234F1Z5",
+            return_period="2026-06",
+            return_type="GSTR2B",
+            source="itc_2b",
+            source_code="task_itc_2b",
+            title="Review ITC / 2B",
+            status=GstComplianceTask.Status.IN_REVIEW,
+            priority=GstComplianceTask.Priority.ERROR,
+            owner=owner,
+            due_date=datetime(2026, 7, 18).date(),
+            created_by=self.user,
+        )
+        GstComplianceTaskComment.objects.create(task=task, comment="Assigned for ITC review.", created_by=self.user)
+        GstComplianceTaskAttachment.objects.create(
+            task=task,
+            file=SimpleUploadedFile("itc.txt", b"evidence", content_type="text/plain"),
+            original_name="itc.txt",
+            content_type="text/plain",
+            size=8,
+            uploaded_by=self.user,
+        )
+
+        scope = parse_gst_compliance_scope(self.scope_params)
+        payload = GstComplianceSnapshotService().build(
+            scope=scope,
+            permission_codes=set(GST_COMPLIANCE_CENTER_VIEW_PERMISSIONS),
+        )
+
+        tasks = {item["code"]: item for item in payload["compliance_operations"]["tasks"]}
+        self.assertEqual(tasks["task_itc_2b"]["id"], task.id)
+        self.assertEqual(tasks["task_itc_2b"]["status"], GstComplianceTask.Status.IN_REVIEW)
+        self.assertEqual(tasks["task_itc_2b"]["priority"], GstComplianceTask.Priority.ERROR)
+        self.assertEqual(tasks["task_itc_2b"]["owner"], owner.id)
+        self.assertEqual(tasks["task_itc_2b"]["owner_label"], "GST Owner")
+        self.assertEqual(tasks["task_itc_2b"]["due_date"], "2026-07-18")
+        self.assertEqual(tasks["task_itc_2b"]["comment_count"], 1)
+        self.assertEqual(tasks["task_itc_2b"]["attachment_count"], 1)
+        self.assertLess(
+            payload["compliance_operations"]["summary"]["needs_owner_count"],
+            payload["compliance_operations"]["summary"]["task_count"],
+        )
 
     def test_snapshot_amendment_queue_summarizes_linked_sales_notes_from_prior_period(self):
         EntityGstRegistration.objects.create(
@@ -784,3 +849,162 @@ class GstComplianceSnapshotTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("return_type", response.data)
         mock_enforce_scope.assert_not_called()
+
+
+class GstComplianceTaskApiTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="gst-task", email="gst-task@example.com", password="pass123")
+        self.owner = User.objects.create_user(username="gst-owner", email="gst-owner@example.com", password="pass123")
+        self.gst_type = GstRegistrationType.objects.create(Name="Regular", Description="Regular")
+        self.entity = Entity.objects.create(
+            entityname="GST Task Entity",
+            legalname="GST Task Entity Pvt Ltd",
+            GstRegitrationType=self.gst_type,
+            createdby=self.user,
+        )
+        self.subentity = SubEntity.objects.create(entity=self.entity, subentityname="Head Office", is_head_office=True)
+        self.entityfin = EntityFinancialYear.objects.create(
+            entity=self.entity,
+            desc="FY 2026-27",
+            finstartyear=timezone.make_aware(datetime(2026, 4, 1)),
+            finendyear=timezone.make_aware(datetime(2027, 3, 31)),
+            createdby=self.user,
+        )
+        self.scope_params = {
+            "entity": self.entity.id,
+            "entityfinid": self.entityfin.id,
+            "subentity": self.subentity.id,
+            "gstin": "29ABCDE1234F1Z5",
+            "return_period": "2026-06",
+        }
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    @patch("reports.gst_compliance.views.GstComplianceTaskListCreateAPIView.enforce_scope")
+    @patch("reports.gst_compliance.views.assert_any_report_permission")
+    def test_task_register_create_list_update_comment_attachment_close_and_reopen(self, mock_permissions, mock_enforce_scope):
+        mock_permissions.return_value = set(GST_COMPLIANCE_CENTER_VIEW_PERMISSIONS)
+
+        create_payload = {
+            **self.scope_params,
+            "return_type": "GSTR3B",
+            "source": "calendar",
+            "source_code": "gstr3b",
+            "title": "Prepare GSTR-3B before due date",
+            "description": "Monthly return should be reviewed before filing.",
+            "priority": "warning",
+            "owner": self.owner.id,
+            "due_date": "2026-07-20",
+        }
+        response = self.client.post(reverse("reports_api:gst-compliance-task-list"), create_payload, format="json")
+
+        self.assertEqual(response.status_code, 201)
+        task_id = response.data["id"]
+        task = GstComplianceTask.objects.get(pk=task_id)
+        self.assertEqual(task.gstin, "29ABCDE1234F1Z5")
+        self.assertEqual(task.owner_id, self.owner.id)
+        self.assertEqual(task.created_by_id, self.user.id)
+        self.assertTrue(GstComplianceTaskAudit.objects.filter(task=task, action="created").exists())
+
+        list_response = self.client.get(reverse("reports_api:gst-compliance-task-list"), self.scope_params)
+        self.assertEqual(list_response.status_code, 200)
+        self.assertEqual(len(list_response.data["results"]), 1)
+        self.assertEqual(list_response.data["results"][0]["title"], "Prepare GSTR-3B before due date")
+
+        with patch("reports.gst_compliance.views.GstComplianceTaskDetailAPIView.enforce_scope"), patch(
+            "reports.gst_compliance.views.assert_any_report_permission",
+            return_value=set(GST_COMPLIANCE_CENTER_VIEW_PERMISSIONS),
+        ):
+            update_response = self.client.patch(
+                reverse("reports_api:gst-compliance-task-detail", args=[task_id]),
+                {"status": "in_review", "priority": "error"},
+                format="json",
+            )
+        self.assertEqual(update_response.status_code, 200)
+        self.assertEqual(update_response.data["status"], "in_review")
+        self.assertTrue(GstComplianceTaskAudit.objects.filter(task_id=task_id, action="updated").exists())
+
+        with patch("reports.gst_compliance.views.GstComplianceTaskDetailAPIView.enforce_scope"), patch(
+            "reports.gst_compliance.views.assert_any_report_permission",
+            return_value=set(GST_COMPLIANCE_CENTER_VIEW_PERMISSIONS),
+        ):
+            comment_response = self.client.post(
+                reverse("reports_api:gst-compliance-task-comment", args=[task_id]),
+                {"comment": "Reviewed with finance owner."},
+                format="json",
+            )
+        self.assertEqual(comment_response.status_code, 201)
+        self.assertEqual(GstComplianceTaskComment.objects.filter(task_id=task_id).count(), 1)
+        self.assertTrue(GstComplianceTaskAudit.objects.filter(task_id=task_id, action="commented").exists())
+
+        with patch("reports.gst_compliance.views.GstComplianceTaskDetailAPIView.enforce_scope"), patch(
+            "reports.gst_compliance.views.assert_any_report_permission",
+            return_value=set(GST_COMPLIANCE_CENTER_VIEW_PERMISSIONS),
+        ):
+            attachment_response = self.client.post(
+                reverse("reports_api:gst-compliance-task-attachment", args=[task_id]),
+                {"file": SimpleUploadedFile("evidence.txt", b"ok", content_type="text/plain")},
+                format="multipart",
+            )
+        self.assertEqual(attachment_response.status_code, 201)
+        self.assertEqual(GstComplianceTaskAttachment.objects.filter(task_id=task_id).count(), 1)
+        self.assertTrue(GstComplianceTaskAudit.objects.filter(task_id=task_id, action="attachment_added").exists())
+
+        with patch("reports.gst_compliance.views.GstComplianceTaskDetailAPIView.enforce_scope"), patch(
+            "reports.gst_compliance.views.assert_any_report_permission",
+            return_value=set(GST_COMPLIANCE_CENTER_VIEW_PERMISSIONS),
+        ):
+            close_response = self.client.post(
+                reverse("reports_api:gst-compliance-task-close", args=[task_id]),
+                {"closure_note": "Filed and evidence attached."},
+                format="json",
+            )
+        self.assertEqual(close_response.status_code, 200)
+        self.assertEqual(close_response.data["status"], "closed")
+        self.assertEqual(close_response.data["closure_note"], "Filed and evidence attached.")
+        self.assertIsNotNone(GstComplianceTask.objects.get(pk=task_id).closed_at)
+        self.assertTrue(GstComplianceTaskAudit.objects.filter(task_id=task_id, action="closed").exists())
+
+        with patch("reports.gst_compliance.views.GstComplianceTaskDetailAPIView.enforce_scope"), patch(
+            "reports.gst_compliance.views.assert_any_report_permission",
+            return_value=set(GST_COMPLIANCE_CENTER_VIEW_PERMISSIONS),
+        ):
+            reopen_response = self.client.post(
+                reverse("reports_api:gst-compliance-task-reopen", args=[task_id]),
+                {"note": "Need revised evidence."},
+                format="json",
+            )
+        self.assertEqual(reopen_response.status_code, 200)
+        self.assertEqual(reopen_response.data["status"], "open")
+        self.assertEqual(reopen_response.data["closure_note"], "")
+        self.assertTrue(GstComplianceTaskAudit.objects.filter(task_id=task_id, action="reopened").exists())
+
+    @patch("reports.gst_compliance.views.GstComplianceTaskListCreateAPIView.enforce_scope")
+    @patch("reports.gst_compliance.views.assert_any_report_permission")
+    def test_task_register_filters_by_scope(self, mock_permissions, mock_enforce_scope):
+        mock_permissions.return_value = set(GST_COMPLIANCE_CENTER_VIEW_PERMISSIONS)
+        GstComplianceTask.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            gstin="29ABCDE1234F1Z5",
+            return_period="2026-06",
+            return_type="GSTR1",
+            title="In scope",
+            created_by=self.user,
+        )
+        GstComplianceTask.objects.create(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+            gstin="29ABCDE1234F1Z5",
+            return_period="2026-07",
+            return_type="GSTR1",
+            title="Out of period",
+            created_by=self.user,
+        )
+
+        response = self.client.get(reverse("reports_api:gst-compliance-task-list"), self.scope_params)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([row["title"] for row in response.data["results"]], ["In scope"])

@@ -686,9 +686,47 @@ Phase H.1 QA evidence:
 
 Phase H.1 remaining:
 
-- Persisted notice/task register with assignment, comments, attachments, closure, and audit history.
-- Stage browser certification of the operations panel after deployment.
-- Stage validation that calendar/task/alert rows preserve entity, GSTIN, FY, return period, and subentity scope across refresh and workspace navigation.
+- Stage validation that persisted notice/task rows preserve entity, GSTIN, FY, return period, and subentity scope across refresh and workspace navigation once the register is built.
+
+Phase H.1 stage certification after deployment on 18 Sep 2026:
+
+- Stage shared scope certification: `playwright/tests/gst-compliance-scope.live.spec.ts --project=chromium` - 3 tests passed.
+- Stage operations panel certification: `playwright/tests/gst-compliance-certification.live.spec.ts --project=chromium -g "Phase H operations"` - 1 test passed.
+- Covered deployed `compliance_operations` payload presence, rendered calendar/task/alert metrics, visible due dates, owner labels, alert messages, raw-object leak prevention, and layout sanity.
+
+Phase H.2 backend implementation status on 18 Sep 2026:
+
+- Added persisted GST compliance task register models: task, comment, attachment, and audit log.
+- Added task register APIs for list, create, detail, update, comment, attachment upload, close, and reopen.
+- API scope is enforced by entity, FY, subentity, GSTIN, and return period.
+- Every create/update/comment/attachment/close/reopen action writes a task audit row.
+- GST Compliance Center snapshot now merges persisted task owner/status/due date/comment/attachment counts back into generated operations tasks when source codes match.
+- Manual persisted tasks in the selected scope also appear in `compliance_operations.tasks`.
+
+Phase H.2 backend QA evidence:
+
+- Backend focused suite: `./venv/bin/python manage.py test reports.tests_gst_compliance_snapshot --keepdb --noinput --verbosity=1` - 16 tests passed.
+- Migration check: `./venv/bin/python manage.py makemigrations --check --dry-run` - no changes detected.
+
+Phase H.2 remaining:
+
+- Browser certification for create, comment, attach evidence, close, reopen, refresh retention, and scope isolation.
+- Stage deployment and live certification of persisted task rows.
+
+Phase H.2 frontend implementation status on 18 Sep 2026:
+
+- GST Compliance Center operations tasks now expose persisted task status, priority, due date, owner label, comment count, and attachment count.
+- Generated operations tasks can be persisted directly from the Operations panel.
+- Persisted tasks open in a right-side task drawer aligned with the report-shell UI.
+- Drawer supports reviewer status, priority, due date, description, comments, evidence upload, close, and reopen.
+- Task mutations refresh the GST Compliance Center snapshot so the operations panel reflects the latest persisted task state.
+- Frontend service now has typed APIs for list, create, detail, update, comment, attachment upload, close, and reopen.
+
+Phase H.2 frontend QA evidence:
+
+- Frontend typecheck: `npx tsc --noEmit` - passed.
+- Frontend focused Angular: `npx ng test --watch=false --include src/app/component/report/gst-compliance-center/gst-compliance-center.component.spec.ts` - 18 tests passed.
+- Covered task persistence from generated operations items, persisted task drawer loading, reviewer save, comment, close/reopen controls, comment/attachment count rendering, and raw-object leak prevention.
 
 ### Phase I: Full Certification And Launch Matrix
 
