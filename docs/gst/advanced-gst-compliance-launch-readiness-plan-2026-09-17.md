@@ -712,6 +712,7 @@ Phase H.2 backend QA evidence:
 - Additional task-register hardening on 19 Sep 2026: persisted GST compliance tasks now keep entity, financial year, subentity, GSTIN, return period, return type, source, and source code immutable after creation, preventing reviewer updates from moving a task into another filing scope or generated-task source.
 - Backend rerun after immutability hardening: `./venv/bin/python manage.py test reports.tests_gst_compliance_snapshot --keepdb --noinput --verbosity=1` - 20 tests passed.
 - Migration check after immutability hardening: `./venv/bin/python manage.py makemigrations --check --dry-run` - no changes detected.
+- Stage immutability verification after backend deployment on 19 Sep 2026: direct stage API certification created a scoped GST compliance task, attempted to PATCH `gstin`, `return_period`, and `source_code`, received HTTP 400 with field-level rejections for all three immutable fields, verified the persisted task scope/status remained unchanged, then closed the temporary certification task.
 
 Phase H.2 remaining:
 
@@ -1105,6 +1106,13 @@ Testing:
 - Angular route/service tests.
 - Playwright mocked workflow tests.
 - Stage live read-only and controlled mutation tests.
+
+Certification evidence added:
+
+- Browser tax lifecycle spec: `npx playwright test playwright/tests/gst-enterprise-tax-lifecycle.spec.ts --project=chromium` - 1 test passed.
+- Coverage: sales intra-state CGST/SGST, sales inter-state IGST, export/zero-rated, exempt/nil/non-GST, sales credit note, sales debit note, purchase eligible ITC, purchase ineligible ITC, deferred 2B ITC, and reverse-charge purchase tax.
+- Certified flow: GST Compliance Center -> GSTR-1 return readiness/export -> GSTR-3B summary/export -> GSTR-1 vs GSTR-3B reconciliation -> GST Reconciliation run detail.
+- Accounting assertions: return totals are computed from source sales/purchase documents, card totals agree with workspaces, reconciliation differences are zero where source data is aligned, ITC/2B deferred and blocked decisions remain visible, and report API requests retain entity/FY/subentity/GSTIN/period/date scope.
 
 Launch gate:
 
