@@ -1125,6 +1125,12 @@ Certification evidence added:
 - Seed safety rule: the seed helper is intentionally skipped unless `GST_ENABLE_STAGE_SEED=true`; normal Playwright runs must not mutate stage.
 - Seed helper non-mutating verification: `npx playwright test playwright/tests/gst-controlled-tax-matrix-seed.live.spec.ts --project=chromium --reporter=line` - 1 test skipped by design.
 - Intentional seed command: `GST_ENABLE_STAGE_SEED=true TEST_USER_EMAIL=<stage user> TEST_USER_PASSWORD=<stage password> GST_BACKEND_URL=https://accerio.in PLAYWRIGHT_BASE_URL=https://accerio.in npx playwright test playwright/tests/gst-controlled-tax-matrix-seed.live.spec.ts --project=chromium`.
+- Post-deployment seed execution: the controlled ITC/2B seed helper passed on stage for the selected scope and created reviewer evidence for `ACCEPT`, `DEFER`, and `BLOCK`.
+- Post-seed strict gate result: strict mode now passes ITC/2B deferred and blocked evidence, but still blocks launch certification until source-document evidence exists for sales credit/debit notes, export or zero-rated outward supply, and reverse-charge purchase liability.
+- Source-document seed helper: backend command `seed_gst_certification_matrix` creates idempotent certification-only sales credit/debit notes, export/zero-rated outward supply, and reverse-charge purchase liability documents for the selected entity/FY/subentity/GSTIN/period.
+- Source-document seed safety rule: the command refuses to mutate unless `--confirm-seed` is supplied; use `--dry-run` to verify the target scope first.
+- Source-document seed regression: `./venv/bin/python manage.py test reports.tests_gst_certification_seed.GstCertificationMatrixSeedTests --keepdb` passes and proves the seeded documents land in the actual GSTR-1 CDNR/EXP buckets and GSTR-3B zero-rated/RCM buckets without duplicate records on rerun.
+- Stage source-document seed command: `python manage.py seed_gst_certification_matrix --entity-id <entity> --entityfin-id <fy> --subentity-id <subentity> --gstin <gstin> --return-period YYYY-MM --user-email <stage user email> --confirm-seed`.
 
 Launch gate:
 
