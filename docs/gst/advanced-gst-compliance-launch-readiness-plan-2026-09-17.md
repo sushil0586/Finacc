@@ -1110,13 +1110,50 @@ Testing:
 Certification evidence added:
 
 - Browser tax lifecycle spec: `npx playwright test playwright/tests/gst-enterprise-tax-lifecycle.spec.ts --project=chromium` - 1 test passed.
+- Stage/live browser tax lifecycle spec: `TEST_USER_EMAIL=<stage user> TEST_USER_PASSWORD=<stage password> GST_BACKEND_URL=https://accerio.in PLAYWRIGHT_BASE_URL=https://accerio.in npx playwright test playwright/tests/gst-enterprise-tax-lifecycle.live.spec.ts --project=chromium` - 1 test passed.
 - Coverage: sales intra-state CGST/SGST, sales inter-state IGST, export/zero-rated, exempt/nil/non-GST, sales credit note, sales debit note, purchase eligible ITC, purchase ineligible ITC, deferred 2B ITC, and reverse-charge purchase tax.
 - Certified flow: GST Compliance Center -> GSTR-1 return readiness/export -> GSTR-3B summary/export -> GSTR-1 vs GSTR-3B reconciliation -> GST Reconciliation run detail.
 - Accounting assertions: return totals are computed from source sales/purchase documents, card totals agree with workspaces, reconciliation differences are zero where source data is aligned, ITC/2B deferred and blocked decisions remain visible, and report API requests retain entity/FY/subentity/GSTIN/period/date scope.
+- Stage assertions: real stage GST APIs were compared with browser-rendered GSTR-1, GSTR-3B, GST Compliance Center, GSTR-1 vs GSTR-3B reconciliation, and GST Reconciliation screens for the selected entity/FY/subentity/GSTIN/period/date scope.
+- Stage controlled tax matrix gate: `TEST_USER_EMAIL=<stage user> TEST_USER_PASSWORD=<stage password> GST_BACKEND_URL=https://accerio.in PLAYWRIGHT_BASE_URL=https://accerio.in npx playwright test playwright/tests/gst-controlled-tax-matrix-stage-gate.live.spec.ts --project=chromium` - 1 test passed in report mode, proving the selected stage scope has core umbrella cards, registered taxable outward supply, nil/exempt/non-GST supply, eligible ITC, and GST reconciliation evidence.
+- Strict stage tax matrix gate: `GST_REQUIRE_FULL_TAX_MATRIX=true ... npx playwright test playwright/tests/gst-controlled-tax-matrix-stage-gate.live.spec.ts --project=chromium` intentionally failed because the selected stage scope is not yet a complete enterprise seed period.
+- Missing strict-stage seed buckets: sales credit/debit-note GST impact, export/zero-rated outward supply, reverse-charge purchase liability, ineligible/blocked/reversed ITC, and deferred/pending ITC decision evidence.
+- Usage rule: keep the gate in report mode for daily stage smoke; run with `GST_REQUIRE_FULL_TAX_MATRIX=true` only when the controlled seed period is expected to be complete and should block launch.
+- Browser/API import contract fix: the GSTR-2B JSON and Excel import views now use the validated integer `entity` id consistently, so browser/API imports do not fail on `payload["entity"].id`.
+- Backend regression: `gst_reconciliation.tests.GstReconciliationPhaseTwoTests.test_json_import_api_accepts_browser_integer_scope_payload` verifies that the browser-style integer scope payload creates an imported return and reconciliation run.
+- Controlled ITC/2B seed helper: `playwright/tests/gst-controlled-tax-matrix-seed.live.spec.ts` imports three opt-in GSTR-2B rows and records `ACCEPT`, `DEFER`, and `BLOCK` reviewer decisions for the selected stage GST scope.
+- Seed safety rule: the seed helper is intentionally skipped unless `GST_ENABLE_STAGE_SEED=true`; normal Playwright runs must not mutate stage.
+- Seed helper non-mutating verification: `npx playwright test playwright/tests/gst-controlled-tax-matrix-seed.live.spec.ts --project=chromium --reporter=line` - 1 test skipped by design.
+- Intentional seed command: `GST_ENABLE_STAGE_SEED=true TEST_USER_EMAIL=<stage user> TEST_USER_PASSWORD=<stage password> GST_BACKEND_URL=https://accerio.in PLAYWRIGHT_BASE_URL=https://accerio.in npx playwright test playwright/tests/gst-controlled-tax-matrix-seed.live.spec.ts --project=chromium`.
 
 Launch gate:
 
 - Final GST launch matrix has evidence for every critical workflow.
+- Before public launch confidence can move above the low-90s, seed or identify a controlled GST period containing every strict matrix bucket and rerun the strict gate green.
+
+Controlled stage seed checklist for the strict matrix gate:
+
+- Use one clearly named certification return period and GSTIN; avoid mixing this with customer production-like test data.
+- Sales side:
+  - Posted taxable B2B invoice.
+  - Posted taxable sales credit note linked to an original invoice.
+  - Posted taxable sales debit note linked to an original invoice.
+  - Posted export/zero-rated outward supply.
+  - Posted nil/exempt/non-GST outward supply.
+- Purchase side:
+  - Posted eligible ITC purchase invoice.
+  - Posted reverse-charge purchase invoice.
+  - Posted ineligible or blocked ITC purchase invoice.
+  - Imported GSTR-2B row matched to purchase and marked accepted.
+  - Imported GSTR-2B row marked deferred or left pending for reviewer action.
+  - Imported GSTR-2B row marked rejected/blocked where policy requires.
+- Reconciliation side:
+  - Run GSTR-2B reconciliation for the certification period.
+  - Confirm at least one matched, one unmatched/exception, and one reviewer-pending/deferred row.
+  - Confirm GST Compliance Center ITC/2B card reflects accepted, deferred/pending, and blocked/rejected decisions.
+- Final proof:
+  - Run the read-only matrix gate in report mode.
+  - Run `GST_REQUIRE_FULL_TAX_MATRIX=true` strict mode and require it to pass before marking the certification period complete.
 
 ## Initial Priority Recommendation
 

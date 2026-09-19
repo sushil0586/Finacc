@@ -72,11 +72,12 @@ class GstGstr2bJsonImportAPIView(APIView):
         serializer = GstGstr2bJsonImportSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
-        GstReconciliationWorkflowAccess.assert_can_manage_scope(user=request.user, entity_id=payload["entity"].id)
+        entity_id = int(payload["entity"])
+        GstReconciliationWorkflowAccess.assert_can_manage_scope(user=request.user, entity_id=entity_id)
         timed = timed_call(
             "gstr2b_import_json",
             lambda: Gstr2bImportPipeline.import_json(
-                entity_id=payload["entity"],
+                entity_id=entity_id,
                 entityfinid_id=payload["entityfinid"],
                 subentity_id=payload.get("subentity"),
                 user=request.user,
@@ -87,7 +88,7 @@ class GstGstr2bJsonImportAPIView(APIView):
                 create_run=payload.get("create_run", True),
                 tolerance_config_json=payload.get("tolerance_config_json") or {},
             ),
-            entity_id=payload["entity"].id,
+            entity_id=entity_id,
             return_period=payload["return_period"],
         )
         imported_return, run = timed.value
@@ -111,12 +112,13 @@ class GstGstr2bExcelImportAPIView(APIView):
         serializer = GstGstr2bExcelImportSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
-        GstReconciliationWorkflowAccess.assert_can_manage_scope(user=request.user, entity_id=payload["entity"].id)
+        entity_id = int(payload["entity"])
+        GstReconciliationWorkflowAccess.assert_can_manage_scope(user=request.user, entity_id=entity_id)
         upload = payload["file"]
         timed = timed_call(
             "gstr2b_import_excel",
             lambda: Gstr2bImportPipeline.import_excel(
-                entity_id=payload["entity"],
+                entity_id=entity_id,
                 entityfinid_id=payload["entityfinid"],
                 subentity_id=payload.get("subentity"),
                 user=request.user,
@@ -127,7 +129,7 @@ class GstGstr2bExcelImportAPIView(APIView):
                 create_run=payload.get("create_run", True),
                 tolerance_config_json=payload.get("tolerance_config_json") or {},
             ),
-            entity_id=payload["entity"].id,
+            entity_id=entity_id,
             return_period=payload["return_period"],
         )
         imported_return, run = timed.value

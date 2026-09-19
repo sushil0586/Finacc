@@ -338,6 +338,46 @@ class GstReconciliationPhaseTwoTests(TestCase):
         self.assertEqual(run.tolerance_config_json["amount_tolerance"], "2.00")
         self.assertEqual(run.items.count(), 1)
 
+    def test_json_import_api_accepts_browser_integer_scope_payload(self):
+        client = APIClient()
+        client.force_authenticate(self.user)
+        response = client.post(
+            reverse("gst_reconciliation_api:gstr2b-import-json"),
+            {
+                "entity": self.entity.id,
+                "entityfinid": self.entityfin.id,
+                "subentity": self.subentity.id,
+                "return_period": "2026-04",
+                "gst_registration_gstin": "29ABCDE1234F1Z5",
+                "reference": "api-json-import-smoke",
+                "create_run": True,
+                "payload": {
+                    "data": [
+                        {
+                            "supplier_gstin": "29ABCDE1234F1Z5",
+                            "supplier_name": "Vendor One",
+                            "supplier_invoice_number": "API/INV/001",
+                            "supplier_invoice_date": "2026-04-12",
+                            "doc_type": "invoice",
+                            "taxable_value": "100.00",
+                            "cgst": "9.00",
+                            "sgst": "9.00",
+                        }
+                    ]
+                },
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201, response.content)
+        payload = response.json()
+        self.assertEqual(payload["imported_return"]["entity"], self.entity.id)
+        self.assertEqual(payload["imported_return"]["entityfinid"], self.entityfin.id)
+        self.assertEqual(payload["imported_return"]["subentity"], self.subentity.id)
+        self.assertEqual(payload["imported_return"]["return_period"], "2026-04")
+        self.assertIsNotNone(payload["run"])
+        self.assertEqual(payload["run"]["return_period"], "2026-04")
+
     def test_excel_import_creates_normalized_rows(self):
         workbook = Workbook()
         sheet = workbook.active
