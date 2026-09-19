@@ -1122,6 +1122,51 @@ class GstComplianceTaskApiTests(TestCase):
 
     @patch("reports.gst_compliance.views.GstComplianceTaskListCreateAPIView.enforce_scope")
     @patch("reports.gst_compliance.views.assert_any_report_permission")
+    def test_task_register_update_cannot_change_scope_or_source(self, mock_permissions, mock_enforce_scope):
+        mock_permissions.return_value = set(GST_COMPLIANCE_CENTER_VIEW_PERMISSIONS)
+
+        create_response = self.client.post(
+            reverse("reports_api:gst-compliance-task-list"),
+            {
+                **self.scope_params,
+                "return_type": "GSTR3B",
+                "source": "calendar",
+                "source_code": "gstr3b",
+                "title": "Prepare GSTR-3B before due date",
+                "priority": "warning",
+            },
+            format="json",
+        )
+        self.assertEqual(create_response.status_code, 201)
+        task_id = create_response.data["id"]
+
+        with patch("reports.gst_compliance.views.GstComplianceTaskDetailAPIView.enforce_scope"), patch(
+            "reports.gst_compliance.views.assert_any_report_permission",
+            return_value=set(GST_COMPLIANCE_CENTER_VIEW_PERMISSIONS),
+        ):
+            update_response = self.client.patch(
+                reverse("reports_api:gst-compliance-task-detail", args=[task_id]),
+                {
+                    "return_period": "2026-07",
+                    "gstin": "29ABCDE1234F1Z6",
+                    "source_code": "task_portal",
+                    "status": "in_review",
+                },
+                format="json",
+            )
+
+        self.assertEqual(update_response.status_code, 400)
+        self.assertIn("return_period", update_response.data)
+        self.assertIn("gstin", update_response.data)
+        self.assertIn("source_code", update_response.data)
+        task = GstComplianceTask.objects.get(pk=task_id)
+        self.assertEqual(task.return_period, "2026-06")
+        self.assertEqual(task.gstin, "29ABCDE1234F1Z5")
+        self.assertEqual(task.source_code, "gstr3b")
+        self.assertEqual(task.status, GstComplianceTask.Status.OPEN)
+
+    @patch("reports.gst_compliance.views.GstComplianceTaskListCreateAPIView.enforce_scope")
+    @patch("reports.gst_compliance.views.assert_any_report_permission")
     def test_task_register_filters_by_scope(self, mock_permissions, mock_enforce_scope):
         mock_permissions.return_value = set(GST_COMPLIANCE_CENTER_VIEW_PERMISSIONS)
         GstComplianceTask.objects.create(

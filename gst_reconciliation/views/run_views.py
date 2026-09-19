@@ -44,14 +44,23 @@ class GstReconciliationRunListCreateAPIView(generics.ListCreateAPIView):
         reconciliation_type = self.request.query_params.get("reconciliation_type")
         return_period = self.request.query_params.get("return_period")
         status_value = self.request.query_params.get("status")
+        entityfinid = self.request.query_params.get("entityfinid")
+        subentity = self.request.query_params.get("subentity")
+        gst_registration_gstin = self.request.query_params.get("gst_registration_gstin")
         if entity_id:
             queryset = queryset.filter(entity_id=entity_id)
+        if entityfinid:
+            queryset = queryset.filter(entityfinid_id=entityfinid)
+        if subentity:
+            queryset = queryset.filter(subentity_id=subentity)
         if reconciliation_type:
             queryset = queryset.filter(reconciliation_type=reconciliation_type)
         if return_period:
             queryset = queryset.filter(return_period=return_period)
         if status_value:
             queryset = queryset.filter(status=status_value)
+        if gst_registration_gstin:
+            queryset = queryset.filter(gst_registration_gstin__iexact=gst_registration_gstin)
         return queryset.order_by("-created_at", "-id")
 
     def get_serializer_class(self):
@@ -90,8 +99,14 @@ class GstReconciliationRunSummaryListAPIView(generics.ListAPIView):
         return_period = self.request.query_params.get("return_period")
         status_value = self.request.query_params.get("status")
         gst_registration_gstin = self.request.query_params.get("gst_registration_gstin")
+        entityfinid = self.request.query_params.get("entityfinid")
+        subentity = self.request.query_params.get("subentity")
         if entity_id:
             queryset = queryset.filter(entity_id=entity_id)
+        if entityfinid:
+            queryset = queryset.filter(entityfinid_id=entityfinid)
+        if subentity:
+            queryset = queryset.filter(subentity_id=subentity)
         if reconciliation_type:
             queryset = queryset.filter(reconciliation_type=reconciliation_type)
         if return_period:

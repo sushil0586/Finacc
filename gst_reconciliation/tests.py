@@ -1204,6 +1204,106 @@ class GstReconciliationPhaseFourTests(APITestCase):
         self.assertEqual(queue_response.status_code, 200)
         self.assertIn("summary", queue_response.json()["meta"])
 
+    def test_scope_filtered_run_list_grid_and_queue_do_not_mix_gstin_period_or_branch(self):
+        self.sales_run.gst_registration_gstin = "29ABCDE1234F1Z5"
+        self.sales_run.save(update_fields=["gst_registration_gstin", "updated_at"])
+        GstReconciliationItem.objects.filter(pk=self.sales_item.id).update(
+            gstin="29ABCDE1234F1Z5",
+            resolution_status=GstReconciliationItem.ResolutionStatus.MISMATCH,
+            match_status=GstReconciliationItem.MatchStatus.MISMATCHED,
+            assigned_reviewer=self.user,
+            counterparty_gstin="27ABCDE1234F1Z5",
+        )
+        other_subentity = SubEntity.objects.create(entity=self.entity, subentityname="Branch 2")
+        other_fin = EntityFinancialYear.objects.create(
+            entity=self.entity,
+            desc="FY 2027-28",
+            finstartyear=timezone.make_aware(datetime(2027, 4, 1)),
+            finendyear=timezone.make_aware(datetime(2028, 3, 31)),
+            createdby=self.user,
+        )
+        other_run = GstReconciliationRun.objects.create(
+            entity=self.entity,
+            entityfinid=other_fin,
+            subentity=other_subentity,
+            gst_registration_gstin="29OTHER1234F1Z5",
+            reconciliation_type=GstReconciliationRun.ReconciliationType.GSTR1_SALES,
+            return_period="2026-05",
+            created_by=self.user,
+            updated_by=self.user,
+        )
+        other_item = GstReconciliationItem.objects.create(
+            entity=self.entity,
+            entityfinid=other_fin,
+            subentity=other_subentity,
+            run=other_run,
+            direction=GstReconciliationItem.Direction.SALES,
+            match_key="GSTR1|OTHER",
+            source_document_type="gst_imported_return_row",
+            source_document_id="other-row",
+            gstin="29OTHER1234F1Z5",
+            counterparty_gstin="27OTHER1234F1Z5",
+            invoice_number="OTHER-1",
+            resolution_status=GstReconciliationItem.ResolutionStatus.MISMATCH,
+            match_status=GstReconciliationItem.MatchStatus.MISMATCHED,
+            assigned_reviewer=self.user,
+            created_by=self.user,
+            updated_by=self.user,
+        )
+        scope_params = {
+            "entity": self.entity.id,
+            "entityfinid": self.entityfin.id,
+            "subentity": self.subentity.id,
+            "return_period": "2026-04",
+            "gst_registration_gstin": "29ABCDE1234F1Z5",
+        }
+
+        run_response = self.client.get(
+            reverse("gst_reconciliation_api:run-summary-list"),
+            {
+                **scope_params,
+                "reconciliation_type": GstReconciliationRun.ReconciliationType.GSTR1_SALES,
+            },
+        )
+        self.assertEqual(run_response.status_code, 200)
+        self.assertEqual([row["id"] for row in run_response.json()["rows"]], [self.sales_run.id])
+
+        grid_response = self.client.get(
+            reverse("gst_reconciliation_api:item-grid"),
+            {
+                **scope_params,
+                "unresolved_only": "true",
+            },
+        )
+        self.assertEqual(grid_response.status_code, 200)
+        grid_ids = [row["id"] for row in grid_response.json()["rows"]]
+        self.assertEqual(grid_ids, [self.sales_item.id])
+        self.assertNotIn(other_item.id, grid_ids)
+
+        queue_response = self.client.get(
+            reverse("gst_reconciliation_api:reviewer-queue"),
+            {
+                **scope_params,
+                "reviewer_id": self.user.id,
+            },
+        )
+        self.assertEqual(queue_response.status_code, 200)
+        queue_ids = [row["id"] for row in queue_response.json()["rows"]]
+        self.assertEqual(queue_ids, [self.sales_item.id])
+        self.assertNotIn(other_item.id, queue_ids)
+
+        bulk_response = self.client.post(
+            reverse("gst_reconciliation_api:items-bulk-ignore"),
+            {
+                "action": "ignore",
+                "item_ids": [self.sales_item.id, other_item.id],
+                "note": "scope leakage guard",
+            },
+            format="json",
+        )
+        self.assertEqual(bulk_response.status_code, 400)
+        self.assertIn("single reconciliation run", bulk_response.json()["errors"][0]["error"])
+
     def test_item_detail_exposes_source_document_and_ledger_impact_for_manual_match_review(self):
         purchase_ledger = Ledger.objects.create(
             entity=self.entity,
@@ -1557,7 +1657,7 @@ class GstReconciliationPhaseEightHardeningTests(APITestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("Closed GST reconciliation runs cannot be modified", response.json()["detail"])
 
-    def test_bulk_action_handles_partial_failures_safely(self):
+    def test_bulk_action_rejects_items_from_multiple_runs(self):
         closed_run = GstReconciliationRun.objects.create(
             entity=self.entity,
             entityfinid=self.entityfin,
@@ -1592,11 +1692,12 @@ class GstReconciliationPhaseEightHardeningTests(APITestCase):
                 {"action": "ignore", "item_ids": [self.item.id, second_item.id], "note": "bulk ignore"},
                 format="json",
             )
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 400)
         payload = response.json()
-        self.assertEqual(payload["success_count"], 1)
-        self.assertEqual(payload["failed_count"], 1)
+        self.assertEqual(payload["success_count"], 0)
+        self.assertEqual(payload["failed_count"], 2)
         self.assertEqual(len(payload["errors"]), 1)
+        self.assertIn("single reconciliation run", payload["errors"][0]["error"])
 
 
 @override_settings(ROOT_URLCONF="FA.urls", AUTH_PASSWORD_VALIDATORS=[], RBAC_DEV_ALLOW_ALL_ACCESS=True, GST_RECON_CACHE_ENABLED=False)

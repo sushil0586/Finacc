@@ -709,6 +709,9 @@ Phase H.2 backend QA evidence:
 
 - Backend focused suite: `./venv/bin/python manage.py test reports.tests_gst_compliance_snapshot --keepdb --noinput --verbosity=1` - 16 tests passed.
 - Migration check: `./venv/bin/python manage.py makemigrations --check --dry-run` - no changes detected.
+- Additional task-register hardening on 19 Sep 2026: persisted GST compliance tasks now keep entity, financial year, subentity, GSTIN, return period, return type, source, and source code immutable after creation, preventing reviewer updates from moving a task into another filing scope or generated-task source.
+- Backend rerun after immutability hardening: `./venv/bin/python manage.py test reports.tests_gst_compliance_snapshot --keepdb --noinput --verbosity=1` - 20 tests passed.
+- Migration check after immutability hardening: `./venv/bin/python manage.py makemigrations --check --dry-run` - no changes detected.
 
 Phase H.2 remaining:
 
@@ -737,6 +740,8 @@ Phase H.2 stage certification after deployment on 18 Sep 2026:
 - Stage deployment check found and resolved two certification blockers before pass:
   - Missing deployed task API route returned 404 until backend deployment caught up.
   - Operations tasks can send `return_type=null`; backend serializer now accepts null and normalizes it to blank for non-return-specific task sources.
+- Stage rerun on 19 Sep 2026: `TEST_USER_EMAIL='...' TEST_USER_PASSWORD='...' PLAYWRIGHT_BASE_URL='https://accerio.in' GST_BACKEND_URL='https://accerio.in' npx playwright test playwright/tests/gst-compliance-certification.live.spec.ts --project=chromium --reporter=line -g 'Phase H\\.(2|3)'` - 2 tests passed.
+- Note: local backend immutability hardening for task scope/source updates was verified locally on 19 Sep 2026 and still requires backend deployment before a dedicated stage immutability check can be added.
 
 Phase H.3 stage filing lifecycle certification on 18 Sep 2026:
 
@@ -763,6 +768,14 @@ Phase G.2 QA evidence:
 - Stage mutation certification is prepared in `playwright/tests/gst-compliance-certification.live.spec.ts` and is intentionally opt-in with `GST_LIFECYCLE_MUTATION=1` plus `GST_LIFECYCLE_RETURN_PERIOD=<YYYY-MM>`.
 - Prepared browser flow covers reopen when needed, prepare, submit review, freeze-without-reason prevention, freeze-with-reason, file-with-portal-reference, browser reload retention, persisted API status, no raw-object rendering, and layout sanity.
 - Local frontend verification for the new browser coverage: `npm run typecheck` passed and `npx playwright test playwright/tests/gst-compliance-certification.live.spec.ts --list` listed 6 tests including `certifies Phase G.2 persisted filing lifecycle actions on stage`.
+
+Phase G.2 stage certification after deployment on 18 Sep 2026:
+
+- First stage run identified a certification test gap: derived `needs_review` lifecycle periods are valid starting points for `Prepare`, but the test skipped that state and matched the `Mark Filed` button text too broadly.
+- Browser certification was corrected to drive `needs_review -> prepared -> in_review -> frozen -> filed` and assert the lifecycle heading/status instead of loose panel text.
+- Stage mutation certification: `GST_LIFECYCLE_MUTATION=1 GST_LIFECYCLE_RETURN_PERIOD=2026-10 npx playwright test playwright/tests/gst-compliance-certification.live.spec.ts --project=chromium -g "Phase G.2 persisted filing lifecycle"` - 1 test passed.
+- Stage read-only lifecycle/drilldown regression: `npx playwright test playwright/tests/gst-compliance-certification.live.spec.ts --project=chromium -g "Phase H.3 filing lifecycle"` - 1 test passed.
+- Covered prepare, submit review, reason-required freeze validation, freeze, file with portal reference, persisted API status, browser reload retention, workspace drilldowns, route scope preservation, no raw-object rendering, and layout sanity.
 
 ### Phase I: Full Certification And Launch Matrix
 
@@ -816,6 +829,18 @@ Phase I live certification progress on 18 Sep 2026:
 - Invalid-combination evidence: unavailable GSTIN/period/no-data/API-failure/permission-restricted states were represented as recoverable states, not as valid silent zero data or blank/broken screens.
 - Card coverage evidence: GSTR-1, GSTR-3B, GSTR-1 vs GSTR-3B reconciliation, GSTR-9, GST Exception Dashboard, GST Portal, ITC / 2B, E-Invoice / E-Way, GST-TDS, and TCS cards/routes were included through card-state, drilldown, and live GST certification coverage where stage data and permissions allowed.
 - Responsive evidence: desktop, tablet, and mobile layouts were checked for card overlap, badge fit, long-value wrapping, action usability, scope toolbar placement, and horizontal overflow safety.
+
+Final Phase I stage pack rerun on 18 Sep 2026:
+
+- Full GST stage pack was rerun with deployed frontend/backend and explicit stage scope (`PLAYWRIGHT_BASE_URL=https://accerio.in`, `GST_BACKEND_URL=https://accerio.in`, `entity=3`, `entityfinid=3`, `subentity=3`).
+- Umbrella, card-state, shared-scope, Phase 2, Phase 3, and Phase 4 live specs passed 18 tests with 1 skipped before the older GST report specs were isolated for corrected-scope rerun.
+- Older GST report and GST-TDS specs initially defaulted to entity `10/8/8`, which was not valid for the stage user and failed during RBAC/bootstrap before page workflow execution.
+- Corrected-scope rerun for `gst-tds-compliance-center.live.spec.ts` and `gst.live.spec.ts` passed 15 tests with 2 data-dependent skips.
+- Certification test correction: GSTR-3B optional warning/ITC tracker test now explicitly returns to the GSTR-3B page after each optional drilldown and only triggers warning/related-report actions when visible in the current stage scope.
+- Supporting local QA after the test correction: `npm run typecheck` passed and the focused `GSTR-3B warning and ITC tracker` live test passed.
+- Final combined Phase I evidence for this run: 33 stage browser tests passed, 3 skipped due data/flag dependency, and 0 unresolved product failures.
+- Controlled lifecycle mutation remains separately certified through Phase G.2 with `GST_LIFECYCLE_MUTATION=1` and is excluded from the read-only full-pack rerun by design.
+- Current GST launch confidence: 93% for pilot use, with remaining risk limited to external GSTN/WhiteBooks filing-provider behavior and stage data availability for rare return states.
 
 Phase 2 GSTR-1, GSTR-3B, and reconciliation certification progress on 18 Sep 2026:
 

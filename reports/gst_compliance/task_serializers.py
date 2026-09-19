@@ -132,6 +132,34 @@ class GstComplianceTaskSerializer(serializers.ModelSerializer):
         return value
 
     def validate(self, attrs):
+        if self.instance is not None:
+            immutable_fields = (
+                "entity",
+                "entityfinid",
+                "subentity",
+                "gstin",
+                "return_period",
+                "return_type",
+                "source",
+                "source_code",
+            )
+            attempted = {}
+            for field in immutable_fields:
+                if field not in attrs:
+                    continue
+                current = getattr(self.instance, field)
+                incoming = attrs[field]
+                if hasattr(current, "pk") or hasattr(incoming, "pk"):
+                    current_value = getattr(current, "pk", current)
+                    incoming_value = getattr(incoming, "pk", incoming)
+                else:
+                    current_value = current
+                    incoming_value = incoming
+                if str(current_value or "") != str(incoming_value or ""):
+                    attempted[field] = "This field cannot be changed after task creation."
+            if attempted:
+                raise serializers.ValidationError(attempted)
+
         source = (attrs.get("source") or getattr(self.instance, "source", "") or "").strip()
         source_code = (attrs.get("source_code") or getattr(self.instance, "source_code", "") or "").strip()
         if bool(source) != bool(source_code):

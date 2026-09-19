@@ -46,6 +46,11 @@ class _ItemGridFilterMixin:
 
     def filter_queryset(self, queryset):
         run_id = self.request.query_params.get("run")
+        entity_id = self.request.query_params.get("entity")
+        entityfinid = self.request.query_params.get("entityfinid")
+        subentity = self.request.query_params.get("subentity")
+        return_period = self.request.query_params.get("return_period")
+        gst_registration_gstin = self.request.query_params.get("gst_registration_gstin")
         match_status = self.request.query_params.get("status")
         resolution_status = self.request.query_params.get("resolution_status")
         supplier_gstin = self.request.query_params.get("supplier_gstin")
@@ -57,6 +62,16 @@ class _ItemGridFilterMixin:
 
         if run_id:
             queryset = queryset.filter(run_id=run_id)
+        if entity_id:
+            queryset = queryset.filter(entity_id=entity_id)
+        if entityfinid:
+            queryset = queryset.filter(entityfinid_id=entityfinid)
+        if subentity:
+            queryset = queryset.filter(subentity_id=subentity)
+        if return_period:
+            queryset = queryset.filter(run__return_period=return_period)
+        if gst_registration_gstin:
+            queryset = queryset.filter(run__gst_registration_gstin__iexact=gst_registration_gstin)
         if match_status:
             queryset = queryset.filter(match_status=match_status)
         if resolution_status:
@@ -416,6 +431,21 @@ class _BulkItemActionBaseAPIView(APIView):
         missing_errors = [{"item_id": item_id, "error": "Item not found."} for item_id in item_ids if item_id not in found_ids]
         if not items:
             return Response({"action": self.action_name, "success_count": 0, "failed_count": len(item_ids), "errors": missing_errors}, status=status.HTTP_400_BAD_REQUEST)
+        run_ids = {item.run_id for item in items}
+        if len(run_ids) > 1:
+            return Response(
+                {
+                    "action": action_name,
+                    "success_count": 0,
+                    "failed_count": len(item_ids),
+                    "errors": [
+                        {
+                            "error": "Bulk GST reconciliation actions must target items from a single reconciliation run.",
+                        }
+                    ],
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         GstReconciliationWorkflowAccess.assert_can_bulk_review(user=request.user, run=items[0].run)
         reviewer = None
         reviewer_id = serializer.validated_data.get("reviewer_id")
