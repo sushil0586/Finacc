@@ -2,8 +2,11 @@ from django.db import transaction
 from django.db.models import Q
 
 from rbac.backfill import LegacyRBACBackfillService
+from rbac import access_catalog
+from rbac.canonical_seeding import CanonicalRBACCatalogSeedService
 from rbac.models import Menu, MenuPermission, Permission, Role, RolePermission, UserRoleAssignment
 from rbac.services import RoleTemplateService
+from subscriptions.services import SubscriptionService
 
 
 class RBACSeedService:
@@ -14,26 +17,28 @@ class RBACSeedService:
     customers can start assigning users immediately after creation.
     """
 
-    DEFAULT_ROLE_SHELLS = (
-        {"name": "Admin", "code": "admin", "priority": 20, "template": "admin"},
-        {"name": "Sales User", "code": "sales_user", "priority": 30, "template": "sales_user"},
-        {"name": "Purchase User", "code": "purchase_user", "priority": 40, "template": "purchase_user"},
-        {"name": "Accounts User", "code": "accounts_user", "priority": 50, "template": "accounts_user"},
-        {"name": "Report Viewer", "code": "report_viewer", "priority": 60, "template": "report_viewer"},
-        {"name": "Payables User", "code": "payables_user", "priority": 70, "template": "payables_user"},
-        {"name": "Payroll User", "code": "payroll_user", "priority": 80, "template": "payroll_user"},
-        {"name": "HRMS User", "code": "hrms_user", "priority": 90, "template": "hrms_user"},
-        {"name": "Compliance User", "code": "compliance_user", "priority": 100, "template": "compliance_user"},
+    DEFAULT_ROLE_SHELLS = tuple(
+        {
+            "name": spec.name,
+            "code": spec.code,
+            "priority": spec.priority,
+            "template": "canonical",
+        }
+        for spec in access_catalog.ROLE_SPECS
+        if spec.code != access_catalog.ROLE_ENTITY_SUPER_ADMIN
     )
 
     @classmethod
     @transaction.atomic
-    def seed_entity(cls, *, entity, actor, seed_default_roles=True):
-        cls._ensure_global_catalog()
+    def seed_entity(cls, *, entity, actor, seed_default_roles=True, ensure_global_catalog=True):
+        if ensure_global_catalog:
+            cls._ensure_global_catalog()
+        subscribed_features = cls._subscribed_feature_codes(entity)
+        subscribed_permission_codes = access_catalog.permission_codes_for_features(subscribed_features)
 
         admin_role, _ = Role.objects.get_or_create(
             entity=entity,
-            code="entity.super_admin",
+            code=access_catalog.ROLE_ENTITY_SUPER_ADMIN,
             defaults={
                 "name": "Entity Super Admin",
                 "description": "Entity Administrator",
@@ -43,7 +48,7 @@ class RBACSeedService:
                 "priority": 1,
                 "createdby": actor,
                 "isactive": True,
-                "metadata": {"seed": "entity_onboarding"},
+                "metadata": {"seed": "entity_onboarding", "template": "canonical", "feature_codes": sorted(subscribed_features)},
             },
         )
         admin_role.name = "Entity Super Admin"
@@ -52,20 +57,23 @@ class RBACSeedService:
         admin_role.is_assignable = True
         admin_role.priority = 1
         admin_role.isactive = True
+        admin_role.metadata = {
+            **(admin_role.metadata or {}),
+            "seed": "entity_onboarding",
+            "template": "canonical",
+            "feature_codes": sorted(subscribed_features),
+        }
         admin_role.save()
 
-        all_permission_ids = list(Permission.objects.filter(isactive=True).values_list("id", flat=True))
-        existing_permission_ids = set(
-            RolePermission.objects.filter(role=admin_role, permission_id__in=all_permission_ids).values_list("permission_id", flat=True)
+        permission_ids = list(
+            Permission.objects.filter(code__in=subscribed_permission_codes, isactive=True).values_list("id", flat=True)
         )
-        missing_permission_ids = set(all_permission_ids) - existing_permission_ids
-        if missing_permission_ids:
-            RolePermission.objects.bulk_create(
-                [
-                    RolePermission(role=admin_role, permission_id=permission_id, effect=RolePermission.EFFECT_ALLOW)
-                    for permission_id in missing_permission_ids
-                ]
-            )
+        cls._grant_role_permission_ids(
+            role=admin_role,
+            permission_ids=permission_ids,
+            seed="entity_onboarding",
+            feature_codes=subscribed_features,
+        )
 
         assignment, _ = UserRoleAssignment.objects.get_or_create(
             user=actor,
@@ -87,52 +95,136 @@ class RBACSeedService:
 
         shell_role_ids = []
         if seed_default_roles:
-            for row in cls.DEFAULT_ROLE_SHELLS:
+            subscribed_role_specs = access_catalog.role_specs_for_features(subscribed_features)
+            subscribed_role_codes = {spec.code for spec in subscribed_role_specs}
+            stale_role_codes = {
+                spec.code
+                for spec in access_catalog.ROLE_SPECS
+                if spec.code not in subscribed_role_codes and spec.code != access_catalog.ROLE_ENTITY_SUPER_ADMIN
+            }
+            Role.objects.filter(
+                entity=entity,
+                code__in=stale_role_codes,
+                metadata__template="canonical",
+            ).update(isactive=False)
+
+            for spec in subscribed_role_specs:
+                if spec.code == access_catalog.ROLE_ENTITY_SUPER_ADMIN:
+                    continue
                 role, _ = Role.objects.get_or_create(
                     entity=entity,
-                    code=row["code"],
+                    code=spec.code,
                     defaults={
-                        "name": row["name"],
-                        "description": row["name"],
+                        "name": spec.name,
+                        "description": spec.description,
                         "role_level": Role.LEVEL_ENTITY,
                         "is_system_role": False,
                         "is_assignable": True,
-                        "priority": row["priority"],
+                        "priority": spec.priority,
                         "createdby": actor,
                         "isactive": True,
-                        "metadata": {"seed": "entity_onboarding", "template": row["template"]},
+                        "metadata": {"seed": "entity_onboarding", "template": "canonical", "feature_codes": sorted(subscribed_features)},
                     },
                 )
-                role.name = row["name"]
-                role.description = row["name"]
-                role.priority = row["priority"]
+                role.name = spec.name
+                role.description = spec.description
+                role.priority = spec.priority
                 role.is_assignable = True
                 role.isactive = True
-                role.metadata = {**(role.metadata or {}), "seed": "entity_onboarding", "template": row["template"]}
+                role.metadata = {
+                    **(role.metadata or {}),
+                    "seed": "entity_onboarding",
+                    "template": "canonical",
+                    "feature_codes": sorted(subscribed_features),
+                }
                 role.save()
-                RoleTemplateService.apply_template(role, row["template"], [], actor=actor)
+                role_permission_codes = cls._permission_codes_for_role(role_code=spec.code, feature_codes=subscribed_features)
+                role_permission_ids = list(
+                    Permission.objects.filter(code__in=role_permission_codes, isactive=True).values_list("id", flat=True)
+                )
+                cls._grant_role_permission_ids(
+                    role=role,
+                    permission_ids=role_permission_ids,
+                    seed="entity_onboarding",
+                    feature_codes=subscribed_features,
+                )
                 shell_role_ids.append(role.id)
 
         return {
             "rbac_admin_role_id": admin_role.id,
             "rbac_admin_assignment_id": assignment.id,
-            "permission_count": len(all_permission_ids),
+            "permission_count": len(permission_ids),
             "shell_role_ids": shell_role_ids,
-            "catalog_seeded": bool(all_permission_ids) and Menu.objects.filter(isactive=True).exists(),
+            "catalog_seeded": bool(permission_ids) and Menu.objects.filter(isactive=True).exists(),
+            "feature_codes": sorted(subscribed_features),
         }
 
     @staticmethod
     def _ensure_global_catalog():
-        if Permission.objects.exists() and Menu.objects.exists():
-            RBACSeedService._normalize_menu_catalog()
-            return
-        LegacyRBACBackfillService.run()
+        if not Permission.objects.exists() or not Menu.objects.exists():
+            LegacyRBACBackfillService.run()
+        CanonicalRBACCatalogSeedService.seed_global_catalog()
         RBACSeedService._normalize_menu_catalog()
 
     @staticmethod
     def _normalize_menu_catalog():
         legacy_route_qs = Menu.objects.filter(code__startswith="legacy.").exclude(code__startswith="legacy.mainmenu.").exclude(code__startswith="legacy.submenu.")
         legacy_route_qs.update(isactive=False)
+
+    @staticmethod
+    def _subscribed_feature_codes(entity):
+        customer_account = SubscriptionService._customer_account_for_entity(entity)
+        flags = SubscriptionService.get_feature_flags(customer_account=customer_account)
+        enabled = {code for code, is_enabled in flags.items() if is_enabled}
+        known = set(access_catalog.ALL_FEATURE_CODES)
+        return frozenset(enabled.intersection(known))
+
+    @staticmethod
+    def _permission_codes_for_role(*, role_code, feature_codes):
+        if role_code in {access_catalog.ROLE_ENTITY_SUPER_ADMIN, access_catalog.ROLE_ADMIN}:
+            return access_catalog.permission_codes_for_features(feature_codes)
+        feature_set = set(feature_codes)
+        menu_permission_codes = {
+            spec.permission_code
+            for spec in access_catalog.MENU_SPECS
+            if spec.feature_code in feature_set and role_code in spec.default_role_codes
+        }
+        route_permission_codes = {
+            code
+            for code in access_catalog.ROLE_ROUTE_PERMISSION_CODES.get(role_code, frozenset())
+            if access_catalog.feature_for_permission_code(code) in feature_set
+        }
+        return frozenset(
+            menu_permission_codes
+            | route_permission_codes
+            | access_catalog.UNIVERSAL_LANDING_PERMISSION_CODES
+        )
+
+    @staticmethod
+    def _grant_role_permission_ids(*, role, permission_ids, seed, feature_codes):
+        permission_ids = set(permission_ids)
+        canonical_permission_codes = {spec.permission_code for spec in access_catalog.MENU_SPECS}
+        RolePermission.objects.filter(
+            role=role,
+            permission__code__in=canonical_permission_codes,
+        ).exclude(permission_id__in=permission_ids).delete()
+        existing_permission_ids = set(
+            RolePermission.objects.filter(role=role, permission_id__in=permission_ids).values_list("permission_id", flat=True)
+        )
+        missing_permission_ids = permission_ids - existing_permission_ids
+        if missing_permission_ids:
+            RolePermission.objects.bulk_create(
+                [
+                    RolePermission(
+                        role=role,
+                        permission_id=permission_id,
+                        effect=RolePermission.EFFECT_ALLOW,
+                        metadata={"seed": seed, "template": "canonical", "feature_codes": sorted(feature_codes)},
+                    )
+                    for permission_id in missing_permission_ids
+                ],
+                batch_size=500,
+            )
 
 
 class PayrollRBACSeedService:

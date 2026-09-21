@@ -22,12 +22,19 @@ class SubscriptionLimitCodes:
     MAX_ENTITIES = "max_entities"
     MAX_ENTITY_USERS = "max_entity_users"
     FEATURE_FINANCIAL = "feature_financial"
+    FEATURE_CATALOG = "feature_catalog"
     FEATURE_INVENTORY = "feature_inventory"
     FEATURE_MANUFACTURING = "feature_manufacturing"
     FEATURE_PURCHASE = "feature_purchase"
     FEATURE_SALES = "feature_sales"
     FEATURE_REPORTING = "feature_reporting"
+    FEATURE_PAYABLES = "feature_payables"
+    FEATURE_RECEIVABLES = "feature_receivables"
+    FEATURE_TREASURY = "feature_treasury"
+    FEATURE_COMPLIANCE = "feature_compliance"
+    FEATURE_GST_COMPLIANCE = "feature_gst_compliance"
     FEATURE_RBAC = "feature_rbac"
+    FEATURE_HRMS = "feature_hrms"
     FEATURE_PAYROLL = "feature_payroll"
     FEATURE_ASSETS = "feature_assets"
 
@@ -45,12 +52,19 @@ class SubscriptionService:
     DEFAULT_TRIAL_DAYS = 14
     DEFAULT_CORE_FEATURE_FLAGS = (
         SubscriptionLimitCodes.FEATURE_FINANCIAL,
+        SubscriptionLimitCodes.FEATURE_CATALOG,
         SubscriptionLimitCodes.FEATURE_INVENTORY,
         SubscriptionLimitCodes.FEATURE_MANUFACTURING,
         SubscriptionLimitCodes.FEATURE_PURCHASE,
         SubscriptionLimitCodes.FEATURE_SALES,
         SubscriptionLimitCodes.FEATURE_REPORTING,
+        SubscriptionLimitCodes.FEATURE_PAYABLES,
+        SubscriptionLimitCodes.FEATURE_RECEIVABLES,
+        SubscriptionLimitCodes.FEATURE_TREASURY,
+        SubscriptionLimitCodes.FEATURE_COMPLIANCE,
+        SubscriptionLimitCodes.FEATURE_GST_COMPLIANCE,
         SubscriptionLimitCodes.FEATURE_RBAC,
+        SubscriptionLimitCodes.FEATURE_HRMS,
         SubscriptionLimitCodes.FEATURE_PAYROLL,
         SubscriptionLimitCodes.FEATURE_ASSETS,
     )
@@ -68,6 +82,11 @@ class SubscriptionService:
         },
         SubscriptionLimitCodes.FEATURE_FINANCIAL: {
             "label": "Financial Module",
+            "limit_type": PlanLimit.LimitType.BOOLEAN,
+            "default": True,
+        },
+        SubscriptionLimitCodes.FEATURE_CATALOG: {
+            "label": "Catalog Module",
             "limit_type": PlanLimit.LimitType.BOOLEAN,
             "default": True,
         },
@@ -96,8 +115,38 @@ class SubscriptionService:
             "limit_type": PlanLimit.LimitType.BOOLEAN,
             "default": True,
         },
+        SubscriptionLimitCodes.FEATURE_PAYABLES: {
+            "label": "Payables Module",
+            "limit_type": PlanLimit.LimitType.BOOLEAN,
+            "default": True,
+        },
+        SubscriptionLimitCodes.FEATURE_RECEIVABLES: {
+            "label": "Receivables Module",
+            "limit_type": PlanLimit.LimitType.BOOLEAN,
+            "default": True,
+        },
+        SubscriptionLimitCodes.FEATURE_TREASURY: {
+            "label": "Treasury Module",
+            "limit_type": PlanLimit.LimitType.BOOLEAN,
+            "default": True,
+        },
+        SubscriptionLimitCodes.FEATURE_COMPLIANCE: {
+            "label": "Compliance Module",
+            "limit_type": PlanLimit.LimitType.BOOLEAN,
+            "default": True,
+        },
+        SubscriptionLimitCodes.FEATURE_GST_COMPLIANCE: {
+            "label": "GST Compliance Module",
+            "limit_type": PlanLimit.LimitType.BOOLEAN,
+            "default": True,
+        },
         SubscriptionLimitCodes.FEATURE_RBAC: {
             "label": "RBAC Module",
+            "limit_type": PlanLimit.LimitType.BOOLEAN,
+            "default": True,
+        },
+        SubscriptionLimitCodes.FEATURE_HRMS: {
+            "label": "HRMS Module",
             "limit_type": PlanLimit.LimitType.BOOLEAN,
             "default": True,
         },
@@ -115,12 +164,19 @@ class SubscriptionService:
 
     FEATURE_MESSAGE_MAP = {
         SubscriptionLimitCodes.FEATURE_FINANCIAL: "Financial module is not included in the current plan.",
+        SubscriptionLimitCodes.FEATURE_CATALOG: "Catalog module is not included in the current plan.",
         SubscriptionLimitCodes.FEATURE_INVENTORY: "Inventory module is not included in the current plan.",
         SubscriptionLimitCodes.FEATURE_MANUFACTURING: "Manufacturing module is not included in the current plan.",
         SubscriptionLimitCodes.FEATURE_PURCHASE: "Purchase module is not included in the current plan.",
         SubscriptionLimitCodes.FEATURE_SALES: "Sales module is not included in the current plan.",
         SubscriptionLimitCodes.FEATURE_REPORTING: "Reporting module is not included in the current plan.",
+        SubscriptionLimitCodes.FEATURE_PAYABLES: "Payables module is not included in the current plan.",
+        SubscriptionLimitCodes.FEATURE_RECEIVABLES: "Receivables module is not included in the current plan.",
+        SubscriptionLimitCodes.FEATURE_TREASURY: "Treasury module is not included in the current plan.",
+        SubscriptionLimitCodes.FEATURE_COMPLIANCE: "Compliance module is not included in the current plan.",
+        SubscriptionLimitCodes.FEATURE_GST_COMPLIANCE: "GST compliance module is not included in the current plan.",
         SubscriptionLimitCodes.FEATURE_RBAC: "RBAC module is not included in the current plan.",
+        SubscriptionLimitCodes.FEATURE_HRMS: "HRMS module is not included in the current plan.",
         SubscriptionLimitCodes.FEATURE_PAYROLL: "Payroll module is not included in the current plan.",
         SubscriptionLimitCodes.FEATURE_ASSETS: "Assets module is not included in the current plan.",
     }
