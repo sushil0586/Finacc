@@ -522,6 +522,7 @@ EMAIL_USE_SSL = config('EMAIL_USE_SSL', default=False, cast=_cast_boolish_env)
 EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
 EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
 DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default=EMAIL_HOST_USER)
+SERVER_EMAIL = config('SERVER_EMAIL', default=DEFAULT_FROM_EMAIL)
 EMAIL_TIMEOUT = config('EMAIL_TIMEOUT', default=20, cast=int)
 
 # ---------------------------------------------------------------------------
