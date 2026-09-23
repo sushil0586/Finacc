@@ -43,7 +43,9 @@ class PurchaseInvoiceImportService:
         extracted_text = cls._extract_text(file_name=file_name, file_kind=file_kind, file_bytes=file_bytes, warnings=warnings)
         parsed_header = cls._parse_header(extracted_text)
         parsed_lines = cls._parse_lines(extracted_text)
-        media_ai_structured = cls._parse_media_with_ai(file_kind, file_name, file_bytes, warnings=warnings)
+        media_ai_structured = None
+        if file_kind == "image" or (file_kind == "pdf" and not extracted_text.strip()):
+            media_ai_structured = cls._parse_media_with_ai(file_kind, file_name, file_bytes, warnings=warnings)
         ai_structured = cls._parse_with_ai(extracted_text, warnings=warnings) if cls._should_attempt_ai_structuring(parsed_header, parsed_lines, file_kind) else None
         if media_ai_structured:
             parsed_header = cls._merge_header(parsed_header, media_ai_structured.get("header") or {})
@@ -251,6 +253,10 @@ class PurchaseInvoiceImportService:
         if len(parts) < 3:
             return None
 
+        labeled_line = cls._parse_labeled_separator_parts(parts, line_no)
+        if labeled_line:
+            return labeled_line
+
         description = parts[0]
         qty = cls._to_number(parts[-3]) if len(parts) >= 3 else None
         rate = cls._to_number(parts[-2]) if len(parts) >= 2 else None
@@ -270,14 +276,74 @@ class PurchaseInvoiceImportService:
         }
 
     @classmethod
+    def _parse_labeled_separator_parts(cls, parts: list[str], line_no: int) -> dict[str, Any] | None:
+        description = cls._clean_item_description(parts[0])
+        qty = rate = amount = gst_rate = None
+        hsn = None
+
+        for part in parts[1:]:
+            label, value = cls._split_inline_label(part)
+            normalized_label = re.sub(r"[^a-z]", "", label.lower())
+            if not normalized_label:
+                continue
+            if normalized_label in {"hsn", "hsnsac", "sac"}:
+                hsn_match = re.search(r"[A-Z0-9]{4,10}", value, flags=re.IGNORECASE)
+                hsn = hsn_match.group(0).upper() if hsn_match else hsn
+            elif normalized_label in {"qty", "quantity"}:
+                qty = cls._extract_first_number(value)
+            elif normalized_label in {"rate", "unitrate", "price", "unitprice"}:
+                rate = cls._extract_first_number(value)
+            elif normalized_label in {"amount", "taxable", "taxablevalue", "value"}:
+                amount = cls._extract_first_number(value)
+            elif normalized_label in {"total", "linetotal", "grandtotal"}:
+                amount = amount if amount is not None else cls._extract_first_number(value)
+            elif normalized_label in {"gst", "gstrate", "igst", "cgst", "sgst", "tax"}:
+                gst_rate = cls._extract_first_number(value)
+
+        if qty is None and rate is None and amount is None and gst_rate is None and hsn is None:
+            return None
+        if not description:
+            return None
+        return {
+            "line_no": line_no,
+            "description": description[:500],
+            "product_name": description[:200],
+            "qty": qty,
+            "rate": rate,
+            "amount": amount,
+            "hsn": hsn,
+            "gst_rate": gst_rate,
+            "taxability": None,
+        }
+
+    @classmethod
+    def _clean_item_description(cls, raw_value: str) -> str:
+        value = str(raw_value or "").strip()
+        value = re.sub(r"^\s*(?:item|product|description|particulars)\s*[:\-]\s*", "", value, flags=re.IGNORECASE)
+        return re.sub(r"\s+", " ", value).strip()
+
+    @classmethod
+    def _split_inline_label(cls, raw_value: str) -> tuple[str, str]:
+        text = str(raw_value or "").strip()
+        match = re.match(r"^\s*([A-Za-z][A-Za-z\s/._-]{0,30})\s*[:\-]?\s*(.*)$", text)
+        if not match:
+            return "", text
+        return match.group(1).strip(), match.group(2).strip()
+
+    @classmethod
+    def _extract_first_number(cls, raw_value: Any) -> float | None:
+        match = re.search(r"(-?\d[\d,]*\.?\d{0,4})", str(raw_value or "").replace(",", ""))
+        return cls._to_number(match.group(1)) if match else None
+
+    @classmethod
     def _extract_labeled_value(cls, lines: Iterable[str], labels: tuple[str, ...]) -> str | None:
         normalized_labels = tuple(label.lower() for label in labels)
         for line in lines:
-            lower_line = line.lower()
             for label in normalized_labels:
-                if label in lower_line:
-                    tail = re.split(r"[:\-]", line, maxsplit=1)
-                    value = tail[1].strip() if len(tail) > 1 else line.strip()
+                pattern = rf"^\s*{re.escape(label)}\s*[:\-]\s*(.+?)\s*$"
+                match = re.match(pattern, line, flags=re.IGNORECASE)
+                if match:
+                    value = match.group(1).strip()
                     if value:
                         return value[:200]
         return None
@@ -499,6 +565,7 @@ class PurchaseInvoiceImportService:
         warnings: list[dict[str, Any]],
     ) -> tuple[bytes, str, str] | None:
         renderers = (
+            cls._render_pdf_first_page_with_pypdfium,
             cls._render_pdf_first_page_with_pdftoppm,
             cls._render_pdf_first_page_with_ghostscript,
         )
@@ -511,11 +578,44 @@ class PurchaseInvoiceImportService:
                 return rendered
         warnings.append({
             "code": "pdf_rasterizer_unavailable",
-            "message": "No PDF rasterization tool is available for scanned PDF OCR fallback.",
+            "message": "No PDF rasterization backend is available for scanned PDF OCR fallback.",
             "field": None,
             "line_index": None,
         })
         return None
+
+    @classmethod
+    def _render_pdf_first_page_with_pypdfium(
+        cls,
+        file_name: str,
+        file_bytes: bytes,
+    ) -> tuple[bytes, str, str] | None:
+        try:
+            import pypdfium2 as pdfium
+        except Exception:
+            return None
+
+        output = BytesIO()
+        pdf = page = bitmap = image = None
+        try:
+            pdf = pdfium.PdfDocument(file_bytes)
+            if len(pdf) < 1:
+                return None
+            page = pdf[0]
+            bitmap = page.render(scale=2)
+            image = bitmap.to_pil()
+            image.save(output, format="PNG")
+            return (output.getvalue(), "image/png", "page 1 rasterized by pypdfium2")
+        except Exception:
+            return None
+        finally:
+            for resource in (image, bitmap, page, pdf):
+                close = getattr(resource, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        pass
 
     @classmethod
     def _render_pdf_first_page_with_pdftoppm(

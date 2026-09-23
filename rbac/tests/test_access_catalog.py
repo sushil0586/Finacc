@@ -101,6 +101,33 @@ class CanonicalAccessCatalogTests(SimpleTestCase):
         for code, parent_code in expected_parents.items():
             self.assertEqual(specs_by_code[code].parent_code, parent_code)
 
+    def test_payables_operational_report_menus_use_current_frontend_routes(self):
+        specs_by_code = {spec.code: spec for spec in access_catalog.MENU_SPECS}
+
+        expected_routes = {
+            "reports.vendorsettlementhistory": "/reports/payables/vendor_settlement_history",
+            "reports.vendornoteregister": "/reports/payables/vendor_note_register",
+            "reports.apglreconciliation": "/reports/payables/ap_gl_reconciliation",
+            "reports.vendorbalanceexceptions": "/reports/payables/vendor_balance_exceptions",
+        }
+
+        for code, route_path in expected_routes.items():
+            self.assertEqual(specs_by_code[code].parent_code, "reports.payables")
+            self.assertEqual(specs_by_code[code].route_path, route_path)
+
+    def test_admin_roles_menu_uses_current_rbac_management_route(self):
+        specs_by_code = {spec.code: spec for spec in access_catalog.MENU_SPECS}
+
+        self.assertEqual(specs_by_code["admin.role_list"].route_path, "/rbacmanagement?tab=roles")
+
+    def test_retired_interest_calculator_menu_has_no_clickable_route(self):
+        specs_by_code = {spec.code: spec for spec in access_catalog.MENU_SPECS}
+
+        spec = specs_by_code["reports.interestcalculatorindividualreport"]
+        self.assertFalse(spec.canonical)
+        self.assertEqual(spec.route_path, "")
+        self.assertIn(spec.code, access_catalog.LEGACY_MENU_CODES_TO_DISABLE)
+
     def test_basic_accounting_excludes_advanced_modules(self):
         features = access_catalog.features_for_packages(
             [access_catalog.PACKAGE_BASIC_ACCOUNTING]

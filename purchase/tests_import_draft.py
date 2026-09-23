@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from io import BytesIO
 from unittest.mock import patch
 
 from django.core.cache import cache
@@ -8,7 +9,11 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import override_settings
 from django.urls import reverse
 from django.utils import timezone
+from PIL import Image, ImageDraw
 from rest_framework.test import APIClient, APITestCase
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.utils import ImageReader
+from reportlab.pdfgen import canvas
 
 from Authentication.models import User
 from catalog.models import Product, ProductCategory, ProductPurchaseBehavior, UnitOfMeasure
@@ -151,6 +156,34 @@ class PurchaseInvoiceImportDraftTests(APITestCase):
         scope = "&".join(f"{key}={value}" for key, value in self._scope().items())
         return f"{reverse('purchase-invoice-import-draft')}?{scope}"
 
+    def _build_image_only_pdf(self) -> bytes:
+        invoice_image = Image.new("RGB", (1000, 560), "white")
+        draw = ImageDraw.Draw(invoice_image)
+        draw.multiline_text(
+            (60, 60),
+            "\n".join([
+                "Supplier Tax Invoice",
+                "Supplier: Alpha Traders",
+                "GSTIN: 27ABCDE1234F1Z5",
+                "Invoice No: PDF-SCAN-101",
+                "Invoice Date: 14/07/2026",
+                "Item: Inventory Product | Qty 2 | Rate 150 | Taxable 300 | GST 18%",
+            ]),
+            fill="black",
+            spacing=14,
+        )
+
+        image_buffer = BytesIO()
+        invoice_image.save(image_buffer, format="PNG")
+        image_buffer.seek(0)
+
+        pdf_buffer = BytesIO()
+        pdf = canvas.Canvas(pdf_buffer, pagesize=A4)
+        pdf.drawImage(ImageReader(image_buffer), 48, 390, width=500, height=280)
+        pdf.showPage()
+        pdf.save()
+        return pdf_buffer.getvalue()
+
     def test_import_draft_parses_txt_and_matches_existing_masters(self):
         upload = SimpleUploadedFile(
             "invoice.txt",
@@ -178,6 +211,44 @@ class PurchaseInvoiceImportDraftTests(APITestCase):
         self.assertEqual(len(response.data["lines"]), 1)
         self.assertEqual(response.data["lines"][0]["product_match"]["status"], "matched")
         self.assertEqual(response.data["lines"][0]["product_match"]["id"], self.product.id)
+
+    def test_import_draft_parses_pdf_extracted_labeled_pipe_lines(self):
+        upload = SimpleUploadedFile(
+            "invoice.txt",
+            (
+                b"Supplier Tax Invoice\n"
+                b"Supplier: Alpha Traders\n"
+                b"GSTIN: 27ABCDE1234F1Z5\n"
+                b"Invoice No: PDF-TEXT-101\n"
+                b"Invoice Date: 14/07/2026\n"
+                b"Item: Inventory Product | HSN 3004 | Qty 2 | Rate 150 | Taxable 300 | GST 18% | Total 354.00\n"
+                b"Grand Total: 354.00\n"
+            ),
+            content_type="text/plain",
+        )
+
+        response = self.client.post(
+            self._import_url(),
+            data={"file": upload},
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["header"]["vendor_name"], "Alpha Traders")
+        self.assertEqual(response.data["header"]["supplier_invoice_number"], "PDF-TEXT-101")
+        self.assertEqual(response.data["header"]["supplier_invoice_date"], "2026-07-14")
+        self.assertEqual(response.data["header"]["grand_total"], 354.0)
+        self.assertEqual(response.data["matches"]["vendor"]["status"], "matched")
+        self.assertEqual(len(response.data["lines"]), 1)
+        imported_line = response.data["lines"][0]
+        self.assertEqual(imported_line["description"], "Inventory Product")
+        self.assertEqual(imported_line["product_name"], "Inventory Product")
+        self.assertEqual(imported_line["qty"], 2.0)
+        self.assertEqual(imported_line["rate"], 150.0)
+        self.assertEqual(imported_line["amount"], 300.0)
+        self.assertEqual(imported_line["hsn"], "3004")
+        self.assertEqual(imported_line["gst_rate"], 18.0)
+        self.assertEqual(imported_line["product_match"]["status"], "matched")
 
     @patch("purchase.services.purchase_invoice_import_service.generate_text")
     def test_import_draft_uses_ai_structuring_when_deterministic_parse_is_weak(self, mocked_generate_text):
@@ -235,6 +306,35 @@ class PurchaseInvoiceImportDraftTests(APITestCase):
         self.assertEqual(response.status_code, 200, response.data)
         warning_codes = {item["code"] for item in response.data["warnings"]}
         self.assertIn("image_ocr_pending", warning_codes)
+
+    def test_import_draft_rasterizes_image_only_pdf_for_vision(self):
+        upload = SimpleUploadedFile("scanned-invoice.pdf", self._build_image_only_pdf(), content_type="application/pdf")
+
+        with (
+            patch.object(PurchaseInvoiceImportService, "_extract_pdf_embedded_image", return_value=None),
+            patch("purchase.services.purchase_invoice_import_service.generate_multimodal_text") as mocked_generate_multimodal_text,
+        ):
+            mocked_generate_multimodal_text.return_value = (
+                '{"header":{"vendor_name":"Alpha Traders","vendor_gstin":"27ABCDE1234F1Z5","supplier_invoice_number":"PDF-SCAN-101","supplier_invoice_date":"2026-07-14","grand_total":300},'
+                '"lines":[{"description":"Inventory Product","product_name":"Inventory Product","qty":2,"rate":150,"amount":300,"gst_rate":18}]}'
+            )
+            response = self.client.post(
+                self._import_url(),
+                data={"file": upload},
+                format="multipart",
+            )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["header"]["supplier_invoice_number"], "PDF-SCAN-101")
+        self.assertEqual(response.data["matches"]["vendor"]["status"], "matched")
+        self.assertEqual(response.data["lines"][0]["product_match"]["status"], "matched")
+        self.assertEqual(mocked_generate_multimodal_text.call_count, 1)
+        media_kwargs = mocked_generate_multimodal_text.call_args.kwargs
+        self.assertEqual(media_kwargs["media_mime_type"], "image/png")
+        self.assertGreater(len(media_kwargs["media_bytes"]), 1000)
+        warning_codes = {item["code"] for item in response.data["warnings"]}
+        self.assertNotIn("pdf_rasterizer_unavailable", warning_codes)
+        self.assertNotIn("pdf_ocr_pending", warning_codes)
 
     @patch.object(PurchaseInvoiceImportService, "_render_pdf_first_page_image")
     @patch.object(PurchaseInvoiceImportService, "_extract_pdf_embedded_image")
