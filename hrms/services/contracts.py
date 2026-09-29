@@ -18,7 +18,7 @@ class EmploymentContractService:
         active_only=True,
         ordering="-payroll_effective_from",
     ):
-        queryset = HrEmploymentContract.all_objects.for_entity(entity_id=entity_id, subentity_id=subentity_id)
+        queryset = HrEmploymentContract.objects.for_entity(entity_id=entity_id, subentity_id=subentity_id)
         if active_only:
             queryset = queryset.active()
         if employee_id:

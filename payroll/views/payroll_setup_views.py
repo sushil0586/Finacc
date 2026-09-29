@@ -80,6 +80,14 @@ def _permission_denied(message: str):
     raise PermissionDenied(detail=message)
 
 
+def _setup_validation_detail(message: str, field_map: dict[str, tuple[str, ...]]):
+    lowered = message.lower()
+    for field, needles in field_map.items():
+        if any(needle in lowered for needle in needles):
+            return {field: [message]}
+    return {"detail": message}
+
+
 def _assert_access(request, *, groups: set[str], permissions_required: set[str], label: str) -> None:
     try:
         PayrollPermissionService.assert_named_access(
@@ -476,7 +484,10 @@ class ContractPayrollProfileListCreateAPIView(PayrollSetupScopedAPIView, Payroll
         try:
             profile = ContractPayrollProfileService.create_or_update_profile(serializer.validated_data)
         except ValueError as err:
-            raise ValidationError({"detail": str(err)})
+            raise ValidationError(_setup_validation_detail(str(err), {
+                "hrms_contract": ("hrms contract", "active contract payroll profile"),
+                "payroll_end_date": ("payroll end date",),
+            }))
         output = self.get_serializer(profile)
         return Response(output.data, status=201)
 
@@ -519,7 +530,10 @@ class ContractPayrollProfileRetrieveUpdateAPIView(PayrollSetupScopedAPIView, gen
         try:
             profile = ContractPayrollProfileService.create_or_update_profile(serializer.validated_data, instance=obj)
         except ValueError as err:
-            raise ValidationError({"detail": str(err)})
+            raise ValidationError(_setup_validation_detail(str(err), {
+                "hrms_contract": ("hrms contract", "active contract payroll profile"),
+                "payroll_end_date": ("payroll end date",),
+            }))
         return Response(self.get_serializer(profile).data)
 
 
@@ -567,7 +581,12 @@ class ContractSalaryAssignmentListCreateAPIView(PayrollSetupScopedAPIView, gener
                 close_previous_active=bool(request.data.get("close_previous_active")),
             )
         except ValueError as err:
-            raise ValidationError({"detail": str(err)})
+            raise ValidationError(_setup_validation_detail(str(err), {
+                "effective_from": ("overlap", "effective start", "effective from"),
+                "effective_to": ("effective end", "effective to"),
+                "salary_structure_version": ("structure version",),
+                "salary_structure": ("salary structure",),
+            }))
         return Response(self.get_serializer(assignment).data, status=201)
 
 
@@ -616,7 +635,12 @@ class ContractSalaryAssignmentRetrieveUpdateAPIView(PayrollSetupScopedAPIView, g
                 instance=obj,
             )
         except ValueError as err:
-            raise ValidationError({"detail": str(err)})
+            raise ValidationError(_setup_validation_detail(str(err), {
+                "effective_from": ("overlap", "effective start", "effective from"),
+                "effective_to": ("effective end", "effective to"),
+                "salary_structure_version": ("structure version",),
+                "salary_structure": ("salary structure",),
+            }))
         return Response(self.get_serializer(assignment).data)
 
 

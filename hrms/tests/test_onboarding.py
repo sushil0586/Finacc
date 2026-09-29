@@ -95,6 +95,25 @@ class HrmsGlobalAdoptionServiceTests(TestCase):
         self.assertGreaterEqual(HRPolicy.objects.filter(entity=self.entity).count(), 1)
         self.assertIn("summary", result)
 
+    def test_repeated_recommended_adoption_is_idempotent_for_same_entity_year(self):
+        HrmsGlobalAdoptionService.adopt_recommended_templates(
+            entity=self.entity,
+            industry_type="services",
+            employee_category="services",
+            year=2026,
+        )
+        first_counts = HrmsGlobalAdoptionService.entity_setup_summary(entity=self.entity)["counts"]
+
+        HrmsGlobalAdoptionService.adopt_recommended_templates(
+            entity=self.entity,
+            industry_type="services",
+            employee_category="services",
+            year=2026,
+        )
+        second_counts = HrmsGlobalAdoptionService.entity_setup_summary(entity=self.entity)["counts"]
+
+        self.assertEqual(second_counts, first_counts)
+
     def test_entity_edits_do_not_modify_global_templates(self):
         HrmsGlobalAdoptionService.adopt_recommended_templates(
             entity=self.entity,

@@ -43,6 +43,7 @@ urlpatterns = [
     path('api/geography/',include('geography.urls',namespace = 'geography_api')),
     path('api/reports/',include('reports.urls',namespace = 'reports_api')),
     path('api/dashboard/',include('dashboard.urls',namespace='dashboard_api')),
+    path('api/cfo/', include('cfo.urls', namespace='cfo_api')),
     *( [path('api/payroll/', include('payroll.urls', namespace='payroll_api'))] if payroll_enabled else []),
     path("api/catalog/", include("catalog.urls")),
     path("api/localization/", include("localization.urls")),

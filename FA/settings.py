@@ -207,6 +207,7 @@ INSTALLED_APPS = [
     'payroll',
     'reports',
     'dashboard',
+    'cfo.apps.CfoConfig',
     'simple_history',
     'errorlogger',
     'numbering',

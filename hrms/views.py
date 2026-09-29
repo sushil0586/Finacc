@@ -132,6 +132,13 @@ class HrmsScopedAPIView(ScopedEntitlementMixin, APIView):
             raise PermissionDenied(detail=str(err))
 
     @staticmethod
+    def _contract_queryset_for_scope(*, entity_id: int, subentity_id: int | None):
+        queryset = HrEmploymentContract.objects.filter(entity_id=entity_id, deleted_at__isnull=True)
+        if subentity_id is not None:
+            return queryset.filter(Q(subentity_id=subentity_id) | Q(subentity_id__isnull=True))
+        return queryset.filter(subentity_id__isnull=True)
+
+    @staticmethod
     def _is_self_service_contract_access(*, user, contract) -> bool:
         if not user or not user.is_authenticated:
             return False
@@ -917,11 +924,8 @@ class DailyAttendanceListCreateAPIView(HrmsScopedAPIView):
             permission_key="attendance_entry_create",
             label="create attendance entries",
         )
-        contract = HrEmploymentContract.objects.filter(
-            pk=payload.get("contract"),
-            entity_id=entity_id,
-            subentity_id=subentity_id,
-            deleted_at__isnull=True,
+        contract = self._contract_queryset_for_scope(entity_id=entity_id, subentity_id=subentity_id).filter(
+            pk=payload.get("contract")
         ).first()
         if contract is None:
             raise ValidationError({"contract": "Valid contract is required."})
@@ -970,11 +974,8 @@ class DailyAttendanceBulkUpsertAPIView(HrmsScopedAPIView):
             permission_key="attendance_entry_update",
             label="update attendance entries",
         )
-        contract = HrEmploymentContract.objects.filter(
-            pk=payload.get("contract"),
-            entity_id=entity_id,
-            subentity_id=subentity_id,
-            deleted_at__isnull=True,
+        contract = self._contract_queryset_for_scope(entity_id=entity_id, subentity_id=subentity_id).filter(
+            pk=payload.get("contract")
         ).first()
         if contract is None:
             raise ValidationError({"contract": "Valid contract is required."})
@@ -1078,12 +1079,13 @@ class AttendanceImportValidateAPIView(HrmsScopedAPIView):
 
         contracts = {
             contract.contract_code.upper(): contract
-            for contract in HrEmploymentContract.objects.filter(entity_id=entity_id, deleted_at__isnull=True)
+            for contract in self._contract_queryset_for_scope(entity_id=entity_id, subentity_id=subentity_id)
             .select_related("entity", "subentity")
         }
         prepared_rows = []
         errors = []
         seen = set()
+        uses_shared_contract = False
         for row_number, source_row in enumerate(reader, start=2):
             row = {str(key or "").strip().lower(): str(value or "").strip() for key, value in source_row.items()}
             contract_code = row.get("contract_code", "").upper()
@@ -1093,8 +1095,6 @@ class AttendanceImportValidateAPIView(HrmsScopedAPIView):
             row_errors = []
             if contract is None:
                 row_errors.append("Contract code was not found in this entity.")
-            elif subentity_id is not None and contract.subentity_id != subentity_id:
-                row_errors.append("Contract does not belong to the selected branch.")
             if attendance_date is None:
                 row_errors.append("Attendance date must be YYYY-MM-DD.")
             if attendance_status not in self.ALLOWED_STATUSES:
@@ -1120,6 +1120,8 @@ class AttendanceImportValidateAPIView(HrmsScopedAPIView):
             if row_errors:
                 errors.append({"row": row_number, "contract_code": contract_code, "errors": row_errors})
                 continue
+            if contract.subentity_id is None:
+                uses_shared_contract = True
             prepared_rows.append({
                 "contract_id": str(contract.id),
                 "contract_code": contract.contract_code,
@@ -1137,7 +1139,7 @@ class AttendanceImportValidateAPIView(HrmsScopedAPIView):
 
         batch = AttendanceImportBatch.objects.create(
             entity_id=entity_id,
-            subentity_id=subentity_id,
+            subentity_id=None if uses_shared_contract else subentity_id,
             batch_code=batch_code,
             import_mode=AttendanceImportBatch.ImportMode.CSV,
             import_status=AttendanceImportBatch.ImportStatus.DRAFT if not errors else AttendanceImportBatch.ImportStatus.FAILED,
@@ -1170,7 +1172,7 @@ class AttendanceImportCommitAPIView(HrmsScopedAPIView):
         if batch is None:
             raise ValidationError({"detail": "Attendance import batch was not found."})
         self.enforce_scope(request, entity_id=batch.entity_id, subentity_id=batch.subentity_id)
-        if requested_subentity_id is not None and requested_subentity_id != batch.subentity_id:
+        if requested_subentity_id is not None and batch.subentity_id is not None and requested_subentity_id != batch.subentity_id:
             raise ValidationError({"subentity": "Attendance import batch does not belong to the selected branch."})
         if batch.import_status == AttendanceImportBatch.ImportStatus.PROCESSED:
             data = AttendanceImportBatchSerializer(batch).data

@@ -10,6 +10,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import models
 from django.utils import timezone
 
+from cfo.models import CashFlowForecastAdjustment, CfoEvidenceItem
 from entity.models import Entity, EntityApprovalPolicy, EntityFinancialYear, SubEntity
 from financial.models import AccountBankDetails, Ledger, account, accountHead, accounttype
 from financial.services import apply_normalized_profile_payload, create_account_with_synced_ledger
@@ -33,11 +34,27 @@ from payroll.services.contract_payroll_profile_service import ContractPayrollPro
 from payroll.services.contract_salary_assignment_service import ContractSalaryAssignmentService
 from payroll.services.payslip_service import PayslipService
 from payroll.services.payroll_run_readiness_resolver_service import PayrollRunReadinessResolverService
+from rbac.models import Permission, Role, RolePermission, UserRoleAssignment
 from rbac.seeding import PayrollRBACSeedService, RBACSeedService
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
 User = get_user_model()
+
+
+CFO_VIEW_PERMISSIONS = (
+    "cfo.control_tower.view",
+    "cfo.receivables.view",
+    "cfo.payables.view",
+    "cfo.cash_flow.view",
+    "cfo.month_close.view",
+    "cfo.budget.view",
+    "cfo.risk_queue.view",
+    "cfo.management_pack.view",
+    "cfo.evidence_center.view",
+    "cfo.insights.view",
+    "cfo.scenario_planner.view",
+)
 
 
 class Command(BaseCommand):
@@ -48,6 +65,8 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument("--user-email", required=True)
         parser.add_argument("--entity-name", required=True)
+        parser.add_argument("--readonly-cfo-email", default="entity-formation-cfo-readonly@example.com")
+        parser.add_argument("--readonly-cfo-password", default="EntityFormationReadonly@12345")
         parser.add_argument("--json", action="store_true", dest="as_json")
 
     def handle(self, *args, **options):
@@ -67,6 +86,13 @@ class Command(BaseCommand):
         self._ensure_access_and_roles(entity=entity, user=user)
 
         scope = self._resolve_scope(entity=entity)
+        readonly_user = self._ensure_cfo_readonly_user(
+            entity=entity,
+            actor=user,
+            email=options["readonly_cfo_email"],
+            password=options["readonly_cfo_password"],
+        )
+        cfo_probe = self._ensure_cfo_permission_probe_records(entity=entity, user=user, scope=scope)
         payroll_setup = self._ensure_payroll_setup(entity=entity, user=user, scope=scope)
         self._ensure_run_attendance_prerequisites(entity=entity, user=user, scope=scope)
         staged = self._stage_runs_and_batches(entity=entity, user=user, scope=scope)
@@ -76,6 +102,9 @@ class Command(BaseCommand):
             "entity_name": entity.entityname,
             "user_id": user.id,
             "user_email": user.email,
+            "readonly_cfo_user_id": readonly_user.id,
+            "readonly_cfo_email": readonly_user.email,
+            **cfo_probe,
             "entityfinid_id": scope["entityfinid"].id,
             "subentity_id": scope["subentity"].id if scope["subentity"] else None,
             "payroll_period_id": scope["period"].id,
@@ -109,6 +138,163 @@ class Command(BaseCommand):
 
         for group_name in ("payroll_operator", "payroll_reviewer", "payroll_finance", "payroll_admin"):
             Group.objects.get_or_create(name=group_name)[0].user_set.add(user)
+
+    def _ensure_cfo_readonly_user(self, *, entity: Entity, actor: User, email: str, password: str) -> User:
+        username = email.split("@", 1)[0]
+        readonly_user, created = User.objects.get_or_create(
+            email=email,
+            defaults={
+                "username": username,
+                "first_name": "CFO",
+                "last_name": "Read Only",
+            },
+        )
+        if created or not readonly_user.has_usable_password():
+            readonly_user.set_password(password)
+            readonly_user.save(update_fields=["password", "updated_at"])
+        elif not readonly_user.check_password(password):
+            readonly_user.set_password(password)
+            readonly_user.save(update_fields=["password", "updated_at"])
+
+        SubscriptionService.ensure_account_membership(
+            customer_account=entity.customer_account,
+            user=readonly_user,
+            role="admin",
+            granted_by=actor,
+        )
+
+        role, _ = Role.objects.update_or_create(
+            entity=entity,
+            code="playwright_cfo_viewer",
+            defaults={
+                "name": "Playwright CFO Viewer",
+                "role_level": Role.LEVEL_ENTITY,
+                "is_assignable": True,
+                "priority": 80,
+                "createdby": actor,
+                "metadata": {"seed": self.marker_prefix},
+            },
+        )
+        view_permissions = [self._ensure_permission(code) for code in CFO_VIEW_PERMISSIONS]
+        RolePermission.objects.filter(role=role).exclude(permission__code__in=CFO_VIEW_PERMISSIONS).delete()
+        for permission in view_permissions:
+            RolePermission.objects.update_or_create(
+                role=role,
+                permission=permission,
+                defaults={
+                    "effect": RolePermission.EFFECT_ALLOW,
+                    "metadata": {"seed": self.marker_prefix},
+                    "isactive": True,
+                },
+            )
+
+        UserRoleAssignment.objects.filter(user=readonly_user, entity=entity).exclude(role=role).delete()
+        UserRoleAssignment.objects.update_or_create(
+            user=readonly_user,
+            entity=entity,
+            role=role,
+            defaults={
+                "is_primary": True,
+                "isactive": True,
+                "assigned_by": actor,
+            },
+        )
+        return readonly_user
+
+    def _ensure_permission(self, code: str) -> Permission:
+        module, resource, action = code.split(".", 2)
+        permission, _ = Permission.objects.update_or_create(
+            code=code,
+            defaults={
+                "name": code,
+                "module": module,
+                "resource": resource,
+                "action": action,
+                "description": code,
+                "scope_type": Permission.SCOPE_ENTITY,
+                "is_system_defined": True,
+                "isactive": True,
+            },
+        )
+        return permission
+
+    def _ensure_cfo_permission_probe_records(self, *, entity: Entity, user: User, scope: dict[str, object]) -> dict[str, object]:
+        entityfinid: EntityFinancialYear = scope["entityfinid"]
+        subentity: SubEntity = scope["subentity"]
+        period: PayrollPeriod = scope["period"]
+
+        adjustment = (
+            CashFlowForecastAdjustment.objects.filter(
+                entity=entity,
+                entityfinid=entityfinid,
+                subentity=subentity,
+                scenario=CashFlowForecastAdjustment.Scenario.BASE,
+                category="PW_E2E_PERMISSION_PROBE",
+            )
+            .order_by("id")
+            .first()
+        )
+        if adjustment is None:
+            adjustment = CashFlowForecastAdjustment(
+                entity=entity,
+                entityfinid=entityfinid,
+                subentity=subentity,
+                scenario=CashFlowForecastAdjustment.Scenario.BASE,
+                category="PW_E2E_PERMISSION_PROBE",
+            )
+        adjustment.adjustment_date = timezone.localdate()
+        adjustment.direction = CashFlowForecastAdjustment.Direction.INFLOW
+        adjustment.description = "Playwright CFO permission probe"
+        adjustment.amount = Decimal("1000.00")
+        adjustment.createdby = user
+        adjustment.isactive = True
+        adjustment.save()
+
+        evidence = (
+            CfoEvidenceItem.objects.filter(
+                entity=entity,
+                entityfinid=entityfinid,
+                subentity=subentity,
+                title="Playwright CFO Permission Probe Evidence",
+            )
+            .order_by("id")
+            .first()
+        )
+        if evidence is None:
+            evidence = CfoEvidenceItem(
+                entity=entity,
+                entityfinid=entityfinid,
+                subentity=subentity,
+                title="Playwright CFO Permission Probe Evidence",
+            )
+        evidence.period_start = period.period_start
+        evidence.period_end = period.period_end
+        evidence.evidence_type = CfoEvidenceItem.EvidenceType.OTHER
+        evidence.description = "Playwright CFO permission probe"
+        evidence.status = CfoEvidenceItem.Status.OPEN
+        evidence.createdby = user
+        evidence.reviewed_by = None
+        evidence.reviewed_at = None
+        evidence.isactive = True
+        evidence.save()
+
+        CashFlowForecastAdjustment.objects.filter(
+            entity=entity,
+            entityfinid=entityfinid,
+            subentity=subentity,
+            scenario=CashFlowForecastAdjustment.Scenario.BASE,
+            category="PW_E2E_PERMISSION_PROBE",
+        ).exclude(pk=adjustment.pk).update(isactive=False)
+        CfoEvidenceItem.objects.filter(
+            entity=entity,
+            entityfinid=entityfinid,
+            subentity=subentity,
+            title="Playwright CFO Permission Probe Evidence",
+        ).exclude(pk=evidence.pk).update(isactive=False)
+        return {
+            "cfo_probe_adjustment_id": adjustment.id,
+            "cfo_probe_evidence_id": evidence.id,
+        }
 
     def _resolve_scope(self, *, entity: Entity) -> dict[str, object]:
         entityfinid = EntityFinancialYear.objects.filter(entity=entity).order_by("-finstartyear", "-id").first()

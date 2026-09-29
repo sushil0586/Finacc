@@ -17,7 +17,7 @@ class HolidayCalendarService:
         active_only=True,
         ordering="-calendar_year",
     ):
-        queryset = HrHolidayCalendar.all_objects.for_entity(entity_id=entity_id, subentity_id=subentity_id)
+        queryset = HrHolidayCalendar.objects.for_entity(entity_id=entity_id, subentity_id=subentity_id)
         if active_only:
             queryset = queryset.active()
         if calendar_year is not None:

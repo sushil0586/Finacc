@@ -508,9 +508,16 @@ class HrmsApiTests(APITestCase):
         self.assertEqual(calendar_delete.status_code, status.HTTP_204_NO_CONTENT)
 
     def test_daily_attendance_and_import_batch_api_match_browser_runtime_contract(self):
+        branch = SubEntity.objects.create(
+            entity=self.entity,
+            subentityname="Head Office",
+            gstno="29AAAAA0000A1Z5",
+            createdby=self.user,
+        )
         payroll_period = PayrollPeriod.objects.create(
             entity=self.entity,
             entityfinid=self.entityfin,
+            subentity=branch,
             code="APR-2026-ATT",
             period_start=date(2026, 4, 1),
             period_end=date(2026, 4, 30),
@@ -520,6 +527,7 @@ class HrmsApiTests(APITestCase):
             "/api/hrms/attendance-import-batches/",
             {
                 "entity": self.entity.id,
+                "subentity": branch.id,
                 "batch_code": "ATT-JUN-2026",
                 "file_name": "attendance-jun.csv",
                 "import_mode": AttendanceImportBatch.ImportMode.PLACEHOLDER,
@@ -535,6 +543,7 @@ class HrmsApiTests(APITestCase):
             "/api/hrms/daily-attendance/bulk-upsert/",
             {
                 "entity": self.entity.id,
+                "subentity": branch.id,
                 "contract": self.contract.id,
                 "rows": [
                     {
@@ -560,6 +569,7 @@ class HrmsApiTests(APITestCase):
             "/api/hrms/daily-attendance/",
             {
                 "entity": self.entity.id,
+                "subentity": branch.id,
                 "contract": self.contract.id,
                 "start_date": "2026-04-01",
                 "end_date": "2026-04-30",
@@ -572,16 +582,40 @@ class HrmsApiTests(APITestCase):
 
         summary_response = self.client.get(
             "/api/hrms/attendance-monthly-summaries/",
-            {"entity": self.entity.id, "payroll_period": payroll_period.id, "contract": self.contract.id},
+            {
+                "entity": self.entity.id,
+                "subentity": branch.id,
+                "payroll_period": payroll_period.id,
+                "contract": self.contract.id,
+            },
         )
         self.assertEqual(summary_response.status_code, status.HTTP_200_OK)
         self.assertEqual(summary_response.data["payroll_period_code"], "APR-2026-ATT")
         self.assertEqual(summary_response.data["items"][0]["contract_code"], "CTR-2001")
         self.assertEqual(summary_response.data["items"][0]["late_count"], 1)
 
-        import_list = self.client.get("/api/hrms/attendance-import-batches/", {"entity": self.entity.id})
+        validate_response = self.client.post(
+            "/api/hrms/attendance-import-batches/validate/",
+            {
+                "entity": self.entity.id,
+                "subentity": branch.id,
+                "batch_code": "ATT-CSV-APR",
+                "file": SimpleUploadedFile(
+                    "attendance-apr.csv",
+                    b"contract_code,attendance_date,status,overtime_hours,late_mark,remarks\n"
+                    b"CTR-2001,2026-04-04,present,0,false,Shared contract import\n",
+                    content_type="text/csv",
+                ),
+            },
+            format="multipart",
+        )
+        self.assertEqual(validate_response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(validate_response.data["import_status"], AttendanceImportBatch.ImportStatus.DRAFT)
+        self.assertEqual(validate_response.data["failed_rows"], 0)
+
+        import_list = self.client.get("/api/hrms/attendance-import-batches/", {"entity": self.entity.id, "subentity": branch.id})
         self.assertEqual(import_list.status_code, status.HTTP_200_OK)
-        self.assertEqual(import_list.data[0]["batch_code"], "ATT-JUN-2026")
+        self.assertEqual({row["batch_code"] for row in import_list.data}, {"ATT-CSV-APR", "ATT-JUN-2026"})
 
     def test_attendance_csv_validate_commit_and_replay_are_atomic_and_idempotent(self):
         PayrollPeriod.objects.create(

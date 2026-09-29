@@ -156,12 +156,16 @@ class HrHolidaySerializer(serializers.ModelSerializer):
 class HrHolidayCalendarSerializer(serializers.ModelSerializer):
     entity_name = serializers.CharField(source="entity.entityname", read_only=True)
     subentity_name = serializers.CharField(source="subentity.subentityname", read_only=True, allow_null=True)
-    holidays = HrHolidaySerializer(many=True, read_only=True)
+    holidays = serializers.SerializerMethodField()
 
     class Meta:
         model = HrHolidayCalendar
         fields = "__all__"
         validators = []
+
+    def get_holidays(self, obj):
+        rows = obj.holidays.filter(deleted_at__isnull=True).order_by("holiday_date", "name")
+        return HrHolidaySerializer(rows, many=True).data
 
     def create(self, validated_data):
         try:

@@ -8,7 +8,7 @@ from hrms.models import HrEmployee
 class EmployeeService:
     @staticmethod
     def list_employees(*, entity_id, subentity_id=None, search=None, status=None, active_only=True, ordering="display_name"):
-        queryset = HrEmployee.all_objects.for_entity(entity_id=entity_id, subentity_id=subentity_id)
+        queryset = HrEmployee.objects.for_entity(entity_id=entity_id, subentity_id=subentity_id)
         if active_only:
             queryset = queryset.active()
         if search:

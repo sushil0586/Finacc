@@ -8,7 +8,7 @@ from hrms.models import HrOrganizationUnit
 class OrganizationUnitService:
     @staticmethod
     def list_units(*, entity_id, subentity_id=None, unit_type=None, status=None, search=None, active_only=True, ordering="name"):
-        queryset = HrOrganizationUnit.all_objects.for_entity(entity_id=entity_id, subentity_id=subentity_id)
+        queryset = HrOrganizationUnit.objects.for_entity(entity_id=entity_id, subentity_id=subentity_id)
         if active_only:
             queryset = queryset.active()
         if unit_type:

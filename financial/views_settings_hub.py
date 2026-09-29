@@ -307,7 +307,7 @@ class SettingsHubAPIView(ScopedEntitlementMixin, APIView):
         )
 
     def _sales_payload(self, entity_id: int, entityfinid_id: Optional[int], subentity_id: Optional[int]):
-        settings = SalesSettingsService.get_settings(entity_id, subentity_id)
+        settings = SalesSettingsService.get_settings(entity_id, subentity_id, entityfinid_id=entityfinid_id)
         current_doc_numbers = None
         if entityfinid_id:
             current_doc_numbers = {
@@ -596,7 +596,7 @@ class SettingsHubAPIView(ScopedEntitlementMixin, APIView):
 
     @transaction.atomic
     def patch(self, request):
-        entity_id, _, subentity_id = self._scope(request)
+        entity_id, entityfinid_id, subentity_id = self._scope(request)
         raw_modules = request.data.get("modules") if isinstance(request.data, dict) else None
         modules = raw_modules if isinstance(raw_modules, dict) else {
             key: value for key, value in (request.data or {}).items() if key in self.MODULE_ORDER
@@ -650,7 +650,7 @@ class SettingsHubAPIView(ScopedEntitlementMixin, APIView):
                 continue
 
             if module_key == "sales":
-                settings = SalesSettingsService.get_settings(entity_id, subentity_id)
+                settings = SalesSettingsService.get_settings(entity_id, subentity_id, entityfinid_id=entityfinid_id)
                 editable = {
                     "default_doc_code_invoice",
                     "default_doc_code_cn",

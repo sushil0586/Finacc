@@ -46,6 +46,10 @@ class HrmsGlobalAdoptionService:
                 return candidate
             suffix += 1
 
+    @staticmethod
+    def _scoped_existing(model, *, entity, subentity, **filters):
+        return model.objects.filter(entity=entity, subentity=subentity, **filters).first()
+
     @classmethod
     def _recommend_queryset(cls, queryset, *, industry_type: str, employee_category: str):
         if employee_category and employee_category != "custom":
@@ -225,6 +229,14 @@ class HrmsGlobalAdoptionService:
 
     @classmethod
     def _clone_leave_type(cls, *, entity, subentity, template):
+        existing = cls._scoped_existing(
+            LeaveType,
+            entity=entity,
+            subentity=subentity,
+            source_global_leave_type=template,
+        )
+        if existing is not None:
+            return existing
         return LeaveType.objects.create(
             entity=entity,
             subentity=subentity,
@@ -243,6 +255,14 @@ class HrmsGlobalAdoptionService:
 
     @classmethod
     def _clone_leave_policy(cls, *, entity, subentity, template):
+        existing = cls._scoped_existing(
+            LeavePolicy,
+            entity=entity,
+            subentity=subentity,
+            source_global_leave_policy_template=template,
+        )
+        if existing is not None:
+            return existing
         return LeavePolicy.objects.create(
             entity=entity,
             subentity=subentity,
@@ -256,6 +276,14 @@ class HrmsGlobalAdoptionService:
 
     @classmethod
     def _clone_leave_policy_rule(cls, *, entity, subentity, leave_policy, leave_type, template):
+        existing = LeavePolicyRule.objects.filter(
+            entity=entity,
+            subentity=subentity,
+            leave_policy=leave_policy,
+            source_global_leave_policy_rule_template=template,
+        ).first()
+        if existing is not None:
+            return existing
         return LeavePolicyRule.objects.create(
             entity=entity,
             subentity=subentity,
@@ -270,6 +298,14 @@ class HrmsGlobalAdoptionService:
 
     @classmethod
     def _clone_shift(cls, *, entity, subentity, template):
+        existing = cls._scoped_existing(
+            HrShift,
+            entity=entity,
+            subentity=subentity,
+            source_global_shift_template=template,
+        )
+        if existing is not None:
+            return existing
         return HrShift.objects.create(
             entity=entity,
             subentity=subentity,
@@ -293,6 +329,24 @@ class HrmsGlobalAdoptionService:
 
     @classmethod
     def _clone_holiday_calendar(cls, *, entity, subentity, template, year: int):
+        existing = cls._scoped_existing(
+            HrHolidayCalendar,
+            entity=entity,
+            subentity=subentity,
+            calendar_year=year,
+            source_global_holiday_calendar_template=template,
+        )
+        if existing is not None:
+            return existing
+        scoped_year_calendar = HrHolidayCalendar.objects.filter(
+            entity=entity,
+            subentity=subentity,
+            calendar_year=year,
+            country__isnull=True,
+            state__isnull=True,
+        ).first()
+        if scoped_year_calendar is not None:
+            return scoped_year_calendar
         calendar = HrHolidayCalendar.objects.create(
             entity=entity,
             subentity=subentity,
@@ -322,6 +376,14 @@ class HrmsGlobalAdoptionService:
 
     @classmethod
     def _clone_attendance_policy(cls, *, entity, subentity, template):
+        existing = cls._scoped_existing(
+            AttendancePolicy,
+            entity=entity,
+            subentity=subentity,
+            source_global_attendance_policy_template=template,
+        )
+        if existing is not None:
+            return existing
         return AttendancePolicy.objects.create(
             entity=entity,
             subentity=subentity,
@@ -335,6 +397,14 @@ class HrmsGlobalAdoptionService:
 
     @classmethod
     def _clone_hr_policy(cls, *, entity, subentity, template):
+        existing = cls._scoped_existing(
+            HRPolicy,
+            entity=entity,
+            subentity=subentity,
+            source_global_hr_policy_template=template,
+        )
+        if existing is not None:
+            return existing
         return HRPolicy.objects.create(
             entity=entity,
             subentity=subentity,

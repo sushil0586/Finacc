@@ -117,7 +117,7 @@ class AttendanceCaptureService:
             "import_batch",
         ).filter(entity_id=entity_id, deleted_at__isnull=True)
         if subentity_id is not None:
-            queryset = queryset.filter(subentity_id=subentity_id)
+            queryset = queryset.filter(Q(subentity_id=subentity_id) | Q(subentity_id__isnull=True))
         if contract_id:
             queryset = queryset.filter(contract_id=contract_id)
         if start_date:
@@ -536,7 +536,7 @@ class AttendanceCaptureService:
             deleted_at__isnull=True,
         )
         if subentity_id is not None:
-            queryset = queryset.filter(subentity_id=subentity_id)
+            queryset = queryset.filter(Q(subentity_id=subentity_id) | Q(subentity_id__isnull=True))
         if contract_id:
             queryset = queryset.filter(pk=contract_id)
         if employee_user_id is not None:

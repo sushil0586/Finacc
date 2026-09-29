@@ -8,7 +8,7 @@ from hrms.models import HrShift
 class ShiftService:
     @staticmethod
     def list_shifts(*, entity_id, subentity_id=None, status=None, search=None, active_only=True, ordering="name"):
-        queryset = HrShift.all_objects.for_entity(entity_id=entity_id, subentity_id=subentity_id)
+        queryset = HrShift.objects.for_entity(entity_id=entity_id, subentity_id=subentity_id)
         if active_only:
             queryset = queryset.active()
         if status:
