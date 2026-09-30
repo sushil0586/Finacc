@@ -714,7 +714,7 @@ MENU_SPECS = ROOT_MENU_SPECS + (
     MenuSpec("reports.inventory.non_moving_stock", "Non-Moving Stock", FEATURE_INVENTORY, "reports.inventory.non_moving_stock.view", "reports.inventory.controls", "/reports/inventory/non-moving-stock", "pause-circle", 10, default_role_codes=(ROLE_INVENTORY_USER, ROLE_ADMIN)),
     MenuSpec("reports.inventory.reorder_status", "Reorder Status", FEATURE_INVENTORY, "reports.inventory.reorder_status.view", "reports.inventory.controls", "/reports/inventory/reorder-status", "refresh-cw", 20, default_role_codes=(ROLE_INVENTORY_USER, ROLE_ADMIN)),
     MenuSpec("reports.inventory.slow_moving_dead_stock", "Slow Moving vs Dead Stock", FEATURE_INVENTORY, "reports.inventory.slow_moving_dead_stock.view", "reports.inventory.controls", "/reports/inventory/slow-moving-dead-stock", "timer-off", 30, default_role_codes=(ROLE_INVENTORY_USER, ROLE_ADMIN)),
-    MenuSpec("reports.inventory.production_order", "Manufacturing Work Order", FEATURE_MANUFACTURING, "manufacturing.workorder.view", "reports.inventory", "/productionorder", "factory", 70, default_role_codes=(ROLE_MANUFACTURING_USER, ROLE_ADMIN)),
+    MenuSpec("reports.inventory.production_order", "Manufacturing Work Order", FEATURE_MANUFACTURING, "manufacturing.workorder.view", "reports.inventory", "/manufacturing-work-order-entry", "factory", 70, default_role_codes=(ROLE_MANUFACTURING_USER, ROLE_ADMIN)),
     MenuSpec("reports.inventory.manufacturing_browser", "Manufacturing Browser", FEATURE_MANUFACTURING, "manufacturing.workorder.view", "reports.inventory", "/manufacturing-work-order-list", "list-checks", 80, default_role_codes=(ROLE_MANUFACTURING_USER, ROLE_ADMIN)),
     MenuSpec("reports.inventory.manufacturing_boms", "Manufacturing BOMs", FEATURE_MANUFACTURING, "manufacturing.bom.view", "reports.inventory", "/manufacturing-boms", "git-branch", 90, default_role_codes=(ROLE_MANUFACTURING_USER, ROLE_ADMIN)),
     MenuSpec("reports.inventory.manufacturing_routes", "Manufacturing Routes", FEATURE_MANUFACTURING, "manufacturing.route.view", "reports.inventory", "/manufacturing-routes", "route", 100, default_role_codes=(ROLE_MANUFACTURING_USER, ROLE_ADMIN)),
@@ -1254,6 +1254,9 @@ ROUTE_PERMISSION_SPECS = tuple(
 LEGACY_MENU_CODES_TO_DISABLE = frozenset(
     {
         "inventory",
+        "inventory.bulkinsertproduct",
+        "inventory.productionorder",
+        "inventory.stockmanagement",
         "manufacturing",
         "masters",
         "payroll.components",

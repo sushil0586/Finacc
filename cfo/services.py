@@ -104,7 +104,7 @@ MONTH_CLOSE_TASK_CATALOG = (
         "task_code": "inventory_valuation",
         "task_label": "Inventory valuation reviewed",
         "sort_order": 50,
-        "evidence_route": "/stockmanagement",
+        "evidence_route": "/reports/inventory/stock-summary",
     },
     {
         "task_code": "depreciation_posted",
