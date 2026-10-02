@@ -293,7 +293,7 @@ class RBACAPITests(TestCase):
         role = Role.objects.create(entity=self.entity_a, name="Accounts Operator", code=f"accounts_{self.entity_a.id}")
         permission_codes = [
             "voucher.payment.view",
-            "financial.account_type.view",
+            "accounts.account_type.view",
             "voucher.settings.view",
         ]
         for code in permission_codes:
@@ -308,7 +308,9 @@ class RBACAPITests(TestCase):
         self.assertIsNotNone(self._find_node(accounts_root["children"], "accounts.vouchers"))
         self.assertIsNotNone(self._find_node(accounts_root["children"], "accounts.financial_masters"))
         self.assertIsNotNone(self._find_node(accounts_root["children"], "accounts.settings"))
-        self.assertIsNotNone(self._find_node(accounts_root["children"], "accounts.paymentvoucher"))
+        payment_voucher = self._find_node(accounts_root["children"], "accounts.payment_voucher")
+        self.assertIsNotNone(payment_voucher)
+        self.assertEqual(payment_voucher["route_path"], "/paymentvoucher")
         self.assertNotIn(
             "accounts.financialmaster.accounttypes",
             [child["code"] for child in accounts_root["children"]],

@@ -462,6 +462,98 @@ class RBACModelTests(TestCase):
         self.assertIn("sales.invoice.view", sales_codes)
         self.assertIn("purchase.invoice.view", purchase_codes)
 
+    def test_launch_role_templates_cover_operational_modules(self):
+        permission_specs = {
+            "financial.account.view": ("financial", "account", "view"),
+            "voucher.journal.view": ("voucher", "journal", "view"),
+            "voucher.journal.create": ("voucher", "journal", "create"),
+            "voucher.bank.view": ("voucher", "bank", "view"),
+            "voucher.cash.view": ("voucher", "cash", "view"),
+            "voucher.payment.view": ("voucher", "payment", "view"),
+            "voucher.receipt.view": ("voucher", "receipt", "view"),
+            "posting.static_account_settings.view": ("posting", "static_account_settings", "view"),
+            "reports.financial_hub.trial_balance.view": ("reports", "financial_hub", "view"),
+            "reports.financial_hub.receivables_hub.customer_outstanding.view": ("reports", "receivables", "view"),
+            "assets.asset.view": ("assets", "asset", "view"),
+            "assets.depreciation_run.view": ("assets", "depreciation_run", "view"),
+            "inventory.transfer.view": ("inventory", "transfer", "view"),
+            "inventory.adjustment.view": ("inventory", "adjustment", "view"),
+            "reports.inventory.stock_summary.view": ("reports", "inventory", "view"),
+            "reports.inventory.view": ("reports", "inventory", "view"),
+            "reports.inventory.manufacturing_hub.view": ("reports", "manufacturing", "view"),
+            "manufacturing.workorder.view": ("manufacturing", "workorder", "view"),
+            "manufacturing.bom.view": ("manufacturing", "bom", "view"),
+            "reports.inventory.manufacturing_summary.view": ("reports", "manufacturing", "view"),
+            "treasury.payment_batch.view": ("treasury", "payment_batch", "view"),
+            "reports.financial_hub.bank_reconciliation.view": ("reports", "bank_reconciliation", "view"),
+            "cfo.control_tower.view": ("cfo", "control_tower", "view"),
+            "cfo.month_close.manage": ("cfo", "month_close", "manage"),
+        }
+        for code, (module, resource, action) in permission_specs.items():
+            Permission.objects.update_or_create(
+                code=code,
+                defaults={
+                    "name": code,
+                    "module": module,
+                    "resource": resource,
+                    "action": action,
+                    "isactive": True,
+                },
+            )
+
+        expected_templates = {
+            "accounts_user",
+            "financial_report_viewer",
+            "receivables_user",
+            "asset_manager",
+            "inventory_user",
+            "manufacturing_user",
+            "treasury_user",
+            "cfo_user",
+        }
+        catalog_codes = {template["code"] for template in RoleTemplateService.template_catalog()}
+        self.assertTrue(expected_templates.issubset(catalog_codes))
+
+        accounts_codes = set(RoleTemplateService._permission_queryset_for_template("accounts_user").values_list("code", flat=True))
+        financial_codes = set(RoleTemplateService._permission_queryset_for_template("financial_report_viewer").values_list("code", flat=True))
+        receivables_codes = set(RoleTemplateService._permission_queryset_for_template("receivables_user").values_list("code", flat=True))
+        asset_codes = set(RoleTemplateService._permission_queryset_for_template("asset_manager").values_list("code", flat=True))
+        inventory_codes = set(RoleTemplateService._permission_queryset_for_template("inventory_user").values_list("code", flat=True))
+        manufacturing_codes = set(RoleTemplateService._permission_queryset_for_template("manufacturing_user").values_list("code", flat=True))
+        treasury_codes = set(RoleTemplateService._permission_queryset_for_template("treasury_user").values_list("code", flat=True))
+        cfo_codes = set(RoleTemplateService._permission_queryset_for_template("cfo_user").values_list("code", flat=True))
+
+        self.assertIn("financial.account.view", accounts_codes)
+        self.assertIn("voucher.journal.view", accounts_codes)
+        self.assertIn("voucher.journal.create", accounts_codes)
+        self.assertIn("voucher.bank.view", accounts_codes)
+        self.assertIn("voucher.cash.view", accounts_codes)
+        self.assertIn("voucher.payment.view", accounts_codes)
+        self.assertIn("voucher.receipt.view", accounts_codes)
+        self.assertIn("posting.static_account_settings.view", accounts_codes)
+        self.assertIn("reports.financial_hub.trial_balance.view", financial_codes)
+        self.assertIn("reports.financial_hub.receivables_hub.customer_outstanding.view", receivables_codes)
+        self.assertIn("assets.asset.view", asset_codes)
+        self.assertIn("assets.depreciation_run.view", asset_codes)
+        self.assertIn("inventory.transfer.view", inventory_codes)
+        self.assertIn("inventory.adjustment.view", inventory_codes)
+        self.assertIn("reports.inventory.view", inventory_codes)
+        self.assertIn("reports.inventory.stock_summary.view", inventory_codes)
+        self.assertNotIn("manufacturing.workorder.view", inventory_codes)
+        self.assertNotIn("manufacturing.bom.view", inventory_codes)
+        self.assertNotIn("reports.inventory.manufacturing_hub.view", inventory_codes)
+        self.assertNotIn("reports.inventory.manufacturing_summary.view", inventory_codes)
+        self.assertIn("manufacturing.workorder.view", manufacturing_codes)
+        self.assertIn("manufacturing.bom.view", manufacturing_codes)
+        self.assertIn("reports.inventory.manufacturing_hub.view", manufacturing_codes)
+        self.assertIn("reports.inventory.manufacturing_summary.view", manufacturing_codes)
+        self.assertNotIn("inventory.transfer.view", manufacturing_codes)
+        self.assertNotIn("inventory.adjustment.view", manufacturing_codes)
+        self.assertIn("treasury.payment_batch.view", treasury_codes)
+        self.assertIn("reports.financial_hub.bank_reconciliation.view", treasury_codes)
+        self.assertIn("cfo.control_tower.view", cfo_codes)
+        self.assertIn("cfo.month_close.manage", cfo_codes)
+
     def test_entity_seeding_grants_invoice_view_permissions_to_default_sales_and_purchase_roles(self):
         Permission.objects.update_or_create(
             code="sales.invoice.view",

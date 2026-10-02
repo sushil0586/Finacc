@@ -60,6 +60,26 @@ class CanonicalAccessCatalogTests(SimpleTestCase):
 
         self.assertEqual(len(routes), len(set(routes)))
 
+    def test_manufacturing_report_parent_uses_manufacturing_permission(self):
+        specs_by_code = {spec.code: spec for spec in access_catalog.MENU_SPECS}
+
+        self.assertEqual(
+            specs_by_code["reports.manufacturing"].permission_code,
+            "reports.inventory.manufacturing_hub.view",
+        )
+        self.assertNotEqual(
+            specs_by_code["reports.manufacturing"].permission_code,
+            "reports.inventory.view",
+        )
+        for code in (
+            "reports.inventory.production_order",
+            "reports.inventory.manufacturing_browser",
+            "reports.inventory.manufacturing_boms",
+            "reports.inventory.manufacturing_routes",
+            "reports.manufacturing.settings",
+        ):
+            self.assertEqual(specs_by_code[code].parent_code, "reports.manufacturing")
+
     def test_canonical_operational_menu_hierarchy_groups_common_workflows(self):
         specs_by_code = {spec.code: spec for spec in access_catalog.MENU_SPECS}
 
@@ -96,6 +116,8 @@ class CanonicalAccessCatalogTests(SimpleTestCase):
             "reports.tds_compliance_center": "reports.financial_hub",
             "reports.gst_tds_compliance_center": "reports.financial_hub",
             "reports.tcs_compliance_center": "reports.financial_hub",
+            "sales.commerce_promotions": "sales.setup",
+            "reports.manufacturing.settings": "reports.manufacturing",
         }
 
         for code, parent_code in expected_parents.items():
@@ -120,6 +142,30 @@ class CanonicalAccessCatalogTests(SimpleTestCase):
 
         self.assertEqual(specs_by_code["admin.role_list"].route_path, "/rbacmanagement?tab=roles")
 
+    def test_admin_setup_menus_use_explicit_admin_permissions(self):
+        specs_by_code = {spec.code: spec for spec in access_catalog.MENU_SPECS}
+
+        expected_permissions = {
+            "admin.role_list": "admin.role.view",
+            "admin.users": "admin.user.view",
+            "admin.rbac_management": "admin.role_access.update",
+            "admin.business_settings": "admin.business_settings.view",
+            "admin.entity_partner_details": "admin.business_settings.view",
+            "admin.branch_workspace": "admin.branch.view",
+        }
+
+        for code, permission_code in expected_permissions.items():
+            self.assertEqual(specs_by_code[code].access_mode, "setup")
+            self.assertEqual(specs_by_code[code].permission_code, permission_code)
+
+        for retired_admin_code in (
+            "admin.organization_structure",
+            "admin.manufacturing_settings",
+            "admin.commerce_promotions",
+        ):
+            self.assertNotIn(retired_admin_code, specs_by_code)
+            self.assertIn(retired_admin_code, access_catalog.LEGACY_DUPLICATE_MENU_CODES_TO_DISABLE)
+
     def test_retired_interest_calculator_menu_has_no_clickable_route(self):
         specs_by_code = {spec.code: spec for spec in access_catalog.MENU_SPECS}
 
@@ -127,6 +173,13 @@ class CanonicalAccessCatalogTests(SimpleTestCase):
         self.assertFalse(spec.canonical)
         self.assertEqual(spec.route_path, "")
         self.assertIn(spec.code, access_catalog.LEGACY_MENU_CODES_TO_DISABLE)
+
+    def test_legacy_tds_report_menu_is_retired_in_favor_of_compliance_center(self):
+        specs_by_code = {spec.code: spec for spec in access_catalog.MENU_SPECS}
+
+        self.assertNotIn("reports.tdsreport", specs_by_code)
+        self.assertIn("reports.tdsreport", access_catalog.LEGACY_DUPLICATE_MENU_CODES_TO_DISABLE)
+        self.assertEqual(specs_by_code["reports.tds_compliance_center"].route_path, "/reports/tds")
 
     def test_basic_accounting_excludes_advanced_modules(self):
         features = access_catalog.features_for_packages(
@@ -246,6 +299,31 @@ class CanonicalRBACCatalogSeedServiceTests(TestCase):
         self.assertFalse(Menu.objects.get(code="masters.old").isactive)
         self.assertFalse(Menu.objects.get(code="inventory").isactive)
         self.assertTrue(Menu.objects.get(code="reports.inventory").isactive)
+
+    def test_seed_global_catalog_rehomes_operational_setup_menus_out_of_admin(self):
+        for code, route_path in (
+            ("admin.organization_structure", "/hrms/organization-units"),
+            ("admin.manufacturing_settings", "/manufacturingsettings"),
+            ("admin.commerce_promotions", "/commerce-promotions"),
+        ):
+            Menu.objects.update_or_create(
+                code=code,
+                defaults={
+                    "name": code,
+                    "menu_type": Menu.TYPE_SCREEN,
+                    "route_path": route_path,
+                    "isactive": True,
+                },
+            )
+
+        CanonicalRBACCatalogSeedService.seed_global_catalog()
+
+        self.assertFalse(Menu.objects.get(code="admin.organization_structure").isactive)
+        self.assertFalse(Menu.objects.get(code="admin.manufacturing_settings").isactive)
+        self.assertFalse(Menu.objects.get(code="admin.commerce_promotions").isactive)
+        self.assertEqual(Menu.objects.get(code="hrms.organization_units").parent.code, "hrms")
+        self.assertEqual(Menu.objects.get(code="reports.manufacturing.settings").parent.code, "reports.manufacturing")
+        self.assertEqual(Menu.objects.get(code="sales.commerce_promotions").parent.code, "sales.setup")
 
     def test_seed_global_catalog_deactivates_duplicate_legacy_routes(self):
         legacy_menu = Menu.objects.create(
