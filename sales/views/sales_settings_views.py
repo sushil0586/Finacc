@@ -10,6 +10,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from entity.models import EntityFinancialYear, SubEntity
 from numbering.models import DocumentNumberSeries
 from numbering.services import ensure_document_type, ensure_document_types_batch, ensure_series, validate_unique_series_pattern
 from sales.models import SalesChoiceOverride, SalesLockPeriod
@@ -187,6 +188,10 @@ class SalesSettingsAPIView(APIView):
         entity_id = self._parse_int(request.query_params.get("entity_id"), "entity_id", required=True)
         subentity_id = self._parse_int(request.query_params.get("subentity_id"), "subentity_id", required=False)
         entityfinid_id = self._parse_int(request.query_params.get("entityfinid"), "entityfinid", required=require_entityfinid)
+        if entityfinid_id and not EntityFinancialYear.objects.filter(pk=entityfinid_id, entity_id=entity_id).exists():
+            raise ValidationError({"entityfinid": "Financial year is not valid for this entity."})
+        if subentity_id and not SubEntity.objects.filter(pk=subentity_id, entity_id=entity_id).exists():
+            raise ValidationError({"subentity_id": "Subentity is not valid for this entity."})
         return entity_id, subentity_id, entityfinid_id
 
     def _list_lock_periods(self, *, entity_id: int, subentity_id: Optional[int]) -> list[dict]:

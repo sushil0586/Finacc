@@ -362,17 +362,12 @@ class PurchaseNoteFactory:
         ))
         totals = PurchaseInvoiceService.compute_totals(db_lines)
 
-        note.total_taxable = totals["total_taxable"]
-        note.total_cgst = totals["total_cgst"]
-        note.total_sgst = totals["total_sgst"]
-        note.total_igst = totals["total_igst"]
-        note.total_cess = totals["total_cess"]
-        note.total_gst = totals["total_gst"]
-        note.grand_total = totals["grand_total_base"] + (note.round_off or 0)
+        policy = PurchaseSettingsService.get_policy(note.entity_id, note.subentity_id)
+        PurchaseInvoiceService.apply_totals_to_header(note, totals, policy=policy)
         note.save(update_fields=[
             "posting_date", "due_date",
             "total_taxable", "total_cgst", "total_sgst", "total_igst",
-            "total_cess", "total_gst", "grand_total"
+            "total_cess", "total_gst", "round_off", "grand_total", "grand_total_base_currency"
         ])
 
         PurchaseInvoiceService.append_correction_audit_event(

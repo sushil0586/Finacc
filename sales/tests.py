@@ -3529,6 +3529,27 @@ class SalesInvoiceViewUnitTests(SimpleTestCase):
 
         self.assertFalse(flags["can_delete"])
 
+    @patch("sales.serializers.sales_invoice_serializers.SalesSettingsService.get_policy")
+    def test_header_serializer_action_flags_allow_posted_cancel_even_when_unpost_is_disabled(self, mocked_get_policy):
+        mocked_get_policy.return_value = SimpleNamespace(
+            controls={"allow_unpost_posted": "off"},
+            delete_policy="never",
+        )
+        header = SimpleNamespace(
+            id=10,
+            status=int(SalesInvoiceHeader.Status.POSTED),
+            entity_id=1,
+            subentity_id=None,
+            entityfinid_id=2026,
+            get_status_display=lambda: "Posted",
+        )
+
+        serializer = SalesInvoiceHeaderSerializer(context={})
+        flags = serializer.get_action_flags(header)
+
+        self.assertTrue(flags["can_cancel"])
+        self.assertFalse(flags["can_unpost"])
+
     @patch("sales.services.sales_settings_service.SalesSettingsService._last_saved_doc_in_scope")
     @patch("sales.services.sales_settings_service.DocumentNumberService.peek_preview")
     @patch("sales.services.sales_settings_service.DocumentType.objects.filter")
@@ -4571,6 +4592,100 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
         self.assertEqual(result["irn"], "IRN123")
         self.assertEqual(result["idempotent"], True)
         mocked_assert_allowed.assert_not_called()
+
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._controls")
+    def test_compliance_action_flags_allow_cancel_irn_with_active_eway_when_policy_enabled(
+        self,
+        mocked_controls,
+    ):
+        mocked_controls.return_value = {
+            "compliance_allow_generate_irn_on_confirmed": "on",
+            "compliance_allow_generate_irn_on_posted": "on",
+            "compliance_allow_regenerate_irn_after_cancel": "off",
+            "compliance_allow_regenerate_eway_after_cancel": "on",
+            "compliance_allow_cancel_irn_when_eway_active": "on",
+        }
+        invoice = SimpleNamespace(
+            status=int(SalesInvoiceHeader.Status.POSTED),
+            supply_category=int(SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B),
+            is_einvoice_applicable=True,
+            is_eway_applicable=True,
+            seller_gstin="22AAAAA0000A1Z5",
+            customer_gstin="27ABCDE1234F1Z5",
+            einvoice_artifact=SimpleNamespace(status=SalesEInvoiceStatus.GENERATED, irn="IRN123"),
+            eway_artifact=SimpleNamespace(status=SalesEWayStatus.GENERATED, ewb_no="171001234567"),
+        )
+
+        flags = SalesComplianceService.compliance_action_flags(invoice)
+
+        self.assertTrue(flags["can_cancel_irn"])
+        self.assertTrue(flags["can_cancel_eway"])
+
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._controls")
+    @patch("sales.services.sales_compliance_service.ComplianceAuditService.resolve_exception")
+    @patch("sales.services.sales_compliance_service.ComplianceAuditService.log_action")
+    @patch("sales.services.sales_compliance_service.SalesEInvoiceCancel.objects.create")
+    @patch("sales.services.sales_compliance_service.ProviderRegistry.get_einvoice")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._stamp_einvoice_provenance")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._get_mastergst_cred_for_entity")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._ensure_einvoice_row")
+    def test_cancel_irn_allows_active_eway_when_policy_enabled(
+        self,
+        mocked_ensure_einv,
+        mocked_get_cred,
+        mocked_stamp,
+        mocked_get_provider,
+        mocked_cancel_create,
+        mocked_log_action,
+        mocked_resolve_exception,
+        mocked_controls,
+    ):
+        mocked_controls.return_value = {
+            "compliance_allow_cancel_irn_when_eway_active": "on",
+        }
+        einv = SimpleNamespace(
+            irn="IRN123",
+            status=SalesEInvoiceStatus.GENERATED,
+            last_response_json=None,
+            last_error_code=None,
+            last_error_message=None,
+            updated_by=None,
+            save=MagicMock(),
+        )
+        mocked_ensure_einv.return_value = einv
+        mocked_get_provider.return_value.cancel_irn.return_value = SimpleNamespace(
+            ok=True,
+            raw={"status": "ok"},
+            error_code=None,
+            error_message=None,
+        )
+        invoice = SimpleNamespace(
+            id=10,
+            entity=SimpleNamespace(id=1),
+            entity_id=1,
+            entityfinid_id=2,
+            subentity_id=3,
+            status=int(SalesInvoiceHeader.Status.POSTED),
+            supply_category=int(SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B),
+            is_einvoice_applicable=True,
+            is_eway_applicable=True,
+            seller_gstin="22AAAAA0000A1Z5",
+            customer_gstin="27ABCDE1234F1Z5",
+            einvoice_artifact=einv,
+            eway_artifact=SimpleNamespace(status=SalesEWayStatus.GENERATED, ewb_no="171001234567"),
+        )
+        user = SimpleNamespace(id=7)
+
+        result = SalesComplianceService(invoice=invoice, user=user).cancel_irn(
+            reason_code="1",
+            remarks="Wrong entry",
+        )
+
+        self.assertEqual(result["status"], "SUCCESS")
+        self.assertEqual(result["irn"], "IRN123")
+        mocked_get_provider.return_value.cancel_irn.assert_called_once()
+        mocked_cancel_create.assert_called_once()
+        einv.save.assert_called_once()
 
     @patch("sales.services.sales_compliance_service.SalesComplianceService._ensure_eway_row")
     @patch("sales.services.sales_compliance_service.SalesComplianceService.assert_action_allowed")

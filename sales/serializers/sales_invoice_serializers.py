@@ -582,6 +582,8 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             "total_cess",
             "total_discount",
             "total_other_charges",
+            "round_off",
+            "grand_total",
             "settled_amount",
             "outstanding_amount",
             "settlement_status",
@@ -662,7 +664,7 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             include_reverse=True,
             include_rebuild_tax_summary=True,
             can_delete=delete_allowed,
-            extra={"can_post": is_draft or is_confirmed},
+            extra={"can_post": is_draft or is_confirmed, "can_cancel": is_draft or is_confirmed or is_posted},
         )
 
     def get_validators(self):
@@ -707,6 +709,9 @@ class SalesInvoiceHeaderSerializer(serializers.ModelSerializer):
             "total_igst",
             "total_cess",
             "total_discount",
+            "total_other_charges",
+            "round_off",
+            "grand_total",
             "settled_amount",
             "outstanding_amount",
             "settlement_status",

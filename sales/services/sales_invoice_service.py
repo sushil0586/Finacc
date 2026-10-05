@@ -2044,6 +2044,13 @@ class SalesInvoiceService:
         cls.assert_not_locked(entity_id=header.entity_id, subentity_id=header.subentity_id, bill_date=bill_date)
 
         header_data = dict(header_data)
+        previous_tax_context = (
+            int(getattr(header, "tax_regime", 0) or 0),
+            bool(getattr(header, "is_igst", False)),
+            bool(getattr(header, "is_reverse_charge", False)),
+            int(getattr(header, "taxability", 0) or 0),
+            str(getattr(header, "place_of_supply_state_code", "") or "").strip(),
+        )
 
         # ---- resolve customer_id ----
         customer_id = header.customer_id
@@ -2141,6 +2148,14 @@ class SalesInvoiceService:
 
         header.full_clean(exclude=None)
         header.save()
+        current_tax_context = (
+            int(getattr(header, "tax_regime", 0) or 0),
+            bool(getattr(header, "is_igst", False)),
+            bool(getattr(header, "is_reverse_charge", False)),
+            int(getattr(header, "taxability", 0) or 0),
+            str(getattr(header, "place_of_supply_state_code", "") or "").strip(),
+        )
+        tax_context_changed = current_tax_context != previous_tax_context
 
         if lines_data is not None:
             cls.apply_product_line_defaults(
@@ -2154,9 +2169,13 @@ class SalesInvoiceService:
                 allow_delete=True,
                 settings_obj=settings_obj,
             )
+        elif tax_context_changed:
+            cls.recompute_existing_lines(header=header, user=user)
         if charges_data is not None:
             cls.validate_charges(header=header, charges=charges_data)
             cls.upsert_charges(header=header, incoming_charges=charges_data, user=user, allow_delete=True)
+        elif tax_context_changed:
+            cls.recompute_existing_charges(header=header, user=user)
         cls._recompute_invoice_state(
             header=header,
             user=user,
@@ -2410,6 +2429,41 @@ class SalesInvoiceService:
         # DELETE missing rows
         # --------------------------
         # Rows omitted from the payload were already deleted before inserts.
+
+    @staticmethod
+    def recompute_existing_lines(*, header: SalesInvoiceHeader, user) -> None:
+        for line in SalesInvoiceLine.objects.filter(header=header).order_by("line_no", "id"):
+            line.updated_by = user
+            SalesInvoiceService.compute_line_amounts(header, line)
+            try:
+                line.full_clean()
+            except DjangoValidationError as e:
+                raise ValidationError(e.message_dict)
+            line.save()
+
+    @staticmethod
+    def recompute_existing_charges(*, header: SalesInvoiceHeader, user) -> None:
+        for charge in SalesChargeLine.objects.filter(header=header).order_by("line_no", "id"):
+            comp = SalesInvoiceService.compute_charge_amounts(
+                header=header,
+                row={
+                    "taxability": charge.taxability,
+                    "gst_rate": charge.gst_rate,
+                    "taxable_value": charge.taxable_value,
+                    "is_rate_inclusive_of_tax": charge.is_rate_inclusive_of_tax,
+                },
+            )
+            charge.taxable_value = comp.taxable_value
+            charge.cgst_amount = comp.cgst_amount
+            charge.sgst_amount = comp.sgst_amount
+            charge.igst_amount = comp.igst_amount
+            charge.total_value = comp.total_value
+            charge.updated_by = user
+            try:
+                charge.full_clean()
+            except DjangoValidationError as e:
+                raise ValidationError(e.message_dict)
+            charge.save()
 
     @staticmethod
     def apply_line_inputs(line: SalesInvoiceLine, row: dict, *, default_taxability: int) -> None:

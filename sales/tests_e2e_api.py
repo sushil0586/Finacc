@@ -836,6 +836,42 @@ class SalesApiEndToEndTests(APITestCase):
         self.assertEqual(int(header.tax_regime), int(SalesInvoiceHeader.TaxRegime.INTRA_STATE))
         self.assertFalse(header.is_igst)
 
+    def test_patch_header_tax_context_recomputes_existing_lines_without_line_payload(self):
+        created = self._create_invoice(
+            reference="SO-HEADER-TAX-RECOMPUTE",
+            customer_state_code="29",
+            place_of_supply_state_code="29",
+        )
+        invoice_id = created["id"]
+        self.assertTrue(created["is_igst"])
+        self.assertEqual(Decimal(str(created["lines"][0]["cgst_amount"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(created["lines"][0]["sgst_amount"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(created["lines"][0]["igst_amount"])), Decimal("180.00"))
+
+        patch_resp = self.client.patch(
+            f"/api/sales/invoices/{invoice_id}/{self._scope_qs()}",
+            {
+                "place_of_supply_state_code": "27",
+            },
+            format="json",
+        )
+        self.assertEqual(patch_resp.status_code, status.HTTP_200_OK, patch_resp.json())
+
+        body = patch_resp.json()
+        self.assertEqual(body["tax_regime"], int(SalesInvoiceHeader.TaxRegime.INTRA_STATE))
+        self.assertFalse(body["is_igst"])
+        self.assertEqual(Decimal(str(body["lines"][0]["cgst_amount"])), Decimal("90.00"))
+        self.assertEqual(Decimal(str(body["lines"][0]["sgst_amount"])), Decimal("90.00"))
+        self.assertEqual(Decimal(str(body["lines"][0]["igst_amount"])), Decimal("0.00"))
+        self.assertEqual(Decimal(str(body["total_cgst"])), Decimal("90.00"))
+        self.assertEqual(Decimal(str(body["total_sgst"])), Decimal("90.00"))
+        self.assertEqual(Decimal(str(body["total_igst"])), Decimal("0.00"))
+
+        line = SalesInvoiceLine.objects.get(header_id=invoice_id, line_no=1)
+        self.assertEqual(line.cgst_amount, Decimal("90.00"))
+        self.assertEqual(line.sgst_amount, Decimal("90.00"))
+        self.assertEqual(line.igst_amount, Decimal("0.00"))
+
     def test_service_invoice_endpoints_only_return_service_rows(self):
         self._create_invoice(reference="SO-GOODS", lines=[self._goods_line_payload()])
         self._create_invoice(
@@ -1589,6 +1625,122 @@ class SalesApiEndToEndTests(APITestCase):
         self.assertIsNotNone(header.confirmed_at)
         self.assertIsNotNone(header.posted_at)
         self.assertTrue(int(header.doc_no or 0) > 0)
+
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._get_mastergst_cred_for_entity")
+    @patch("sales.services.sales_compliance_service.ProviderRegistry.get_einvoice")
+    def test_confirm_auto_einvoice_persists_generated_irn_when_provider_succeeds(
+        self,
+        mocked_get_provider,
+        mocked_get_cred,
+    ):
+        settings_obj = SalesSettingsService.get_settings(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            entityfinid_id=self.entityfin.id,
+        )
+        settings_obj.enable_einvoice = True
+        settings_obj.enable_eway = False
+        settings_obj.einvoice_entity_applicable = True
+        settings_obj.auto_generate_einvoice_on_confirm = True
+        settings_obj.auto_generate_einvoice_on_post = False
+        settings_obj.auto_generate_eway_on_confirm = False
+        settings_obj.auto_generate_eway_on_post = False
+        settings_obj.save()
+        mocked_get_cred.return_value = SimpleNamespace(environment=1, gstin="27AAAAA1234A1Z5")
+        mocked_get_provider.return_value.generate_irn.return_value = SimpleNamespace(
+            ok=True,
+            irn="IRN-AUTO-CONFIRM",
+            ack_no="ACK-AUTO-CONFIRM",
+            ack_date=timezone.make_aware(datetime(2026, 4, 10, 10, 0, 0)),
+            signed_invoice="signed-invoice",
+            signed_qr_code="signed-qr",
+            ewb_no=None,
+            ewb_date=None,
+            ewb_valid_upto=None,
+            raw={"irn": "IRN-AUTO-CONFIRM"},
+        )
+        created = self._create_invoice(
+            endpoint="/api/sales/service-invoices/",
+            lines=[self._service_line_payload()],
+            reference="SO-AUTO-IRN-CONFIRM",
+        )
+        invoice_id = created["id"]
+
+        confirm_resp = self.client.post(
+            f"/api/sales/service-invoices/{invoice_id}/confirm/{self._scope_qs()}&line_mode=service",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(confirm_resp.status_code, status.HTTP_200_OK, confirm_resp.json())
+        self.assertEqual(confirm_resp.json()["status"], int(SalesInvoiceHeader.Status.CONFIRMED))
+        artifact = SalesEInvoice.objects.get(invoice_id=invoice_id)
+        self.assertEqual(artifact.status, SalesEInvoiceStatus.GENERATED)
+        self.assertEqual(artifact.irn, "IRN-AUTO-CONFIRM")
+        self.assertEqual(artifact.ack_no, "ACK-AUTO-CONFIRM")
+        self.assertEqual(artifact.attempt_count, 1)
+        mocked_get_provider.return_value.generate_irn.assert_called_once()
+
+    @patch("sales.services.sales_invoice_service.SalesArService.sync_open_item_for_header")
+    @patch("sales.services.sales_invoice_service.SalesInvoicePostingAdapter.post_sales_invoice")
+    @patch("sales.services.sales_compliance_service.SalesComplianceService._get_mastergst_cred_for_entity")
+    @patch("sales.services.sales_compliance_service.ProviderRegistry.get_einvoice")
+    def test_post_auto_einvoice_persists_generated_irn_when_provider_succeeds(
+        self,
+        mocked_get_provider,
+        mocked_get_cred,
+        mocked_post_adapter,
+        mocked_sync_open_item,
+    ):
+        settings_obj = SalesSettingsService.get_settings(
+            entity_id=self.entity.id,
+            subentity_id=self.subentity.id,
+            entityfinid_id=self.entityfin.id,
+        )
+        settings_obj.enable_einvoice = True
+        settings_obj.enable_eway = False
+        settings_obj.einvoice_entity_applicable = True
+        settings_obj.auto_generate_einvoice_on_confirm = False
+        settings_obj.auto_generate_einvoice_on_post = True
+        settings_obj.auto_generate_eway_on_confirm = False
+        settings_obj.auto_generate_eway_on_post = False
+        settings_obj.save()
+        mocked_get_cred.return_value = SimpleNamespace(environment=1, gstin="27AAAAA1234A1Z5")
+        mocked_get_provider.return_value.generate_irn.return_value = SimpleNamespace(
+            ok=True,
+            irn="IRN-AUTO-POST",
+            ack_no="ACK-AUTO-POST",
+            ack_date=timezone.make_aware(datetime(2026, 4, 10, 11, 0, 0)),
+            signed_invoice="signed-invoice",
+            signed_qr_code="signed-qr",
+            ewb_no=None,
+            ewb_date=None,
+            ewb_valid_upto=None,
+            raw={"irn": "IRN-AUTO-POST"},
+        )
+        created = self._create_invoice(
+            endpoint="/api/sales/service-invoices/",
+            lines=[self._service_line_payload()],
+            reference="SO-AUTO-IRN-POST",
+        )
+        invoice_id = created["id"]
+
+        post_resp = self.client.post(
+            f"/api/sales/service-invoices/{invoice_id}/post/{self._scope_qs()}&line_mode=service",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(post_resp.status_code, status.HTTP_200_OK, post_resp.json())
+        self.assertEqual(post_resp.json()["status"], int(SalesInvoiceHeader.Status.POSTED))
+        artifact = SalesEInvoice.objects.get(invoice_id=invoice_id)
+        self.assertEqual(artifact.status, SalesEInvoiceStatus.GENERATED)
+        self.assertEqual(artifact.irn, "IRN-AUTO-POST")
+        self.assertEqual(artifact.ack_no, "ACK-AUTO-POST")
+        self.assertEqual(artifact.attempt_count, 1)
+        mocked_post_adapter.assert_called_once()
+        mocked_sync_open_item.assert_called_once()
+        mocked_get_provider.return_value.generate_irn.assert_called_once()
 
     @patch("sales.services.sales_invoice_service.SalesInvoiceService._run_auto_compliance")
     @patch("sales.services.sales_invoice_service.SalesArService.sync_open_item_for_header")

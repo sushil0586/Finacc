@@ -1925,6 +1925,7 @@ class PurchaseInvoiceService:
         *,
         round_off_explicit: bool = False,
         grand_total_hint: Optional[Decimal] = None,
+        policy=None,
     ) -> None:
         header.total_taxable = totals["total_taxable"]
         header.total_cgst = totals["total_cgst"]
@@ -1938,9 +1939,15 @@ class PurchaseInvoiceService:
             ro = q2(getattr(header, "round_off", ZERO2))
         elif grand_total_hint is not None:
             ro = q2(q2(grand_total_hint) - base_total)
+        elif policy is not None and not bool(getattr(policy, "enable_round_off", True)):
+            ro = ZERO2
         else:
-            nearest_rupee = base_total.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-            ro = q2(nearest_rupee - base_total)
+            decimals_raw = getattr(policy, "round_decimals", 0) if policy is not None else 0
+            decimals = 0 if decimals_raw is None else int(decimals_raw)
+            decimals = max(0, min(decimals, 6))
+            quant = Decimal("1") if decimals == 0 else Decimal("1").scaleb(-decimals)
+            rounded_total = base_total.quantize(quant, rounding=ROUND_HALF_UP)
+            ro = q2(rounded_total - base_total)
         header.round_off = ro
         header.grand_total = q2(base_total + ro)
         fx = Decimal(getattr(header, "exchange_rate", Decimal("1.000000")) or Decimal("1.000000"))
@@ -2886,6 +2893,7 @@ class PurchaseInvoiceService:
             totals,
             round_off_explicit=round_off_explicit,
             grand_total_hint=grand_total_hint,
+            policy=policy,
         )
         mark_phase("totals_assign_ms")
 
@@ -3085,6 +3093,7 @@ class PurchaseInvoiceService:
             totals,
             round_off_explicit=round_off_explicit,
             grand_total_hint=grand_total_hint,
+            policy=policy,
         )
         mark_phase("totals_assign_ms")
 

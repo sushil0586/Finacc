@@ -221,6 +221,11 @@ class SalesComplianceService:
         allow_irn_posted = SalesComplianceService._flag_on(controls, "compliance_allow_generate_irn_on_posted", "on")
         allow_regen_irn = SalesComplianceService._flag_on(controls, "compliance_allow_regenerate_irn_after_cancel", "off")
         allow_regen_eway = SalesComplianceService._flag_on(controls, "compliance_allow_regenerate_eway_after_cancel", "on")
+        allow_cancel_irn_with_active_eway = SalesComplianceService._flag_on(
+            controls,
+            "compliance_allow_cancel_irn_when_eway_active",
+            "off",
+        )
         irn_generation_status_ok = (is_confirmed and allow_irn_confirmed) or (is_posted and allow_irn_posted)
         irn_generation_not_already_done = (not irn_generated) and (allow_regen_irn or not irn_cancelled)
         eway_generation_not_already_done = (not eway_generated) and (allow_regen_eway or not eway_cancelled)
@@ -230,7 +235,7 @@ class SalesComplianceService:
         eway_flow_eligible = eway_applicable or irn_generated or eway_generated or eway_cancelled
         can_generate_eway = can_open and eway_flow_eligible and eway_generation_not_already_done and (is_b2c or irn_generated)
 
-        can_cancel_irn = can_open and irn_generated and not eway_generated
+        can_cancel_irn = can_open and irn_generated and (not eway_generated or allow_cancel_irn_with_active_eway)
         can_cancel_eway = can_open and eway_generated
 
         return {
@@ -874,7 +879,18 @@ class SalesComplianceService:
         if not einv.irn or einv.status != SalesEInvoiceStatus.GENERATED:
             raise ValidationError("IRN cancel is allowed only for generated IRN.")
         ewb = getattr(inv, "eway_artifact", None)
-        if ewb and int(getattr(ewb, "status", 0) or 0) == int(SalesEWayStatus.GENERATED) and getattr(ewb, "ewb_no", None):
+        controls = SalesComplianceService._controls(inv)
+        allow_cancel_irn_with_active_eway = SalesComplianceService._flag_on(
+            controls,
+            "compliance_allow_cancel_irn_when_eway_active",
+            "off",
+        )
+        if (
+            not allow_cancel_irn_with_active_eway
+            and ewb
+            and int(getattr(ewb, "status", 0) or 0) == int(SalesEWayStatus.GENERATED)
+            and getattr(ewb, "ewb_no", None)
+        ):
             raise ValidationError("IRN cannot be cancelled while EWB is active. Cancel E-Way Bill first.")
 
         provider_name = self._einvoice_provider_name()

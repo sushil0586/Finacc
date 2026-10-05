@@ -38,7 +38,7 @@ from purchase.services.purchase_invoice_nav_service import PurchaseInvoiceNavSer
 from purchase.services.purchase_invoice_actions import PurchaseInvoiceActions
 from purchase.services.purchase_asset_intake_service import PurchaseAssetIntakeService
 from purchase.services.purchase_invoice_service import PurchaseInvoiceService
-from purchase.services.purchase_settings_service import PurchaseSettingsService
+from purchase.services.purchase_settings_service import PurchasePolicy, PurchaseSettingsService
 from purchase.services.purchase_statutory_service import PurchaseStatutoryService
 from purchase.views.purchase_invoice import (
     PurchaseInvoiceListCreateAPIView,
@@ -194,6 +194,57 @@ class PurchaseTdsApplyTests(SimpleTestCase):
 
         with self.assertRaisesMessage(ValueError, "not invoice-based"):
             PurchaseInvoiceService._apply_tds(header=header)
+
+
+class PurchaseInvoiceRoundOffSettingsTests(SimpleTestCase):
+    def _header(self):
+        return PurchaseInvoiceHeader(
+            exchange_rate=Decimal("1.000000"),
+            round_off=Decimal("0.00"),
+        )
+
+    def _totals(self, grand_total_base=Decimal("118.49")):
+        return {
+            "total_taxable": Decimal("100.00"),
+            "total_cgst": Decimal("9.00"),
+            "total_sgst": Decimal("9.00"),
+            "total_igst": Decimal("0.00"),
+            "total_cess": Decimal("0.49"),
+            "total_gst": Decimal("18.49"),
+            "grand_total_base": grand_total_base,
+        }
+
+    def test_purchase_policy_preserves_zero_rounding_precision_from_settings(self):
+        policy = PurchasePolicy(settings=SimpleNamespace(round_grand_total_to=0))
+
+        self.assertEqual(policy.round_decimals, 0)
+
+    def test_apply_totals_rounds_to_configured_zero_decimal_precision(self):
+        header = self._header()
+        policy = SimpleNamespace(enable_round_off=True, round_decimals=0)
+
+        PurchaseInvoiceService.apply_totals_to_header(header, self._totals(), policy=policy)
+
+        self.assertEqual(header.round_off, Decimal("-0.49"))
+        self.assertEqual(header.grand_total, Decimal("118.00"))
+
+    def test_apply_totals_uses_configured_two_decimal_precision(self):
+        header = self._header()
+        policy = SimpleNamespace(enable_round_off=True, round_decimals=2)
+
+        PurchaseInvoiceService.apply_totals_to_header(header, self._totals(), policy=policy)
+
+        self.assertEqual(header.round_off, Decimal("0.00"))
+        self.assertEqual(header.grand_total, Decimal("118.49"))
+
+    def test_apply_totals_disables_round_off_from_settings(self):
+        header = self._header()
+        policy = SimpleNamespace(enable_round_off=False, round_decimals=0)
+
+        PurchaseInvoiceService.apply_totals_to_header(header, self._totals(), policy=policy)
+
+        self.assertEqual(header.round_off, Decimal("0.00"))
+        self.assertEqual(header.grand_total, Decimal("118.49"))
 
 
 class PurchaseInvoiceRetrieveContextTests(SimpleTestCase):
