@@ -173,17 +173,17 @@ def build_vendor_settlement_history_report(
             total_settled = q2(total_settled + applied_amount)
             drilldown = {
                 "document": _drilldown_item(
-                    label="Purchase Document Detail",
+                    label="Open Bill",
                     target="purchase_document_detail",
                     params={"id": open_item.header_id, "entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id},
                 ),
                 "vendor_outstanding": _drilldown_item(
-                    label="Vendor Outstanding",
+                    label="Vendor Outstanding Report",
                     target="vendor_outstanding",
                     params={"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "to_date": to_date or settlement.settlement_date, "vendor": settlement.vendor_id},
                 ),
                 "ap_aging": _drilldown_item(
-                    label="AP Aging",
+                    label="AP Aging Detail",
                     target="ap_aging",
                     params={"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "as_of_date": to_date or settlement.settlement_date, "vendor": settlement.vendor_id, "view": "invoice"},
                 ),
@@ -242,12 +242,12 @@ def build_vendor_settlement_history_report(
             total_unapplied = q2(total_unapplied + unapplied_amount)
             drilldown = {
                 "vendor_outstanding": _drilldown_item(
-                    label="Vendor Outstanding",
+                    label="Vendor Outstanding Report",
                     target="vendor_outstanding",
                     params={"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "to_date": to_date or settlement.settlement_date, "vendor": settlement.vendor_id},
                 ),
                 "ap_aging": _drilldown_item(
-                    label="AP Aging",
+                    label="AP Aging Detail",
                     target="ap_aging",
                     params={"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "as_of_date": to_date or settlement.settlement_date, "vendor": settlement.vendor_id, "view": "invoice"},
                 ),
@@ -384,19 +384,19 @@ def _build_vendor_note_register_uncached(
         net_total = q2(net_total + note_amount)
         drilldown = {
             "document": {
-                "label": "Purchase Document Detail",
+                "label": "Open Bill",
                 "target": "purchase_document_detail",
                 "kind": "document",
                 "route": _purchase_note_route(header),
                 "params": {"id": header.id, "entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id},
             },
             "vendor_outstanding": _drilldown_item(
-                label="Vendor Outstanding",
+                label="Vendor Outstanding Report",
                 target="vendor_outstanding",
                 params={"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "to_date": to_date or header.bill_date, "vendor": header.vendor_id},
             ),
             "ap_aging": _drilldown_item(
-                label="AP Aging",
+                label="AP Aging Detail",
                 target="ap_aging",
                 params={"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "as_of_date": to_date or header.bill_date, "vendor": header.vendor_id, "view": "invoice"},
             ),
@@ -581,7 +581,7 @@ def _build_vendor_ledger_statement_uncached(
         }
         if include_related_reports:
             drilldown["vendor_outstanding"] = _drilldown_item(
-                label="Vendor Outstanding",
+                label="Vendor Outstanding Report",
                 target="vendor_outstanding",
                 report_code="vendor_outstanding",
                 path="/api/reports/payables/vendor-outstanding/",
@@ -594,7 +594,7 @@ def _build_vendor_ledger_statement_uncached(
                 },
             )
             drilldown["ap_aging"] = _drilldown_item(
-                label="AP Aging",
+                label="AP Aging Detail",
                 target="ap_aging",
                 report_code="ap_aging",
                 path="/api/reports/payables/aging/",

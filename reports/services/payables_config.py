@@ -172,7 +172,7 @@ PAYABLE_DRILLDOWN_TARGETS = OrderedDict(
         },
         "purchase_ap_open_items": {
             "code": "purchase_ap_open_items",
-            "label": "Open Bills",
+            "label": "Vendor Open Items",
             "target": "purchase_ap_open_items",
             "kind": "report",
         },
@@ -184,7 +184,7 @@ PAYABLE_DRILLDOWN_TARGETS = OrderedDict(
         },
         "purchase_document_detail": {
             "code": "purchase_document_detail",
-            "label": "Bill Detail",
+            "label": "Open Bill",
             "target": "purchase_document_detail",
             "kind": "document",
         },
@@ -1332,7 +1332,7 @@ def build_related_report_links(report_codes, *, entity_id, entityfin_id, subenti
             name = "AP Aging Summary"
         elif code == "ap_aging_invoice":
             base = get_payables_report_config("ap_aging", view="invoice")
-            name = "AP Aging Invoice"
+            name = "AP Aging Detail"
         else:
             base = get_payables_report_config(code)
             name = base["name"] if base else None

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from django.utils.dateparse import parse_date
 from rest_framework import generics, permissions, status
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -16,8 +16,23 @@ from sales.serializers.sales_ar import (
 from sales.services.sales_ar_service import SalesArService
 from sales.views.rbac import require_sales_scope_permission
 from rbac.services import EffectivePermissionService
+from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 from financial.models import account
 from financial.profile_access import account_gstno, account_pan, account_partytype
+
+
+AR_REPORT_VIEW_PERMISSION_CODES = (
+    "reports.financial_hub.receivables_hub.customer_ledger_statement.view",
+    "reports.financial_hub.receivables_hub.open_items.view",
+    "reports.financial_hub.receivables_hub.customer_outstanding.view",
+    "reports.financial_hub.receivables_hub.receivable_aging.view",
+    "reports.financial_hub.receivables_hub.receivable_aging_detail.view",
+    "reports.financial_hub.receivables_hub.overdue_customers.view",
+    "reports.financial_hub.receivables_hub.credit_exposure.view",
+    "reports.financial_hub.receivables_hub.receivables_exception_report.view",
+    "reports.outstanding.view",
+    "reports.accounts_receivable_aging.view",
+)
 
 
 def _parse_scope(request):
@@ -38,14 +53,30 @@ def _parse_scope(request):
 
 
 def _require_ar_view_permission(*, user, entity_id: int):
-    require_sales_scope_permission(
-        user=user,
-        entity_id=entity_id,
-        permission_codes=("sales.ar.view",),
-        access_mode="operational",
-        feature_code="feature_sales",
-        message="Missing permission to access sales AR data.",
-    )
+    entity = EffectivePermissionService.entity_for_user(user, int(entity_id))
+    if entity is None:
+        raise PermissionDenied("You do not have access to this entity.")
+
+    available_codes = set(EffectivePermissionService.permission_codes_for_user(user, int(entity.id)))
+    if "sales.ar.view" in available_codes:
+        SubscriptionService.assert_entity_access(
+            user=user,
+            entity=entity,
+            access_mode=SubscriptionService.ACCESS_MODE_OPERATIONAL,
+            feature_code=SubscriptionLimitCodes.FEATURE_SALES,
+        )
+        return entity
+
+    if any(code in available_codes for code in AR_REPORT_VIEW_PERMISSION_CODES):
+        SubscriptionService.assert_entity_access(
+            user=user,
+            entity=entity,
+            access_mode=SubscriptionService.ACCESS_MODE_OPERATIONAL,
+            feature_code=SubscriptionLimitCodes.FEATURE_RECEIVABLES,
+        )
+        return entity
+
+    raise PermissionDenied("Missing permission to access sales AR data.")
 
 
 def _require_ar_manage_permission(*, user, entity_id: int):

@@ -10,6 +10,7 @@ from reports.selectors.financial import resolve_scope_names
 from reports.services.inventory.stock_ledger import (
     _apply_movement,
     _build_product_map,
+    _inventory_identity,
     _movement_rows,
     _new_valuation_state,
     _normalize_method,
@@ -201,14 +202,16 @@ def build_inventory_stock_aging(
         group = groups.setdefault(
             key,
             {
-                "state": _new_valuation_state(method),
                 "last_movement_date": None,
                 "movement_count": 0,
                 "location_name": (row.get("location__name") or row.get("location__code")) if group_by_location else "All Locations",
                 "location_id": location_id,
+                "states": {},
             },
         )
-        _apply_movement(group["state"], row, method)
+        identity = _inventory_identity(row)
+        state = group["states"].setdefault(identity, _new_valuation_state(method))
+        _apply_movement(state, row, method)
         group["movement_count"] += 1
         current_date = row.get("posting_date")
         if current_date and (group["last_movement_date"] is None or current_date > group["last_movement_date"]):
@@ -229,7 +232,12 @@ def build_inventory_stock_aging(
         if product is None:
             continue
 
-        closing_qty, closing_value = _snapshot_state(group["state"], method)
+        closing_qty = ZERO
+        closing_value = ZERO
+        for state in group["states"].values():
+            state_qty, state_value = _snapshot_state(state, method)
+            closing_qty += state_qty
+            closing_value += state_value
         closing_qty = _q4(closing_qty)
         closing_value = _q2(closing_value)
         if not include_negative and closing_qty < 0:

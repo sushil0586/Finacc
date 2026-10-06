@@ -124,7 +124,7 @@ def _vendor_reconciliation_rows(*, entity_id, entityfin_id, subentity_id, as_of_
             continue
         drilldown = {
             "vendor_outstanding": _drilldown_item(
-                label="Vendor Outstanding",
+                label="Vendor Outstanding Report",
                 target="vendor_outstanding",
                 report_code="vendor_outstanding",
                 path="/api/reports/payables/vendor-outstanding/",
@@ -270,7 +270,7 @@ def build_ap_gl_reconciliation_report(
 def _exception_row(*, exception_type, severity, vendor, amount, message, as_of_date, entity_id, entityfin_id, subentity_id, document_number=None, age_days=None, extra_params=None):
     drilldown = {
         "vendor_outstanding": _drilldown_item(
-            label="Vendor Outstanding",
+            label="Vendor Outstanding Report",
             target="vendor_outstanding",
             report_code="vendor_outstanding",
             path="/api/reports/payables/vendor-outstanding/",
@@ -283,7 +283,7 @@ def _exception_row(*, exception_type, severity, vendor, amount, message, as_of_d
             },
         ),
         "ap_aging": _drilldown_item(
-            label="AP Aging Invoice",
+            label="AP Aging Detail",
             target="ap_aging",
             report_code="ap_aging",
             path="/api/reports/payables/aging/",

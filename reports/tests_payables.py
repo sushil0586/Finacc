@@ -1583,6 +1583,23 @@ class PayableReportAPITests(APITestCase):
         header_line = export_response.content.decode("utf-8-sig").splitlines()[0]
         self.assertIn("Vendor", header_line)
 
+    def test_upcoming_payments_calendar_rejects_to_date_before_from_date_with_validation_message(self):
+        response = self.client.get(
+            reverse("reports_api:upcoming-payments-calendar"),
+            self._base_scope(from_date="2025-04-30", to_date="2025-04-01"),
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("To date must be on or after From date.", str(response.json()))
+
+        export_response = self.client.get(
+            reverse("reports_api:upcoming-payments-calendar-csv"),
+            self._base_scope(from_date="2025-04-30", to_date="2025-04-01"),
+        )
+
+        self.assertEqual(export_response.status_code, 400)
+        self.assertIn("To date must be on or after From date.", str(export_response.json()))
+
     def test_upcoming_payments_calendar_bill_detail_uses_service_route_for_service_bills(self):
         PurchaseInvoiceLine.objects.create(
             header=self.invoice,

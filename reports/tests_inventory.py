@@ -1652,6 +1652,128 @@ class InventoryReportAPITests(APITestCase):
         self.assertIn('available_exports', data)
         self.assertEqual(data['available_exports'], ['excel', 'pdf', 'csv', 'print'])
 
+    def test_inventory_stock_aging_values_batch_identities_like_stock_ledger(self):
+        batch_product = Product.objects.create(
+            entity=self.entity,
+            productname='Batch Valued Component',
+            sku='BVC-001',
+            productdesc='Batch-valued component',
+            productcategory=self.category,
+            base_uom=self.uom,
+            is_service=False,
+            is_batch_managed=True,
+            is_serialized=False,
+        )
+        ProductPlanning.objects.create(
+            product=batch_product,
+            min_stock=Decimal('0.00'),
+            max_stock=Decimal('100.00'),
+            reorder_level=Decimal('0.00'),
+            reorder_qty=Decimal('10.00'),
+        )
+
+        def create_move(*, txn_id, voucher_no, batch_number, move_type, qty, unit_cost, posting_date):
+            posting_batch = PostingBatch.objects.create(
+                entity=self.entity,
+                entityfin=self.entityfin,
+                subentity=self.subentity,
+                txn_type=TxnType.PURCHASE if move_type == InventoryMove.MoveType.IN_ else TxnType.SALES,
+                txn_id=txn_id,
+                voucher_no=voucher_no,
+                created_by=self.user,
+                is_active=True,
+            )
+            entry = Entry.objects.create(
+                entity=self.entity,
+                entityfin=self.entityfin,
+                subentity=self.subentity,
+                txn_type=posting_batch.txn_type,
+                txn_id=txn_id,
+                voucher_no=voucher_no,
+                voucher_date=posting_date,
+                posting_date=posting_date,
+                status=EntryStatus.POSTED,
+                posted_at=timezone.now(),
+                posted_by=self.user,
+                posting_batch=posting_batch,
+                narration=f'{voucher_no} batch valuation',
+                created_by=self.user,
+            )
+            InventoryMove.objects.create(
+                entry=entry,
+                posting_batch=posting_batch,
+                entity=self.entity,
+                entityfin=self.entityfin,
+                subentity=self.subentity,
+                txn_type=posting_batch.txn_type,
+                txn_id=txn_id,
+                detail_id=1,
+                voucher_no=voucher_no,
+                product=batch_product,
+                location=self.godown,
+                uom=self.uom,
+                base_uom=self.uom,
+                qty=qty,
+                uom_factor=Decimal('1'),
+                base_qty=qty,
+                unit_cost=unit_cost,
+                ext_cost=(qty * unit_cost).quantize(Decimal('0.01')),
+                cost_source=InventoryMove.CostSource.PURCHASE,
+                move_type=move_type,
+                batch_number=batch_number,
+                posting_date=posting_date,
+                posted_at=timezone.now(),
+                created_by=self.user,
+            )
+
+        create_move(
+            txn_id=4101,
+            voucher_no='PUR-4101',
+            batch_number='BATCH-A',
+            move_type=InventoryMove.MoveType.IN_,
+            qty=Decimal('10.0000'),
+            unit_cost=Decimal('100.0000'),
+            posting_date='2025-04-05',
+        )
+        create_move(
+            txn_id=4102,
+            voucher_no='PUR-4102',
+            batch_number='BATCH-B',
+            move_type=InventoryMove.MoveType.IN_,
+            qty=Decimal('10.0000'),
+            unit_cost=Decimal('200.0000'),
+            posting_date='2025-04-06',
+        )
+        create_move(
+            txn_id=4103,
+            voucher_no='SAL-4103',
+            batch_number='BATCH-B',
+            move_type=InventoryMove.MoveType.OUT,
+            qty=Decimal('5.0000'),
+            unit_cost=Decimal('200.0000'),
+            posting_date='2025-04-07',
+        )
+
+        params = self._scope(
+            as_of_date='2025-04-30',
+            to_date='2025-04-30',
+            valuation_method='fifo',
+            product_ids=str(batch_product.id),
+            location_ids=str(self.godown.id),
+            include_zero='false',
+            include_negative='true',
+        )
+        aging_response = self.client.get(reverse('reports_api:inventory-stock-aging'), params)
+        ledger_response = self.client.get(reverse('reports_api:inventory-stock-ledger'), params)
+
+        self.assertEqual(aging_response.status_code, 200)
+        self.assertEqual(ledger_response.status_code, 200)
+        aging_data = aging_response.json()
+        ledger_data = ledger_response.json()
+        self.assertEqual(aging_data['rows'][0]['closing_qty'], '15.0000')
+        self.assertEqual(aging_data['rows'][0]['closing_value'], '2000.00')
+        self.assertEqual(aging_data['totals']['closing_value'], ledger_data['totals']['closing_value'])
+
     def test_inventory_stock_aging_export_routes_return_files(self):
         aging_scope = self._scope(as_of_date='2025-04-30', bucket_ends='30,60,90,120,150', product_ids=str(self.product.id))
         excel = self.client.get(reverse('reports_api:inventory-stock-aging-excel'), aging_scope)

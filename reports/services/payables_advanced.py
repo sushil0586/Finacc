@@ -273,7 +273,7 @@ def build_ap_payment_forecast_report(
                     kind="report",
                 ),
                 "vendor_outstanding": _drilldown_item(
-                    label="Vendor Outstanding",
+                    label="Vendor Outstanding Report",
                     target="vendor_outstanding",
                     params={
                         "entity": entity_id,
@@ -287,7 +287,7 @@ def build_ap_payment_forecast_report(
                     kind="report",
                 ),
                 "ap_aging": _drilldown_item(
-                    label="AP Aging",
+                    label="AP Aging Detail",
                     target="ap_aging",
                     params={
                         "entity": entity_id,
@@ -515,7 +515,7 @@ def build_vendor_reconciliation_statement_report(
                     kind="report",
                 ),
                 "vendor_outstanding": _drilldown_item(
-                    label="Vendor Outstanding",
+                    label="Vendor Outstanding Report",
                     target="vendor_outstanding",
                     params={
                         "entity": entity_id,
@@ -530,7 +530,7 @@ def build_vendor_reconciliation_statement_report(
                     kind="report",
                 ),
                 "ap_aging": _drilldown_item(
-                    label="AP Aging",
+                    label="AP Aging Detail",
                     target="ap_aging",
                     params={
                         "entity": entity_id,
@@ -697,12 +697,12 @@ def build_grn_invoice_posting_exceptions_report(
                         },
                     },
                     "bill_detail": _drilldown_item(
-                        label="Purchase Document Detail",
+                        label="Open Bill",
                         target="purchase_document_detail",
                         params={"id": header["id"], "entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id},
                     ),
                     "vendor_outstanding": _drilldown_item(
-                        label="Vendor Outstanding",
+                        label="Vendor Outstanding Report",
                         target="vendor_outstanding",
                         report_code="vendor_outstanding",
                         params={
@@ -717,7 +717,7 @@ def build_grn_invoice_posting_exceptions_report(
                         kind="report",
                     ),
                     "ap_aging": _drilldown_item(
-                        label="AP Aging",
+                        label="AP Aging Detail",
                         target="ap_aging",
                         report_code="ap_aging",
                         params={
@@ -867,12 +867,12 @@ def build_ap_compliance_aging_report(
                             },
                         },
                         "bill_detail": _drilldown_item(
-                            label="Purchase Document Detail",
+                            label="Open Bill",
                             target="purchase_document_detail",
                             params={"id": item.header_id, "entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id},
                         ),
                         "vendor_outstanding": _drilldown_item(
-                            label="Vendor Outstanding",
+                            label="Vendor Outstanding Report",
                             target="vendor_outstanding",
                             report_code="vendor_outstanding",
                             params={
@@ -887,7 +887,7 @@ def build_ap_compliance_aging_report(
                             kind="report",
                         ),
                         "ap_aging": _drilldown_item(
-                            label="AP Aging",
+                            label="AP Aging Detail",
                             target="ap_aging",
                             report_code="ap_aging",
                             params={
@@ -979,12 +979,12 @@ def build_ap_compliance_aging_report(
                             },
                         },
                         "bill_detail": _drilldown_item(
-                            label="Purchase Document Detail",
+                            label="Open Bill",
                             target="purchase_document_detail",
                             params={"id": item.header_id, "entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id},
                         ),
                         "vendor_outstanding": _drilldown_item(
-                            label="Vendor Outstanding",
+                            label="Vendor Outstanding Report",
                             target="vendor_outstanding",
                             report_code="vendor_outstanding",
                             params={
@@ -999,7 +999,7 @@ def build_ap_compliance_aging_report(
                             kind="report",
                         ),
                         "ap_aging": _drilldown_item(
-                            label="AP Aging",
+                            label="AP Aging Detail",
                             target="ap_aging",
                             report_code="ap_aging",
                             params={
@@ -1192,12 +1192,12 @@ def build_duplicate_anomalous_bill_detection_report(
                         },
                     },
                     "bill_detail": _drilldown_item(
-                        label="Purchase Document Detail",
+                        label="Open Bill",
                         target="purchase_document_detail",
                         params={"id": header["id"], "entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id},
                     ),
                     "vendor_outstanding": _drilldown_item(
-                        label="Vendor Outstanding",
+                        label="Vendor Outstanding Report",
                         target="vendor_outstanding",
                         report_code="vendor_outstanding",
                         params={
@@ -1212,7 +1212,7 @@ def build_duplicate_anomalous_bill_detection_report(
                         kind="report",
                     ),
                     "ap_aging": _drilldown_item(
-                        label="AP Aging",
+                        label="AP Aging Detail",
                         target="ap_aging",
                         report_code="ap_aging",
                         params={

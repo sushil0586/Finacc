@@ -77,7 +77,7 @@ from sales.views.eway_views import (
     SalesInvoiceGetEWayBillsForTransporterByGSTINAPIView,
     SalesInvoiceGenerateConsolidatedEWayAPIView,
 )
-from sales.views.sales_ar import CustomerSettlementListCreateAPIView
+from sales.views.sales_ar import CustomerSettlementListCreateAPIView, _require_ar_view_permission
 from sales.views.sales_ar_exports import CustomerStatementExcelAPIView
 from posting.adapters.sales_invoice import SalesInvoicePostingAdapter, SalesInvoicePostingConfig
 from posting.common.static_accounts import StaticAccountCodes
@@ -115,6 +115,63 @@ class SalesCompliancePermissionContractTests(SimpleTestCase):
 
         self.assertEqual(response.status_code, 403)
         self.assertIn("sales.compliance.cancel_eway", str(response.data))
+
+
+class SalesArPermissionContractTests(SimpleTestCase):
+    def setUp(self):
+        self.user = SimpleNamespace(id=11, is_authenticated=True)
+        self.entity = SimpleNamespace(id=77)
+
+    @patch("sales.views.sales_ar.SubscriptionService.assert_entity_access")
+    @patch("sales.views.sales_ar.EffectivePermissionService.permission_codes_for_user")
+    @patch("sales.views.sales_ar.EffectivePermissionService.entity_for_user")
+    def test_ar_view_allows_customer_ledger_report_permission(
+        self,
+        mocked_entity_for_user,
+        mocked_permission_codes,
+        mocked_assert_entity_access,
+    ):
+        mocked_entity_for_user.return_value = self.entity
+        mocked_permission_codes.return_value = {
+            "reports.financial_hub.receivables_hub.customer_ledger_statement.view"
+        }
+
+        result = _require_ar_view_permission(user=self.user, entity_id=self.entity.id)
+
+        self.assertEqual(result, self.entity)
+        mocked_assert_entity_access.assert_called_once()
+        self.assertEqual(mocked_assert_entity_access.call_args.kwargs["feature_code"], "feature_receivables")
+
+    @patch("sales.views.sales_ar.SubscriptionService.assert_entity_access")
+    @patch("sales.views.sales_ar.EffectivePermissionService.permission_codes_for_user")
+    @patch("sales.views.sales_ar.EffectivePermissionService.entity_for_user")
+    def test_ar_view_keeps_sales_ar_permission_on_sales_feature(
+        self,
+        mocked_entity_for_user,
+        mocked_permission_codes,
+        mocked_assert_entity_access,
+    ):
+        mocked_entity_for_user.return_value = self.entity
+        mocked_permission_codes.return_value = {"sales.ar.view"}
+
+        result = _require_ar_view_permission(user=self.user, entity_id=self.entity.id)
+
+        self.assertEqual(result, self.entity)
+        mocked_assert_entity_access.assert_called_once()
+        self.assertEqual(mocked_assert_entity_access.call_args.kwargs["feature_code"], "feature_sales")
+
+    @patch("sales.views.sales_ar.EffectivePermissionService.permission_codes_for_user")
+    @patch("sales.views.sales_ar.EffectivePermissionService.entity_for_user")
+    def test_ar_view_rejects_missing_sales_and_report_permission(
+        self,
+        mocked_entity_for_user,
+        mocked_permission_codes,
+    ):
+        mocked_entity_for_user.return_value = self.entity
+        mocked_permission_codes.return_value = {"reports.financial_hub.view"}
+
+        with self.assertRaises(PermissionDenied):
+            _require_ar_view_permission(user=self.user, entity_id=self.entity.id)
 
 
 class SalesInvoiceServiceUnitTests(SimpleTestCase):

@@ -391,7 +391,7 @@ def _row_with_meta(row, *, drilldown, trace=None):
 def _invoice_row_drilldown(*, entity_id, entityfin_id, subentity_id, as_of, row):
     return {
         "invoice_list": _drilldown_item(
-            label="AP Aging Invoice",
+            label="AP Aging Detail",
             target="ap_aging",
             report_code="ap_aging",
             path="/api/reports/payables/aging/",
@@ -405,7 +405,7 @@ def _invoice_row_drilldown(*, entity_id, entityfin_id, subentity_id, as_of, row)
             },
         ),
         "bill": _drilldown_item(
-            label="Purchase Document Detail",
+            label="Open Bill",
             target="purchase_document_detail",
             params={
                 "id": row["header_id"],
@@ -850,7 +850,7 @@ def build_vendor_outstanding_report(
                     },
                     drilldown={
                         "source_document": _drilldown_item(
-                            label="Purchase Document Detail",
+                            label="Open Bill",
                             target="purchase_document_detail",
                             params={"id": item.header_id, "entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id},
                         ),
@@ -1009,7 +1009,7 @@ def build_vendor_outstanding_report(
             },
             drilldown={
                 "vendor_detail": _drilldown_item(
-                    label="Vendor Outstanding Detail",
+                    label="Vendor Outstanding Report",
                     target="vendor_outstanding",
                     report_code="vendor_outstanding",
                     path="/api/reports/payables/vendor-outstanding/",
@@ -1043,7 +1043,7 @@ def build_vendor_outstanding_report(
                     },
                 ),
                 "aging_bill_list": _drilldown_item(
-                    label="AP Aging Invoice",
+                    label="AP Aging Detail",
                     target="ap_aging",
                     report_code="ap_aging",
                     path="/api/reports/payables/aging/",
@@ -1444,7 +1444,7 @@ def _build_ap_aging_report_uncached(
                 params={"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "as_of_date": as_of, "vendor": vendor_id_key, "view": "summary"},
             ),
             "invoice_view": _drilldown_item(
-                label="AP Aging Invoice",
+                label="AP Aging Detail",
                 target="ap_aging",
                 report_code="ap_aging",
                 path="/api/reports/payables/aging/",
@@ -1874,12 +1874,12 @@ def build_msme_overdue_report(
             },
             drilldown={
                 "bill_detail": _drilldown_item(
-                    label="Purchase Document Detail",
+                    label="Open Bill",
                     target="purchase_document_detail",
                     params={"id": item.header_id, "entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id},
                 ),
                 "vendor_outstanding": _drilldown_item(
-                    label="Vendor Outstanding",
+                    label="Vendor Outstanding Report",
                     target="vendor_outstanding",
                     report_code="vendor_outstanding",
                     path="/api/reports/payables/vendor-outstanding/",
@@ -1895,7 +1895,7 @@ def build_msme_overdue_report(
                     },
                 ),
                 "ap_aging": _drilldown_item(
-                    label="AP Aging Invoice",
+                    label="AP Aging Detail",
                     target="ap_aging",
                     report_code="ap_aging",
                     path="/api/reports/payables/aging/",
@@ -2176,7 +2176,7 @@ def build_upcoming_payments_calendar_report(
                     },
                     drilldown={
                         "vendor_outstanding": _drilldown_item(
-                            label="Vendor Outstanding",
+                            label="Vendor Outstanding Report",
                             target="vendor_outstanding",
                             report_code="vendor_outstanding",
                             path="/api/reports/payables/vendor-outstanding/",
@@ -2191,7 +2191,7 @@ def build_upcoming_payments_calendar_report(
                             },
                         ),
                         "aging_invoice": _drilldown_item(
-                            label="AP Aging Invoice",
+                            label="AP Aging Detail",
                             target="ap_aging",
                             report_code="ap_aging",
                             path="/api/reports/payables/aging/",
@@ -2217,7 +2217,7 @@ def build_upcoming_payments_calendar_report(
                             },
                         ),
                         "bill_detail": _drilldown_item(
-                            label="Purchase Document Detail",
+                            label="Open Bill",
                             target="purchase_document_detail",
                             params={"id": item.header_id, "entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id},
                         ),

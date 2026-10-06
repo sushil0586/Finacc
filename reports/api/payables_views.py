@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from django.http import HttpResponse
 from rest_framework import permissions
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -29,6 +29,14 @@ from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
 PAYABLE_DEFAULTS = PAYABLE_REPORT_DEFAULTS
+UPCOMING_PAYMENTS_DATE_RANGE_MESSAGE = "To date must be on or after From date."
+
+
+def _upcoming_payments_validation_error(exc):
+    message = str(exc) or "Invalid Upcoming Payments Calendar filter."
+    if "to_date must be on or after from_date" in message.lower():
+        message = UPCOMING_PAYMENTS_DATE_RANGE_MESSAGE
+    return ValidationError({"to_date": [message]})
 
 
 def _export_headers(report_code, *, view=None, feature_state=None):
@@ -404,28 +412,31 @@ class UpcomingPaymentsCalendarAPIView(_BasePayableAPIView):
     def get(self, request):
         scope = self.get_scope(request)
         self.assert_report_permission(request, scope, "upcoming_payments_calendar")
-        payload = build_upcoming_payments_calendar_report(
-            entity_id=scope["entity"],
-            entityfin_id=scope.get("entityfinid"),
-            subentity_id=scope.get("subentity"),
-            from_date=scope.get("from_date"),
-            to_date=scope.get("to_date"),
-            as_of_date=scope.get("as_of_date"),
-            vendor_id=scope.get("vendor"),
-            vendor_ids=scope.get("vendor_ids"),
-            vendor_group=scope.get("vendor_group"),
-            region_id=scope.get("region"),
-            currency=scope.get("currency"),
-            outstanding_gt=scope.get("outstanding_gt"),
-            overdue_only=scope.get("overdue_only", False),
-            search=scope.get("search"),
-            sort_by=scope.get("sort_by"),
-            sort_order=scope.get("sort_order", "asc"),
-            page=scope.get("page", 1),
-            page_size=scope.get("page_size", PAYABLE_DEFAULTS["default_page_size"]),
-            include_trace=scope.get("include_trace", True),
-            user=request.user,
-        )
+        try:
+            payload = build_upcoming_payments_calendar_report(
+                entity_id=scope["entity"],
+                entityfin_id=scope.get("entityfinid"),
+                subentity_id=scope.get("subentity"),
+                from_date=scope.get("from_date"),
+                to_date=scope.get("to_date"),
+                as_of_date=scope.get("as_of_date"),
+                vendor_id=scope.get("vendor"),
+                vendor_ids=scope.get("vendor_ids"),
+                vendor_group=scope.get("vendor_group"),
+                region_id=scope.get("region"),
+                currency=scope.get("currency"),
+                outstanding_gt=scope.get("outstanding_gt"),
+                overdue_only=scope.get("overdue_only", False),
+                search=scope.get("search"),
+                sort_by=scope.get("sort_by"),
+                sort_order=scope.get("sort_order", "asc"),
+                page=scope.get("page", 1),
+                page_size=scope.get("page_size", PAYABLE_DEFAULTS["default_page_size"]),
+                include_trace=scope.get("include_trace", True),
+                user=request.user,
+            )
+        except ValueError as exc:
+            raise _upcoming_payments_validation_error(exc) from exc
         return Response(
             self.build_envelope(
                 report_code="upcoming_payments_calendar",
@@ -716,28 +727,31 @@ class _UpcomingPaymentsCalendarExportMixin(_BasePayableExportAPIView):
         scope = self.get_scope(request)
         self.assert_report_permission(request, scope, "upcoming_payments_calendar")
         scope_names = resolve_scope_names(scope["entity"], scope.get("entityfinid"), scope.get("subentity"))
-        data = build_upcoming_payments_calendar_report(
-            entity_id=scope["entity"],
-            entityfin_id=scope.get("entityfinid"),
-            subentity_id=scope.get("subentity"),
-            from_date=scope.get("from_date"),
-            to_date=scope.get("to_date"),
-            as_of_date=scope.get("as_of_date"),
-            vendor_id=scope.get("vendor"),
-            vendor_ids=scope.get("vendor_ids"),
-            vendor_group=scope.get("vendor_group"),
-            region_id=scope.get("region"),
-            currency=scope.get("currency"),
-            outstanding_gt=scope.get("outstanding_gt"),
-            overdue_only=scope.get("overdue_only", False),
-            search=scope.get("search"),
-            sort_by=scope.get("sort_by"),
-            sort_order=scope.get("sort_order", "asc"),
-            page=1,
-            page_size=100000,
-            include_trace=scope.get("include_trace", True),
-            user=request.user,
-        )
+        try:
+            data = build_upcoming_payments_calendar_report(
+                entity_id=scope["entity"],
+                entityfin_id=scope.get("entityfinid"),
+                subentity_id=scope.get("subentity"),
+                from_date=scope.get("from_date"),
+                to_date=scope.get("to_date"),
+                as_of_date=scope.get("as_of_date"),
+                vendor_id=scope.get("vendor"),
+                vendor_ids=scope.get("vendor_ids"),
+                vendor_group=scope.get("vendor_group"),
+                region_id=scope.get("region"),
+                currency=scope.get("currency"),
+                outstanding_gt=scope.get("outstanding_gt"),
+                overdue_only=scope.get("overdue_only", False),
+                search=scope.get("search"),
+                sort_by=scope.get("sort_by"),
+                sort_order=scope.get("sort_order", "asc"),
+                page=1,
+                page_size=100000,
+                include_trace=scope.get("include_trace", True),
+                user=request.user,
+            )
+        except ValueError as exc:
+            raise _upcoming_payments_validation_error(exc) from exc
         fallback_keys = [
             "vendor_name",
             "vendor_code",
