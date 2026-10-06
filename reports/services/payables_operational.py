@@ -91,7 +91,7 @@ def _close_pack_top_issues(checks):
 
 
 def _resolve_vendor(entity_id, vendor_id):
-    vendor = vendor_queryset(entity_id=entity_id, vendor_id=vendor_id).first()
+    vendor = vendor_queryset(entity_id=entity_id, vendor_id=vendor_id, include_untyped=True).first()
     if not vendor:
         raise ValueError({"vendor": ["Vendor is not available in the selected entity scope."]})
     if not getattr(vendor, "ledger_id", None):

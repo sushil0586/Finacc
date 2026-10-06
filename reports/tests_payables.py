@@ -2882,6 +2882,44 @@ class PayableReportAPITests(APITestCase):
         self.assertEqual(payload["rows"][0]["drilldown_target"], "purchase_invoice_detail")
         self.assertIn("vendor_settlements", payload["rows"][0]["_meta"]["drilldown"])
 
+    def test_vendor_ledger_statement_accepts_meta_visible_untyped_party_vendor(self):
+        legacy_vendor_ledger = Ledger.objects.create(
+            entity=self.entity,
+            ledger_code=9303,
+            name="Legacy Meta Vendor",
+            accounthead=self.vendor_head,
+            createdby=self.user,
+        )
+        legacy_vendor = create_account_with_synced_ledger(
+            account_data={
+                "entity": self.entity,
+                "ledger": legacy_vendor_ledger,
+                "accountname": "Legacy Meta Vendor",
+                "createdby": self.user,
+            },
+            ledger_overrides={"ledger_code": 9303, "accounthead": self.vendor_head, "is_party": True},
+        )
+        apply_normalized_profile_payload(
+            legacy_vendor,
+            compliance_data={"gstno": "03ABCDE9303F1Z5"},
+            commercial_data={"partytype": None},
+            primary_address_data={"state": self.state, "city": self.city},
+        )
+
+        meta_response = self.client.get(reverse("reports_api:payables-meta"), self._base_scope())
+        self.assertEqual(meta_response.status_code, 200)
+        self.assertIn("Legacy Meta Vendor", {row["name"] for row in meta_response.json()["vendors"]})
+
+        response = self.client.get(
+            reverse("reports_api:vendor-ledger-statement"),
+            self._base_scope(vendor=legacy_vendor.id, from_date="2025-04-01", to_date="2025-04-30"),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["vendor"]["vendor_id"], legacy_vendor.id)
+        self.assertEqual(payload["vendor"]["ledger_id"], legacy_vendor.ledger_id)
+        self.assertEqual(payload["summary"]["transaction_count"], 0)
+
     def test_vendor_ledger_statement_routes_reject_vendor_outside_entity_scope(self):
         params = self._base_scope(vendor=99999999, from_date="2025-04-01", to_date="2025-04-30")
         route_names = (
