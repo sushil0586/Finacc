@@ -24,9 +24,9 @@ from numbering.models import DocumentNumberSeries, DocumentType
 from financial.models import Ledger, account
 from posting.models import EntityStaticAccountMap, StaticAccount
 from posting.services.static_accounts import StaticAccountService
+from rbac import access_catalog
 from rbac.models import Permission, Role, RolePermission
 from rbac.seeding import RBACSeedService
-from rbac.services import RoleTemplateService
 from catalog.models import HsnSac, ProductCategory, UnitOfMeasure
 from catalog.seeding import CatalogSeedService
 from assets.models import AssetCategory, AssetSettings
@@ -547,32 +547,44 @@ class PlatformOperationService:
 
     @classmethod
     def entity_rbac_role_repair_preview(cls, entity):
-        role_codes = [row["code"] for row in RBACSeedService.DEFAULT_ROLE_SHELLS]
+        feature_codes = RBACSeedService._subscribed_feature_codes(entity)
+        role_specs = tuple(
+            spec
+            for spec in access_catalog.role_specs_for_features(feature_codes)
+            if spec.code != access_catalog.ROLE_ENTITY_SUPER_ADMIN
+        )
+        role_codes = [spec.code for spec in role_specs]
         existing = {row.code: row for row in Role.objects.filter(entity=entity, code__in=role_codes)}
         missing_roles = []
         blockers = []
-        for spec in RBACSeedService.DEFAULT_ROLE_SHELLS:
-            role = existing.get(spec["code"])
+        for spec in role_specs:
+            role = existing.get(spec.code)
             if role and role.isactive:
                 continue
             if role:
                 blockers.append({
-                    "code": "inactive_role_conflict", "role_code": spec["code"],
-                    "message": f"Role {spec['code']} exists but is inactive and requires manual review.",
+                    "code": "inactive_role_conflict", "role_code": spec.code,
+                    "message": f"Role {spec.code} exists but is inactive and requires manual review.",
                 })
                 continue
-            permission_ids = list(RoleTemplateService._permission_queryset_for_template(
-                spec["template"]
-            ).order_by("id").values_list("id", flat=True))
+            permission_codes = RBACSeedService._permission_codes_for_role(
+                role_code=spec.code,
+                feature_codes=feature_codes,
+            )
+            permission_ids = list(
+                Permission.objects.filter(code__in=permission_codes, isactive=True)
+                .order_by("id")
+                .values_list("id", flat=True)
+            )
             if not permission_ids:
                 blockers.append({
-                    "code": "template_permissions_missing", "role_code": spec["code"],
-                    "message": f"Template {spec['template']} has no active permissions.",
+                    "code": "template_permissions_missing", "role_code": spec.code,
+                    "message": f"Canonical role {spec.code} has no active permissions for this entity plan.",
                 })
                 continue
             missing_roles.append({
-                "name": spec["name"], "code": spec["code"], "priority": spec["priority"],
-                "template": spec["template"], "permission_ids": permission_ids,
+                "name": spec.name, "code": spec.code, "priority": spec.priority,
+                "template": "canonical", "permission_ids": permission_ids,
                 "permission_count": len(permission_ids),
             })
         return {

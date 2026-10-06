@@ -5,6 +5,7 @@ from rest_framework.test import APIClient
 from Authentication.models import User
 from entity.models import Entity
 from platform_ops.models import PlatformPermission, PlatformRole, PlatformUserRole
+from rbac import access_catalog
 from rbac.models import Permission, Role, RolePermission, UserRoleAssignment
 from rbac.seeding import RBACSeedService
 from subscriptions.models import CustomerAccount
@@ -12,6 +13,9 @@ from subscriptions.models import CustomerAccount
 
 @override_settings(PLATFORM_OPS_ENABLED=True, PLATFORM_OPS_MUTATIONS_ENABLED=True)
 class PlatformEntityRbacRoleRepairTests(TestCase):
+    MISSING_ROLE_CODE = access_catalog.ROLE_FINANCIAL_REPORT_VIEWER
+    MISSING_ROLE_NAME = "Financial Report Viewer"
+
     @classmethod
     def setUpTestData(cls):
         cls.maker = User.objects.create_user(username="rbac-maker", email="rbac-maker@example.com", password="Pass123!")
@@ -29,7 +33,7 @@ class PlatformEntityRbacRoleRepairTests(TestCase):
         cls.customer = CustomerAccount.objects.create(name="RBAC Customer", slug="rbac-customer", owner=cls.owner)
         cls.entity = Entity.objects.create(entityname="RBAC Target", customer_account=cls.customer, createdby=cls.owner)
         for spec in RBACSeedService.DEFAULT_ROLE_SHELLS:
-            if spec["code"] != "report_viewer":
+            if spec["code"] != cls.MISSING_ROLE_CODE:
                 Role.objects.create(
                     entity=cls.entity, name=spec["name"], code=spec["code"], priority=spec["priority"],
                     createdby=cls.owner, isactive=True,
@@ -71,7 +75,7 @@ class PlatformEntityRbacRoleRepairTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.data["eligible"])
         self.assertEqual(response.data["missing_role_count"], 1)
-        self.assertEqual(response.data["missing_roles"][0]["code"], "report_viewer")
+        self.assertEqual(response.data["missing_roles"][0]["code"], self.MISSING_ROLE_CODE)
         self.assertGreater(response.data["missing_roles"][0]["permission_count"], 0)
 
     def test_approved_repair_preserves_custom_roles_and_assignments(self):
@@ -82,7 +86,7 @@ class PlatformEntityRbacRoleRepairTests(TestCase):
         self.auth(self.executor)
         response = self.client.post(f"/api/platform/operations/{operation_id}/execute/", {}, format="json")
         self.assertEqual(response.status_code, 200)
-        role = Role.objects.get(entity=self.entity, code="report_viewer")
+        role = Role.objects.get(entity=self.entity, code=self.MISSING_ROLE_CODE)
         self.assertEqual(set(role.role_permissions.values_list("permission_id", flat=True)), approved_permission_ids)
         self.assertTrue(Role.objects.filter(pk=self.custom_role.id).exists())
         self.assertTrue(RolePermission.objects.filter(role=self.custom_role, permission=self.custom_permission, effect="deny").exists())
@@ -92,7 +96,7 @@ class PlatformEntityRbacRoleRepairTests(TestCase):
         self.assertTrue(replay.data["replayed"])
 
     def test_inactive_baseline_role_blocks_repair(self):
-        Role.objects.create(entity=self.entity, name="Report Viewer", code="report_viewer", isactive=False)
+        Role.objects.create(entity=self.entity, name=self.MISSING_ROLE_NAME, code=self.MISSING_ROLE_CODE, isactive=False)
         response = self.request_repair("rbac-role-repair-blocked")
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data["preview"]["blockers"][0]["code"], "inactive_role_conflict")
@@ -106,7 +110,7 @@ class PlatformEntityRbacRoleRepairTests(TestCase):
         response = self.client.post(f"/api/platform/operations/{operation_id}/execute/", {}, format="json")
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.data["operation"]["failure"]["code"], "stale_approval")
-        self.assertFalse(Role.objects.filter(entity=self.entity, code="report_viewer").exists())
+        self.assertFalse(Role.objects.filter(entity=self.entity, code=self.MISSING_ROLE_CODE).exists())
 
     def test_deactivated_approved_permission_fails_atomically(self):
         requested = self.request_repair("rbac-role-repair-permission-change")
@@ -118,4 +122,4 @@ class PlatformEntityRbacRoleRepairTests(TestCase):
         response = self.client.post(f"/api/platform/operations/{operation_id}/execute/", {}, format="json")
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.data["operation"]["failure"]["code"], "approved_permissions_changed")
-        self.assertFalse(Role.objects.filter(entity=self.entity, code="report_viewer").exists())
+        self.assertFalse(Role.objects.filter(entity=self.entity, code=self.MISSING_ROLE_CODE).exists())

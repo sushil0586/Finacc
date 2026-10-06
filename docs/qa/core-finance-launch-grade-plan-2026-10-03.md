@@ -16,8 +16,8 @@ Use these scoped confidence labels consistently:
 
 | Scope | Current Confidence | Notes |
 | --- | ---: | --- |
-| Core finance/accounting areas already hardened | 94% | Reports, vouchers, bank reconciliation, assets, inventory/manufacturing finance links, compliance, documentation, SES, stage smoke, and major RBAC/context fixes now have focused evidence. |
-| Phase 1 finance launch scope excluding HRMS/Payroll | 90% | Remaining risk is mainly full off-hours Sales/Purchase/Payments/Reports packs and one branch-numbering fixture gap. |
+| Core finance/accounting areas already hardened | 95% | Reports, vouchers, bank reconciliation, assets, inventory/manufacturing finance links, compliance, documentation, SES, platform admin, stage smoke, and major RBAC/context fixes now have focused evidence. |
+| Phase 1 finance launch scope excluding HRMS/Payroll | 92% | Remaining risk is mainly full off-hours Sales/Purchase/Payments/Reports packs and one branch-numbering fixture gap. Platform admin has focused stage/backend evidence. |
 | Full ERP including HRMS/Payroll/CFO depth | Out of scope | HRMS/Payroll are explicitly excluded from this launch-grade pass. |
 
 ## Update Protocol
@@ -55,7 +55,8 @@ Allowed phase statuses:
 | 10 | Compliance | Focused Passed | 2026-10-05 | Compliance hub/config/report centers, GST reconciliation, accessibility, live data integrity, performance, assistive checks, and visual snapshot certification passed after focused UI fixes and rebaseline. |
 | 11 | SES email testing | Passed | 2026-10-06 | Stage uses SMTP email backend with configured Amazon SMTP endpoint and credentials; stage release audit with `--require-email` is ready. Stage smoke email was SMTP-accepted and real inbox receipt was confirmed. |
 | 12 | Documentation completion | Passed | 2026-10-06 | Core finance launch operator documentation hub and module-wise guide added under `docs/core_finance`; required Phase 12 areas are covered with related deep-module links. |
-| 13 | Final launch certification | Not Started | 2026-10-03 | Final build, backend, Angular, Playwright, SES, manual signoff. |
+| 13 | Platform admin | Focused Passed | 2026-10-06 | Platform routes/stage accessibility passed; frontend platform specs passed; backend platform/subscription suite passed after canonical RBAC role-repair alignment. |
+| 14 | Final launch certification | Not Started | 2026-10-06 | Final build, backend, Angular, Playwright, SES, manual signoff. |
 
 ## Known Recent Evidence
 
@@ -980,7 +981,47 @@ Evidence:
   - Coverage: settings/configuration, Sales, Purchase, Vouchers, Reports, Bank Reconciliation, Assets, TDS/TCS/GST-TDS/GST, Inventory finance links, Manufacturing finance links, RBAC/user roles, SES/email, and common validation troubleshooting.
   - Notes: HRMS/Payroll remain explicitly out of scope. Existing deeper guides for Assets, Purchase Statutory, TCS, GST Reports/Reconciliation, Manufacturing, Bank Reconciliation samples, and reporting scope rules are linked from the new hub.
 
-## Phase 13: Final Launch Certification
+## Phase 13: Platform Admin
+
+Purpose: close the platform-admin launch gap separately from tenant finance modules.
+
+Required checks:
+
+- Platform operator route guard and service contract.
+- Platform stage route access across desktop and mobile.
+- Platform Admin navigation and menu labels.
+- Platform API 500 guard during route load.
+- Platform accessibility and overflow checks.
+- Platform backend permissions, discovery, operation lifecycle, approval workflow, customer requests, entity repair operations, membership, ownership, invitation, and subscription operations.
+- Tenant subscription tests that support platform-admin workflows.
+
+Exit gate:
+
+- Stage non-mutating platform acceptance passes.
+- Focused frontend platform specs pass.
+- Backend platform/subscription suite passes.
+- No platform RBAC repair drift remains.
+
+Evidence:
+
+- 2026-10-06: Stage non-mutating platform acceptance passed.
+  - Command: `BASE_URL=https://accerio.in npx playwright test tests/p1/platform-staging-acceptance.p1.spec.ts --grep 'FIN-PLATFORM-STAGE-001' --project=chromium --workers=1 --reporter=line --no-deps`
+  - Result: `1 passed`.
+  - Coverage: Platform Admin menus, ten platform routes, API 500 guard for `/api/platform/`, desktop/mobile responsive checks, and WCAG helper checks.
+- 2026-10-06: Frontend focused platform specs passed.
+  - Command: `npm run test:ci -- --include=src/app/guard/platform-operator.guard.spec.ts --include=src/app/service/platform-operations/platform-operations.service.spec.ts --include=src/app/service/subscriptions/tenant-membership.service.spec.ts`
+  - Result: `32 SUCCESS`.
+- 2026-10-06: Initial backend platform clean-DB focused run proved platform catalog seeding and core operation controls.
+  - Command: `./venv/bin/python manage.py test platform_ops.tests.test_discovery_api platform_ops.tests.test_operation_lifecycle platform_ops.tests.test_approval_workflow --noinput -v 2`
+  - Result: `26 tests OK`.
+- 2026-10-06: Broad backend platform/subscription run initially exposed one real platform-admin RBAC repair drift.
+  - Symptom: `platform_ops.tests.test_entity_rbac_role_repair` expected legacy `report_viewer` behavior and the repair service still resolved role permissions through old role templates.
+  - Fix: entity RBAC role repair preview now uses the canonical access catalog, subscribed feature scope, and `RBACSeedService._permission_codes_for_role`; test coverage now targets the real canonical `financial_report_viewer` role.
+  - Focused retest: `./venv/bin/python manage.py test platform_ops.tests.test_entity_rbac_role_repair --keepdb -v 2` returned `5 tests OK`.
+  - Broad retest: `./venv/bin/python manage.py test platform_ops.tests subscriptions.tests --keepdb -v 1` returned `218 tests OK`.
+- 2026-10-06: Stage acceptance test harness was aligned with the product accessible name for the platform mobile nav button: `Open platform navigation`.
+
+## Phase 14: Final Launch Certification
 
 Purpose: execute the final gated launch pack after phase-level defects are closed.
 
@@ -1042,6 +1083,7 @@ Signoff matrix:
 | Compliance | Passed |
 | SES emails | Passed |
 | Documentation | Minimum launch docs complete |
+| Platform Admin | Focused Passed |
 
 Evidence:
 
@@ -1098,7 +1140,8 @@ Evidence:
 | CF-LAUNCH-045 | 6 | Stage Vendor Ledger Statement can offer a vendor option that the refresh API rejects for the active entity/subentity scope. | Medium | Backend | Closed | Root cause: Payables meta intentionally exposes legacy untyped party ledgers, but Vendor Ledger validation only accepted explicit Vendor/Both parties. Vendor Ledger now resolves vendors with the same legacy party scope as payables meta while still rejecting vendors outside the entity. Focused backend regression passed, broader Vendor Ledger API slice passed `6 tests OK`, stage API returned `200 OK` for the formerly rejected vendor, stage payables performance baseline passed, and stage Vendor Ledger vendor-dropdown smoke passed. |
 | CF-LAUNCH-046 | 6 | Financial statement related-report navigation could show the target switcher link as active while a stale source statement component rewrote the URL back to its own route. | Medium | Frontend | Closed | Root cause: Balance Sheet, Trading Account, and Profit & Loss auto-synced query params after async report loads, so a late source load could hijack a user click to another related statement. The three statement components now suppress source-route URL sync after cross-report navigation begins. Focused component specs passed `82 SUCCESS`, production frontend build passed, static stage frontend patch was synced, and stage `FIN-ROUTE-001` plus bank-reco link smoke passed `4 passed`. |
 | CF-LAUNCH-047 | 6 | Payables and Receivables hub card buttons exposed long card-level accessible names, so exact-name browser assertions for `Vendor Outstanding Report` and `Sales Register` failed even though the cards and routes were visible. | Low | QA/UX | Closed | Hub chooser cards now expose concise `aria-label`s while preserving visible card detail. Focused Angular hub specs passed `20 SUCCESS`, production build passed, frontend patch was synced to stage, and scoped stage hub smoke passed `3 passed` for `FIN-PAY-BR-001` and `FIN-REC-BR-001`. Playwright hub assertions were scoped to the hub surface to avoid sidebar button collisions and updated to the product label `AP Aging Report`. |
-| CF-LAUNCH-048 | 1/6 | RBAC Reports navigation showed duplicate Payables/Receivables sections: `Payables Reports > Payables Reports`, plus both top-level `Receivables Hub` and `Receivables Reports`. Sales Register also still had a legacy RBAC menu route. | Medium | Backend/Frontend | Closed - Fix Ready | Canonical RBAC catalog now has one `Payables Reports` group and one `Receivables Reports` group, each with `Hub Overview` as a child. Payables operational report menus were flattened under `reports.payables`, Receivables Hub was rehomed under `reports.receivables`, and Sales Register route was canonicalized to `/reports/receivables/sales-register`. Migration `0217_flatten_payables_receivables_report_menus` added. Frontend shell now normalizes stale cached/pre-migration menu trees. Verification: backend catalog/API focused checks passed, full access-catalog suite passed `27 tests OK`, Angular shell spec passed `24 SUCCESS`, Django check passed, and frontend production build passed. Stage requires migration/deploy before visual confirmation. |
+| CF-LAUNCH-048 | 1/6 | RBAC Reports navigation showed duplicate Payables/Receivables sections: `Payables Reports > Payables Reports`, plus both top-level `Receivables Hub` and `Receivables Reports`. Sales Register also still had a legacy RBAC menu route. | Medium | Backend/Frontend | Closed | Canonical RBAC catalog now has one `Payables Reports` group and one `Receivables Reports` group, each with `Hub Overview` as a child. Payables operational report menus were flattened under `reports.payables`, Receivables Hub was rehomed under `reports.receivables`, and Sales Register route was canonicalized to `/reports/receivables/sales-register`. Migration `0217_flatten_payables_receivables_report_menus` added and applied on stage. Frontend shell now normalizes stale cached/pre-migration menu trees. Verification: backend catalog/API focused checks passed, full access-catalog suite passed `27 tests OK`, Angular shell spec passed `24 SUCCESS`, Django check passed, frontend production build passed, stage DB menu shape was clean, deployed `main.js` contains the new payables/receivables normalization plus canonical Sales Register route, and stage browser visual checks passed for the Reports sidebar plus Sales Register navigation. |
+| CF-LAUNCH-049 | 13 | Platform entity RBAC role repair was still coupled to the retired `report_viewer`/legacy role-template model while the launch catalog now uses canonical feature-scoped roles such as `financial_report_viewer`. | High | Backend/QA | Closed | Repair preview now derives missing baseline roles from the canonical access catalog for the entity's subscribed features and resolves permission IDs through `RBACSeedService._permission_codes_for_role`. Tests now cover canonical `financial_report_viewer` repair, inactive-role blocking, stale approval, permission deactivation, and preservation of custom roles/assignments. Focused retest passed `5 tests OK`; broad platform/subscription backend suite passed `218 tests OK`. |
 
 ## Phase Completion Log
 
@@ -1151,4 +1194,6 @@ Evidence:
 | 2026-10-06 | Financial statement routing and bank-reco stage closure | Passed | Stage cross-module smoke initially found `CF-LAUNCH-046`: `FIN-ROUTE-001` could remain on Trading Account after clicking Profit & Loss. Frontend fix suppresses stale source-report URL sync during related-report navigation. Verification: focused Angular statement specs passed `82 SUCCESS`, production build passed, stage static frontend patch synced to `/var/www/accerio`, and stage rerun passed `4 passed` for `FIN-ROUTE-001`, `FIN-BR-DASH-LINK-001`, and `FIN-BR-DASH-LINK-002`. |
 | 2026-10-06 | Stage compact finance-critical smoke | Passed with low QA observation | Compact stage smoke first passed `16 passed` across account voucher shells, purchase/sales invoice route access, reports RBAC, payment voucher shell, Trial Balance, and bank-reco links. Three failures were triaged: auth entity name was only a case-sensitive test input mismatch (`Manav-t` vs `Manav-T`), and Payables/Receivables hub failures were exact accessible-name assertions against long card-button names. Follow-up route-level retest passed `8 passed`, covering corrected auth/context, Vendor Outstanding, AP Aging, MSME Overdue, Customer Outstanding, Sales Register route/smart filter, and Customer Ledger malformed date handling. `CF-LAUNCH-047` captured the non-blocking hub-card naming/test-harness cleanup and was later closed. |
 | 2026-10-06 | Hub card accessible-name closure | Passed | `CF-LAUNCH-047` closed by adding concise `aria-label`s to Payables and Receivables hub chooser cards while preserving visible card detail. Focused Angular hub specs passed `20 SUCCESS`, production build passed, stage frontend patch synced to `/var/www/accerio`, and exact stage hub smoke passed `3 passed` after Playwright assertions were scoped to the hub content instead of the global sidebar. |
-| 2026-10-06 | RBAC report menu hierarchy cleanup | Fix Ready | `CF-LAUNCH-048` closed locally. Verified root cause in canonical RBAC catalog: nested `reports.payables.hub` was labelled `Payables Reports`, while `reports.receivables_hub` and `reports.receivables` were both top-level report entries. Catalog now exposes one Payables group and one Receivables group with `Hub Overview` children; Sales Register uses the canonical Receivables route. Migration `0217_flatten_payables_receivables_report_menus` is pending deployment. Verification passed: backend catalog/API focused checks, full access-catalog suite `27 OK`, Angular shell spec `24 SUCCESS`, Django check, and frontend production build. |
+| 2026-10-06 | RBAC report menu hierarchy cleanup | Passed | `CF-LAUNCH-048` is closed after stage deployment. Verified root cause in canonical RBAC catalog: nested `reports.payables.hub` was labelled `Payables Reports`, while `reports.receivables_hub` and `reports.receivables` were both top-level report entries. Catalog now exposes one Payables group and one Receivables group with `Hub Overview` children; Sales Register uses the canonical Receivables route. Migration `0217_flatten_payables_receivables_report_menus` applied on stage. Stage DB validation confirmed no active top-level `reports.receivables_hub`, no active `Payables Reports` child under `reports.payables`, and clean Payables/Receivables child lists. Deployed frontend bundle contains `normalizePayablesReportSection`, `normalizeReceivablesReportSection`, `Hub Overview`, and `/reports/receivables/sales-register`. Browser visual confirmation with a valid saved stage session passed: one Payables group, one Receivables group, no legacy `Receivables Hub`, Payables expands flat with `Hub Overview`/Vendor Outstanding/AP Aging, and Sales Register opens at `/reports/receivables/sales-register`. The local `.env` account still returns `403 invalid_credentials`, so future automated stage packs should use refreshed valid stage credentials or the saved session. |
+| 2026-10-06 | Compact post-RBAC stage smoke | Passed | Using the valid saved Chromium stage session for `sushiljyotibansal@gmail.com`, compact route smoke passed for Payables Hub, Vendor Outstanding, AP Aging, Receivables Hub, Customer Outstanding, Sales Register, Trial Balance, Bank Reco Dashboard, Bank Reco Workspace, Payment Voucher, and Receipt Voucher. Initial broad route smoke had one false Bank Reco pass and one early Receipt Voucher miss due to loose URL/readiness checks; isolated reruns with URL assertions and longer readiness passed all three targeted checks. |
+| 2026-10-06 | Platform admin launch gate | Focused Passed | Stage non-mutating platform acceptance passed `1 passed`, covering Platform Admin route/menu/API-500/responsive/WCAG checks. Frontend platform focused specs passed `32 SUCCESS`. Broad backend platform/subscription suite initially found `CF-LAUNCH-049`; after canonical RBAC role-repair alignment, focused repair tests passed `5 tests OK` and the full platform/subscription backend suite passed `218 tests OK`. |
