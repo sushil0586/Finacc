@@ -137,6 +137,38 @@ class CanonicalAccessCatalogTests(SimpleTestCase):
             self.assertEqual(specs_by_code[code].parent_code, "reports.payables")
             self.assertEqual(specs_by_code[code].route_path, route_path)
 
+    def test_payables_and_receivables_report_menus_do_not_duplicate_hub_sections(self):
+        specs_by_code = {spec.code: spec for spec in access_catalog.MENU_SPECS}
+
+        self.assertEqual(specs_by_code["reports.payables"].parent_code, "reports")
+        self.assertEqual(specs_by_code["reports.payables"].menu_type, "group")
+        self.assertEqual(specs_by_code["reports.payables.hub"].name, "Hub Overview")
+        self.assertEqual(specs_by_code["reports.payables.hub"].parent_code, "reports.payables")
+        self.assertEqual(specs_by_code["reports.payables.hub"].route_path, "/reports/payables")
+
+        for code in (
+            "reports.payables.ap_aging",
+            "reports.payables.upcoming_payments_calendar",
+            "reports.payables.ap_payment_forecast",
+            "reports.payables.msme_overdue",
+            "reports.payables.vendor_reconciliation_statement",
+            "reports.payables.grn_invoice_posting_exceptions",
+            "reports.payables.ap_compliance_aging",
+            "reports.payables.duplicate_anomalous_bill_detection",
+            "reports.payables.settings",
+        ):
+            self.assertEqual(specs_by_code[code].parent_code, "reports.payables")
+
+        self.assertEqual(specs_by_code["reports.receivables"].parent_code, "reports")
+        self.assertEqual(specs_by_code["reports.receivables"].menu_type, "group")
+        self.assertEqual(specs_by_code["reports.receivables_hub"].name, "Hub Overview")
+        self.assertEqual(specs_by_code["reports.receivables_hub"].parent_code, "reports.receivables")
+        self.assertEqual(specs_by_code["reports.receivables_hub"].route_path, "/reports/receivables")
+        self.assertEqual(
+            specs_by_code["reports.receivables.sales_register"].route_path,
+            "/reports/receivables/sales-register",
+        )
+
     def test_admin_roles_menu_uses_current_rbac_management_route(self):
         specs_by_code = {spec.code: spec for spec in access_catalog.MENU_SPECS}
 

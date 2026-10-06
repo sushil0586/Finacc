@@ -394,8 +394,8 @@ class RBACAPITests(TestCase):
         self.assertIsNotNone(payables_group)
         self.assertIsNotNone(assets_group)
         self.assertIsNotNone(self._find_node(financial_group["children"], "reports.financial_hub"))
-        self.assertIsNotNone(self._find_node(payables_group["children"], "reports.reports.payables"))
-        self.assertIsNotNone(self._find_node(assets_group["children"], "reports.fixedassetregister"))
+        self.assertIsNotNone(self._find_node(payables_group["children"], "reports.payables.hub"))
+        self.assertIsNotNone(self._find_node(assets_group["children"], "reports.assets.fixed_register"))
 
     def test_sales_register_moves_under_receivables_reports(self):
         role = Role.objects.create(entity=self.entity_a, name="Receivables Report Operator", code=f"receivables_reports_{self.entity_a.id}")
@@ -412,11 +412,11 @@ class RBACAPITests(TestCase):
         self.assertEqual(response.status_code, 200)
         receivables_group = self._find_node(response.data["menus"], "reports.receivables")
         self.assertIsNotNone(receivables_group)
-        self.assertIsNotNone(self._find_node(receivables_group["children"], "reports.reports.salesregister"))
+        self.assertIsNotNone(self._find_node(receivables_group["children"], "reports.receivables.sales_register"))
 
     def test_receivables_hub_menu_is_visible_to_receivables_roles(self):
         role = Role.objects.create(entity=self.entity_a, name="Receivables Viewer", code=f"receivables_{self.entity_a.id}")
-        menu = Menu.objects.get(code="reports.financial_hub.receivables_hub")
+        menu = Menu.objects.get(code="reports.receivables_hub")
         parent_permission = Permission.objects.get(code="reports.financial_hub.view")
         menu_permission = Permission.objects.get(code="reports.financial_hub.receivables_hub.view")
         permission = Permission.objects.get(code="reports.outstanding.view")
@@ -443,7 +443,7 @@ class RBACAPITests(TestCase):
 
     def test_customer_ledger_statement_menu_is_visible_to_receivables_roles(self):
         role = Role.objects.create(entity=self.entity_a, name="Receivables Viewer", code=f"receivables_{self.entity_a.id}_cls")
-        menu = Menu.objects.get(code="reports.financial_hub.receivables_hub.customer_ledger_statement")
+        menu = Menu.objects.get(code="reports.receivables.customer_ledger_statement")
         parent_permission = Permission.objects.get(code="reports.financial_hub.view")
         hub_permission = Permission.objects.get(code="reports.financial_hub.receivables_hub.view")
         menu_permission = Permission.objects.get(code="reports.financial_hub.receivables_hub.customer_ledger_statement.view")
@@ -473,7 +473,7 @@ class RBACAPITests(TestCase):
 
     def test_customer_outstanding_menu_is_visible_to_receivables_roles(self):
         role = Role.objects.create(entity=self.entity_a, name="Receivables Viewer", code=f"receivables_{self.entity_a.id}_co")
-        menu = Menu.objects.get(code="reports.financial_hub.receivables_hub.customer_outstanding")
+        menu = Menu.objects.get(code="reports.receivables.customer_outstanding")
         parent_permission = Permission.objects.get(code="reports.financial_hub.view")
         hub_permission = Permission.objects.get(code="reports.financial_hub.receivables_hub.view")
         menu_permission = Permission.objects.get(code="reports.financial_hub.receivables_hub.customer_outstanding.view")
@@ -503,7 +503,7 @@ class RBACAPITests(TestCase):
 
     def test_receivable_aging_menu_is_visible_to_receivables_roles(self):
         role = Role.objects.create(entity=self.entity_a, name="Receivables Viewer", code=f"receivables_{self.entity_a.id}_ra")
-        menu = Menu.objects.get(code="reports.financial_hub.receivables_hub.receivable_aging")
+        menu = Menu.objects.get(code="reports.receivables.receivable_aging")
         parent_permission = Permission.objects.get(code="reports.financial_hub.view")
         hub_permission = Permission.objects.get(code="reports.financial_hub.receivables_hub.view")
         menu_permission = Permission.objects.get(code="reports.financial_hub.receivables_hub.receivable_aging.view")
@@ -581,7 +581,7 @@ class RBACAPITests(TestCase):
 
     def test_receivable_aging_detail_menu_is_visible_to_receivables_roles(self):
         role = Role.objects.create(entity=self.entity_a, name="Receivables Viewer", code=f"receivables_{self.entity_a.id}_rad")
-        menu = Menu.objects.get(code="reports.financial_hub.receivables_hub.receivable_aging_detail")
+        menu = Menu.objects.get(code="reports.receivables.receivable_aging_detail")
         parent_permission = Permission.objects.get(code="reports.financial_hub.view")
         hub_permission = Permission.objects.get(code="reports.financial_hub.receivables_hub.view")
         menu_permission = Permission.objects.get(code="reports.financial_hub.receivables_hub.receivable_aging_detail.view")
@@ -611,7 +611,7 @@ class RBACAPITests(TestCase):
 
     def test_overdue_customers_menu_is_visible_to_receivables_roles(self):
         role = Role.objects.create(entity=self.entity_a, name="Receivables Viewer", code=f"receivables_{self.entity_a.id}_oc")
-        menu = Menu.objects.get(code="reports.financial_hub.receivables_hub.overdue_customers")
+        menu = Menu.objects.get(code="reports.receivables.overdue_customers")
         parent_permission = Permission.objects.get(code="reports.financial_hub.view")
         hub_permission = Permission.objects.get(code="reports.financial_hub.receivables_hub.view")
         menu_permission = Permission.objects.get(code="reports.financial_hub.receivables_hub.overdue_customers.view")
@@ -641,7 +641,7 @@ class RBACAPITests(TestCase):
 
     def test_credit_exposure_menu_is_visible_to_receivables_roles(self):
         role = Role.objects.create(entity=self.entity_a, name="Receivables Viewer", code=f"receivables_{self.entity_a.id}_ce")
-        menu = Menu.objects.get(code="reports.financial_hub.receivables_hub.credit_exposure")
+        menu = Menu.objects.get(code="reports.receivables.credit_exposure")
         parent_permission = Permission.objects.get(code="reports.financial_hub.view")
         hub_permission = Permission.objects.get(code="reports.financial_hub.receivables_hub.view")
         menu_permission = Permission.objects.get(code="reports.financial_hub.receivables_hub.credit_exposure.view")
@@ -671,16 +671,14 @@ class RBACAPITests(TestCase):
 
     def test_open_items_menu_is_visible_to_receivables_roles(self):
         role = Role.objects.create(entity=self.entity_a, name="Receivables Viewer", code=f"receivables_{self.entity_a.id}_oi")
-        menu = Menu.objects.get(code="reports.financial_hub.receivables_hub.open_items")
+        menu = Menu.objects.get(code="reports.receivables.open_items")
         parent_permission = Permission.objects.get(code="reports.financial_hub.view")
         hub_permission = Permission.objects.get(code="reports.financial_hub.receivables_hub.view")
         menu_permission = Permission.objects.get(code="reports.financial_hub.receivables_hub.open_items.view")
-        export_permission = Permission.objects.get(code="reports.financial_hub.receivables_hub.open_items.export")
         outstanding_permission = Permission.objects.get(code="reports.outstanding.view")
         RolePermission.objects.create(role=role, permission=parent_permission)
         RolePermission.objects.create(role=role, permission=hub_permission)
         RolePermission.objects.create(role=role, permission=menu_permission)
-        RolePermission.objects.create(role=role, permission=export_permission)
         RolePermission.objects.create(role=role, permission=outstanding_permission)
         UserRoleAssignment.objects.create(user=self.user, entity=self.entity_a, role=role, is_primary=True)
 
@@ -703,7 +701,7 @@ class RBACAPITests(TestCase):
 
     def test_collections_history_menu_is_visible_to_receivables_roles(self):
         role = Role.objects.create(entity=self.entity_a, name="Receivables Viewer", code=f"receivables_{self.entity_a.id}_ch")
-        menu = Menu.objects.get(code="reports.financial_hub.receivables_hub.collections_history")
+        menu = Menu.objects.get(code="reports.receivables.collections_history")
         parent_permission = Permission.objects.get(code="reports.financial_hub.view")
         hub_permission = Permission.objects.get(code="reports.financial_hub.receivables_hub.view")
         menu_permission = Permission.objects.get(code="reports.financial_hub.receivables_hub.collections_history.view")
@@ -733,7 +731,7 @@ class RBACAPITests(TestCase):
 
     def test_receivables_exceptions_menu_is_visible_to_receivables_roles(self):
         role = Role.objects.create(entity=self.entity_a, name="Receivables Viewer", code=f"receivables_{self.entity_a.id}_re")
-        menu = Menu.objects.get(code="reports.financial_hub.receivables_hub.receivables_exception_report")
+        menu = Menu.objects.get(code="reports.receivables.exceptions")
         parent_permission = Permission.objects.get(code="reports.financial_hub.view")
         hub_permission = Permission.objects.get(code="reports.financial_hub.receivables_hub.view")
         menu_permission = Permission.objects.get(code="reports.financial_hub.receivables_hub.receivables_exception_report.view")
