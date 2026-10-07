@@ -103,6 +103,7 @@ class FinancialControlsDestructiveWorkflowTests(TestCase):
             patch("reports.services.controls.year_end_close.build_year_end_close_preview", return_value=preview),
             patch("reports.services.controls.year_end_close._compute_snapshot", return_value=snapshot),
             patch("reports.services.controls.year_end_close._build_close_journal_lines", return_value=(self._balanced_lines(), line_meta, {})),
+            patch("reports.services.controls.phase_one.mandatory_close_checklist_blockers", return_value=[]),
             patch("reports.services.controls.year_end_close.FinancialSettings.objects.filter") as settings_filter,
         ):
             settings_filter.return_value.only.return_value.first.return_value = None
@@ -181,6 +182,15 @@ class FinancialControlsDestructiveWorkflowTests(TestCase):
             "destination_year": {"id": destination.id},
             "opening_policy": {"require_closed_source_year": True},
         }
+        source.metadata = {
+            "opening_lifecycle": {
+                f"sub:{self.subentity.id}": {
+                    "status": "approved",
+                    "status_label": "Approved",
+                }
+            }
+        }
+        source.save(update_fields=["metadata"])
         snapshot = {"financial_year": source}
         policy = {"require_closed_source_year": True}
         line_meta = [

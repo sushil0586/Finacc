@@ -663,6 +663,10 @@ class SubscriptionAwareRBACSeedServiceTests(TestCase):
         self.assertIn("reports.financial_hub.view", financial_report_permissions)
         self.assertIn("reports.financial_hub.trial_balance.view", financial_report_permissions)
         self.assertIn("reports.trial_balance.view", financial_report_permissions)
+        self.assertIn("reports.financial_hub.year_end_close.view", financial_report_permissions)
+        self.assertIn("reports.financial_hub.controls_phase_one.view", financial_report_permissions)
+        self.assertNotIn("reports.financial_hub.year_end_close.execute", financial_report_permissions)
+        self.assertNotIn("reports.financial_hub.year_end_close.rollback", financial_report_permissions)
         self.assertNotIn("purchase.invoice.view", financial_report_permissions)
         self.assertNotIn("sales.invoice.view", financial_report_permissions)
 

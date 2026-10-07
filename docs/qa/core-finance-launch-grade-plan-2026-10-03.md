@@ -56,7 +56,7 @@ Allowed phase statuses:
 | 11 | SES email testing | Passed | 2026-10-06 | Stage uses SMTP email backend with configured Amazon SMTP endpoint and credentials; stage release audit with `--require-email` is ready. Stage smoke email was SMTP-accepted and real inbox receipt was confirmed. |
 | 12 | Documentation completion | Passed | 2026-10-06 | Core finance launch operator documentation hub and module-wise guide added under `docs/core_finance`; required Phase 12 areas are covered with related deep-module links. |
 | 13 | Platform admin | Focused Passed | 2026-10-06 | Platform routes/stage accessibility passed; frontend platform specs passed; backend platform/subscription suite passed after canonical RBAC role-repair alignment. |
-| 14 | Final launch certification | Not Started | 2026-10-06 | Final build, backend, Angular, Playwright, SES, manual signoff. |
+| 14 | Final launch certification | In Progress | 2026-10-06 | 14A release sanity passed: backend checks/migrations, stage backend check, frontend build, and focused Angular smoke. Off-hours full packs remain pending. |
 
 ## Known Recent Evidence
 
@@ -1020,6 +1020,10 @@ Evidence:
   - Focused retest: `./venv/bin/python manage.py test platform_ops.tests.test_entity_rbac_role_repair --keepdb -v 2` returned `5 tests OK`.
   - Broad retest: `./venv/bin/python manage.py test platform_ops.tests subscriptions.tests --keepdb -v 1` returned `218 tests OK`.
 - 2026-10-06: Stage acceptance test harness was aligned with the product accessible name for the platform mobile nav button: `Open platform navigation`.
+- 2026-10-06: Platform Admin deployment verification passed after stage deployment.
+  - Stage code check: `/home/ubuntu/Finacc/platform_ops/operations.py` contains canonical `access_catalog.role_specs_for_features(...)` and `RBACSeedService._permission_codes_for_role(...)` usage for entity RBAC role repair.
+  - Stage backend check: `python manage.py check` passed with no issues.
+  - Stage non-mutating acceptance rerun: `FIN-PLATFORM-STAGE-001` passed again on `https://accerio.in`.
 
 ## Phase 14: Final Launch Certification
 
@@ -1087,7 +1091,13 @@ Signoff matrix:
 
 Evidence:
 
-- Pending.
+- 2026-10-06: Phase 14A release sanity passed.
+  - Local backend: `./venv/bin/python manage.py check` passed.
+  - Local backend migrations: `rbac.0217_flatten_payables_receivables_report_menus` was applied locally; no unapplied migrations were reported after migration check.
+  - Stage backend: commit `d47dbd1d`; `rbac.0217` applied; `python manage.py check` passed.
+  - Frontend production build: `npm run build` passed and generated `/Users/ansh/finacc-angular/accountproject/dist/my-app`.
+  - Focused Angular smoke: `npm run test:ci` with app shell, platform operator/service, tenant membership, report service/session, Payables Hub, and Receivables Hub specs passed `221 SUCCESS`.
+- Remaining Phase 14 work: off-hours full Playwright packs, broad Angular/full smoke if desired, and final manual go/no-go signoff.
 
 ## Open Issue Register
 
@@ -1197,3 +1207,5 @@ Evidence:
 | 2026-10-06 | RBAC report menu hierarchy cleanup | Passed | `CF-LAUNCH-048` is closed after stage deployment. Verified root cause in canonical RBAC catalog: nested `reports.payables.hub` was labelled `Payables Reports`, while `reports.receivables_hub` and `reports.receivables` were both top-level report entries. Catalog now exposes one Payables group and one Receivables group with `Hub Overview` children; Sales Register uses the canonical Receivables route. Migration `0217_flatten_payables_receivables_report_menus` applied on stage. Stage DB validation confirmed no active top-level `reports.receivables_hub`, no active `Payables Reports` child under `reports.payables`, and clean Payables/Receivables child lists. Deployed frontend bundle contains `normalizePayablesReportSection`, `normalizeReceivablesReportSection`, `Hub Overview`, and `/reports/receivables/sales-register`. Browser visual confirmation with a valid saved stage session passed: one Payables group, one Receivables group, no legacy `Receivables Hub`, Payables expands flat with `Hub Overview`/Vendor Outstanding/AP Aging, and Sales Register opens at `/reports/receivables/sales-register`. The local `.env` account still returns `403 invalid_credentials`, so future automated stage packs should use refreshed valid stage credentials or the saved session. |
 | 2026-10-06 | Compact post-RBAC stage smoke | Passed | Using the valid saved Chromium stage session for `sushiljyotibansal@gmail.com`, compact route smoke passed for Payables Hub, Vendor Outstanding, AP Aging, Receivables Hub, Customer Outstanding, Sales Register, Trial Balance, Bank Reco Dashboard, Bank Reco Workspace, Payment Voucher, and Receipt Voucher. Initial broad route smoke had one false Bank Reco pass and one early Receipt Voucher miss due to loose URL/readiness checks; isolated reruns with URL assertions and longer readiness passed all three targeted checks. |
 | 2026-10-06 | Platform admin launch gate | Focused Passed | Stage non-mutating platform acceptance passed `1 passed`, covering Platform Admin route/menu/API-500/responsive/WCAG checks. Frontend platform focused specs passed `32 SUCCESS`. Broad backend platform/subscription suite initially found `CF-LAUNCH-049`; after canonical RBAC role-repair alignment, focused repair tests passed `5 tests OK` and the full platform/subscription backend suite passed `218 tests OK`. |
+| 2026-10-06 | Platform admin stage deployment verification | Passed | Stage server contains the canonical RBAC role-repair implementation, stage `python manage.py check` passed, and the non-mutating Platform Admin stage acceptance rerun passed `1 passed` on `https://accerio.in`. |
+| 2026-10-06 | Phase 14A release sanity | Passed | Local backend check passed, local migration state is clean after applying `rbac.0217`, stage backend commit `d47dbd1d` has `rbac.0217` applied and `manage.py check` clean, frontend production build passed, and focused Angular smoke passed `221 SUCCESS`. |

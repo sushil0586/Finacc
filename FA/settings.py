@@ -155,6 +155,13 @@ FINANCIAL_REPORTS_PERF_LOGGING = config(
     default=False,
     cast=_cast_boolish_env,
 )
+CONTROLS_PERF_LOGGING = config(
+    'CONTROLS_PERF_LOGGING',
+    default=FINANCIAL_REPORTS_PERF_LOGGING,
+    cast=_cast_boolish_env,
+)
+CONTROLS_AUDIT_ACTIVITY_DEFAULT_DAYS = config('CONTROLS_AUDIT_ACTIVITY_DEFAULT_DAYS', default=90, cast=int)
+CONTROLS_AUDIT_ACTIVITY_MAX_DAYS = config('CONTROLS_AUDIT_ACTIVITY_MAX_DAYS', default=366, cast=int)
 SALES_PERF_LOGGING = config(
     'SALES_PERF_LOGGING',
     default=False,
@@ -600,6 +607,11 @@ LOGGING = {
             'propagate': False,
         },
         'financial_reports.perf': {
+            'handlers': ['financial_reports_perf_file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'controls.perf': {
             'handlers': ['financial_reports_perf_file'],
             'level': 'INFO',
             'propagate': False,

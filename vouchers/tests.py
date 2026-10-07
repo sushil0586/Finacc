@@ -5,18 +5,20 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
+from django.core.files.base import ContentFile
 from django.core.management import call_command
 from django.http import Http404
 from django.test import TestCase
 from django.utils import timezone
 
 from entity.models import Entity, EntityFinancialYear, SubEntity
+from financial.models import FinancialSettings
 from numbering.models import DocumentNumberSeries, DocumentType
 from numbering.seeding import NumberingSeedService
 from django.test import SimpleTestCase
 from rest_framework.test import APIRequestFactory, force_authenticate
 
-from vouchers.models import VoucherHeader, VoucherLine
+from vouchers.models import VoucherAttachment, VoucherHeader, VoucherLine
 from vouchers.serializers.voucher import VoucherWriteSerializer
 from vouchers.services.voucher_settings_service import VoucherSettingsService
 from vouchers.services.voucher_service import VoucherResult, VoucherService
@@ -542,6 +544,76 @@ class VoucherWorkflowPolicyTests(TestCase):
         )
 
         result = VoucherService.post_voucher(header.id, posted_by_id=self.approver.id)
+
+        header.refresh_from_db()
+        self.assertEqual(result.header.status, VoucherHeader.Status.POSTED)
+        self.assertEqual(header.status, VoucherHeader.Status.POSTED)
+        mocked_post_voucher.assert_called_once()
+
+    @patch("vouchers.services.voucher_service.VoucherPostingAdapter.post_voucher")
+    @patch("vouchers.services.voucher_service.VoucherSettingsService.get_policy")
+    def test_post_voucher_requires_attachment_when_attachment_vault_policy_enforces_it(
+        self,
+        mocked_get_policy,
+        mocked_post_voucher,
+    ):
+        header = self._header(status=VoucherHeader.Status.CONFIRMED)
+        FinancialSettings.objects.create(
+            entity=self.entity,
+            reporting_policy={
+                "attachment_vault": {
+                    "enabled": True,
+                    "require_for_posting": True,
+                    "required_documents": {"vouchers": True},
+                }
+            },
+            createdby=self.user,
+        )
+        mocked_get_policy.return_value = SimpleNamespace(
+            controls={
+                "require_confirm_before_post": "on",
+                "voucher_maker_checker": "off",
+            }
+        )
+
+        with self.assertRaisesMessage(ValueError, "Voucher attachment is required before posting by attachment vault policy."):
+            VoucherService.post_voucher(header.id, posted_by_id=self.user.id)
+
+        mocked_post_voucher.assert_not_called()
+
+    @patch("vouchers.services.voucher_service.VoucherPostingAdapter.post_voucher")
+    @patch("vouchers.services.voucher_service.VoucherSettingsService.get_policy")
+    def test_post_voucher_allows_attachment_when_attachment_vault_policy_enforces_it(
+        self,
+        mocked_get_policy,
+        mocked_post_voucher,
+    ):
+        header = self._header(status=VoucherHeader.Status.CONFIRMED)
+        FinancialSettings.objects.create(
+            entity=self.entity,
+            reporting_policy={
+                "attachment_vault": {
+                    "enabled": True,
+                    "require_for_posting": True,
+                    "required_documents": {"vouchers": True},
+                }
+            },
+            createdby=self.user,
+        )
+        VoucherAttachment.objects.create(
+            header=header,
+            file=ContentFile(b"evidence", name="voucher-evidence.pdf"),
+            original_name="voucher-evidence.pdf",
+            uploaded_by=self.user,
+        )
+        mocked_get_policy.return_value = SimpleNamespace(
+            controls={
+                "require_confirm_before_post": "on",
+                "voucher_maker_checker": "off",
+            }
+        )
+
+        result = VoucherService.post_voucher(header.id, posted_by_id=self.user.id)
 
         header.refresh_from_db()
         self.assertEqual(result.header.status, VoucherHeader.Status.POSTED)

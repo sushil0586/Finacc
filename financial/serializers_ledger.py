@@ -285,10 +285,11 @@ class LedgerSerializer(serializers.ModelSerializer):
 
 class LedgerSimpleSerializer(serializers.ModelSerializer):
     accountname = serializers.CharField(source="account_profile.accountname", read_only=True)
+    accountid = serializers.IntegerField(source="account_profile_id", read_only=True)
 
     class Meta:
         model = Ledger
-        fields = ("id", "ledger_code", "name", "accountname", "accounthead", "is_party")
+        fields = ("id", "ledger_code", "name", "accountname", "accountid", "accounthead", "is_party")
 
 
 class LedgerBalanceRowSerializer(serializers.Serializer):

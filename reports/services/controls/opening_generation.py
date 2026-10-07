@@ -24,6 +24,7 @@ ZERO = Decimal("0.00")
 INVENTORY_SYNTHETIC_LABEL = "Inventory (Closing Stock)"
 CURRENT_PROFIT_LABEL = "Current Period Profit"
 CURRENT_LOSS_LABEL = "Current Period Loss"
+OPENING_LIFECYCLE_KEY = "opening_lifecycle"
 
 
 def _decimal(value) -> Decimal:
@@ -53,6 +54,139 @@ def _fy_label(start_date: date | None, end_date: date | None) -> str:
     if not start_date or not end_date:
         return "Opening Year"
     return f"FY {start_date.year}-{str(end_date.year)[-2:]}"
+
+
+def _lifecycle_scope_key(subentity_id: int | None = None) -> str:
+    return f"sub:{subentity_id or 'all'}"
+
+
+def _actor_payload(user) -> dict[str, object]:
+    return {
+        "id": getattr(user, "id", None),
+        "username": getattr(user, "get_username", lambda: None)(),
+        "name": " ".join(
+            part for part in [getattr(user, "first_name", ""), getattr(user, "last_name", "")]
+            if part
+        ).strip() or None,
+    }
+
+
+def _opening_lifecycle_record(*, source_fy: EntityFinancialYear | None, subentity_id: int | None) -> dict:
+    if source_fy is None:
+        return {"status": "preview", "status_label": "Preview"}
+    metadata = getattr(source_fy, "metadata", None) or {}
+    records = metadata.get(OPENING_LIFECYCLE_KEY) or {}
+    record = records.get(_lifecycle_scope_key(subentity_id)) if isinstance(records, dict) else None
+    if not isinstance(record, dict):
+        return {"status": "preview", "status_label": "Preview"}
+    status = str(record.get("status") or "preview")
+    return {
+        **record,
+        "status": status,
+        "status_label": status.replace("_", " ").title(),
+    }
+
+
+def mark_opening_lifecycle(
+    *,
+    entity_id: int,
+    entityfin_id: int | None,
+    subentity_id: int | None = None,
+    action: str,
+    actor=None,
+    reporting_policy: dict | None = None,
+) -> dict:
+    source_fy = _compute_snapshot(entity_id, entityfin_id, subentity_id, reporting_policy).get("financial_year")
+    if source_fy is None:
+        raise ValidationError({"detail": "Source financial year could not be resolved."})
+    action = str(action or "").strip().lower()
+    if action not in {"ready_for_review", "approved"}:
+        raise ValidationError({"action": "Unsupported opening lifecycle action."})
+    with transaction.atomic():
+        locked_source = EntityFinancialYear.objects.select_for_update().filter(pk=source_fy.pk, entity_id=entity_id).first()
+        if locked_source is None:
+            raise ValidationError({"detail": "Source financial year could not be locked."})
+        metadata = dict(getattr(locked_source, "metadata", None) or {})
+        records = dict(metadata.get(OPENING_LIFECYCLE_KEY) or {})
+        current = records.get(_lifecycle_scope_key(subentity_id)) or {}
+        if action == "approved" and current.get("status") not in {"ready_for_review", "approved"}:
+            raise ValidationError({"detail": "Opening preview must be marked ready for review before approval."})
+        status = "approved" if action == "approved" else "ready_for_review"
+        record = {
+            **current,
+            "status": status,
+            "status_label": status.replace("_", " ").title(),
+            "updated_at": timezone.now().isoformat(),
+            "updated_by": _actor_payload(actor),
+        }
+        if action == "ready_for_review":
+            record["submitted_at"] = record["updated_at"]
+            record["submitted_by"] = record["updated_by"]
+        if action == "approved":
+            record["approved_at"] = record["updated_at"]
+            record["approved_by"] = record["updated_by"]
+        records[_lifecycle_scope_key(subentity_id)] = record
+        metadata[OPENING_LIFECYCLE_KEY] = records
+        locked_source.metadata = metadata
+        locked_source.save(update_fields=["metadata"])
+    return {
+        "status": "success",
+        "message": f"Opening lifecycle marked {record['status_label']}.",
+        "report_code": "opening_lifecycle",
+        "entity_id": entity_id,
+        "entityfin_id": entityfin_id,
+        "subentity_id": subentity_id,
+        "lifecycle": record,
+    }
+
+
+def lock_opening_generation(
+    *,
+    entity_id: int,
+    entityfin_id: int | None,
+    subentity_id: int | None = None,
+    actor=None,
+    reporting_policy: dict | None = None,
+) -> dict:
+    preview = build_opening_preview(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        reporting_policy=reporting_policy,
+    )
+    opening_history = preview.get("opening_history")
+    if not opening_history:
+        raise ValidationError({"detail": "Opening carry-forward must be generated before it can be locked."})
+    destination_year_id = (opening_history.get("destination_year") or {}).get("id")
+    with transaction.atomic():
+        destination_fy = EntityFinancialYear.objects.select_for_update().filter(pk=destination_year_id, entity_id=entity_id).first()
+        if destination_fy is None:
+            raise ValidationError({"detail": "Destination financial year could not be locked."})
+        metadata = dict(getattr(destination_fy, "metadata", None) or {})
+        opening = dict(metadata.get("opening_carry_forward") or {})
+        if not opening:
+            raise ValidationError({"detail": "Opening carry-forward history was not found."})
+        lifecycle = dict(opening.get("lifecycle") or {})
+        lifecycle.update({
+            "status": "locked",
+            "status_label": "Locked",
+            "locked_at": timezone.now().isoformat(),
+            "locked_by": _actor_payload(actor),
+        })
+        opening["status"] = "locked"
+        opening["lifecycle"] = lifecycle
+        metadata["opening_carry_forward"] = opening
+        destination_fy.metadata = metadata
+        destination_fy.save(update_fields=["metadata"])
+    return {
+        "status": "success",
+        "message": "Opening carry-forward locked successfully.",
+        "report_code": "opening_lifecycle_lock",
+        "entity_id": entity_id,
+        "entityfin_id": entityfin_id,
+        "subentity_id": subentity_id,
+        "lifecycle": lifecycle,
+    }
 
 
 def _leaf_rows(rows: list[dict], *, section: str) -> list[dict]:
@@ -318,10 +452,25 @@ def _build_opening_lines(snapshot: dict, *, opening_policy: dict, entity_id: int
             source="synthetic_loss",
         )
 
+    source_assets = sum((_decimal(row.get("amount_decimal") or row.get("amount")) for row in actual_asset_rows), ZERO)
+    source_liabilities = sum((_decimal(row.get("amount_decimal") or row.get("amount")) for row in actual_liability_rows), ZERO)
+    inventory_carry_forward = sum((_decimal(row.get("amount_decimal") or row.get("amount")) for row in inventory_rows), ZERO)
+    opening_debits = sum((line.amount for line in journal_lines if line.drcr), ZERO)
+    opening_credits = sum((line.amount for line in journal_lines if not line.drcr), ZERO)
+    reconciliation = _build_opening_reconciliation(
+        source_assets=source_assets,
+        source_liabilities=source_liabilities,
+        source_inventory=inventory_carry_forward,
+        source_net_profit=net_profit,
+        opening_debits=opening_debits,
+        opening_credits=opening_credits,
+        line_count=len(line_meta),
+    )
+
     diagnostics = {
-        "source_assets": f"{sum((_decimal(row.get('amount_decimal') or row.get('amount')) for row in actual_asset_rows), ZERO):.2f}",
-        "source_liabilities": f"{sum((_decimal(row.get('amount_decimal') or row.get('amount')) for row in actual_liability_rows), ZERO):.2f}",
-        "inventory_carry_forward": f"{sum((_decimal(row.get('amount_decimal') or row.get('amount')) for row in inventory_rows), ZERO):.2f}",
+        "source_assets": f"{source_assets:.2f}",
+        "source_liabilities": f"{source_liabilities:.2f}",
+        "inventory_carry_forward": f"{inventory_carry_forward:.2f}",
         "net_profit_transfer": f"{net_profit:.2f}",
         "raw_net_profit_already_posted": f"{raw_net_profit:.2f}",
         "synthetic_equity_adjustment": f"{synthetic_equity_adjustment:.2f}",
@@ -333,12 +482,42 @@ def _build_opening_lines(snapshot: dict, *, opening_policy: dict, entity_id: int
         "missing_equity_codes": missing_equity_codes,
         "equity_allocation_mode": context.get("equity_allocation_mode"),
         "equity_embedded_in_balance_sheet": True,
+        "reconciliation": reconciliation,
     }
 
     return journal_lines, line_meta, {
         "sections": sections,
         "diagnostics": diagnostics,
         "net_profit": net_profit,
+        "reconciliation": reconciliation,
+    }
+
+
+def _build_opening_reconciliation(
+    *,
+    source_assets: Decimal,
+    source_liabilities: Decimal,
+    source_inventory: Decimal,
+    source_net_profit: Decimal,
+    opening_debits: Decimal,
+    opening_credits: Decimal,
+    line_count: int,
+) -> dict[str, object]:
+    source_total = source_assets + source_inventory + source_net_profit
+    opening_difference = opening_debits - opening_credits
+    source_difference = source_total - opening_debits
+    return {
+        "status": "balanced" if opening_difference == ZERO and source_difference == ZERO else "difference",
+        "source_assets": f"{source_assets:.2f}",
+        "source_liabilities": f"{source_liabilities:.2f}",
+        "source_inventory": f"{source_inventory:.2f}",
+        "source_net_profit": f"{source_net_profit:.2f}",
+        "source_total": f"{source_total:.2f}",
+        "opening_debits": f"{opening_debits:.2f}",
+        "opening_credits": f"{opening_credits:.2f}",
+        "opening_difference": f"{opening_difference:.2f}",
+        "source_difference": f"{source_difference:.2f}",
+        "line_count": line_count,
     }
 
 
@@ -448,6 +627,9 @@ def build_opening_generation(
         raise ValidationError({"detail": "Source financial year could not be resolved."})
     if not bool(getattr(source_fy, "is_year_closed", False)):
         raise ValidationError({"detail": "Opening generation requires the source year to be closed."})
+    source_lifecycle = _opening_lifecycle_record(source_fy=source_fy, subentity_id=subentity_id)
+    if source_lifecycle.get("status") != "approved":
+        raise ValidationError({"detail": "Opening generation requires approved opening preview lifecycle."})
 
     opening_policy = resolve_opening_policy(entity_id)
     with transaction.atomic():
@@ -522,6 +704,7 @@ def build_opening_generation(
                 "allocation_plan": summary_payload.get("allocation_plan") or [],
                 "validation_issues": summary_payload.get("validation_issues") or [],
                 "equity_allocation_mode": summary_payload.get("equity_allocation_mode"),
+                "reconciliation": summary_payload.get("reconciliation") or {},
             },
             opening_policy=opening_policy,
             executed_by=executed_by,
@@ -529,6 +712,13 @@ def build_opening_generation(
             active_year_ids_before_generation=active_year_ids_before_generation,
             active_year_id_after_generation=destination_fy.id,
         )
+        opening_history["lifecycle"] = {
+            **source_lifecycle,
+            "status": "generated",
+            "status_label": "Generated",
+            "generated_at": opening_history.get("generated_at"),
+            "generated_by": opening_history.get("generated_by"),
+        }
 
         metadata = dict(getattr(destination_fy, "metadata", None) or {})
         metadata["opening_carry_forward"] = opening_history
@@ -596,6 +786,9 @@ def build_opening_generation_rollback(
         active_history = destination_metadata.get("opening_carry_forward")
         if not isinstance(active_history, dict):
             raise ValidationError({"detail": "No opening carry-forward history was found on the destination year."})
+        lifecycle = active_history.get("lifecycle") or {}
+        if lifecycle.get("status") == "locked" or active_history.get("status") == "locked":
+            raise ValidationError({"detail": "Locked opening carry-forward cannot be rolled back."})
 
         purge_result = purge_posting_locator(
             entity_id=entity_id,

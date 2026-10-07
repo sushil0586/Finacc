@@ -1017,6 +1017,27 @@ def build_year_end_close_execution(
         raise ValidationError({"detail": "This financial year is already closed."})
     if preview["close_state"]["readiness_state"] != "ready":
         raise ValidationError({"detail": "Year-end close can only be executed when the readiness state is ready."})
+    from reports.services.controls.phase_one import mandatory_close_checklist_blockers
+
+    checklist_blockers = mandatory_close_checklist_blockers(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+    )
+    if checklist_blockers:
+        raise ValidationError(
+            {
+                "detail": "Mandatory close checklist blockers must be cleared before year-end close execution.",
+                "checklist_blockers": [
+                    {
+                        "key": item.get("key"),
+                        "label": item.get("label"),
+                        "detail": item.get("detail"),
+                    }
+                    for item in checklist_blockers
+                ],
+            }
+        )
 
     snapshot = _compute_snapshot(entity_id, entityfin_id, subentity_id, reporting_policy)
     fy = snapshot["financial_year"]

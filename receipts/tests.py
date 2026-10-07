@@ -709,6 +709,39 @@ class ReceiptChoicesEntitlementTests(TestCase):
         self.assertEqual(header.status, ReceiptVoucherHeader.Status.POSTED)
         mock_post_adapter.assert_called_once()
 
+    @patch("receipts.services.receipt_voucher_service.enforce_voucher_attachment_before_posting", side_effect=ValueError("Receipt voucher attachment is required before posting by attachment vault policy."))
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherPostingAdapter.post_receipt_voucher")
+    @patch("receipts.services.receipt_voucher_service.ReceiptSettingsService.get_policy")
+    @patch("receipts.services.receipt_voucher_service.ReceiptVoucherHeader.objects")
+    def test_post_voucher_blocks_when_attachment_vault_requires_evidence(
+        self,
+        mock_header_objects,
+        mock_get_policy,
+        mock_post_adapter,
+        mock_attachment_policy,
+    ):
+        header = SimpleNamespace(
+            id=12,
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            status=ReceiptVoucherHeader.Status.CONFIRMED,
+            receipt_type=ReceiptVoucherHeader.ReceiptType.AGAINST_INVOICE,
+            voucher_date=None,
+            workflow_payload={},
+        )
+        mock_header_objects.prefetch_related.return_value.select_for_update.return_value.get.return_value = header
+        mock_get_policy.return_value = SimpleNamespace(controls={"require_confirm_before_post": "on"})
+
+        with self.assertRaisesMessage(ValueError, "Receipt voucher attachment is required before posting by attachment vault policy."):
+            ReceiptVoucherService.post_voucher.__wrapped__(voucher_id=12, posted_by_id=9)
+
+        mock_attachment_policy.assert_called_once_with(
+            header,
+            message="Receipt voucher attachment is required before posting by attachment vault policy.",
+        )
+        mock_post_adapter.assert_not_called()
+
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherService._sync_runtime_tcs_computation")
     @patch("receipts.services.receipt_voucher_service.SalesArService.cancel_settlement")
     @patch("receipts.services.receipt_voucher_service.ReceiptVoucherPostingAdapter.unpost_receipt_voucher")

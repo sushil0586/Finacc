@@ -96,7 +96,7 @@ from reports.api.book_views import (
     DaybookPDFPortraitAPIView,
     DaybookPrintAPIView,
 )
-from reports.api.controls_views import PhaseOneControlsHubAPIView, PhaseOneOpeningGenerateAPIView, PhaseOneOpeningPolicyAPIView, PhaseOneOpeningPreviewAPIView, PhaseOneOpeningRollbackAPIView
+from reports.api.controls_views import PhaseOneApprovalWorkflowAPIView, PhaseOneAttachmentVaultAPIView, PhaseOneAuditActivityAPIView, PhaseOneAuditActivityExportAPIView, PhaseOneAuditTrailAPIView, PhaseOneCloseChecklistAPIView, PhaseOneControlsAuditPackExportAPIView, PhaseOneControlsHubAPIView, PhaseOneEvidencePackReviewAPIView, PhaseOneEvidencePackSnapshotAPIView, PhaseOneOpeningGenerateAPIView, PhaseOneOpeningLifecycleAPIView, PhaseOneOpeningPolicyAPIView, PhaseOneOpeningPreviewAPIView, PhaseOneOpeningRollbackAPIView, PhaseOneRecurringJournalRunAPIView, PhaseOneRecurringJournalsAPIView
 from reports.api.controls_views import PhaseOnePostingSetupApplyAPIView, PhaseOnePostingSetupPreviewAPIView
 from reports.api.controls_close_views import YearEndCloseExecuteAPIView, YearEndClosePreviewAPIView, YearEndCloseRollbackAPIView
 from reports.api.financial_hub_settings_view import FinancialHubSettingsAPIView
@@ -374,8 +374,20 @@ urlpatterns = [
     path("financial/cashbook/csv/", CashbookCSVAPIView.as_view(), name="financial-cashbook-csv"),
     path("financial/cashbook/print/", CashbookPrintAPIView.as_view(), name="financial-cashbook-print"),
     path("controls/phase-one/meta/", PhaseOneControlsHubAPIView.as_view(), name="controls-phase-one-meta"),
+    path("controls/phase-one/audit-pack/export/", PhaseOneControlsAuditPackExportAPIView.as_view(), name="controls-phase-one-audit-pack-export"),
+    path("controls/phase-one/audit-pack/snapshots/", PhaseOneEvidencePackSnapshotAPIView.as_view(), name="controls-phase-one-audit-pack-snapshots"),
+    path("controls/phase-one/audit-pack/review/", PhaseOneEvidencePackReviewAPIView.as_view(), name="controls-phase-one-audit-pack-review"),
+    path("controls/phase-one/close-checklist/", PhaseOneCloseChecklistAPIView.as_view(), name="controls-phase-one-close-checklist"),
+    path("controls/phase-one/recurring-journals/", PhaseOneRecurringJournalsAPIView.as_view(), name="controls-phase-one-recurring-journals"),
+    path("controls/phase-one/recurring-journals/run/", PhaseOneRecurringJournalRunAPIView.as_view(), name="controls-phase-one-recurring-journals-run"),
+    path("controls/phase-one/approval-workflow/", PhaseOneApprovalWorkflowAPIView.as_view(), name="controls-phase-one-approval-workflow"),
+    path("controls/phase-one/audit-trail/", PhaseOneAuditTrailAPIView.as_view(), name="controls-phase-one-audit-trail"),
+    path("controls/phase-one/audit-trail/activity/", PhaseOneAuditActivityAPIView.as_view(), name="controls-phase-one-audit-activity"),
+    path("controls/phase-one/audit-trail/activity/export/", PhaseOneAuditActivityExportAPIView.as_view(), name="controls-phase-one-audit-activity-export"),
+    path("controls/phase-one/attachment-vault/", PhaseOneAttachmentVaultAPIView.as_view(), name="controls-phase-one-attachment-vault"),
     path("controls/phase-one/opening-policy/", PhaseOneOpeningPolicyAPIView.as_view(), name="controls-phase-one-opening-policy"),
     path("controls/phase-one/opening-preview/", PhaseOneOpeningPreviewAPIView.as_view(), name="controls-phase-one-opening-preview"),
+    path("controls/phase-one/opening-lifecycle/", PhaseOneOpeningLifecycleAPIView.as_view(), name="controls-phase-one-opening-lifecycle"),
     path("controls/phase-one/opening-generate/", PhaseOneOpeningGenerateAPIView.as_view(), name="controls-phase-one-opening-generate"),
     path("controls/phase-one/opening-generate/rollback/", PhaseOneOpeningRollbackAPIView.as_view(), name="controls-phase-one-opening-rollback"),
     path("controls/posting-setup/preview/", PhaseOnePostingSetupPreviewAPIView.as_view(), name="controls-posting-setup-preview"),

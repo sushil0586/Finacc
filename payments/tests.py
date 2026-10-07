@@ -503,6 +503,39 @@ class PaymentChoicesEntitlementTests(TestCase):
         self.assertEqual(header.status, PaymentVoucherHeader.Status.POSTED)
         mock_post_adapter.assert_called_once()
 
+    @patch("payments.services.payment_voucher_service.enforce_voucher_attachment_before_posting", side_effect=ValueError("Payment voucher attachment is required before posting by attachment vault policy."))
+    @patch("payments.services.payment_voucher_service.PaymentVoucherPostingAdapter.post_payment_voucher")
+    @patch("payments.services.payment_voucher_service.PaymentSettingsService.get_policy")
+    @patch("payments.services.payment_voucher_service.PaymentVoucherHeader.objects")
+    def test_post_voucher_blocks_when_attachment_vault_requires_evidence(
+        self,
+        mock_header_objects,
+        mock_get_policy,
+        mock_post_adapter,
+        mock_attachment_policy,
+    ):
+        header = SimpleNamespace(
+            id=12,
+            entity_id=1,
+            entityfinid_id=1,
+            subentity_id=None,
+            status=PaymentVoucherHeader.Status.CONFIRMED,
+            payment_type=PaymentVoucherHeader.PaymentType.AGAINST_BILL,
+            voucher_date=None,
+            workflow_payload={},
+        )
+        mock_header_objects.prefetch_related.return_value.select_for_update.return_value.get.return_value = header
+        mock_get_policy.return_value = SimpleNamespace(controls={"require_confirm_before_post": "on"})
+
+        with self.assertRaisesMessage(ValueError, "Payment voucher attachment is required before posting by attachment vault policy."):
+            PaymentVoucherService.post_voucher.__wrapped__(voucher_id=12, posted_by_id=9)
+
+        mock_attachment_policy.assert_called_once_with(
+            header,
+            message="Payment voucher attachment is required before posting by attachment vault policy.",
+        )
+        mock_post_adapter.assert_not_called()
+
     @patch("payments.services.payment_voucher_service.PurchaseApService.cancel_settlement")
     @patch("payments.services.payment_voucher_service.PaymentVoucherPostingAdapter.unpost_payment_voucher")
     @patch("payments.services.payment_voucher_service.PaymentSettingsService.get_policy")

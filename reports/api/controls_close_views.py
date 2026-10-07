@@ -8,6 +8,8 @@ from core.entitlements import ScopedEntitlementMixin
 from reports.api.report_permissions import assert_any_report_permission
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
+from reports.services.controls.audit_trail import record_controls_audit_event
+from reports.services.controls.perf import controls_scope_fields, profile_controls_block
 from reports.services.controls.year_end_close import build_year_end_close_execution, build_year_end_close_preview, build_year_end_close_rollback
 
 
@@ -47,13 +49,19 @@ class YearEndClosePreviewAPIView(YearEndClosePermissionMixin, ScopedEntitlementM
             subentity_id=scope.get("subentity"),
         )
         self.enforce_report_permission(request, entity_id=scope["entity"])
-        return Response(
-            build_year_end_close_preview(
+        with profile_controls_block(
+            "controls.phase_one.year_end_close_preview",
+            **controls_scope_fields(request=request, entity_id=scope["entity"], entityfin_id=scope.get("entityfinid"), subentity_id=scope.get("subentity")),
+        ) as perf:
+            payload = build_year_end_close_preview(
                 entity_id=scope["entity"],
                 entityfin_id=scope.get("entityfinid"),
                 subentity_id=scope.get("subentity"),
             )
-        )
+            close_state = payload.get("close_state") or {}
+            perf["status"] = close_state.get("readiness_state") or payload.get("report_code")
+            perf["is_year_closed"] = close_state.get("is_year_closed")
+        return Response(payload)
 
 
 class YearEndCloseExecuteAPIView(YearEndClosePermissionMixin, ScopedEntitlementMixin, APIView):
@@ -75,14 +83,34 @@ class YearEndCloseExecuteAPIView(YearEndClosePermissionMixin, ScopedEntitlementM
             subentity_id=scope.get("subentity"),
         )
         self.enforce_report_permission(request, entity_id=scope["entity"])
-        return Response(
-            build_year_end_close_execution(
+        with profile_controls_block(
+            "controls.phase_one.year_end_close_execute",
+            **controls_scope_fields(request=request, entity_id=scope["entity"], entityfin_id=scope.get("entityfinid"), subentity_id=scope.get("subentity")),
+        ) as perf:
+            result = build_year_end_close_execution(
                 entity_id=scope["entity"],
                 entityfin_id=scope.get("entityfinid"),
                 subentity_id=scope.get("subentity"),
                 executed_by=request.user,
             )
+            perf["status"] = result.get("status")
+            perf["run_code"] = result.get("run_code")
+        record_controls_audit_event(
+            request=request,
+            entity_id=scope["entity"],
+            entityfin_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
+            module="year_end_close",
+            action="year_end_close_executed",
+            new_data={
+                "status": result.get("status"),
+                "report_code": result.get("report_code"),
+                "run_code": result.get("run_code"),
+                "snapshot": result.get("snapshot"),
+                "close": result.get("close"),
+            },
         )
+        return Response(result)
 
 
 class YearEndCloseRollbackAPIView(YearEndClosePermissionMixin, ScopedEntitlementMixin, APIView):
@@ -104,11 +132,28 @@ class YearEndCloseRollbackAPIView(YearEndClosePermissionMixin, ScopedEntitlement
             subentity_id=scope.get("subentity"),
         )
         self.enforce_report_permission(request, entity_id=scope["entity"])
-        return Response(
-            build_year_end_close_rollback(
+        with profile_controls_block(
+            "controls.phase_one.year_end_close_rollback",
+            **controls_scope_fields(request=request, entity_id=scope["entity"], entityfin_id=scope.get("entityfinid"), subentity_id=scope.get("subentity")),
+        ) as perf:
+            result = build_year_end_close_rollback(
                 entity_id=scope["entity"],
                 entityfin_id=scope.get("entityfinid"),
                 subentity_id=scope.get("subentity"),
                 executed_by=request.user,
             )
+            perf["status"] = result.get("status")
+        record_controls_audit_event(
+            request=request,
+            entity_id=scope["entity"],
+            entityfin_id=scope.get("entityfinid"),
+            subentity_id=scope.get("subentity"),
+            module="year_end_close",
+            action="year_end_close_rolled_back",
+            new_data={
+                "status": result.get("status"),
+                "report_code": result.get("report_code"),
+                "rollback": result.get("rollback"),
+            },
         )
+        return Response(result)

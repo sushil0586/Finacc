@@ -20,6 +20,14 @@ from sales.models import SalesAdvanceAdjustment
 from posting.adapters.receipt_voucher import ReceiptVoucherPostingAdapter, ReceiptVoucherPostingConfig
 from posting.common.static_accounts import StaticAccountCodes
 from posting.services.static_accounts import StaticAccountService
+from reports.services.controls.approval_workflow import (
+    approval_submission_metadata,
+    enforce_approval_before_approve,
+    enforce_approval_before_posting,
+    enforce_approval_before_reject,
+    record_approval_workflow_event,
+)
+from reports.services.controls.attachment_vault import enforce_voucher_attachment_before_posting
 from withholding.models import (
     EntityWithholdingSectionPostingMap,
     TcsComputation,
@@ -1753,12 +1761,30 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
             "submitted_at": timezone.now().isoformat(),
             "remarks": (remarks or "").strip() or None,
         })
+        state.update(
+            approval_submission_metadata(
+                entity_id=h.entity_id,
+                document_type="receipt",
+                amount=h.settlement_effective_amount or h.cash_received_amount,
+            )
+        )
         h.workflow_payload = ReceiptVoucherService._set_workflow_state(h.workflow_payload, state)
         h.workflow_payload = ReceiptVoucherService._append_audit(
             h.workflow_payload,
             {"action": "SUBMITTED", "at": timezone.now().isoformat(), "by": submitted_by_id, "remarks": state["remarks"]},
         )
         h.save(update_fields=["workflow_payload", "updated_at"])
+        record_approval_workflow_event(
+            entity_id=h.entity_id,
+            entityfin_id=h.entityfinid_id,
+            subentity_id=h.subentity_id,
+            document_type="receipt",
+            document_id=h.id,
+            action="submitted",
+            actor_id=submitted_by_id,
+            workflow_state=state,
+            remarks=state["remarks"],
+        )
         return ReceiptVoucherResult(h, "Submitted for approval.")
 
     @staticmethod
@@ -1776,6 +1802,12 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
         state = ReceiptVoucherService._workflow_state(h.workflow_payload)
         if state.get("status") == "APPROVED":
             return ReceiptVoucherResult(h, "Already approved.")
+        enforce_approval_before_approve(
+            header=h,
+            document_type="receipt",
+            workflow_state=state,
+            approved_by_id=approved_by_id,
+        )
         if (
             str(policy.controls.get("require_submit_before_approve", "off")).lower().strip() == "on"
             and state.get("status") != "SUBMITTED"
@@ -1801,6 +1833,17 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
             {"action": "APPROVED", "at": timezone.now().isoformat(), "by": approved_by_id, "remarks": state["remarks"]},
         )
         h.save(update_fields=["workflow_payload", "updated_at"])
+        record_approval_workflow_event(
+            entity_id=h.entity_id,
+            entityfin_id=h.entityfinid_id,
+            subentity_id=h.subentity_id,
+            document_type="receipt",
+            document_id=h.id,
+            action="approved",
+            actor_id=approved_by_id,
+            workflow_state=state,
+            remarks=state["remarks"],
+        )
         return ReceiptVoucherResult(h, "Approved.")
 
     @staticmethod
@@ -1817,6 +1860,11 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
         state = ReceiptVoucherService._workflow_state(h.workflow_payload)
         if state.get("status") == "REJECTED":
             return ReceiptVoucherResult(h, "Already rejected.")
+        enforce_approval_before_reject(
+            header=h,
+            document_type="receipt",
+            remarks=remarks,
+        )
         state.update({
             "status": "REJECTED",
             "rejected_by": rejected_by_id,
@@ -1829,6 +1877,17 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
             {"action": "REJECTED", "at": timezone.now().isoformat(), "by": rejected_by_id, "remarks": state["remarks"]},
         )
         h.save(update_fields=["workflow_payload", "updated_at"])
+        record_approval_workflow_event(
+            entity_id=h.entity_id,
+            entityfin_id=h.entityfinid_id,
+            subentity_id=h.subentity_id,
+            document_type="receipt",
+            document_id=h.id,
+            action="rejected",
+            actor_id=rejected_by_id,
+            workflow_state=state,
+            remarks=state["remarks"],
+        )
         return ReceiptVoucherResult(h, "Rejected.")
 
     @staticmethod
@@ -1870,6 +1929,12 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
         if str(policy.controls.get("receipt_maker_checker", "off")).lower().strip() == "hard":
             if workflow_state.get("status") != "APPROVED":
                 raise ValueError("Voucher must be approved before posting by policy.")
+        enforce_approval_before_posting(
+            header=h,
+            document_type="receipt",
+            workflow_state=workflow_state,
+        )
+        enforce_voucher_attachment_before_posting(h, message="Receipt voucher attachment is required before posting by attachment vault policy.")
         warnings: list[str] = []
 
         # Recompute monetary totals from live rows before posting so stale draft values
@@ -2203,6 +2268,16 @@ class ReceiptVoucherService(SettlementVoucherRuntimeMixin):
             h.save(update_fields=["status", "approved_at", "approved_by", "ap_settlement", "workflow_payload", "updated_at"])
         else:
             h.save(update_fields=["status", "approved_at", "ap_settlement", "workflow_payload", "updated_at"])
+        record_approval_workflow_event(
+            entity_id=h.entity_id,
+            entityfin_id=h.entityfinid_id,
+            subentity_id=h.subentity_id,
+            document_type="receipt",
+            document_id=h.id,
+            action="posted",
+            actor_id=posted_by_id or h.created_by_id,
+            workflow_state=ReceiptVoucherService._workflow_state(h.workflow_payload),
+        )
         ReceiptVoucherService._sync_runtime_tcs_computation(h)
         msg = "Posted."
         if warnings:

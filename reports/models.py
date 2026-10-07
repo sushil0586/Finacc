@@ -86,6 +86,7 @@ class ReportFreezeSnapshot(TrackingModel):
         indexes = [
             models.Index(fields=("report_code", "entity", "entityfinid", "subentity", "version")),
             models.Index(fields=("report_code", "entity", "entityfinid", "subentity", "created_at"), name="ix_rpt_frz_latest"),
+            models.Index(fields=("report_code", "entity", "entityfinid", "subentity", "isactive", "version"), name="ix_rpt_frz_ctrl_ver"),
         ]
 
     def __str__(self):

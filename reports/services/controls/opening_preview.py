@@ -10,6 +10,8 @@ from reports.services.controls.drilldowns import build_posting_detail_drilldown
 from reports.services.controls.opening_policy import resolve_opening_policy, summarize_opening_policy
 from reports.services.controls.year_end_close import build_year_end_close_preview
 
+OPENING_LIFECYCLE_KEY = "opening_lifecycle"
+
 
 def _as_date(value):
     if value is None:
@@ -79,6 +81,28 @@ def _build_opening_history(
         "constitution_notes": opening.get("constitution_notes") or [],
         "validation_issues": opening.get("validation_issues") or [],
         "equity_allocation_mode": opening.get("equity_allocation_mode"),
+        "lifecycle": opening.get("lifecycle") or {
+            "status": opening.get("status", "generated"),
+            "status_label": str(opening.get("status", "generated")).replace("_", " ").title(),
+        },
+        "reconciliation": (opening.get("summary") or {}).get("reconciliation") or {},
+    }
+
+
+def _source_opening_lifecycle(source_fy: EntityFinancialYear | None, *, subentity_id: int | None) -> dict[str, object]:
+    if source_fy is None:
+        return {"status": "preview", "status_label": "Preview"}
+    metadata = getattr(source_fy, "metadata", None) or {}
+    records = metadata.get(OPENING_LIFECYCLE_KEY) or {}
+    key = f"sub:{subentity_id or 'all'}"
+    record = records.get(key) if isinstance(records, dict) else None
+    if not isinstance(record, dict):
+        return {"status": "preview", "status_label": "Preview"}
+    status = str(record.get("status") or "preview")
+    return {
+        **record,
+        "status": status,
+        "status_label": status.replace("_", " ").title(),
     }
 
 
@@ -195,8 +219,10 @@ def build_opening_preview(*, entity_id: int, entityfin_id: int | None = None, su
         entityfin_id=destination_year.get("id"),
         subentity_id=subentity_id,
     )
+    opening_lifecycle = (opening_history or {}).get("lifecycle") or _source_opening_lifecycle(source_fy_obj, subentity_id=subentity_id)
     generation_ready = bool(source_close_state.get("is_year_closed")) if opening_policy.get("require_closed_source_year", True) else True
-    can_generate = bool(preview_ready and generation_ready and constitution_is_valid and not opening_history)
+    lifecycle_approved = opening_lifecycle.get("status") == "approved"
+    can_generate = bool(preview_ready and generation_ready and constitution_is_valid and lifecycle_approved and not opening_history)
 
     checks = [
         {
@@ -234,9 +260,9 @@ def build_opening_preview(*, entity_id: int, entityfin_id: int | None = None, su
             "detail": (
                 "The entity is ready for opening generation."
                 if generation_ready and preview_ready and constitution_is_valid
-                else "Opening generation will require the source year to be closed, the carry-forward snapshot to be available, and constitution validation to pass."
+                else "Opening generation will require approval, the source year to be closed, the carry-forward snapshot to be available, and constitution validation to pass."
             ),
-            "tone": "available" if generation_ready and preview_ready and constitution_is_valid else "warning",
+            "tone": "available" if generation_ready and preview_ready and constitution_is_valid and lifecycle_approved else "warning",
         },
     ]
 
@@ -276,6 +302,7 @@ def build_opening_preview(*, entity_id: int, entityfin_id: int | None = None, su
         ],
         "opening_balance_preview": opening_balance_preview,
         "opening_history": opening_history,
+        "opening_lifecycle": opening_lifecycle,
         "equity_targets": equity_context.get("equity_targets") or [],
         "missing_equity_codes": equity_context.get("missing_equity_codes") or [],
         "equity_allocation_mode": equity_context.get("equity_allocation_mode"),
@@ -294,6 +321,9 @@ def build_opening_preview(*, entity_id: int, entityfin_id: int | None = None, su
             "can_refresh": True,
             "can_generate": can_generate,
             "can_rollback": bool(opening_history),
+            "can_mark_ready": bool(preview_ready and generation_ready and constitution_is_valid and opening_lifecycle.get("status") in {"preview", "review", "ready_for_review"}),
+            "can_approve": bool(preview_ready and generation_ready and constitution_is_valid and opening_lifecycle.get("status") in {"ready_for_review", "approved"}),
+            "can_lock": bool(opening_history and opening_lifecycle.get("status") == "generated"),
         },
         "preview_state": "generated" if opening_history else "ready" if can_generate else "review" if preview_ready and constitution_is_valid else "blocked",
     }

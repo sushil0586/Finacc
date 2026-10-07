@@ -17,6 +17,7 @@ class AuditLog(models.Model):
         indexes = [
             models.Index(fields=["method", "timestamp"], name="ix_auditlog_method_ts"),
             models.Index(fields=["user", "timestamp"], name="ix_auditlog_user_ts"),
+            models.Index(fields=["action", "timestamp"], name="ix_auditlog_action_ts"),
         ]
 
     def __str__(self):

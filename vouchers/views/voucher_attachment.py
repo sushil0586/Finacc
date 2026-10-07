@@ -12,6 +12,7 @@ from rest_framework.views import APIView
 
 from core.entitlements import enforce_operational_entity_access
 from helpers.utils.attachment_validation import validate_attachment_uploads
+from reports.services.controls.attachment_vault import enforce_posted_attachment_delete_policy, record_attachment_vault_event
 from subscriptions.services import SubscriptionLimitCodes
 from vouchers.models import VoucherAttachment, VoucherHeader
 from vouchers.serializers.voucher_attachment import VoucherAttachmentSerializer
@@ -87,6 +88,17 @@ class VoucherAttachmentListCreateAPIView(VoucherAttachmentBaseAPIView):
                     uploaded_by=request.user,
                 )
             )
+        record_attachment_vault_event(
+            request=request,
+            entity_id=header.entity_id,
+            entityfin_id=header.entityfinid_id,
+            subentity_id=header.subentity_id,
+            document_type="journal_voucher",
+            document_id=header.id,
+            action="uploaded",
+            attachment_ids=[item.id for item in created],
+            attachment_names=[item.original_name or item.file.name for item in created],
+        )
         return Response(
             {
                 "message": "Attachments uploaded.",
@@ -100,11 +112,26 @@ class VoucherAttachmentDeleteAPIView(VoucherAttachmentBaseAPIView):
     def delete(self, request, pk: int, attachment_id: int):
         header = self._scoped_header(request, pk)
         self._authorize(request, header, "delete")
+        try:
+            enforce_posted_attachment_delete_policy(header)
+        except ValueError as exc:
+            raise ValidationError({"detail": str(exc)})
         attachment = get_object_or_404(VoucherAttachment.objects.filter(header=header), pk=attachment_id)
         try:
             attachment.file.delete(save=False)
         except Exception:
             pass
+        record_attachment_vault_event(
+            request=request,
+            entity_id=header.entity_id,
+            entityfin_id=header.entityfinid_id,
+            subentity_id=header.subentity_id,
+            document_type="journal_voucher",
+            document_id=header.id,
+            action="deleted",
+            attachment_ids=[attachment.id],
+            attachment_names=[attachment.original_name or attachment.file.name],
+        )
         attachment.delete()
         return Response({"message": "Attachment deleted."}, status=status.HTTP_200_OK)
 

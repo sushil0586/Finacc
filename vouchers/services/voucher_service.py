@@ -11,6 +11,14 @@ from numbering.models import DocumentType
 from numbering.services.document_number_service import DocumentNumberService
 from helpers.utils.settlement_runtime import SettlementVoucherRuntimeMixin
 from posting.adapters.voucher import VoucherPostingAdapter
+from reports.services.controls.approval_workflow import (
+    approval_submission_metadata,
+    enforce_approval_before_approve,
+    enforce_approval_before_posting,
+    enforce_approval_before_reject,
+    record_approval_workflow_event,
+)
+from reports.services.controls.attachment_vault import enforce_voucher_attachment_before_posting
 from vouchers.models.voucher_core import VoucherHeader, VoucherLine
 from vouchers.services.voucher_settings_service import VoucherSettingsService
 
@@ -34,6 +42,15 @@ class VoucherResult:
 
 
 class VoucherService(SettlementVoucherRuntimeMixin):
+    @staticmethod
+    def _approval_document_type(header: VoucherHeader) -> str:
+        voucher_type = str(header.voucher_type or "").upper()
+        if voucher_type == VoucherHeader.VoucherType.CASH:
+            return "cash"
+        if voucher_type == VoucherHeader.VoucherType.BANK:
+            return "bank"
+        return "journal"
+
     @staticmethod
     def _doc_type_id(voucher_type: str, doc_code: str) -> int:
         doc_key = VoucherSettingsService.DOC_KEY_BY_TYPE[voucher_type]
@@ -349,10 +366,28 @@ class VoucherService(SettlementVoucherRuntimeMixin):
         if int(header.status) != int(VoucherHeader.Status.DRAFT):
             raise ValueError("Only draft vouchers can be submitted.")
         state.update({"status": "SUBMITTED", "submitted_by": submitted_by_id, "submitted_at": timezone.now().isoformat(), "remarks": remarks})
+        state.update(
+            approval_submission_metadata(
+                entity_id=header.entity_id,
+                document_type=cls._approval_document_type(header),
+                amount=header.total_debit_amount,
+            )
+        )
         payload = cls._set_workflow_state(header.workflow_payload, state)
         payload = cls._append_audit(payload, {"at": timezone.now().isoformat(), "by": submitted_by_id, "action": "SUBMITTED", "remarks": remarks})
         header.workflow_payload = payload
         header.save(update_fields=["workflow_payload", "updated_at"])
+        record_approval_workflow_event(
+            entity_id=header.entity_id,
+            entityfin_id=header.entityfinid_id,
+            subentity_id=header.subentity_id,
+            document_type=cls._approval_document_type(header),
+            document_id=header.id,
+            action="submitted",
+            actor_id=submitted_by_id,
+            workflow_state=state,
+            remarks=remarks,
+        )
         return VoucherResult(header=header, message="Voucher submitted.")
 
     @classmethod
@@ -365,6 +400,12 @@ class VoucherService(SettlementVoucherRuntimeMixin):
         state = cls._workflow_state(header.workflow_payload)
         if state.get("status") == "APPROVED":
             return VoucherResult(header=header, message="Already approved.")
+        enforce_approval_before_approve(
+            header=header,
+            document_type=cls._approval_document_type(header),
+            workflow_state=state,
+            approved_by_id=approved_by_id,
+        )
         if str(policy.controls.get("require_submit_before_approve", "off")).lower() == "on" and state.get("status") != "SUBMITTED":
             raise ValueError("Voucher must be submitted before approval by policy.")
         if str(policy.controls.get("same_user_submit_approve", "on")).lower() == "off" and state.get("submitted_by") and int(state["submitted_by"]) == int(approved_by_id):
@@ -376,6 +417,17 @@ class VoucherService(SettlementVoucherRuntimeMixin):
         header.approved_by_id = approved_by_id
         header.approved_at = timezone.now()
         header.save(update_fields=["workflow_payload", "approved_by", "approved_at", "updated_at"])
+        record_approval_workflow_event(
+            entity_id=header.entity_id,
+            entityfin_id=header.entityfinid_id,
+            subentity_id=header.subentity_id,
+            document_type=cls._approval_document_type(header),
+            document_id=header.id,
+            action="approved",
+            actor_id=approved_by_id,
+            workflow_state=state,
+            remarks=remarks,
+        )
         return VoucherResult(header=header, message="Voucher approved.")
 
     @classmethod
@@ -387,11 +439,27 @@ class VoucherService(SettlementVoucherRuntimeMixin):
         state = cls._workflow_state(header.workflow_payload)
         if state.get("status") == "REJECTED":
             return VoucherResult(header=header, message="Already rejected.")
+        enforce_approval_before_reject(
+            header=header,
+            document_type=cls._approval_document_type(header),
+            remarks=remarks,
+        )
         state.update({"status": "REJECTED", "rejected_by": rejected_by_id, "rejected_at": timezone.now().isoformat(), "remarks": remarks})
         payload = cls._set_workflow_state(header.workflow_payload, state)
         payload = cls._append_audit(payload, {"at": timezone.now().isoformat(), "by": rejected_by_id, "action": "REJECTED", "remarks": remarks})
         header.workflow_payload = payload
         header.save(update_fields=["workflow_payload", "updated_at"])
+        record_approval_workflow_event(
+            entity_id=header.entity_id,
+            entityfin_id=header.entityfinid_id,
+            subentity_id=header.subentity_id,
+            document_type=cls._approval_document_type(header),
+            document_id=header.id,
+            action="rejected",
+            actor_id=rejected_by_id,
+            workflow_state=state,
+            remarks=remarks,
+        )
         return VoucherResult(header=header, message="Voucher rejected.")
 
     @classmethod
@@ -409,9 +477,25 @@ class VoucherService(SettlementVoucherRuntimeMixin):
             state = cls._workflow_state(header.workflow_payload)
             if state.get("status") != "APPROVED":
                 raise ValueError("Voucher must be approved before posting by policy.")
+        enforce_approval_before_posting(
+            header=header,
+            document_type=cls._approval_document_type(header),
+            workflow_state=cls._workflow_state(header.workflow_payload),
+        )
+        enforce_voucher_attachment_before_posting(header)
         VoucherPostingAdapter.post_voucher(header=header, lines=list(header.lines.all()), user_id=posted_by_id)
         header.status = VoucherHeader.Status.POSTED
         header.save(update_fields=["status", "updated_at"])
+        record_approval_workflow_event(
+            entity_id=header.entity_id,
+            entityfin_id=header.entityfinid_id,
+            subentity_id=header.subentity_id,
+            document_type=cls._approval_document_type(header),
+            document_id=header.id,
+            action="posted",
+            actor_id=posted_by_id,
+            workflow_state=cls._workflow_state(header.workflow_payload),
+        )
         return VoucherResult(header=header, message="Voucher posted.")
 
     @classmethod

@@ -20,6 +20,14 @@ from purchase.models.purchase_ap import VendorAdvanceBalance, VendorBillOpenItem
 from posting.adapters.payment_voucher import PaymentVoucherPostingAdapter, PaymentVoucherPostingConfig
 from posting.common.static_accounts import StaticAccountCodes
 from posting.services.static_accounts import StaticAccountService
+from reports.services.controls.approval_workflow import (
+    approval_submission_metadata,
+    enforce_approval_before_approve,
+    enforce_approval_before_posting,
+    enforce_approval_before_reject,
+    record_approval_workflow_event,
+)
+from reports.services.controls.attachment_vault import enforce_voucher_attachment_before_posting
 from withholding.models import (
     EntityWithholdingSectionPostingMap,
     WithholdingBaseRule,
@@ -1263,12 +1271,30 @@ class PaymentVoucherService(SettlementVoucherRuntimeMixin):
             "submitted_at": timezone.now().isoformat(),
             "remarks": (remarks or "").strip() or None,
         })
+        state.update(
+            approval_submission_metadata(
+                entity_id=h.entity_id,
+                document_type="payment",
+                amount=h.settlement_effective_amount or h.cash_paid_amount,
+            )
+        )
         h.workflow_payload = PaymentVoucherService._set_workflow_state(h.workflow_payload, state)
         h.workflow_payload = PaymentVoucherService._append_audit(
             h.workflow_payload,
             {"action": "SUBMITTED", "at": timezone.now().isoformat(), "by": submitted_by_id, "remarks": state["remarks"]},
         )
         h.save(update_fields=["workflow_payload", "updated_at"])
+        record_approval_workflow_event(
+            entity_id=h.entity_id,
+            entityfin_id=h.entityfinid_id,
+            subentity_id=h.subentity_id,
+            document_type="payment",
+            document_id=h.id,
+            action="submitted",
+            actor_id=submitted_by_id,
+            workflow_state=state,
+            remarks=state["remarks"],
+        )
         return PaymentVoucherResult(h, "Submitted for approval.")
 
     @staticmethod
@@ -1281,6 +1307,12 @@ class PaymentVoucherService(SettlementVoucherRuntimeMixin):
         state = PaymentVoucherService._workflow_state(h.workflow_payload)
         if state.get("status") == "APPROVED":
             return PaymentVoucherResult(h, "Already approved.")
+        enforce_approval_before_approve(
+            header=h,
+            document_type="payment",
+            workflow_state=state,
+            approved_by_id=approved_by_id,
+        )
         if (
             str(policy.controls.get("require_submit_before_approve", "off")).lower().strip() == "on"
             and state.get("status") != "SUBMITTED"
@@ -1306,6 +1338,17 @@ class PaymentVoucherService(SettlementVoucherRuntimeMixin):
             {"action": "APPROVED", "at": timezone.now().isoformat(), "by": approved_by_id, "remarks": state["remarks"]},
         )
         h.save(update_fields=["workflow_payload", "updated_at"])
+        record_approval_workflow_event(
+            entity_id=h.entity_id,
+            entityfin_id=h.entityfinid_id,
+            subentity_id=h.subentity_id,
+            document_type="payment",
+            document_id=h.id,
+            action="approved",
+            actor_id=approved_by_id,
+            workflow_state=state,
+            remarks=state["remarks"],
+        )
         return PaymentVoucherResult(h, "Approved.")
 
     @staticmethod
@@ -1317,6 +1360,11 @@ class PaymentVoucherService(SettlementVoucherRuntimeMixin):
         state = PaymentVoucherService._workflow_state(h.workflow_payload)
         if state.get("status") == "REJECTED":
             return PaymentVoucherResult(h, "Already rejected.")
+        enforce_approval_before_reject(
+            header=h,
+            document_type="payment",
+            remarks=remarks,
+        )
         state.update({
             "status": "REJECTED",
             "rejected_by": rejected_by_id,
@@ -1329,6 +1377,17 @@ class PaymentVoucherService(SettlementVoucherRuntimeMixin):
             {"action": "REJECTED", "at": timezone.now().isoformat(), "by": rejected_by_id, "remarks": state["remarks"]},
         )
         h.save(update_fields=["workflow_payload", "updated_at"])
+        record_approval_workflow_event(
+            entity_id=h.entity_id,
+            entityfin_id=h.entityfinid_id,
+            subentity_id=h.subentity_id,
+            document_type="payment",
+            document_id=h.id,
+            action="rejected",
+            actor_id=rejected_by_id,
+            workflow_state=state,
+            remarks=state["remarks"],
+        )
         return PaymentVoucherResult(h, "Rejected.")
 
     @staticmethod
@@ -1369,6 +1428,12 @@ class PaymentVoucherService(SettlementVoucherRuntimeMixin):
         if str(policy.controls.get("payment_maker_checker", "off")).lower().strip() == "hard":
             if workflow_state.get("status") != "APPROVED":
                 raise ValueError("Voucher must be approved before posting by policy.")
+        enforce_approval_before_posting(
+            header=h,
+            document_type="payment",
+            workflow_state=workflow_state,
+        )
+        enforce_voucher_attachment_before_posting(h, message="Payment voucher attachment is required before posting by attachment vault policy.")
         warnings: list[str] = []
 
         # Recompute monetary totals from live rows before posting so stale draft values
@@ -1679,6 +1744,16 @@ class PaymentVoucherService(SettlementVoucherRuntimeMixin):
             h.save(update_fields=["status", "approved_at", "approved_by", "ap_settlement", "workflow_payload", "updated_at"])
         else:
             h.save(update_fields=["status", "approved_at", "ap_settlement", "workflow_payload", "updated_at"])
+        record_approval_workflow_event(
+            entity_id=h.entity_id,
+            entityfin_id=h.entityfinid_id,
+            subentity_id=h.subentity_id,
+            document_type="payment",
+            document_id=h.id,
+            action="posted",
+            actor_id=posted_by_id or h.created_by_id,
+            workflow_state=PaymentVoucherService._workflow_state(h.workflow_payload),
+        )
         msg = "Posted."
         if warnings:
             msg = f"Posted with warnings: {' | '.join(warnings)}"
