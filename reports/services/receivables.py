@@ -255,6 +255,76 @@ def _asof_open_item_balances(*, entity_id, entityfin_id, subentity_id, upto_date
     return rows
 
 
+def _asof_open_item_balance_values(*, entity_id, entityfin_id, subentity_id, upto_date, customer_ids=None):
+    line_map = _settlement_line_sums(
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        upto_date=upto_date,
+        customer_ids=customer_ids,
+    )
+    qs = _scope_filter(
+        CustomerBillOpenItem.objects.all(),
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+    )
+    qs = _exclude_cancelled_open_items(qs).filter(bill_date__lte=upto_date)
+    if customer_ids is not None:
+        qs = qs.filter(customer_id__in=customer_ids)
+    rows = []
+    for (
+        item_id,
+        header_id,
+        customer_id,
+        subentity_name,
+        bill_date,
+        due_date,
+        invoice_number,
+        customer_reference_number,
+        original_amount,
+        is_open,
+        stored_outstanding,
+        stored_settled,
+    ) in qs.values_list(
+        "id",
+        "header_id",
+        "customer_id",
+        "subentity__subentityname",
+        "bill_date",
+        "due_date",
+        "invoice_number",
+        "customer_reference_number",
+        "original_amount",
+        "is_open",
+        "outstanding_amount",
+        "settled_amount",
+    ).iterator(chunk_size=2000):
+        settled, outstanding = _resolved_open_item_exposure(
+            original_amount=original_amount,
+            applied_amount=line_map.get(item_id, ZERO),
+            is_open=is_open,
+            stored_outstanding=stored_outstanding,
+            stored_settled=stored_settled,
+        )
+        rows.append(
+            {
+                "id": item_id,
+                "header_id": header_id,
+                "customer_id": customer_id,
+                "subentity_name": subentity_name,
+                "bill_date": bill_date,
+                "due_date": due_date,
+                "invoice_number": invoice_number,
+                "customer_reference_number": customer_reference_number,
+                "original_amount": original_amount,
+                "settled": settled,
+                "outstanding": outstanding,
+            }
+        )
+    return rows
+
+
 def _asof_advances(*, entity_id, entityfin_id, subentity_id, upto_date, customer_ids=None):
     adjusted_map = _advance_adjusted_sums(
         entity_id=entity_id,
@@ -1213,7 +1283,7 @@ def build_receivable_aging_report(
     customer_ids = set(customer_by_id.keys())
 
     if normalized_view == "invoice":
-        open_items_asof = _asof_open_item_balances(
+        open_items_asof = _asof_open_item_balance_values(
             entity_id=entity_id,
             entityfin_id=entityfin_id,
             subentity_id=subentity_id,
@@ -1227,9 +1297,7 @@ def build_receivable_aging_report(
             upto_date=as_of,
             customer_ids=customer_ids,
         )
-        invoice_route_map = _sales_invoice_route_map(
-            item.header_id for item, _settled, _outstanding in open_items_asof
-        )
+        invoice_route_map = {}
     else:
         open_items_asof, credit_pool = _receivable_aging_summary_open_items(
             entity_id=entity_id,
@@ -1257,11 +1325,15 @@ def build_receivable_aging_report(
     invoice_rows_by_customer = defaultdict(list)
     if normalized_view == "invoice":
         credit_pool = defaultdict(lambda: ZERO)
-        for item, settled, outstanding in open_items_asof:
-            if item.customer_id not in customer_ids:
+        for item in open_items_asof:
+            customer = customer_by_id.get(item["customer_id"])
+            if customer is None:
                 continue
+            outstanding = item["outstanding"]
             if outstanding > ZERO:
-                received_amount = _received_amount_asof(item, settled)
+                received_amount = ZERO
+                if q2(item["original_amount"]) > ZERO:
+                    received_amount = q2(min(q2(item["settled"]), q2(item["original_amount"])))
                 drilldown = {
                     "invoice_list": {
                         "target": "receivable_aging",
@@ -1270,14 +1342,14 @@ def build_receivable_aging_report(
                             "entityfinid": entityfin_id,
                             "subentity": subentity_id,
                             "as_of_date": as_of,
-                            "customer": item.customer_id,
+                            "customer": item["customer_id"],
                             "view": "invoice",
                         },
                     },
                     "invoice": {
                         "target": "sales_invoice",
-                        "route": invoice_route_map.get(item.header_id, "/saleinvoice"),
-                        "params": {"id": item.header_id, "entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id},
+                        "route": "/saleinvoice",
+                        "params": {"id": item["header_id"], "entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id},
                     },
                     "payment_allocation": {
                         "target": "sales_ar_payment_allocation",
@@ -1285,44 +1357,44 @@ def build_receivable_aging_report(
                             "entity": entity_id,
                             "entityfinid": entityfin_id,
                             "subentity": subentity_id,
-                            "customer": item.customer_id,
-                            "invoice_header": item.header_id,
-                            "open_item": item.id,
+                            "customer": item["customer_id"],
+                            "invoice_header": item["header_id"],
+                            "open_item": item["id"],
                             "as_of_date": as_of,
                         },
                     },
                     "customer_statement": {
                         "target": "sales_ar_customer_statement",
-                        "params": {"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "customer": item.customer_id},
+                        "params": {"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "customer": item["customer_id"]},
                     },
                 }
-                invoice_rows_by_customer[item.customer_id].append(
+                invoice_rows_by_customer[item["customer_id"]].append(
                     _row_with_meta(
                         {
-                            "item_id": item.id,
-                            "header_id": item.header_id,
-                            "customer_id": item.customer_id,
-                            "customer_name": item.customer.effective_accounting_name,
-                            "customer_code": item.customer.effective_accounting_code,
-                            "invoice_number": item.invoice_number or item.customer_reference_number or f"INV-{item.id}",
-                            "invoice_date": item.bill_date,
-                            "due_date": item.due_date or item.bill_date,
-                            "credit_days": ((item.due_date - item.bill_date).days if item.due_date else None),
-                            "invoice_amount": q2(item.original_amount),
+                            "item_id": item["id"],
+                            "header_id": item["header_id"],
+                            "customer_id": item["customer_id"],
+                            "customer_name": customer.effective_accounting_name,
+                            "customer_code": customer.effective_accounting_code,
+                            "invoice_number": item["invoice_number"] or item["customer_reference_number"] or f"INV-{item['id']}",
+                            "invoice_date": item["bill_date"],
+                            "due_date": item["due_date"] or item["bill_date"],
+                            "credit_days": ((item["due_date"] - item["bill_date"]).days if item["due_date"] else None),
+                            "invoice_amount": q2(item["original_amount"]),
                             "received_amount": q2(received_amount),
                             "residual_before_credit": q2(outstanding),
                             "salesperson": None,
-                            "branch": getattr(item.subentity, "subentityname", None),
-                            "currency": account_currency(item.customer) or "INR",
-                            "gstin": account_gstno(item.customer),
-                            "credit_limit": q2(account_creditlimit(item.customer) or ZERO) if account_creditlimit(item.customer) is not None else None,
-                            "last_payment_date": last_payment_map.get(item.customer_id),
+                            "branch": item["subentity_name"],
+                            "currency": account_currency(customer) or "INR",
+                            "gstin": account_gstno(customer),
+                            "credit_limit": q2(account_creditlimit(customer) or ZERO) if account_creditlimit(customer) is not None else None,
+                            "last_payment_date": last_payment_map.get(item["customer_id"]),
                         },
                         drilldown=drilldown,
                         )
                     )
             elif outstanding < ZERO:
-                credit_pool[item.customer_id] = q2(credit_pool[item.customer_id] + abs(outstanding))
+                credit_pool[item["customer_id"]] = q2(credit_pool[item["customer_id"]] + abs(outstanding))
     else:
         for cust_id, summary_row in open_items_asof:
             invoice_rows_by_customer[cust_id].append(summary_row)
@@ -1427,7 +1499,9 @@ def build_receivable_aging_report(
         _sort_rows(invoice_rows, sort_by or "balance", sort_order)
         paged_rows, total_rows = _paginate(invoice_rows, page, page_size)
         total_pages = max(1, (total_rows + page_size - 1) // page_size)
+        invoice_route_map = _sales_invoice_route_map(row.get("header_id") for row in paged_rows)
         for row in paged_rows:
+            row.get("_meta", {}).get("drilldown", {}).get("invoice", {})["route"] = invoice_route_map.get(row.get("header_id"), "/saleinvoice")
             for key in ("invoice_amount", "received_amount", "balance", "current", "bucket_1_30", "bucket_31_60", "bucket_61_90", "bucket_90_plus", "credit_applied_fifo"):
                 row[key] = f"{q2(row[key]):.2f}"
         return {
@@ -1521,7 +1595,7 @@ def build_open_items_report(
         subentity_id=subentity_id,
         customer_id=customer_id,
         is_open=None,
-    ).select_related("customer", "customer__ledger", "customer__commercial_profile", "customer__compliance_profile", "subentity", "header")
+    )
     qs = _exclude_cancelled_open_items(qs).filter(bill_date__lte=resolved_as_of)
 
     if search:
@@ -1535,56 +1609,137 @@ def build_open_items_report(
                 | Q(customer_reference_number__icontains=token)
             )
 
-    invoice_route_map = _sales_invoice_route_map(qs.values_list("header_id", flat=True).distinct())
     rows = []
     totals = defaultdict(lambda: ZERO)
     credit_balance_amount = ZERO
-    customer_ids = set(qs.values_list("customer_id", flat=True).distinct())
+    customer_ids = set()
 
-    for item in qs.iterator(chunk_size=1000):
+    value_rows = qs.values_list(
+        "id",
+        "header_id",
+        "customer_id",
+        "doc_type",
+        "bill_date",
+        "due_date",
+        "invoice_number",
+        "customer_reference_number",
+        "original_amount",
+        "settled_amount",
+        "outstanding_amount",
+        "is_open",
+        "subentity__subentityname",
+    )
+    raw_items = []
+    for (
+        item_id,
+        header_id,
+        item_customer_id,
+        doc_type,
+        bill_date,
+        due_date,
+        invoice_number,
+        customer_reference_number,
+        original_amount,
+        stored_settled,
+        stored_outstanding,
+        is_open,
+        subentity_name,
+    ) in value_rows.iterator(chunk_size=2000):
         settled, outstanding = _resolved_open_item_exposure(
-            original_amount=item.original_amount,
-            applied_amount=line_map.get(item.id, ZERO),
-            is_open=item.is_open,
-            stored_outstanding=item.outstanding_amount,
-            stored_settled=item.settled_amount,
+            original_amount=original_amount,
+            applied_amount=line_map.get(item_id, ZERO),
+            is_open=is_open,
+            stored_outstanding=stored_outstanding,
+            stored_settled=stored_settled,
         )
         if outstanding < ZERO:
+            customer_ids.add(item_customer_id)
             credit_balance_amount = q2(credit_balance_amount + abs(outstanding))
             continue
         if outstanding == ZERO:
             continue
+        customer_ids.add(item_customer_id)
+        raw_items.append(
+            (
+                item_id,
+                header_id,
+                item_customer_id,
+                doc_type,
+                bill_date,
+                due_date,
+                invoice_number,
+                customer_reference_number,
+                original_amount,
+                settled,
+                outstanding,
+                subentity_name,
+            )
+        )
+
+    customers_by_id = {
+        customer.id: customer
+        for customer in _customer_queryset(
+            entity_id=entity_id,
+            customer_id=None,
+            customer_group=None,
+            region_id=None,
+            currency=None,
+            search=None,
+        ).filter(id__in=customer_ids)
+    }
+
+    for (
+        item_id,
+        header_id,
+        item_customer_id,
+        doc_type,
+        bill_date,
+        due_date,
+        invoice_number,
+        customer_reference_number,
+        original_amount,
+        settled,
+        outstanding,
+        subentity_name,
+    ) in raw_items:
+        customer = customers_by_id.get(item_customer_id)
+        if customer is None:
+            continue
+        try:
+            doc_type_name = SalesInvoiceHeader.DocType(int(doc_type)).label
+        except (TypeError, ValueError):
+            doc_type_name = str(doc_type) if doc_type is not None else None
 
         row = _row_with_meta(
             {
-                "item_id": item.id,
-                "header_id": item.header_id,
-                "customer_id": item.customer_id,
-                "customer_name": item.customer.effective_accounting_name,
-                "customer_code": item.customer.effective_accounting_code,
-                "bill_date": item.bill_date,
-                "due_date": item.due_date,
-                "invoice_number": item.invoice_number or f"INV-{item.id}",
-                "customer_reference_number": item.customer_reference_number,
-                "doc_type_name": item.header.get_doc_type_display() if getattr(item, "header", None) else None,
-                "original_amount": q2(item.original_amount),
+                "item_id": item_id,
+                "header_id": header_id,
+                "customer_id": item_customer_id,
+                "customer_name": customer.effective_accounting_name,
+                "customer_code": customer.effective_accounting_code,
+                "bill_date": bill_date,
+                "due_date": due_date,
+                "invoice_number": invoice_number or f"INV-{item_id}",
+                "customer_reference_number": customer_reference_number,
+                "doc_type_name": doc_type_name,
+                "original_amount": q2(original_amount),
                 "settled_amount": settled,
                 "outstanding_amount": outstanding,
-                "currency": account_currency(item.customer) or "INR",
-                "gstin": account_gstno(item.customer),
-                "credit_days": account_creditdays(item.customer),
+                "currency": account_currency(customer) or "INR",
+                "gstin": account_gstno(customer),
+                "credit_days": account_creditdays(customer),
                 "status": "Open",
-                "last_settled_at": last_settlement_map.get(item.id),
+                "last_settled_at": last_settlement_map.get(item_id),
             },
             drilldown={
                 "invoice": {
                     "target": "sales_invoice",
-                    "route": invoice_route_map.get(item.header_id, "/saleinvoice"),
-                    "params": {"id": item.header_id, "entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id},
+                    "route": "/saleinvoice",
+                    "params": {"id": header_id, "entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id},
                 },
                 "customer_statement": {
                     "target": "sales_ar_customer_statement",
-                    "params": {"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "customer": item.customer_id, "as_of_date": resolved_as_of},
+                    "params": {"entity": entity_id, "entityfinid": entityfin_id, "subentity": subentity_id, "customer": item_customer_id, "as_of_date": resolved_as_of},
                 },
                 "payment_allocation": {
                     "target": "sales_ar_payment_allocation",
@@ -1592,9 +1747,9 @@ def build_open_items_report(
                         "entity": entity_id,
                         "entityfinid": entityfin_id,
                         "subentity": subentity_id,
-                        "customer": item.customer_id,
-                        "invoice_header": item.header_id,
-                        "open_item": item.id,
+                        "customer": item_customer_id,
+                        "invoice_header": header_id,
+                        "open_item": item_id,
                     },
                 },
             },
@@ -1634,8 +1789,10 @@ def build_open_items_report(
 
     rows.sort(key=sort_key, reverse=(sort_order or "asc").lower() == "desc")
     paged_rows, total_rows = _paginate(rows, page, page_size)
+    invoice_route_map = _sales_invoice_route_map(row.get("header_id") for row in paged_rows)
 
     for row in paged_rows:
+        row.get("_meta", {}).get("drilldown", {}).get("invoice", {})["route"] = invoice_route_map.get(row.get("header_id"), "/saleinvoice")
         for key in ("original_amount", "settled_amount", "outstanding_amount"):
             row[key] = f"{q2(row[key]):.2f}"
 

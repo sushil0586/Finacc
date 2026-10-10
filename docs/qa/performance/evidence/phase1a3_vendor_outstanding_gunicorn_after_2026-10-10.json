@@ -1,0 +1,24 @@
+{
+  "name": "payables_vendor_outstanding_gunicorn_after_summary_aggregate",
+  "status_code": 200,
+  "elapsed_ms": 1609.1,
+  "response_bytes": 312602,
+  "rows": 100,
+  "total_rows": 970,
+  "totals": {
+    "opening_balance": "0.00",
+    "bill_amount": "38640562.20",
+    "payment_amount": "3385178.00",
+    "net_outstanding": "32090147.20",
+    "outstanding": "32090147.20",
+    "not_due": "0.00",
+    "bucket_0_30": "24339347.00",
+    "bucket_31_60": "2950757.00",
+    "bucket_61_90": "3252131.20",
+    "bucket_91_180": "3664070.00",
+    "bucket_181_plus": "695.00",
+    "credit_balance": "715982.00",
+    "advance_balance": "2129939.00",
+    "overdue_amount": "34220086.20"
+  }
+}

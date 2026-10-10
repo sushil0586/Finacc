@@ -1,0 +1,13 @@
+{
+  "name": "receivables_open_items_gunicorn_after_projection",
+  "status_code": 200,
+  "elapsed_ms": 3628.65,
+  "response_bytes": 152069,
+  "rows": 100,
+  "total_rows": 10181,
+  "totals": {
+    "original_amount": "19624631.00",
+    "settled_amount": "116310.87",
+    "outstanding_amount": "19508320.13"
+  }
+}

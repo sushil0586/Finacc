@@ -1,0 +1,21 @@
+CREATE EXTENSION
+ shared_preload_libraries 
+--------------------------
+ pg_stat_statements
+(1 row)
+
+      extname       
+--------------------
+ pg_stat_statements
+ plpgsql
+(2 rows)
+
+               name                | setting 
+-----------------------------------+---------
+ pg_stat_statements.max            | 10000
+ pg_stat_statements.save           | on
+ pg_stat_statements.track          | all
+ pg_stat_statements.track_planning | off
+ pg_stat_statements.track_utility  | on
+(5 rows)
+

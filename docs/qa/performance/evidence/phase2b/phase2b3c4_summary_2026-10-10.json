@@ -1,0 +1,845 @@
+{
+  "10u_5m": {
+    "aggregate": {
+      "Request Count": "1411",
+      "Failure Count": "0",
+      "Average Response Time": "172.33415977681568",
+      "Median Response Time": "130.0",
+      "95%": "420",
+      "99%": "830",
+      "Max Response Time": "1388.3646250033053",
+      "Requests/s": "4.726235588663576",
+      "Failures/s": "0.0",
+      "Average Content Size": "58854.630758327425"
+    },
+    "financial_equal": true,
+    "exit_code": "0",
+    "endpoints_by_p95": [
+      {
+        "name": "auth/login",
+        "requests": 10,
+        "failures": 0,
+        "avg_ms": 850.4,
+        "p50_ms": 840.0,
+        "p95_ms": 1400.0,
+        "p99_ms": 1400.0,
+        "max_ms": 1388.36,
+        "avg_bytes": 4321.6
+      },
+      {
+        "name": "reports/gstr3b/summary",
+        "requests": 55,
+        "failures": 0,
+        "avg_ms": 369.29,
+        "p50_ms": 290.0,
+        "p95_ms": 1000.0,
+        "p99_ms": 1200.0,
+        "max_ms": 1189.45,
+        "avg_bytes": 5015.0
+      },
+      {
+        "name": "entity/context [startup]",
+        "requests": 10,
+        "failures": 0,
+        "avg_ms": 439.39,
+        "p50_ms": 390.0,
+        "p95_ms": 800.0,
+        "p99_ms": 800.0,
+        "max_ms": 804.31,
+        "avg_bytes": 766.6
+      },
+      {
+        "name": "reports/financial/daybook",
+        "requests": 144,
+        "failures": 0,
+        "avg_ms": 244.52,
+        "p50_ms": 190.0,
+        "p95_ms": 570.0,
+        "p99_ms": 800.0,
+        "max_ms": 871.0,
+        "avg_bytes": 36597.8
+      },
+      {
+        "name": "purchase/invoices/list",
+        "requests": 50,
+        "failures": 0,
+        "avg_ms": 318.86,
+        "p50_ms": 280.0,
+        "p95_ms": 500.0,
+        "p99_ms": 560.0,
+        "max_ms": 556.86,
+        "avg_bytes": 522373.2
+      },
+      {
+        "name": "reports/gstr1/summary",
+        "requests": 51,
+        "failures": 0,
+        "avg_ms": 177.36,
+        "p50_ms": 130.0,
+        "p95_ms": 480.0,
+        "p99_ms": 690.0,
+        "max_ms": 693.7,
+        "avg_bytes": 2718.0
+      },
+      {
+        "name": "reports/financial/ledger-summary",
+        "requests": 71,
+        "failures": 0,
+        "avg_ms": 125.33,
+        "p50_ms": 93.0,
+        "p95_ms": 420.0,
+        "p99_ms": 830.0,
+        "max_ms": 834.03,
+        "avg_bytes": 5537.4
+      },
+      {
+        "name": "reports/receivables/aging-invoice",
+        "requests": 74,
+        "failures": 0,
+        "avg_ms": 211.37,
+        "p50_ms": 170.0,
+        "p95_ms": 420.0,
+        "p99_ms": 710.0,
+        "max_ms": 706.96,
+        "avg_bytes": 199899.2
+      },
+      {
+        "name": "reports/receivables/open-items",
+        "requests": 95,
+        "failures": 0,
+        "avg_ms": 199.46,
+        "p50_ms": 150.0,
+        "p95_ms": 420.0,
+        "p99_ms": 870.0,
+        "max_ms": 869.1,
+        "avg_bytes": 149752.4
+      },
+      {
+        "name": "reports/payables/vendor-outstanding-voucher",
+        "requests": 60,
+        "failures": 0,
+        "avg_ms": 163.56,
+        "p50_ms": 130.0,
+        "p95_ms": 400.0,
+        "p99_ms": 540.0,
+        "max_ms": 544.95,
+        "avg_bytes": 14537.4
+      },
+      {
+        "name": "reports/gstr1/readiness",
+        "requests": 35,
+        "failures": 0,
+        "avg_ms": 271.97,
+        "p50_ms": 260.0,
+        "p95_ms": 390.0,
+        "p99_ms": 470.0,
+        "max_ms": 471.59,
+        "avg_bytes": 3754.0
+      },
+      {
+        "name": "reports/payables/vendor-outstanding",
+        "requests": 94,
+        "failures": 0,
+        "avg_ms": 159.38,
+        "p50_ms": 120.0,
+        "p95_ms": 380.0,
+        "p99_ms": 1100.0,
+        "max_ms": 1093.45,
+        "avg_bytes": 14453.4
+      },
+      {
+        "name": "cross-tenant/financial-years [denied]",
+        "requests": 10,
+        "failures": 0,
+        "avg_ms": 174.61,
+        "p50_ms": 150.0,
+        "p95_ms": 340.0,
+        "p99_ms": 340.0,
+        "max_ms": 340.64,
+        "avg_bytes": 47.0
+      },
+      {
+        "name": "sales/invoices/list",
+        "requests": 57,
+        "failures": 0,
+        "avg_ms": 125.08,
+        "p50_ms": 98.0,
+        "p95_ms": 310.0,
+        "p99_ms": 790.0,
+        "max_ms": 790.76,
+        "avg_bytes": 56962.0
+      },
+      {
+        "name": "reports/receivables/aging-summary",
+        "requests": 74,
+        "failures": 0,
+        "avg_ms": 157.26,
+        "p50_ms": 140.0,
+        "p95_ms": 290.0,
+        "p99_ms": 410.0,
+        "max_ms": 408.54,
+        "avg_bytes": 4557.0
+      },
+      {
+        "name": "auth/me",
+        "requests": 32,
+        "failures": 0,
+        "avg_ms": 80.44,
+        "p50_ms": 49.0,
+        "p95_ms": 270.0,
+        "p99_ms": 400.0,
+        "max_ms": 399.25,
+        "avg_bytes": 4247.8
+      },
+      {
+        "name": "purchase/invoices/lookup",
+        "requests": 141,
+        "failures": 0,
+        "avg_ms": 100.79,
+        "p50_ms": 67.0,
+        "p95_ms": 270.0,
+        "p99_ms": 610.0,
+        "max_ms": 827.3,
+        "avg_bytes": 46586.3
+      },
+      {
+        "name": "dashboard/home-meta",
+        "requests": 130,
+        "failures": 0,
+        "avg_ms": 94.62,
+        "p50_ms": 78.0,
+        "p95_ms": 240.0,
+        "p99_ms": 300.0,
+        "max_ms": 314.17,
+        "avg_bytes": 14589.7
+      },
+      {
+        "name": "sales/invoices/lookup",
+        "requests": 150,
+        "failures": 0,
+        "avg_ms": 119.6,
+        "p50_ms": 95.0,
+        "p95_ms": 240.0,
+        "p99_ms": 580.0,
+        "max_ms": 636.82,
+        "avg_bytes": 47694.9
+      },
+      {
+        "name": "entity/context",
+        "requests": 42,
+        "failures": 0,
+        "avg_ms": 73.51,
+        "p50_ms": 62.0,
+        "p95_ms": 170.0,
+        "p99_ms": 220.0,
+        "max_ms": 223.96,
+        "avg_bytes": 766.7
+      },
+      {
+        "name": "reports/sales/gstin",
+        "requests": 26,
+        "failures": 0,
+        "avg_ms": 51.05,
+        "p50_ms": 41.0,
+        "p95_ms": 81.0,
+        "p99_ms": 170.0,
+        "max_ms": 167.16,
+        "avg_bytes": 1661.0
+      }
+    ],
+    "resources": {
+      "finacc-web-1": {
+        "max_cpu_pct": 280.12,
+        "max_mem_mib": 696.5,
+        "first_mem_mib": 556.6,
+        "last_mem_mib": 558.7,
+        "samples": 18
+      },
+      "finacc-postgres-1": {
+        "max_cpu_pct": 59.82,
+        "max_mem_mib": 71.12,
+        "first_mem_mib": 69.64,
+        "last_mem_mib": 62.69,
+        "samples": 18
+      },
+      "finacc-redis-1": {
+        "max_cpu_pct": 4.8,
+        "max_mem_mib": 10.85,
+        "first_mem_mib": 10.16,
+        "last_mem_mib": 10.02,
+        "samples": 18
+      },
+      "finacc-nginx-1": {
+        "max_cpu_pct": 1.27,
+        "max_mem_mib": 10.89,
+        "first_mem_mib": 10.55,
+        "last_mem_mib": 10.54,
+        "samples": 18
+      }
+    },
+    "max_pg_backends_sampled": 4,
+    "idle_in_transaction_samples": 0
+  },
+  "15u_5m": {
+    "aggregate": {
+      "Request Count": "2096",
+      "Failure Count": "0",
+      "Average Response Time": "188.41400338214606",
+      "Median Response Time": "130.0",
+      "95%": "530",
+      "99%": "980",
+      "Max Response Time": "1637.10529099626",
+      "Requests/s": "7.002967890061555",
+      "Failures/s": "0.0",
+      "Average Content Size": "62044.74427480916"
+    },
+    "financial_equal": true,
+    "exit_code": "0",
+    "endpoints_by_p95": [
+      {
+        "name": "auth/login",
+        "requests": 15,
+        "failures": 0,
+        "avg_ms": 978.28,
+        "p50_ms": 950.0,
+        "p95_ms": 1600.0,
+        "p99_ms": 1600.0,
+        "max_ms": 1637.11,
+        "avg_bytes": 4322.0
+      },
+      {
+        "name": "entity/context [startup]",
+        "requests": 15,
+        "failures": 0,
+        "avg_ms": 844.12,
+        "p50_ms": 880.0,
+        "p95_ms": 1300.0,
+        "p99_ms": 1300.0,
+        "max_ms": 1316.19,
+        "avg_bytes": 766.7
+      },
+      {
+        "name": "purchase/invoices/list",
+        "requests": 81,
+        "failures": 0,
+        "avg_ms": 402.33,
+        "p50_ms": 280.0,
+        "p95_ms": 950.0,
+        "p99_ms": 1300.0,
+        "max_ms": 1254.69,
+        "avg_bytes": 522430.4
+      },
+      {
+        "name": "reports/gstr1/readiness",
+        "requests": 77,
+        "failures": 0,
+        "avg_ms": 340.09,
+        "p50_ms": 270.0,
+        "p95_ms": 790.0,
+        "p99_ms": 1300.0,
+        "max_ms": 1273.24,
+        "avg_bytes": 3754.0
+      },
+      {
+        "name": "reports/gstr3b/summary",
+        "requests": 74,
+        "failures": 0,
+        "avg_ms": 364.98,
+        "p50_ms": 300.0,
+        "p95_ms": 620.0,
+        "p99_ms": 780.0,
+        "max_ms": 784.75,
+        "avg_bytes": 5015.0
+      },
+      {
+        "name": "reports/financial/daybook",
+        "requests": 211,
+        "failures": 0,
+        "avg_ms": 247.0,
+        "p50_ms": 190.0,
+        "p95_ms": 600.0,
+        "p99_ms": 940.0,
+        "max_ms": 1070.77,
+        "avg_bytes": 36607.0
+      },
+      {
+        "name": "reports/receivables/aging-invoice",
+        "requests": 123,
+        "failures": 0,
+        "avg_ms": 217.55,
+        "p50_ms": 160.0,
+        "p95_ms": 600.0,
+        "p99_ms": 820.0,
+        "max_ms": 992.27,
+        "avg_bytes": 199915.7
+      },
+      {
+        "name": "reports/receivables/aging-summary",
+        "requests": 109,
+        "failures": 0,
+        "avg_ms": 187.32,
+        "p50_ms": 130.0,
+        "p95_ms": 520.0,
+        "p99_ms": 870.0,
+        "max_ms": 898.07,
+        "avg_bytes": 4557.0
+      },
+      {
+        "name": "reports/receivables/open-items",
+        "requests": 158,
+        "failures": 0,
+        "avg_ms": 197.63,
+        "p50_ms": 150.0,
+        "p95_ms": 430.0,
+        "p99_ms": 640.0,
+        "max_ms": 823.19,
+        "avg_bytes": 149759.2
+      },
+      {
+        "name": "reports/payables/vendor-outstanding",
+        "requests": 143,
+        "failures": 0,
+        "avg_ms": 171.0,
+        "p50_ms": 120.0,
+        "p95_ms": 420.0,
+        "p99_ms": 790.0,
+        "max_ms": 935.5,
+        "avg_bytes": 14453.4
+      },
+      {
+        "name": "sales/invoices/lookup",
+        "requests": 198,
+        "failures": 0,
+        "avg_ms": 136.83,
+        "p50_ms": 95.0,
+        "p95_ms": 360.0,
+        "p99_ms": 880.0,
+        "max_ms": 985.1,
+        "avg_bytes": 47707.3
+      },
+      {
+        "name": "reports/gstr1/summary",
+        "requests": 74,
+        "failures": 0,
+        "avg_ms": 168.16,
+        "p50_ms": 120.0,
+        "p95_ms": 330.0,
+        "p99_ms": 1000.0,
+        "max_ms": 1041.63,
+        "avg_bytes": 2718.0
+      },
+      {
+        "name": "entity/context",
+        "requests": 72,
+        "failures": 0,
+        "avg_ms": 97.47,
+        "p50_ms": 61.0,
+        "p95_ms": 320.0,
+        "p99_ms": 850.0,
+        "max_ms": 851.61,
+        "avg_bytes": 766.7
+      },
+      {
+        "name": "reports/payables/vendor-outstanding-voucher",
+        "requests": 69,
+        "failures": 0,
+        "avg_ms": 150.47,
+        "p50_ms": 120.0,
+        "p95_ms": 310.0,
+        "p99_ms": 440.0,
+        "max_ms": 436.79,
+        "avg_bytes": 14537.3
+      },
+      {
+        "name": "cross-tenant/financial-years [denied]",
+        "requests": 15,
+        "failures": 0,
+        "avg_ms": 245.17,
+        "p50_ms": 250.0,
+        "p95_ms": 300.0,
+        "p99_ms": 300.0,
+        "max_ms": 295.48,
+        "avg_bytes": 47.0
+      },
+      {
+        "name": "sales/invoices/list",
+        "requests": 68,
+        "failures": 0,
+        "avg_ms": 120.9,
+        "p50_ms": 97.0,
+        "p95_ms": 270.0,
+        "p99_ms": 820.0,
+        "max_ms": 824.01,
+        "avg_bytes": 56962.0
+      },
+      {
+        "name": "dashboard/home-meta",
+        "requests": 186,
+        "failures": 0,
+        "avg_ms": 108.28,
+        "p50_ms": 75.0,
+        "p95_ms": 260.0,
+        "p99_ms": 920.0,
+        "max_ms": 949.53,
+        "avg_bytes": 14589.7
+      },
+      {
+        "name": "purchase/invoices/lookup",
+        "requests": 222,
+        "failures": 0,
+        "avg_ms": 91.12,
+        "p50_ms": 66.0,
+        "p95_ms": 210.0,
+        "p99_ms": 420.0,
+        "max_ms": 804.87,
+        "avg_bytes": 46590.0
+      },
+      {
+        "name": "reports/financial/ledger-summary",
+        "requests": 109,
+        "failures": 0,
+        "avg_ms": 118.3,
+        "p50_ms": 94.0,
+        "p95_ms": 210.0,
+        "p99_ms": 430.0,
+        "max_ms": 768.96,
+        "avg_bytes": 5537.9
+      },
+      {
+        "name": "reports/sales/gstin",
+        "requests": 44,
+        "failures": 0,
+        "avg_ms": 65.04,
+        "p50_ms": 41.0,
+        "p95_ms": 180.0,
+        "p99_ms": 310.0,
+        "max_ms": 314.01,
+        "avg_bytes": 1661.0
+      },
+      {
+        "name": "auth/me",
+        "requests": 33,
+        "failures": 0,
+        "avg_ms": 56.44,
+        "p50_ms": 46.0,
+        "p95_ms": 140.0,
+        "p99_ms": 200.0,
+        "max_ms": 201.56,
+        "avg_bytes": 4250.3
+      }
+    ],
+    "resources": {
+      "finacc-web-1": {
+        "max_cpu_pct": 199.86,
+        "max_mem_mib": 672.6,
+        "first_mem_mib": 559.0,
+        "last_mem_mib": 560.5,
+        "samples": 18
+      },
+      "finacc-postgres-1": {
+        "max_cpu_pct": 72.59,
+        "max_mem_mib": 76.97,
+        "first_mem_mib": 68.57,
+        "last_mem_mib": 63.79,
+        "samples": 18
+      },
+      "finacc-redis-1": {
+        "max_cpu_pct": 2.54,
+        "max_mem_mib": 10.68,
+        "first_mem_mib": 10.05,
+        "last_mem_mib": 10.37,
+        "samples": 18
+      },
+      "finacc-nginx-1": {
+        "max_cpu_pct": 1.53,
+        "max_mem_mib": 10.67,
+        "first_mem_mib": 10.67,
+        "last_mem_mib": 10.59,
+        "samples": 18
+      }
+    },
+    "max_pg_backends_sampled": 4,
+    "idle_in_transaction_samples": 3
+  },
+  "25u_10m": {
+    "aggregate": {
+      "Request Count": "6787",
+      "Failure Count": "0",
+      "Average Response Time": "229.8950107283735",
+      "Median Response Time": "140.0",
+      "95%": "720",
+      "99%": "1800",
+      "Max Response Time": "3094.0994170014164",
+      "Requests/s": "11.33256052665341",
+      "Failures/s": "0.0",
+      "Average Content Size": "60143.103285693236"
+    },
+    "financial_equal": true,
+    "exit_code": "0",
+    "endpoints_by_p95": [
+      {
+        "name": "auth/login",
+        "requests": 25,
+        "failures": 0,
+        "avg_ms": 1380.17,
+        "p50_ms": 1500.0,
+        "p95_ms": 2400.0,
+        "p99_ms": 2600.0,
+        "max_ms": 2599.01,
+        "avg_bytes": 4321.8
+      },
+      {
+        "name": "entity/context [startup]",
+        "requests": 25,
+        "failures": 0,
+        "avg_ms": 1284.69,
+        "p50_ms": 1300.0,
+        "p95_ms": 2100.0,
+        "p99_ms": 2100.0,
+        "max_ms": 2098.56,
+        "avg_bytes": 766.6
+      },
+      {
+        "name": "reports/receivables/aging-invoice",
+        "requests": 355,
+        "failures": 0,
+        "avg_ms": 282.61,
+        "p50_ms": 170.0,
+        "p95_ms": 1100.0,
+        "p99_ms": 1900.0,
+        "max_ms": 2943.03,
+        "avg_bytes": 199958.1
+      },
+      {
+        "name": "reports/gstr3b/summary",
+        "requests": 252,
+        "failures": 0,
+        "avg_ms": 409.46,
+        "p50_ms": 300.0,
+        "p95_ms": 980.0,
+        "p99_ms": 2000.0,
+        "max_ms": 2670.62,
+        "avg_bytes": 5015.0
+      },
+      {
+        "name": "reports/gstr1/readiness",
+        "requests": 225,
+        "failures": 0,
+        "avg_ms": 373.17,
+        "p50_ms": 270.0,
+        "p95_ms": 910.0,
+        "p99_ms": 1700.0,
+        "max_ms": 2585.94,
+        "avg_bytes": 3754.0
+      },
+      {
+        "name": "purchase/invoices/list",
+        "requests": 258,
+        "failures": 0,
+        "avg_ms": 382.0,
+        "p50_ms": 280.0,
+        "p95_ms": 900.0,
+        "p99_ms": 1400.0,
+        "max_ms": 2042.65,
+        "avg_bytes": 522439.5
+      },
+      {
+        "name": "reports/payables/vendor-outstanding",
+        "requests": 511,
+        "failures": 0,
+        "avg_ms": 235.54,
+        "p50_ms": 130.0,
+        "p95_ms": 800.0,
+        "p99_ms": 2000.0,
+        "max_ms": 2815.51,
+        "avg_bytes": 14453.4
+      },
+      {
+        "name": "reports/receivables/open-items",
+        "requests": 483,
+        "failures": 0,
+        "avg_ms": 266.91,
+        "p50_ms": 160.0,
+        "p95_ms": 760.0,
+        "p99_ms": 2400.0,
+        "max_ms": 2849.16,
+        "avg_bytes": 149772.4
+      },
+      {
+        "name": "reports/financial/daybook",
+        "requests": 604,
+        "failures": 0,
+        "avg_ms": 292.26,
+        "p50_ms": 190.0,
+        "p95_ms": 710.0,
+        "p99_ms": 1600.0,
+        "max_ms": 3094.1,
+        "avg_bytes": 36592.8
+      },
+      {
+        "name": "sales/invoices/lookup",
+        "requests": 699,
+        "failures": 0,
+        "avg_ms": 174.36,
+        "p50_ms": 92.0,
+        "p95_ms": 650.0,
+        "p99_ms": 1300.0,
+        "max_ms": 2529.24,
+        "avg_bytes": 47700.9
+      },
+      {
+        "name": "auth/me",
+        "requests": 119,
+        "failures": 0,
+        "avg_ms": 130.25,
+        "p50_ms": 47.0,
+        "p95_ms": 630.0,
+        "p99_ms": 1600.0,
+        "max_ms": 1979.9,
+        "avg_bytes": 4249.1
+      },
+      {
+        "name": "reports/gstr1/summary",
+        "requests": 219,
+        "failures": 0,
+        "avg_ms": 206.31,
+        "p50_ms": 130.0,
+        "p95_ms": 620.0,
+        "p99_ms": 1600.0,
+        "max_ms": 2235.63,
+        "avg_bytes": 2718.0
+      },
+      {
+        "name": "dashboard/home-meta",
+        "requests": 614,
+        "failures": 0,
+        "avg_ms": 169.38,
+        "p50_ms": 75.0,
+        "p95_ms": 600.0,
+        "p99_ms": 2100.0,
+        "max_ms": 2619.61,
+        "avg_bytes": 14589.6
+      },
+      {
+        "name": "reports/receivables/aging-summary",
+        "requests": 390,
+        "failures": 0,
+        "avg_ms": 213.44,
+        "p50_ms": 140.0,
+        "p95_ms": 600.0,
+        "p99_ms": 1400.0,
+        "max_ms": 2458.4,
+        "avg_bytes": 4557.0
+      },
+      {
+        "name": "reports/sales/gstin",
+        "requests": 134,
+        "failures": 0,
+        "avg_ms": 133.0,
+        "p50_ms": 39.0,
+        "p95_ms": 590.0,
+        "p99_ms": 2400.0,
+        "max_ms": 2449.27,
+        "avg_bytes": 1661.0
+      },
+      {
+        "name": "sales/invoices/list",
+        "requests": 258,
+        "failures": 0,
+        "avg_ms": 181.32,
+        "p50_ms": 94.0,
+        "p95_ms": 530.0,
+        "p99_ms": 1800.0,
+        "max_ms": 2926.41,
+        "avg_bytes": 56962.0
+      },
+      {
+        "name": "reports/financial/ledger-summary",
+        "requests": 406,
+        "failures": 0,
+        "avg_ms": 171.38,
+        "p50_ms": 94.0,
+        "p95_ms": 520.0,
+        "p99_ms": 1200.0,
+        "max_ms": 2197.4,
+        "avg_bytes": 5537.3
+      },
+      {
+        "name": "cross-tenant/financial-years [denied]",
+        "requests": 25,
+        "failures": 0,
+        "avg_ms": 372.26,
+        "p50_ms": 360.0,
+        "p95_ms": 490.0,
+        "p99_ms": 510.0,
+        "max_ms": 505.58,
+        "avg_bytes": 47.0
+      },
+      {
+        "name": "reports/payables/vendor-outstanding-voucher",
+        "requests": 236,
+        "failures": 0,
+        "avg_ms": 190.33,
+        "p50_ms": 120.0,
+        "p95_ms": 470.0,
+        "p99_ms": 1200.0,
+        "max_ms": 2273.92,
+        "avg_bytes": 14537.3
+      },
+      {
+        "name": "purchase/invoices/lookup",
+        "requests": 695,
+        "failures": 0,
+        "avg_ms": 135.66,
+        "p50_ms": 65.0,
+        "p95_ms": 430.0,
+        "p99_ms": 1100.0,
+        "max_ms": 2635.05,
+        "avg_bytes": 46590.8
+      },
+      {
+        "name": "entity/context",
+        "requests": 254,
+        "failures": 0,
+        "avg_ms": 115.54,
+        "p50_ms": 61.0,
+        "p95_ms": 290.0,
+        "p99_ms": 1100.0,
+        "max_ms": 2094.14,
+        "avg_bytes": 766.7
+      }
+    ],
+    "resources": {
+      "finacc-web-1": {
+        "max_cpu_pct": 332.83,
+        "max_mem_mib": 703.5,
+        "first_mem_mib": 628.2,
+        "last_mem_mib": 557.9,
+        "samples": 36
+      },
+      "finacc-postgres-1": {
+        "max_cpu_pct": 141.66,
+        "max_mem_mib": 81.63,
+        "first_mem_mib": 69.41,
+        "last_mem_mib": 71.57,
+        "samples": 36
+      },
+      "finacc-redis-1": {
+        "max_cpu_pct": 3.38,
+        "max_mem_mib": 11.05,
+        "first_mem_mib": 10.4,
+        "last_mem_mib": 10.61,
+        "samples": 36
+      },
+      "finacc-nginx-1": {
+        "max_cpu_pct": 7.3,
+        "max_mem_mib": 10.86,
+        "first_mem_mib": 10.7,
+        "last_mem_mib": 10.23,
+        "samples": 36
+      }
+    },
+    "max_pg_backends_sampled": 4,
+    "idle_in_transaction_samples": 7
+  }
+}

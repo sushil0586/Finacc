@@ -1,0 +1,178 @@
+{
+  "1u_3m": {
+    "reports/financial/daybook [get]": {
+      "requests": 3,
+      "failures": 0,
+      "avg_ms": 564.0,
+      "p50_ms": 440.0,
+      "p95_ms": 830.0,
+      "p99_ms": 830.0,
+      "max_ms": 826.0,
+      "avg_bytes": 35533.0
+    },
+    "reports/payables/vendor-outstanding [summary]": {
+      "requests": 4,
+      "failures": 0,
+      "avg_ms": 1084.9,
+      "p50_ms": 1100.0,
+      "p95_ms": 1200.0,
+      "p99_ms": 1200.0,
+      "max_ms": 1155.4,
+      "avg_bytes": 312602.0
+    },
+    "reports/receivables/aging [invoice]": {
+      "requests": 1,
+      "failures": 0,
+      "avg_ms": 1694.4,
+      "p50_ms": 1700.0,
+      "p95_ms": 1700.0,
+      "p99_ms": 1700.0,
+      "max_ms": 1694.4,
+      "avg_bytes": 201860.0
+    },
+    "reports/receivables/aging [summary]": {
+      "requests": 7,
+      "failures": 0,
+      "avg_ms": 1557.2,
+      "p50_ms": 1500.0,
+      "p95_ms": 2000.0,
+      "p99_ms": 2000.0,
+      "max_ms": 1979.5,
+      "avg_bytes": 157692.0
+    },
+    "Aggregated": {
+      "requests": 81,
+      "failures": 0,
+      "avg_ms": 425.4,
+      "p50_ms": 130.0,
+      "p95_ms": 1500.0,
+      "p99_ms": 2000.0,
+      "max_ms": 1979.5,
+      "avg_bytes": 293543.7
+    }
+  },
+  "5u_5m": {
+    "reports/financial/daybook [get]": {
+      "requests": 25,
+      "failures": 0,
+      "avg_ms": 292.8,
+      "p50_ms": 250.0,
+      "p95_ms": 480.0,
+      "p99_ms": 520.0,
+      "max_ms": 515.5,
+      "avg_bytes": 35533.0
+    },
+    "reports/payables/vendor-outstanding [summary]": {
+      "requests": 34,
+      "failures": 0,
+      "avg_ms": 1078.6,
+      "p50_ms": 1100.0,
+      "p95_ms": 1200.0,
+      "p99_ms": 1400.0,
+      "max_ms": 1411.1,
+      "avg_bytes": 312602.0
+    },
+    "reports/receivables/aging [invoice]": {
+      "requests": 16,
+      "failures": 0,
+      "avg_ms": 1785.8,
+      "p50_ms": 1800.0,
+      "p95_ms": 2000.0,
+      "p99_ms": 2000.0,
+      "max_ms": 1956.6,
+      "avg_bytes": 201860.0
+    },
+    "reports/receivables/aging [summary]": {
+      "requests": 40,
+      "failures": 0,
+      "avg_ms": 1483.5,
+      "p50_ms": 1400.0,
+      "p95_ms": 2100.0,
+      "p99_ms": 2400.0,
+      "max_ms": 2361.7,
+      "avg_bytes": 157692.0
+    },
+    "reports/receivables/open-items [get]": {
+      "requests": 21,
+      "failures": 0,
+      "avg_ms": 1510.5,
+      "p50_ms": 1500.0,
+      "p95_ms": 1700.0,
+      "p99_ms": 1700.0,
+      "max_ms": 1680.1,
+      "avg_bytes": 152261.0
+    },
+    "Aggregated": {
+      "requests": 630,
+      "failures": 0,
+      "avg_ms": 401.8,
+      "p50_ms": 120.0,
+      "p95_ms": 1500.0,
+      "p99_ms": 1800.0,
+      "max_ms": 2361.7,
+      "avg_bytes": 257620.8
+    }
+  },
+  "10u_10m": {
+    "reports/financial/daybook [get]": {
+      "requests": 134,
+      "failures": 0,
+      "avg_ms": 322.1,
+      "p50_ms": 250.0,
+      "p95_ms": 730.0,
+      "p99_ms": 1300.0,
+      "max_ms": 2194.6,
+      "avg_bytes": 35533.0
+    },
+    "reports/payables/vendor-outstanding [summary]": {
+      "requests": 120,
+      "failures": 0,
+      "avg_ms": 1183.1,
+      "p50_ms": 1100.0,
+      "p95_ms": 1700.0,
+      "p99_ms": 2500.0,
+      "max_ms": 2954.8,
+      "avg_bytes": 312602.0
+    },
+    "reports/receivables/aging [invoice]": {
+      "requests": 56,
+      "failures": 0,
+      "avg_ms": 1990.3,
+      "p50_ms": 1900.0,
+      "p95_ms": 2700.0,
+      "p99_ms": 2700.0,
+      "max_ms": 2732.1,
+      "avg_bytes": 201860.0
+    },
+    "reports/receivables/aging [summary]": {
+      "requests": 132,
+      "failures": 0,
+      "avg_ms": 1582.0,
+      "p50_ms": 1500.0,
+      "p95_ms": 2400.0,
+      "p99_ms": 2800.0,
+      "max_ms": 2860.9,
+      "avg_bytes": 157692.0
+    },
+    "reports/receivables/open-items [get]": {
+      "requests": 82,
+      "failures": 0,
+      "avg_ms": 1679.8,
+      "p50_ms": 1500.0,
+      "p95_ms": 2600.0,
+      "p99_ms": 3000.0,
+      "max_ms": 2976.9,
+      "avg_bytes": 152261.0
+    },
+    "Aggregated": {
+      "requests": 2496,
+      "failures": 0,
+      "avg_ms": 427.7,
+      "p50_ms": 130.0,
+      "p95_ms": 1600.0,
+      "p99_ms": 2400.0,
+      "max_ms": 2976.9,
+      "avg_bytes": 255779.8
+    }
+  }
+}

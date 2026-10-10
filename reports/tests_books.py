@@ -4,7 +4,9 @@ from datetime import date, datetime
 from decimal import Decimal
 from unittest.mock import patch
 
+from django.db import connection
 from django.test import override_settings
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APITestCase, APIClient
@@ -18,6 +20,7 @@ from geography.models import City, Country, District, State
 from payments.models.payment_core import PaymentVoucherHeader
 from posting.models import Entry, EntryStatus, PostingBatch, JournalLine, StaticAccount, EntityStaticAccountMap, TxnType
 from purchase.models.purchase_core import PurchaseInvoiceHeader, PurchaseInvoiceLine
+from reports.services.financial.books import build_daybook
 from receipts.models.receipt_core import ReceiptVoucherHeader
 from sales.models.sales_core import SalesInvoiceHeader, SalesInvoiceLine
 from vouchers.models.voucher_core import VoucherHeader
@@ -671,6 +674,22 @@ class BookReportAPITests(APITestCase):
         self.assertEqual(data["totals"]["debit_total"], "125.00")
         self.assertIsNotNone(data["next"])
         self.assertIsNone(data["previous"])
+
+    def test_daybook_query_count_does_not_grow_with_page_size(self):
+        with CaptureQueriesContext(connection) as queries:
+            data = build_daybook(
+                entity_id=self.entity.id,
+                entityfin_id=self.entityfin.id,
+                subentity_id=self.subentity.id,
+                from_date="2025-04-01",
+                to_date="2025-04-30",
+                page=1,
+                page_size=2,
+            )
+
+        self.assertEqual(len(data["results"]), 2)
+        self.assertEqual(data["totals"]["debit_total"], "125.00")
+        self.assertLessEqual(len(queries), 8)
 
     def test_daybook_detail_returns_journal_lines(self):
         response = self.client.get(reverse("reports_api:financial-daybook-detail", args=[self.cash_entry.id]), {"entity": self.entity.id, "entityfinid": self.entityfin.id, "subentity": self.subentity.id})

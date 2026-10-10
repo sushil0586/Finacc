@@ -1,0 +1,16 @@
+{
+  "name": "purchase/invoices",
+  "status_code": 200,
+  "elapsed_ms": 105.58,
+  "query_count": 34,
+  "sql_ms": 69.0,
+  "response_bytes": 25256,
+  "params": {
+    "entity": "10",
+    "entityfinid": "8",
+    "page": "1",
+    "page_size": "25",
+    "subentity": "8"
+  },
+  "slow_queries": []
+}

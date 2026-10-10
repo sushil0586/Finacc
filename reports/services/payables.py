@@ -37,6 +37,7 @@ from reports.selectors.payables import (
     coerce_date,
     iter_asof_open_item_balance_summary_rows,
     open_item_vendor_aging_bucket_summary,
+    open_item_vendor_outstanding_summary,
     open_item_vendor_summary,
     period_bill_credit_totals,
     posted_payment_totals,
@@ -261,6 +262,37 @@ def _voucher_type_matches(raw_type, label, selected_types):
         candidates.add(str(int(raw_type)) if str(raw_type).lstrip("-").isdigit() else str(raw_type).strip().lower())
     normalized = {str(item).strip().lower() for item in (selected_types or []) if str(item).strip()}
     return bool(candidates & normalized)
+
+
+def _purchase_doc_type_filters(selected_types):
+    if not selected_types:
+        return []
+    mapping = {
+        "1": int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
+        "pinv": int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
+        "tax invoice": int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
+        "purchase invoice": int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
+        "invoice": int(PurchaseInvoiceHeader.DocType.TAX_INVOICE),
+        "2": int(PurchaseInvoiceHeader.DocType.CREDIT_NOTE),
+        "pcn": int(PurchaseInvoiceHeader.DocType.CREDIT_NOTE),
+        "credit note": int(PurchaseInvoiceHeader.DocType.CREDIT_NOTE),
+        "purchase credit note": int(PurchaseInvoiceHeader.DocType.CREDIT_NOTE),
+        "3": int(PurchaseInvoiceHeader.DocType.DEBIT_NOTE),
+        "pdn": int(PurchaseInvoiceHeader.DocType.DEBIT_NOTE),
+        "debit note": int(PurchaseInvoiceHeader.DocType.DEBIT_NOTE),
+        "purchase debit note": int(PurchaseInvoiceHeader.DocType.DEBIT_NOTE),
+    }
+    doc_types = []
+    for value in selected_types:
+        normalized = str(value).strip().lower()
+        if not normalized:
+            continue
+        doc_type = mapping.get(normalized)
+        if doc_type is None:
+            return None
+        if doc_type not in doc_types:
+            doc_types.append(doc_type)
+    return doc_types
 
 
 def _date_or_none(value):
@@ -695,6 +727,7 @@ def build_vendor_outstanding_report(
     vendor_scope_ids = set(vendor_by_id.keys())
 
     selected_voucher_types = voucher_type or []
+    selected_purchase_doc_types = _purchase_doc_type_filters(selected_voucher_types)
     normalized_aging_basis = (aging_basis or "due_date").strip().lower()
     if normalized_aging_basis not in {"due_date", "bill_date"}:
         normalized_aging_basis = "due_date"
@@ -724,20 +757,35 @@ def build_vendor_outstanding_report(
         upto_date=to_date,
         vendor_ids=vendor_scope_ids,
     )
-    asof_open_item_rows = asof_open_item_balances(
-        entity_id=entity_id,
-        entityfin_id=entityfin_id,
-        subentity_id=subentity_id,
-        upto_date=to_date,
-        vendor_ids=vendor_scope_ids,
-    )
-    asof_advance_rows = asof_advances(
-        entity_id=entity_id,
-        entityfin_id=entityfin_id,
-        subentity_id=subentity_id,
-        upto_date=to_date,
-        vendor_ids=vendor_scope_ids,
-    )
+    can_use_summary_aggregate = normalized_view == "summary" and selected_purchase_doc_types is not None
+    asof_open_item_summary = {}
+    if can_use_summary_aggregate:
+        asof_open_item_summary = open_item_vendor_outstanding_summary(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            upto_date=to_date,
+            vendor_ids=vendor_scope_ids,
+            aging_basis=normalized_aging_basis,
+            doc_types=selected_purchase_doc_types,
+        )
+        asof_open_item_rows = []
+        asof_advance_rows = []
+    else:
+        asof_open_item_rows = asof_open_item_balances(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            upto_date=to_date,
+            vendor_ids=vendor_scope_ids,
+        )
+        asof_advance_rows = asof_advances(
+            entity_id=entity_id,
+            entityfin_id=entityfin_id,
+            subentity_id=subentity_id,
+            upto_date=to_date,
+            vendor_ids=vendor_scope_ids,
+        )
     payment_totals, _period_last_payment = posted_payment_totals(
         entity_id=entity_id,
         entityfin_id=entityfin_id,
@@ -778,17 +826,21 @@ def build_vendor_outstanding_report(
         vendor_credit_limit = account_creditlimit(vendor)
         credit_limit = q2(vendor_credit_limit or ZERO) if vendor_credit_limit is not None else None
 
-        vendor_positive_outstanding = ZERO
-        vendor_credit_balance = ZERO
+        summary_source = asof_open_item_summary.get(vendor.id, {}) if can_use_summary_aggregate else {}
+        vendor_positive_outstanding = q2(summary_source.get("positive_outstanding", ZERO))
+        vendor_credit_balance = q2(summary_source.get("credit_balance", ZERO))
         vendor_advance_balance = asof_advance_total
-        vendor_not_due = ZERO
-        vendor_overdue = ZERO
-        oldest_due_date = None
+        vendor_not_due = q2(summary_source.get("not_due", ZERO))
+        vendor_overdue = q2(summary_source.get("overdue_amount", ZERO))
+        oldest_due_date = summary_source.get("oldest_due_date")
         last_bill_date = last_bill_dates.get(vendor.id)
         bucket_totals = defaultdict(lambda: ZERO)
+        if can_use_summary_aggregate:
+            for key in ("bucket_0_30", "bucket_31_60", "bucket_61_90", "bucket_91_180", "bucket_181_plus"):
+                bucket_totals[key] = q2(summary_source.get(key, ZERO))
         vendor_detail_rows = []
 
-        for item, settled, outstanding in items_by_vendor.get(vendor.id, []):
+        for item, settled, outstanding in ([] if can_use_summary_aggregate else items_by_vendor.get(vendor.id, [])):
             doc_type = int(getattr(item, "doc_type", 0) or getattr(getattr(item, "header", None), "doc_type", 0) or 0)
             doc_type_name = item.header.get_doc_type_display() if getattr(item, "header", None) else str(doc_type)
             if not _voucher_type_matches(doc_type, doc_type_name, selected_voucher_types):

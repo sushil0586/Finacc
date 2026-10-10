@@ -1,0 +1,15 @@
+NAME                CPU %     MEM USAGE / LIMIT
+finacc-nginx-1      0.03%     9.77MiB / 7.748GiB
+finacc-postgres-1   1.19%     190.2MiB / 7.748GiB
+finacc-redis-1      0.34%     10.31MiB / 7.748GiB
+finacc-web-1        154.63%   465.1MiB / 7.748GiB
+ total_connections | active | idle_in_tx | waiting 
+-------------------+--------+------------+---------
+                 1 |      1 |          0 |       0
+(1 row)
+
+ ungranted_locks 
+-----------------
+               0
+(1 row)
+

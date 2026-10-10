@@ -34,6 +34,11 @@ AR_REPORT_VIEW_PERMISSION_CODES = (
     "reports.accounts_receivable_aging.view",
 )
 
+AR_CUSTOMER_LEDGER_EXPORT_PERMISSION_CODES = (
+    "sales.ar.export",
+    "reports.financial_hub.receivables_hub.customer_ledger_statement.view",
+)
+
 
 def _parse_scope(request):
     entity = request.query_params.get("entity")
@@ -91,6 +96,29 @@ def _require_ar_manage_permission(*, user, entity_id: int):
 
 
 def _require_ar_export_permission(*, user, entity_id: int):
+    entity = EffectivePermissionService.entity_for_user(user, int(entity_id))
+    if entity is None:
+        raise PermissionDenied("You do not have access to this entity.")
+
+    available_codes = set(EffectivePermissionService.permission_codes_for_user(user, int(entity.id)))
+    if "sales.ar.export" in available_codes:
+        SubscriptionService.assert_entity_access(
+            user=user,
+            entity=entity,
+            access_mode=SubscriptionService.ACCESS_MODE_OPERATIONAL,
+            feature_code=SubscriptionLimitCodes.FEATURE_SALES,
+        )
+        return entity
+
+    if "reports.financial_hub.receivables_hub.customer_ledger_statement.view" in available_codes:
+        SubscriptionService.assert_entity_access(
+            user=user,
+            entity=entity,
+            access_mode=SubscriptionService.ACCESS_MODE_OPERATIONAL,
+            feature_code=SubscriptionLimitCodes.FEATURE_RECEIVABLES,
+        )
+        return entity
+
     require_sales_scope_permission(
         user=user,
         entity_id=entity_id,
@@ -110,7 +138,8 @@ def _filtered_querydict(request, *, exclude=None):
 
 def _attach_customer_statement_actions(payload, request, *, entity_id, export_base_path):
     query = _filtered_querydict(request)
-    can_export = "sales.ar.export" in EffectivePermissionService.permission_codes_for_user(request.user, entity_id)
+    permissions = set(EffectivePermissionService.permission_codes_for_user(request.user, entity_id))
+    can_export = any(code in permissions for code in AR_CUSTOMER_LEDGER_EXPORT_PERMISSION_CODES)
     payload["actions"] = {
         "can_view": True,
         "can_export_excel": can_export,

@@ -1,0 +1,22 @@
+{
+  "name": "reports/payables/vendor-outstanding",
+  "status_code": 200,
+  "elapsed_ms": 8143.2,
+  "query_count": 42,
+  "sql_ms": 561.0,
+  "response_bytes": 161793,
+  "params": {
+    "entity": "10",
+    "entityfinid": "8",
+    "subentity": "8",
+    "as_of_date": "2026-10-10",
+    "page": "1",
+    "page_size": "50"
+  },
+  "slow_queries": [
+    {
+      "sql_ms": 269.0,
+      "sql": "DECLARE \"_django_curs_8283676032_sync_4\" NO SCROLL CURSOR WITH HOLD FOR SELECT \"purchase_vendorbillopenitem\".\"id\", \"purchase_vendorbillopenitem\".\"header_id\", \"purchase_vendorbillopenitem\".\"subentity_id\", \"purchase_vendorbillopenitem\".\"vendor_id\", \"purchase_vendorbillopenitem\".\"doc_type\", \"purchase_vendorbillopenitem\".\"bill_date\", \"purchase_vendorbillopenitem\".\"due_date\", \"purchase_vendorbillopenitem\".\"purchase_number\", \"purchase_vendorbillopenitem\".\"supplier_invoice_number\", \"purchase_vendorbill"
+    }
+  ]
+}

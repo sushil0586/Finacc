@@ -1,0 +1,21 @@
+{
+  "name": "purchase/invoices",
+  "status_code": 200,
+  "elapsed_ms": 23567.07,
+  "query_count": 34,
+  "sql_ms": 432.0,
+  "response_bytes": 72507984,
+  "params": {
+    "entity": "10",
+    "entityfinid": "8",
+    "page": "1",
+    "page_size": "25",
+    "subentity": "8"
+  },
+  "slow_queries": [
+    {
+      "sql_ms": 382.0,
+      "sql": "SELECT \"purchase_purchaseinvoiceheader\".\"id\", \"purchase_purchaseinvoiceheader\".\"doc_type\", \"purchase_purchaseinvoiceheader\".\"bill_date\", \"purchase_purchaseinvoiceheader\".\"posting_date\", \"purchase_purchaseinvoiceheader\".\"due_date\", \"purchase_purchaseinvoiceheader\".\"doc_code\", \"purchase_purchaseinvoiceheader\".\"doc_no\", \"purchase_purchaseinvoiceheader\".\"purchase_number\", \"purchase_purchaseinvoiceheader\".\"supplier_invoice_number\", \"purchase_purchaseinvoiceheader\".\"po_reference_no\", \"purchase_purchas"
+    }
+  ]
+}

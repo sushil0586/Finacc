@@ -77,7 +77,12 @@ from sales.views.eway_views import (
     SalesInvoiceGetEWayBillsForTransporterByGSTINAPIView,
     SalesInvoiceGenerateConsolidatedEWayAPIView,
 )
-from sales.views.sales_ar import CustomerSettlementListCreateAPIView, _require_ar_view_permission
+from sales.views.sales_ar import (
+    CustomerSettlementListCreateAPIView,
+    _attach_customer_statement_actions,
+    _require_ar_export_permission,
+    _require_ar_view_permission,
+)
 from sales.views.sales_ar_exports import CustomerStatementExcelAPIView
 from posting.adapters.sales_invoice import SalesInvoicePostingAdapter, SalesInvoicePostingConfig
 from posting.common.static_accounts import StaticAccountCodes
@@ -119,6 +124,7 @@ class SalesCompliancePermissionContractTests(SimpleTestCase):
 
 class SalesArPermissionContractTests(SimpleTestCase):
     def setUp(self):
+        self.factory = APIRequestFactory()
         self.user = SimpleNamespace(id=11, is_authenticated=True)
         self.entity = SimpleNamespace(id=77)
 
@@ -172,6 +178,45 @@ class SalesArPermissionContractTests(SimpleTestCase):
 
         with self.assertRaises(PermissionDenied):
             _require_ar_view_permission(user=self.user, entity_id=self.entity.id)
+
+    @patch("sales.views.sales_ar.SubscriptionService.assert_entity_access")
+    @patch("sales.views.sales_ar.EffectivePermissionService.permission_codes_for_user")
+    @patch("sales.views.sales_ar.EffectivePermissionService.entity_for_user")
+    def test_customer_ledger_report_permission_allows_statement_export(
+        self,
+        mocked_entity_for_user,
+        mocked_permission_codes,
+        mocked_assert_entity_access,
+    ):
+        mocked_entity_for_user.return_value = self.entity
+        mocked_permission_codes.return_value = {
+            "reports.financial_hub.receivables_hub.customer_ledger_statement.view"
+        }
+
+        result = _require_ar_export_permission(user=self.user, entity_id=self.entity.id)
+
+        self.assertEqual(result, self.entity)
+        mocked_assert_entity_access.assert_called_once()
+        self.assertEqual(mocked_assert_entity_access.call_args.kwargs["feature_code"], "feature_receivables")
+
+    @patch("sales.views.sales_ar.EffectivePermissionService.permission_codes_for_user")
+    def test_customer_statement_actions_show_exports_for_customer_ledger_report_permission(
+        self,
+        mocked_permission_codes,
+    ):
+        mocked_permission_codes.return_value = {
+            "reports.financial_hub.receivables_hub.customer_ledger_statement.view"
+        }
+        request = self.factory.get("/api/sales/ar/customer-statement/", {"entity": "77", "customer": "529"})
+        request.user = self.user
+
+        payload = _attach_customer_statement_actions({}, request, entity_id=self.entity.id, export_base_path="/api/sales/ar/customer-statement/")
+
+        self.assertTrue(payload["actions"]["can_export_excel"])
+        self.assertTrue(payload["actions"]["can_export_pdf"])
+        self.assertTrue(payload["actions"]["can_export_csv"])
+        self.assertTrue(payload["actions"]["can_print"])
+        self.assertEqual(set(payload["actions"]["export_urls"].keys()), {"excel", "pdf", "csv", "print"})
 
 
 class SalesInvoiceServiceUnitTests(SimpleTestCase):
@@ -3484,6 +3529,24 @@ class SalesInvoiceViewUnitTests(SimpleTestCase):
         self.assertIn("ledger", select_related["customer"])
         self.assertIn("subentity", select_related)
 
+    @patch("sales.views.sales_invoice_views.require_sales_request_permission")
+    def test_lookup_queryset_filters_current_window_and_orders_latest_first(self, mocked_require_permission):
+        request = self.factory.get(
+            "/api/sales/invoices/lookup/?entity=1&from_date=2026-10-01&to_date=2026-10-10"
+        )
+        force_authenticate(request, user=self.user)
+
+        view = SalesInvoiceLookupAPIView()
+        view.request = view.initialize_request(request)
+
+        queryset = view._base_queryset()
+        _sql, params = queryset.query.sql_with_params()
+
+        self.assertEqual(queryset.query.order_by, ("-bill_date", "-id"))
+        self.assertIn(date(2026, 10, 1), params)
+        self.assertIn(date(2026, 10, 10), params)
+        mocked_require_permission.assert_called_once()
+
     def test_nav_scope_queryset_uses_exists_for_line_mode_filter(self):
         queryset = SalesInvoiceNavService._scope_qs(
             entity_id=1,
@@ -6099,6 +6162,38 @@ class SalesComplianceRecoveryUnitTests(SalesInvoiceViewUnitTests):
                 "returned_count": 1,
             },
         )
+
+    @patch("sales.views.sales_invoice_views.profile_sales_block")
+    @patch("sales.views.sales_invoice_views.SalesInvoiceListSerializer")
+    @patch.object(SalesInvoiceListCreateAPIView, "filter_queryset")
+    @patch.object(SalesInvoiceListCreateAPIView, "get_queryset")
+    def test_list_view_honors_page_size_without_changing_array_contract(
+        self,
+        mocked_get_queryset,
+        mocked_filter_queryset,
+        mocked_list_serializer,
+        mocked_profile_sales_block,
+    ):
+        perf_state = {}
+        mocked_profile_sales_block.return_value.__enter__.return_value = perf_state
+        queryset = MagicMock()
+        sliced_queryset = [self.header]
+        queryset.__getitem__.return_value = sliced_queryset
+        mocked_get_queryset.return_value = queryset
+        mocked_filter_queryset.return_value = queryset
+        mocked_list_serializer.return_value.data = [{"id": 10, "invoice_number": "INV-10"}]
+
+        request = self.factory.get("/api/sales/invoices/?entity=1&page=2&page_size=25")
+        force_authenticate(request, user=self.user)
+
+        response = SalesInvoiceListCreateAPIView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, [{"id": 10, "invoice_number": "INV-10"}])
+        queryset.__getitem__.assert_called_once_with(slice(25, 50, None))
+        self.assertEqual(perf_state["limit"], 25)
+        self.assertEqual(perf_state["offset"], 25)
+        self.assertEqual(perf_state["returned_count"], 1)
 
     def test_lookup_view_returns_limited_payload(self):
         mocked_queryset = MagicMock()

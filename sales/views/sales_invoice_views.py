@@ -12,6 +12,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import PermissionDenied, ValidationError as DRFValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from django.utils.dateparse import parse_date
 
 from entity.models import Entity
 from financial.profile_access import account_pan, account_primary_bank_detail
@@ -237,6 +238,18 @@ class SalesInvoiceListCreateAPIView(_SalesScopeMixin, generics.ListCreateAPIView
         except (TypeError, ValueError):
             return 0
 
+    def _parse_page_window(self) -> tuple[int | None, int]:
+        raw_page = self.request.query_params.get("page")
+        raw_page_size = self.request.query_params.get("page_size")
+        if raw_page in (None, "", "null") or raw_page_size in (None, "", "null"):
+            return None, 0
+        try:
+            page = max(1, int(raw_page))
+            page_size = max(1, min(int(raw_page_size), 250))
+        except (TypeError, ValueError):
+            return None, 0
+        return page_size, (page - 1) * page_size
+
     def get_queryset(self):
         scope_filters = self._scope_filters(self.request)
         entity_id = scope_filters.get("entity_id")
@@ -326,6 +339,12 @@ class SalesInvoiceListCreateAPIView(_SalesScopeMixin, generics.ListCreateAPIView
             if limit is not None:
                 offset = self._parse_offset()
                 queryset = queryset[offset:offset + limit]
+            else:
+                page_size, page_offset = self._parse_page_window()
+                if page_size is not None:
+                    limit = page_size
+                    offset = page_offset
+                    queryset = queryset[offset:offset + limit]
             serializer = SalesInvoiceListSerializer(
                 queryset,
                 many=True,
@@ -402,6 +421,15 @@ class SalesInvoiceLookupAPIView(_SalesScopeMixin, APIView):
                 return 0
         return 0
 
+    def _parse_date_filter(self, param_name: str):
+        raw = str(self.request.query_params.get(param_name) or "").strip()
+        if not raw:
+            return None
+        parsed = parse_date(raw)
+        if parsed is None:
+            raise DRFValidationError({param_name: "Use YYYY-MM-DD format."})
+        return parsed
+
     def _base_queryset(self):
         scope_filters = self._scope_filters(self.request)
         entity_id = scope_filters.get("entity_id")
@@ -418,13 +446,15 @@ class SalesInvoiceLookupAPIView(_SalesScopeMixin, APIView):
         qs = (
             self._scoped_queryset()
             .select_related("customer", "customer__ledger", "subentity")
-            .order_by("-doc_no", "-id")
+            .order_by("-bill_date", "-id")
         )
 
         doc_type = params.get("doc_type")
         status_value = params.get("status")
         customer_id = params.get("customer_id")
         search = str(params.get("search") or "").strip()
+        from_date = self._parse_date_filter("from_date")
+        to_date = self._parse_date_filter("to_date")
 
         if doc_type:
             qs = qs.filter(doc_type=doc_type)
@@ -432,6 +462,10 @@ class SalesInvoiceLookupAPIView(_SalesScopeMixin, APIView):
             qs = qs.filter(status=status_value)
         if customer_id:
             qs = qs.filter(customer_id=customer_id)
+        if from_date:
+            qs = qs.filter(bill_date__gte=from_date)
+        if to_date:
+            qs = qs.filter(bill_date__lte=to_date)
         if search:
             draft_id = None
             if search.isdigit():

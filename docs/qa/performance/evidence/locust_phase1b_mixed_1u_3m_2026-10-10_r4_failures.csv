@@ -1,0 +1,2 @@
+Method,Name,Error,Occurrences
+GET,sales/service-invoices/cross-mode-nav [service->goods],CatchResponseError('Payload missing list rows'),5

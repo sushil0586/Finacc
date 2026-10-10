@@ -1,0 +1,14 @@
+{
+  "name": "purchase/invoices",
+  "url": "http://127.0.0.1:8015/api/purchase/purchase-invoices/",
+  "status_code": 200,
+  "elapsed_ms": 895.09,
+  "response_bytes": 25256,
+  "params": {
+    "entity": "10",
+    "entityfinid": "8",
+    "page": "1",
+    "page_size": "25",
+    "subentity": "8"
+  }
+}

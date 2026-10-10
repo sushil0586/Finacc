@@ -1,0 +1,5 @@
+ pg_stat_statements_reset 
+--------------------------
+ 
+(1 row)
+

@@ -1,0 +1,11 @@
+ current_database  | current_user |      preload       
+-------------------+--------------+--------------------
+ finacc_perf_local | finacc_perf  | pg_stat_statements
+(1 row)
+
+      extname       
+--------------------
+ pg_stat_statements
+ plpgsql
+(2 rows)
+

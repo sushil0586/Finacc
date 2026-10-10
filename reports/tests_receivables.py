@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.test import TestCase
 from django.utils import timezone
 
@@ -322,6 +324,30 @@ class ReceivablesRouteContractTests(TestCase):
         self.assertEqual(report["summary"]["unapplied_receipt_amount"], "25.00")
         self.assertEqual(report["summary"]["net_exposure_reference"], "75.00")
         self.assertIn("invoice-style document residuals", report["summary"]["reporting_note"])
+
+    def test_open_items_report_query_count_does_not_grow_per_row(self):
+        self._create_service_invoice()
+        second_customer = self._create_customer(name="Second Customer", gstin="27ABCDE1234F1Z6", accountcode=5002)
+        self._create_product_invoice(
+            customer=second_customer,
+            doc_no=2,
+            invoice_number="SINV-0002",
+            bill_date="2025-04-16",
+            due_date="2025-04-20",
+            amount=Decimal("75.00"),
+        )
+
+        with CaptureQueriesContext(connection) as queries:
+            report = build_open_items_report(
+                entity_id=self.entity.id,
+                entityfin_id=self.entityfin.id,
+                subentity_id=self.subentity.id,
+                as_of_date="2025-04-30",
+            )
+
+        self.assertEqual(report["pagination"]["total_rows"], 2)
+        self.assertEqual(report["totals"]["outstanding_amount"], "193.00")
+        self.assertLessEqual(len(queries), 8)
 
     def test_receivable_aging_invoice_view_exposes_service_invoice_route(self):
         invoice = self._create_service_invoice()

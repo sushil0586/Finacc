@@ -7,7 +7,9 @@ from io import BytesIO
 from unittest.mock import patch
 from uuid import uuid4
 
+from django.db import connection
 from django.test import override_settings
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 from openpyxl import load_workbook
@@ -26,6 +28,7 @@ from purchase.models.purchase_core import PurchaseInvoiceHeader, PurchaseInvoice
 from purchase.services.purchase_ap_service import PurchaseApService
 from rbac.models import Permission, Role, RolePermission, UserRoleAssignment
 from rbac.services import EffectiveMenuService
+from reports.services.payables import build_vendor_outstanding_report
 from subscriptions.models import UserEntityAccess
 from subscriptions.services import SubscriptionService
 
@@ -528,6 +531,158 @@ class PayableReportAPITests(APITestCase):
         meta = response.json()["_meta"]
         self.assertTrue(meta["gl_reconciliation_warning"])
         self.assertEqual(meta["difference_amount"], "750.00")
+
+    def test_vendor_outstanding_summary_matches_legacy_item_math_with_stable_query_count(self):
+        future_due_vendor = self._create_vendor("Future Due Vendor", 5091)
+        future_due_header = self._create_purchase_header(
+            vendor=future_due_vendor,
+            vendor_ledger=future_due_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 25),
+            due_date=date(2025, 5, 15),
+            doc_code="PINV",
+            doc_no=1901,
+            purchase_number="PI-PINV-1901",
+            supplier_invoice_number="SUP-1901",
+            amount=Decimal("300.00"),
+        )
+        self._create_open_item(
+            header=future_due_header,
+            vendor=future_due_vendor,
+            vendor_ledger=future_due_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 25),
+            due_date=date(2025, 5, 15),
+            purchase_number="PI-PINV-1901",
+            supplier_invoice_number="SUP-1901",
+            amount=Decimal("300.00"),
+        )
+        opening_vendor = self._create_vendor("Opening Vendor", 5092)
+        opening_header = self._create_purchase_header(
+            vendor=opening_vendor,
+            vendor_ledger=opening_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 3, 25),
+            due_date=date(2025, 4, 5),
+            doc_code="PINV",
+            doc_no=1902,
+            purchase_number="PI-PINV-1902",
+            supplier_invoice_number="SUP-1902",
+            amount=Decimal("400.00"),
+        )
+        self._create_open_item(
+            header=opening_header,
+            vendor=opening_vendor,
+            vendor_ledger=opening_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 3, 25),
+            due_date=date(2025, 4, 5),
+            purchase_number="PI-PINV-1902",
+            supplier_invoice_number="SUP-1902",
+            amount=Decimal("400.00"),
+        )
+        self._create_advance(
+            vendor=opening_vendor,
+            vendor_ledger=opening_vendor.ledger,
+            credit_date=date(2025, 3, 28),
+            reference_no="ADV-OPENING",
+            amount=Decimal("25.00"),
+        )
+
+        with CaptureQueriesContext(connection) as queries:
+            payload = build_vendor_outstanding_report(
+                entity_id=self.entity.id,
+                entityfin_id=self.entityfin.id,
+                subentity_id=self.subentity.id,
+                from_date="2025-04-01",
+                to_date="2025-04-30",
+                page=1,
+                page_size=50,
+            )
+        rows = {row["vendor_name"]: row for row in payload["rows"]}
+
+        self.assertEqual(rows["ABC Traders"]["opening_balance"], "0.00")
+        self.assertEqual(rows["ABC Traders"]["bill_amount"], "1000.00")
+        self.assertEqual(rows["ABC Traders"]["payment_amount"], "200.00")
+        self.assertEqual(rows["ABC Traders"]["credit_balance"], "100.00")
+        self.assertEqual(rows["ABC Traders"]["advance_balance"], "50.00")
+        self.assertEqual(rows["ABC Traders"]["outstanding"], "750.00")
+        self.assertEqual(rows["ABC Traders"]["bucket_0_30"], "800.00")
+        self.assertEqual(rows["ABC Traders"]["overdue_amount"], "800.00")
+        self.assertEqual(rows["Future Due Vendor"]["not_due"], "300.00")
+        self.assertEqual(rows["Future Due Vendor"]["overdue_amount"], "0.00")
+        self.assertEqual(rows["Opening Vendor"]["opening_balance"], "375.00")
+        self.assertEqual(rows["Opening Vendor"]["outstanding"], "375.00")
+        self.assertEqual(payload["pagination"]["paginated"], True)
+        self.assertLessEqual(len(queries), 12)
+
+    def test_vendor_outstanding_summary_voucher_type_uses_filtered_aggregate(self):
+        voucher_vendor = self._create_vendor("Voucher Filter Vendor", 5093)
+        invoice_header = self._create_purchase_header(
+            vendor=voucher_vendor,
+            vendor_ledger=voucher_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 10),
+            due_date=date(2025, 4, 20),
+            doc_code="PINV",
+            doc_no=1903,
+            purchase_number="PI-PINV-1903",
+            supplier_invoice_number="SUP-1903",
+            amount=Decimal("600.00"),
+        )
+        self._create_open_item(
+            header=invoice_header,
+            vendor=voucher_vendor,
+            vendor_ledger=voucher_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.TAX_INVOICE,
+            bill_date=date(2025, 4, 10),
+            due_date=date(2025, 4, 20),
+            purchase_number="PI-PINV-1903",
+            supplier_invoice_number="SUP-1903",
+            amount=Decimal("600.00"),
+        )
+        credit_header = self._create_purchase_header(
+            vendor=voucher_vendor,
+            vendor_ledger=voucher_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.CREDIT_NOTE,
+            bill_date=date(2025, 4, 12),
+            due_date=date(2025, 4, 12),
+            doc_code="PCN",
+            doc_no=1904,
+            purchase_number="PCN-1904",
+            supplier_invoice_number="SUP-CN-1904",
+            amount=Decimal("-150.00"),
+            ref_document=invoice_header,
+        )
+        self._create_open_item(
+            header=credit_header,
+            vendor=voucher_vendor,
+            vendor_ledger=voucher_vendor.ledger,
+            doc_type=PurchaseInvoiceHeader.DocType.CREDIT_NOTE,
+            bill_date=date(2025, 4, 12),
+            due_date=date(2025, 4, 12),
+            purchase_number="PCN-1904",
+            supplier_invoice_number="SUP-CN-1904",
+            amount=Decimal("-150.00"),
+        )
+
+        with CaptureQueriesContext(connection) as queries:
+            payload = build_vendor_outstanding_report(
+                entity_id=self.entity.id,
+                entityfin_id=self.entityfin.id,
+                subentity_id=self.subentity.id,
+                from_date="2025-04-01",
+                to_date="2025-04-30",
+                voucher_type=["PINV"],
+                page=1,
+                page_size=50,
+            )
+
+        row = next(row for row in payload["rows"] if row["vendor_name"] == "Voucher Filter Vendor")
+        self.assertEqual(row["outstanding"], "600.00")
+        self.assertEqual(row["credit_balance"], "0.00")
+        self.assertEqual(row["bucket_0_30"], "600.00")
+        self.assertLessEqual(len(queries), 12)
 
     def test_settlement_application_respects_as_of_date(self):
         response = self.client.get(

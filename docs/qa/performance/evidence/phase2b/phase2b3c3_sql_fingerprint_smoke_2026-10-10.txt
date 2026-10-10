@@ -1,0 +1,31 @@
+ calls | total_ms | mean_ms | rows  |                                                                                        query                                                                                         
+-------+----------+---------+-------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+   264 |   187.83 |    0.71 | 37356 | SELECT "rbac_permission"."code" AS "permission__code" FROM "rbac_rolepermission" INNER JOIN "rbac_permission" ON ("rbac_rolepermission"."permission_id" = "rbac_permission"."id") IN
+   117 |    72.92 |    0.62 |   117 | INSERT INTO "auditlogger_auditlog" ("user_id", "method", "path", "ip_address", "timestamp", "action", "old_data", "new_data") VALUES ($1, $2, $3, $4::inet, $5::timestamptz, $6, $7,
+     3 |    42.95 |   14.32 |  1137 | SELECT                                                                                                                                                                              +
+       |          |         |       |                 c.relname,                                                                                                                                                          +
+       |          |         |       |                 CASE                                                                                                                                                                +
+       |          |         |       |                     WHEN c.relispartition THEN $1                                                                                                                                   +
+       |          |         |       |                     WHEN c.relkind IN ($2, $3) THEN $4                                                                                                                              +
+       |          |         |       |                     
+     1 |    42.22 |   42.22 |     0 | create extension if not exists pg_stat_statements
+     2 |    36.85 |   18.42 |     0 | DECLARE "_django_curs_281473472910528_sync_12" NO SCROLL CURSOR WITH HOLD FOR SELECT "purchase_vendorbillopenitem"."id", "purchase_vendorbillopenitem"."header_id", "purchase_vendor
+    12 |    34.91 |    2.91 |    12 | SELECT "sales_tax_summary"."hsn_sac_code" AS "hsn_sac_code", "sales_tax_summary"."is_service" AS "is_service", "sales_tax_summary"."gst_rate" AS "gst_rate", COALESCE(SUM(("sales_ta
+    12 |    27.29 |    2.27 |    12 | SELECT COUNT("sales_invoice_header"."id") AS "document_count", COALESCE(SUM(("sales_invoice_header"."total_taxable_value" * CASE WHEN "sales_invoice_header"."status" = $1 THEN $2 W
+    12 |    26.31 |    2.19 |    12 | SELECT "sales_invoice_line"."hsn_sac_code" AS "hsn_sac_code", "sales_invoice_line"."is_service" AS "is_service", "sales_invoice_line"."gst_rate" AS "gst_rate", COALESCE(SUM(("sales
+     6 |    23.06 |    3.84 |     6 | SELECT COALESCE(SUM(CASE WHEN "posting_journalline"."drcr" THEN "posting_journalline"."amount" ELSE $1 END), $2) AS "debit_total", COALESCE(SUM(CASE WHEN NOT "posting_journalline".
+     6 |    22.26 |    3.71 |  3000 | SELECT "purchase_purchaseinvoiceheader"."id", "purchase_purchaseinvoiceheader"."doc_type", "purchase_purchaseinvoiceheader"."bill_date", "purchase_purchaseinvoiceheader"."posting_d
+   348 |    21.91 |    0.06 |   348 | SELECT "customer_subscriptions"."id", "customer_subscriptions"."created_at", "customer_subscriptions"."updated_at", "customer_subscriptions"."is_active", "customer_subscriptions"."
+     6 |    21.55 |    3.59 |    36 | SELECT COALESCE("posting_journalline"."ledger_id", "financial_account"."ledger_id") AS "resolved_ledger_id", COALESCE(SUM("posting_journalline"."amount") FILTER (WHERE ("posting_jo
+     1 |    18.06 |   18.06 |     0 | DECLARE "_django_curs_281473472910528_sync_2" NO SCROLL CURSOR WITH HOLD FOR SELECT "purchase_vendorbillopenitem"."id", "purchase_vendorbillopenitem"."header_id", "purchase_vendorb
+     6 |    17.42 |    2.90 |  6000 | SELECT "sales_tax_summary"."header_id" AS "header_id", SUM("sales_tax_summary"."taxable_value") AS "taxable", SUM("sales_tax_summary"."cgst_amount") AS "cgst", SUM("sales_tax_summa
+     6 |    17.26 |    2.88 |  3000 | SELECT "purchase_purchaseinvoiceheader"."id", "purchase_purchaseinvoiceheader"."doc_type", "purchase_purchaseinvoiceheader"."bill_date", "purchase_purchaseinvoiceheader"."posting_d
+    12 |    15.11 |    1.26 |    12 | SELECT COUNT("sales_invoice_header"."id") AS "document_count", COALESCE(SUM(("sales_invoice_header"."total_taxable_value" * CASE WHEN "sales_invoice_header"."status" = $1 THEN $2 W
+     4 |    13.72 |    3.43 |     0 | -- Register a view on the function for ease of use.                                                                                                                                 +
+       |          |         |       | CREATE VIEW pg_stat_statements AS                                                                                                                                                   +
+       |          |         |       |   SELECT * FROM pg_stat_statements(true)
+     1 |    13.12 |   13.12 |     0 | DECLARE "_django_curs_281473472910528_sync_15" NO SCROLL CURSOR WITH HOLD FOR SELECT "purchase_vendorbillopenitem"."id", "purchase_vendorbillopenitem"."header_id", "purchase_vendor
+     6 |    12.66 |    2.11 |   300 | SELECT "posting_entry"."id", "posting_entry"."entity_id", "posting_entry"."entityfin_id", "posting_entry"."subentity_id", "posting_entry"."txn_type", "posting_entry"."txn_id", "pos
+     1 |    12.23 |   12.23 |     0 | DECLARE "_django_curs_281473472910528_sync_1" NO SCROLL CURSOR WITH HOLD FOR SELECT "purchase_vendorbillopenitem"."id", "purchase_vendorbillopenitem"."header_id", "purchase_vendorb
+(20 rows)
+

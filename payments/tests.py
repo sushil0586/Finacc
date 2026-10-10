@@ -946,6 +946,11 @@ class PurchaseApServiceUnitTests(SimpleTestCase):
         mock_fresh_allocs,
         mock_logger,
     ):
+        user = User.objects.create_user(
+            username="phase2a-payment-retry",
+            email="phase2a-payment-retry@example.com",
+            password="pass123",
+        )
         advance_row = SimpleNamespace(
             advance_balance_id=14,
             allocation_id=None,
@@ -973,7 +978,7 @@ class PurchaseApServiceUnitTests(SimpleTestCase):
             settlement_effective_amount=Decimal("66000.00"),
             settlement_effective_amount_base_currency=Decimal("66000.00"),
             exchange_rate=Decimal("1.000000"),
-            created_by_id=5,
+            created_by_id=user.id,
             ap_settlement_id=201,
             approved_at=None,
             approved_by_id=None,
@@ -1002,7 +1007,7 @@ class PurchaseApServiceUnitTests(SimpleTestCase):
 
         with patch.object(PaymentVoucherService, "_validate_advance_adjustments", return_value=None), \
              patch.object(PaymentVoucherService, "_validate_allocations", return_value=[]):
-            res = PaymentVoucherService.post_voucher.__wrapped__(voucher_id=33, posted_by_id=9)
+            res = PaymentVoucherService.post_voucher.__wrapped__(voucher_id=33, posted_by_id=user.id)
 
         self.assertIn("Posted with warnings:", res.message)
         self.assertIn("Payment settlement resumed from existing linked settlement", res.message)

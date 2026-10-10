@@ -17,6 +17,7 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.views import APIView
 from django.db.models import Exists, OuterRef
 from django.db.models import Q
+from django.utils.dateparse import parse_date
 
 
 
@@ -51,6 +52,19 @@ class PurchaseInvoiceListCreateAPIView(generics.ListCreateAPIView):
     search_fields = ["purchase_number", "supplier_invoice_number", "vendor_name", "vendor_gstin"]
     ordering_fields = ["bill_date", "doc_no", "id"]
     ordering = ["-bill_date", "-id"]
+
+    def _parse_page_window(self):
+        raw_page = self.request.query_params.get("page")
+        raw_page_size = self.request.query_params.get("page_size")
+        if raw_page in (None, "", "null") or raw_page_size in (None, "", "null"):
+            return None
+        try:
+            page = max(1, int(raw_page))
+            page_size = max(1, min(int(raw_page_size), 250))
+        except (TypeError, ValueError):
+            return None
+        start = (page - 1) * page_size
+        return start, start + page_size
 
     def _scope_ids(self, *, required: bool):
         if self.request.method.upper() == "POST":
@@ -125,6 +139,10 @@ class PurchaseInvoiceListCreateAPIView(generics.ListCreateAPIView):
                     "subentity",
                 ).only(
                     "id",
+                    "is_legacy_imported",
+                    "legacy_source_system",
+                    "legacy_source_key",
+                    "legacy_import_mode",
                     "doc_type",
                     "status",
                     "bill_date",
@@ -187,6 +205,15 @@ class PurchaseInvoiceListCreateAPIView(generics.ListCreateAPIView):
             ctx["skip_navigation"] = True
             ctx["skip_gst_tds_contract_summary"] = True
         return ctx
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        page_window = self._parse_page_window()
+        if page_window is not None:
+            start, end = page_window
+            queryset = queryset[start:end]
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
@@ -605,6 +632,15 @@ class PurchaseInvoiceLookupAPIView(APIView):
                 return 0
         return 0
 
+    def _parse_date_filter(self, param_name: str):
+        raw = str(self.request.query_params.get(param_name) or "").strip()
+        if not raw:
+            return None
+        parsed = parse_date(raw)
+        if parsed is None:
+            raise ValidationError({param_name: "Use YYYY-MM-DD format."})
+        return parsed
+
     def _scope_ids(self):
         entity = self.request.query_params.get("entity")
         entityfinid = self.request.query_params.get("entityfinid")
@@ -651,7 +687,7 @@ class PurchaseInvoiceLookupAPIView(APIView):
         qs = (
             PurchaseInvoiceHeader.objects
             .filter(entity_id=entity_id, entityfinid_id=entityfinid_id)
-            .order_by("-doc_no", "-id")
+            .order_by("-bill_date", "-id")
         )
 
         if subentity_id is not None:
@@ -661,6 +697,8 @@ class PurchaseInvoiceLookupAPIView(APIView):
         status_value = params.get("status")
         vendor_id = params.get("vendor")
         search = str(params.get("search") or "").strip()
+        from_date = self._parse_date_filter("from_date")
+        to_date = self._parse_date_filter("to_date")
 
         if doc_type:
             qs = qs.filter(doc_type=doc_type)
@@ -668,6 +706,10 @@ class PurchaseInvoiceLookupAPIView(APIView):
             qs = qs.filter(status=status_value)
         if vendor_id:
             qs = qs.filter(vendor_id=vendor_id)
+        if from_date:
+            qs = qs.filter(bill_date__gte=from_date)
+        if to_date:
+            qs = qs.filter(bill_date__lte=to_date)
         if search:
             qs = qs.filter(
                 Q(purchase_number__icontains=search)

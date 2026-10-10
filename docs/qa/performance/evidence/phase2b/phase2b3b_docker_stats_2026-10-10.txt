@@ -1,0 +1,5 @@
+NAME                CPU %     MEM USAGE / LIMIT
+finacc-nginx-1      0.00%     8.531MiB / 7.748GiB
+finacc-postgres-1   0.00%     92.1MiB / 7.748GiB
+finacc-redis-1      0.42%     10.09MiB / 7.748GiB
+finacc-web-1        200.43%   425.1MiB / 7.748GiB

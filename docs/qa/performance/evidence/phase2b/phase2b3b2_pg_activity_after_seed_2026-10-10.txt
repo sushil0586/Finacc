@@ -1,0 +1,15 @@
+ total_connections | active | idle_in_tx | waiting 
+-------------------+--------+------------+---------
+                 1 |      1 |          0 |       0
+(1 row)
+
+ ungranted_locks 
+-----------------
+               0
+(1 row)
+
+ db_size_bytes 
+---------------
+     102276119
+(1 row)
+

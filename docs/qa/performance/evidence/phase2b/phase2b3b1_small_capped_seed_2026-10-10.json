@@ -1,0 +1,87 @@
+{
+  "database_after": {
+    "database": "finacc_perf_local",
+    "size_bytes": 72997911,
+    "user": "finacc_perf"
+  },
+  "database_before": {
+    "database": "finacc_perf_local",
+    "size_bytes": 69729303,
+    "user": "finacc_perf"
+  },
+  "dry_run": false,
+  "elapsed_seconds": 3.47,
+  "results": [
+    {
+      "entity_id": 5,
+      "purchase_inserted": 50,
+      "sales_inserted": 100,
+      "tenant": "P2B3B-SMALL-S",
+      "validation": {
+        "ap_open_total": "23600.00",
+        "ar_open_total": "47200.00",
+        "balanced": true,
+        "duplicate_purchase_doc_numbers": 0,
+        "duplicate_sales_doc_numbers": 0,
+        "journal_credit": "88500.00",
+        "journal_debit": "88500.00",
+        "purchase_count": 50,
+        "sales_count": 100
+      }
+    },
+    {
+      "entity_id": 6,
+      "purchase_inserted": 50,
+      "sales_inserted": 100,
+      "tenant": "P2B3B-SMALL-M",
+      "validation": {
+        "ap_open_total": "23600.00",
+        "ar_open_total": "47200.00",
+        "balanced": true,
+        "duplicate_purchase_doc_numbers": 0,
+        "duplicate_sales_doc_numbers": 0,
+        "journal_credit": "88500.00",
+        "journal_debit": "88500.00",
+        "purchase_count": 50,
+        "sales_count": 100
+      }
+    },
+    {
+      "entity_id": 7,
+      "purchase_inserted": 50,
+      "sales_inserted": 100,
+      "tenant": "P2B3B-SMALL-L",
+      "validation": {
+        "ap_open_total": "23600.00",
+        "ar_open_total": "47200.00",
+        "balanced": true,
+        "duplicate_purchase_doc_numbers": 0,
+        "duplicate_sales_doc_numbers": 0,
+        "journal_credit": "88500.00",
+        "journal_debit": "88500.00",
+        "purchase_count": 50,
+        "sales_count": 100
+      }
+    }
+  ],
+  "targets": [
+    {
+      "code": "P2B3B-SMALL-S",
+      "label": "Phase2B3B small Small Tenant",
+      "purchase": 50,
+      "sales": 100
+    },
+    {
+      "code": "P2B3B-SMALL-M",
+      "label": "Phase2B3B small Medium Tenant",
+      "purchase": 50,
+      "sales": 100
+    },
+    {
+      "code": "P2B3B-SMALL-L",
+      "label": "Phase2B3B small Large Tenant",
+      "purchase": 50,
+      "sales": 100
+    }
+  ]
+}

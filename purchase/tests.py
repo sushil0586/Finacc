@@ -27,7 +27,11 @@ from entity.models import Entity, EntityFinancialYear, Godown, SubEntity
 from catalog.models import Product, ProductCategory, ProductPurchaseBehavior, UnitOfMeasure
 from financial.models import Ledger, account, accountHead, accounttype
 from purchase.models.purchase_core import PurchaseInvoiceHeader, PurchaseInvoiceLine
-from purchase.serializers.purchase_invoice import PurchaseInvoiceHeaderSerializer, PurchaseInvoiceLineSerializer
+from purchase.serializers.purchase_invoice import (
+    PurchaseInvoiceHeaderSerializer,
+    PurchaseInvoiceLineSerializer,
+    PurchaseInvoiceListSerializer,
+)
 from purchase.serializers.purchase_ap import VendorSettlementCreateInputSerializer
 from purchase.serializers.purchase_charge import PurchaseChargeLineSerializer, PurchaseChargeTypeSerializer
 from purchase.serializers.purchase_statutory import (
@@ -411,6 +415,24 @@ class PurchaseInvoiceLookupViewTests(SimpleTestCase):
 
         self.assertIn("vendor", select_related)
         self.assertNotIn("subentity", select_related)
+        mocked_require_permission.assert_called_once()
+
+    @patch("purchase.views.purchase_invoice.require_purchase_request_permission")
+    def test_lookup_base_queryset_filters_current_window_and_orders_latest_first(self, mocked_require_permission):
+        request = self.factory.get(
+            "/api/purchase/purchase-invoices/lookup/?entity=1&entityfinid=1&from_date=2026-10-01&to_date=2026-10-10"
+        )
+        force_authenticate(request, user=self.user)
+
+        view = PurchaseInvoiceLookupAPIView()
+        view.request = view.initialize_request(request)
+
+        queryset = view._base_queryset()
+        _sql, params = queryset.query.sql_with_params()
+
+        self.assertEqual(queryset.query.order_by, ("-bill_date", "-id"))
+        self.assertIn(date(2026, 10, 1), params)
+        self.assertIn(date(2026, 10, 10), params)
         mocked_require_permission.assert_called_once()
 
 
@@ -1930,6 +1952,56 @@ class PurchaseInvoiceViewUnitTests(SimpleTestCase):
         self.assertIn("ledger", select_related["vendor"])
         self.assertIn("commercial_profile", select_related["vendor"])
         mocked_require_permission.assert_called_once()
+
+    @patch("purchase.views.purchase_invoice.require_purchase_request_permission")
+    def test_list_queryset_projects_all_direct_serializer_model_fields(self, mocked_require_permission):
+        request = self.factory.get("/api/purchase/purchase-invoices/?entity=1&entityfinid=1")
+        force_authenticate(request, user=self.user)
+
+        view = PurchaseInvoiceListCreateAPIView()
+        view.request = view.initialize_request(request)
+
+        queryset = view.get_queryset()
+        projected_fields = set(queryset.query.deferred_loading[0])
+        model_field_names = {
+            field.name
+            for field in PurchaseInvoiceHeader._meta.concrete_fields
+        }
+        serializer_model_fields = set()
+        for field_name in PurchaseInvoiceListSerializer.Meta.fields:
+            if field_name not in model_field_names:
+                continue
+            model_field = PurchaseInvoiceHeader._meta.get_field(field_name)
+            serializer_model_fields.add(getattr(model_field, "attname", field_name))
+
+        self.assertFalse(
+            serializer_model_fields - projected_fields,
+            f"Purchase list serializer fields missing from queryset .only(): {serializer_model_fields - projected_fields}",
+        )
+        mocked_require_permission.assert_called_once()
+
+    @patch("purchase.views.purchase_invoice.require_purchase_request_permission")
+    def test_list_honors_explicit_page_size_without_changing_array_contract(self, mocked_require_permission):
+        request = self.factory.get("/api/purchase/purchase-invoices/?entity=1&entityfinid=1&page=2&page_size=25")
+        force_authenticate(request, user=self.user)
+
+        view = PurchaseInvoiceListCreateAPIView()
+        view.request = view.initialize_request(request)
+        queryset = MagicMock(name="purchase-list-queryset")
+        filtered_queryset = MagicMock(name="filtered-purchase-list-queryset")
+        paged_queryset = MagicMock(name="paged-purchase-list-queryset")
+        filtered_queryset.__getitem__.return_value = paged_queryset
+        serializer = SimpleNamespace(data=[{"id": 1}])
+
+        with patch.object(view, "get_queryset", return_value=queryset), patch.object(
+            view, "filter_queryset", return_value=filtered_queryset
+        ), patch.object(view, "get_serializer", return_value=serializer) as mocked_get_serializer:
+            response = view.list(view.request)
+
+        filtered_queryset.__getitem__.assert_called_once_with(slice(25, 50, None))
+        mocked_get_serializer.assert_called_once_with(paged_queryset, many=True)
+        self.assertEqual(response.data, [{"id": 1}])
+        mocked_require_permission.assert_not_called()
 
     def test_nav_scope_queryset_uses_exists_for_line_mode_filter(self):
         queryset = PurchaseInvoiceNavService._scope_qs(

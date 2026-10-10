@@ -400,31 +400,6 @@ def _entry_base_queryset(entity_id, entityfin_id=None, subentity_id=None, from_d
         Entry.objects.filter(entity_id=entity_id)
         .exclude(txn_type=TxnType.OPENING_BALANCE)
         .select_related("created_by", "posted_by", "entity", "entityfin", "subentity")
-        .annotate(
-            debit_total=Coalesce(
-                Sum(
-                    Case(
-                        When(posting_journal_lines__drcr=True, then=F("posting_journal_lines__amount")),
-                        default=ZERO,
-                        output_field=DecimalField(max_digits=14, decimal_places=2),
-                    )
-                ),
-                ZERO,
-            ),
-            credit_total=Coalesce(
-                Sum(
-                    Case(
-                        When(posting_journal_lines__drcr=False, then=F("posting_journal_lines__amount")),
-                        default=ZERO,
-                        output_field=DecimalField(max_digits=14, decimal_places=2),
-                    )
-                ),
-                ZERO,
-            ),
-            reference_number=_entry_reference_annotation(),
-            document_number=_entry_document_number_annotation(),
-            counterparty_name=_entry_counterparty_name_annotation(),
-        )
     )
     if entityfin_id:
         qs = qs.filter(entityfin_id=entityfin_id)
@@ -443,6 +418,34 @@ def _entry_base_queryset(entity_id, entityfin_id=None, subentity_id=None, from_d
         )
     )
     return qs, entity_id, entityfin_id, subentity_id, from_date, to_date
+
+
+def _annotate_daybook_entries(qs):
+    return qs.annotate(
+        debit_total=Coalesce(
+            Sum(
+                Case(
+                    When(posting_journal_lines__drcr=True, then=F("posting_journal_lines__amount")),
+                    default=ZERO,
+                    output_field=DecimalField(max_digits=14, decimal_places=2),
+                )
+            ),
+            ZERO,
+        ),
+        credit_total=Coalesce(
+            Sum(
+                Case(
+                    When(posting_journal_lines__drcr=False, then=F("posting_journal_lines__amount")),
+                    default=ZERO,
+                    output_field=DecimalField(max_digits=14, decimal_places=2),
+                )
+            ),
+            ZERO,
+        ),
+        reference_number=_entry_reference_annotation(),
+        document_number=_entry_document_number_annotation(),
+        counterparty_name=_entry_counterparty_name_annotation(),
+    )
 
 
 def _paginate_queryset(qs, *, page: int, page_size: int):
@@ -535,6 +538,7 @@ def build_daybook(
     elif posted is False:
         qs = qs.exclude(status=EntryStatus.POSTED)
     if search:
+        qs = _annotate_daybook_entries(qs)
         qs = qs.filter(
             Q(voucher_no__icontains=search)
             | Q(narration__icontains=search)
@@ -543,7 +547,7 @@ def build_daybook(
             | Q(counterparty_name__icontains=search)
         )
 
-    qs = qs.distinct().order_by("posting_date", "voucher_date", "created_at", "id")
+    qs = qs.order_by("posting_date", "voucher_date", "created_at", "id")
 
     summary = JournalLine.objects.filter(entry_id__in=qs.values("id")).aggregate(
         debit_total=Coalesce(
@@ -568,6 +572,14 @@ def build_daybook(
         ),
     )
     paged = _paginate_queryset(qs, page=page, page_size=page_size)
+    page_entry_ids = [entry.id for entry in paged["results"]]
+    if page_entry_ids:
+        page_entries = _annotate_daybook_entries(
+            Entry.objects.filter(id__in=page_entry_ids)
+            .select_related("created_by", "posted_by", "entity", "entityfin", "subentity")
+        )
+        page_entry_map = {entry.id: entry for entry in page_entries}
+        paged["results"] = [page_entry_map[entry_id] for entry_id in page_entry_ids if entry_id in page_entry_map]
     rows = []
     for entry in paged["results"]:
         source_module, voucher_type_name = _txn_source(entry.txn_type)

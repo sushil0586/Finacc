@@ -1,0 +1,29 @@
+{
+  "database": {
+    "database": "finacc_perf_local",
+    "size_bytes": 73120791,
+    "user": "finacc_perf"
+  },
+  "dry_run": true,
+  "message": "Safety audit passed. No rows were written.",
+  "targets": [
+    {
+      "code": "P2B3B-SMALL-S",
+      "label": "Phase2B3B small Small Tenant",
+      "purchase": 500,
+      "sales": 1000
+    },
+    {
+      "code": "P2B3B-SMALL-M",
+      "label": "Phase2B3B small Medium Tenant",
+      "purchase": 500,
+      "sales": 1000
+    },
+    {
+      "code": "P2B3B-SMALL-L",
+      "label": "Phase2B3B small Large Tenant",
+      "purchase": 500,
+      "sales": 1000
+    }
+  ]
+}

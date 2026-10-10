@@ -1,0 +1,77 @@
+{
+  "name": "payables_vendor_outstanding_after_summary_aggregate",
+  "elapsed_ms": 1630.11,
+  "query_count": 9,
+  "sql_ms": 275.0,
+  "rows": 100,
+  "total_rows": 970,
+  "response_contract_keys": [
+    "_meta",
+    "drilldown_hierarchy",
+    "entity_id",
+    "entityfin_id",
+    "from_date",
+    "pagination",
+    "rows",
+    "subentity_id",
+    "summary",
+    "to_date",
+    "totals",
+    "view"
+  ],
+  "totals": {
+    "opening_balance": "0.00",
+    "bill_amount": "38640562.20",
+    "payment_amount": "3385178.00",
+    "net_outstanding": "32090147.20",
+    "outstanding": "32090147.20",
+    "not_due": "0.00",
+    "bucket_0_30": "24339347.00",
+    "bucket_31_60": "2950757.00",
+    "bucket_61_90": "3252131.20",
+    "bucket_91_180": "3664070.00",
+    "bucket_181_plus": "695.00",
+    "credit_balance": "715982.00",
+    "advance_balance": "2129939.00",
+    "overdue_amount": "34220086.20"
+  },
+  "profile_top_cumulative": "         2683170 function calls (2603989 primitive calls) in 1.628 seconds\n\n   Ordered by: cumulative time\n   List reduced from 788 to 15 due to restriction <15>\n\n   ncalls  tottime  percall  cumtime  percall filename:lineno(function)\n        1    0.030    0.030    1.628    1.628 payables.py:630(build_vendor_outstanding_report)\n     4482    0.009    0.000    1.041    0.000 query.py:85(__iter__)\n     1701    0.001    0.000    0.701    0.000 query.py:495(_iterator)\n        2    0.003    0.001    0.691    0.345 payables.py:800(advance_vendor_summary)\n       16    0.000    0.000    0.686    0.043 connection.py:406(wait)\n       16    0.001    0.000    0.686    0.043 waiting.py:326(wait_poll)\n       56    0.000    0.000    0.657    0.012 utils.py:96(inner)\n       56    0.090    0.002    0.641    0.011 _py_transformer.py:296(load_rows)\n       55    0.000    0.000    0.623    0.011 compiler.py:2165(cursor_iter)\n       55    0.000    0.000    0.623    0.011 compiler.py:2171(<lambda>)\n      7/5    0.000    0.000    0.441    0.088 query.py:369(__iter__)\n     10/7    0.001    0.000    0.441    0.063 query.py:1943(_fetch_all)\n     3167    0.005    0.000    0.431    0.000 compiler.py:1534(apply_converters)\n        4    0.000    0.000    0.410    0.103 _server_cursor.py:125(fetchmany)\n      386    0.000    0.000    0.404    0.001 {method 'send' of 'generator' objects}\n\n\n",
+  "slow_queries": [
+    {
+      "time_ms": 115.0,
+      "sql": "\n        SELECT\n            vendor_id,\n            COALESCE(SUM(CASE WHEN outstanding_asof > 0 THEN outstanding_asof ELSE 0 END), 0) AS positive_outstanding,\n            COALESCE(SUM(CASE WHEN outstanding_asof < 0 THEN ABS(outstanding_asof) ELSE 0 END), 0) AS credit_balance,\n            COALESCE(SUM(CASE WHEN outstanding_asof > 0 AND reference_date > '2026-10-10'::date THEN outstanding_asof ELSE 0 END), 0) AS not_due,\n            COALESCE(SUM(CASE WHEN outstanding_asof > 0 AND reference_date <= '2026-10-10'::date THEN outstanding_asof ELSE 0 END), 0) AS overdue_amount,\n            COALESCE(SUM(CASE WHEN outstanding_asof > 0 AND reference_date < '2026-10-10'::date AND reference_date >= '2026-09-10'::date THEN outstanding_asof ELSE 0 END), 0) AS bucket_0_30,\n            COALESCE(SUM(CASE WHEN outstanding_asof > 0 AND reference_date < '2026-09-10'::date AND reference_date >= '2026-08-11'::date THEN outstanding_asof ELSE 0 END), 0) AS bucket_31_60,\n            COALESCE(SUM(CASE WHEN outstanding_asof > 0 AND reference_date < '2026-08-11'::date AND reference_date >= '2026-07-12'::date THEN outstanding_asof ELSE 0 END), 0) AS bucket_61_90,\n            COALESCE(SUM(CASE WHEN outstanding_as"
+    },
+    {
+      "time_ms": 44.0,
+      "sql": "SELECT \"purchase_vendorbillopenitem\".\"vendor_id\" AS \"vendor_id\", COALESCE(SUM(CASE WHEN \"purchase_vendorbillopenitem\".\"original_amount\" >= 0.00 THEN \"purchase_vendorbillopenitem\".\"original_amount\" ELSE 0.00 END), 0.00) AS \"bill_total\", COALESCE(SUM(CASE WHEN \"purchase_vendorbillopenitem\".\"original_amount\" < 0.00 THEN ABS(\"purchase_vendorbillopenitem\".\"original_amount\") ELSE 0.00 END), 0.00) AS \"credit_total\", MAX(CASE WHEN \"purchase_vendorbillopenitem\".\"original_amount\" >= 0.00 THEN \"purchase_vendorbillopenitem\".\"bill_date\" ELSE NULL END) AS \"last_bill_date\" FROM \"purchase_vendorbillopenitem\" INNER JOIN \"purchase_purchaseinvoiceheader\" ON (\"purchase_vendorbillopenitem\".\"header_id\" = \"purchase_purchaseinvoiceheader\".\"id\") WHERE (\"purchase_vendorbillopenitem\".\"entity_id\" = 10 AND \"purchase_vendorbillopenitem\".\"entityfinid_id\" = 8 AND (\"purchase_vendorbillopenitem\".\"subentity_id\" = 8 OR \"purchase_vendorbillopenitem\".\"subentity_id\" IS NULL) AND NOT (\"purchase_purchaseinvoiceheader\".\"status\" = 9) AND \"purchase_vendorbillopenitem\".\"bill_date\" >= '2026-04-01'::date AND \"purchase_vendorbillopenitem\".\"bill_date\" <= '2026-10-10'::date AND \"purchase_vendorbillopenitem\".\"vendor_id\" IN (276, 28"
+    },
+    {
+      "time_ms": 35.0,
+      "sql": "DECLARE \"_django_curs_8283676032_sync_6\" NO SCROLL CURSOR WITH HOLD FOR SELECT \"purchase_vendoradvancebalance\".\"id\", \"purchase_vendoradvancebalance\".\"subentity_id\", \"purchase_vendoradvancebalance\".\"vendor_id\", \"purchase_vendoradvancebalance\".\"credit_date\", \"purchase_vendoradvancebalance\".\"reference_no\", \"purchase_vendoradvancebalance\".\"original_amount\", \"purchase_vendoradvancebalance\".\"adjusted_amount\", \"purchase_vendoradvancebalance\".\"outstanding_amount\", \"purchase_vendoradvancebalance\".\"is_open\", \"purchase_vendoradvancebalance\".\"payment_voucher_id\", COALESCE(\"purchase_vendoradvancebalance\".\"adjusted_amount\", 0.00) AS \"adjusted_asof\", COALESCE(\"purchase_vendoradvancebalance\".\"outstanding_amount\", 0.00) AS \"outstanding_asof\", \"entity_subentity\".\"id\", \"entity_subentity\".\"subentityname\", \"financial_account\".\"id\", \"financial_account\".\"ledger_id\", \"financial_ledger\".\"id\", \"financial_ledger\".\"created_at\", \"financial_ledger\".\"updated_at\", \"financial_ledger\".\"isactive\", \"financial_ledger\".\"entity_id\", \"financial_ledger\".\"ledger_code\", \"financial_ledger\".\"name\", \"financial_ledger\".\"legal_name\", \"financial_ledger\".\"accounthead_id\", \"financial_ledger\".\"creditaccounthead_id\", \"financial_ledge"
+    },
+    {
+      "time_ms": 29.0,
+      "sql": "DECLARE \"_django_curs_8283676032_sync_4\" NO SCROLL CURSOR WITH HOLD FOR SELECT \"purchase_vendorbillopenitem\".\"id\", \"purchase_vendorbillopenitem\".\"header_id\", \"purchase_vendorbillopenitem\".\"subentity_id\", \"purchase_vendorbillopenitem\".\"vendor_id\", \"purchase_vendorbillopenitem\".\"doc_type\", \"purchase_vendorbillopenitem\".\"bill_date\", \"purchase_vendorbillopenitem\".\"due_date\", \"purchase_vendorbillopenitem\".\"purchase_number\", \"purchase_vendorbillopenitem\".\"supplier_invoice_number\", \"purchase_vendorbillopenitem\".\"original_amount\", \"purchase_vendorbillopenitem\".\"settled_amount\", \"purchase_vendorbillopenitem\".\"outstanding_amount\", \"purchase_vendorbillopenitem\".\"is_open\", COALESCE(SUM(\"purchase_vendorsettlementline\".\"applied_amount_signed\") FILTER (WHERE (\"purchase_vendorsettlement\".\"status\" = 2 AND \"purchase_vendorsettlement\".\"settlement_date\" <= '2026-03-31'::date AND \"purchase_vendorsettlement\".\"entity_id\" = 10 AND \"purchase_vendorsettlement\".\"entityfinid_id\" = 8 AND (\"purchase_vendorsettlement\".\"subentity_id\" = 8 OR \"purchase_vendorsettlement\".\"subentity_id\" IS NULL))), 0.00) AS \"settled_asof_lines\", COALESCE(SUM(\"purchase_vendorsettlementline\".\"applied_amount_signed\") FILTER (WHERE (\"pur"
+    },
+    {
+      "time_ms": 17.0,
+      "sql": "SELECT \"financial_account\".\"id\", \"financial_account\".\"ledger_id\", \"financial_account\".\"accountname\", \"financial_account\".\"legalname\", \"financial_account\".\"entity_id\", \"financial_ledger\".\"id\", \"financial_ledger\".\"ledger_code\", \"financial_ledger\".\"name\", \"financial_ledger\".\"accounthead_id\", \"financial_accountcomplianceprofile\".\"id\", \"financial_accountcomplianceprofile\".\"gstno\", \"financial_accountcomplianceprofile\".\"msme\", \"financial_accountcomplianceprofile\".\"msme_status\", \"financial_accountcomplianceprofile\".\"udyam_no\", \"financial_accountcomplianceprofile\".\"has_written_payment_terms\", \"financial_accountcomplianceprofile\".\"msme_credit_days\", \"financial_accountcommercialprofile\".\"id\", \"financial_accountcommercialprofile\".\"partytype\", \"financial_accountcommercialprofile\".\"creditlimit\", \"financial_accountcommercialprofile\".\"creditdays\", \"financial_accountcommercialprofile\".\"currency\", \"financial_accountcommercialprofile\".\"agent\" FROM \"financial_account\" INNER JOIN \"financial_accountcommercialprofile\" ON (\"financial_account\".\"id\" = \"financial_accountcommercialprofile\".\"account_id\") LEFT OUTER JOIN \"financial_ledger\" ON (\"financial_account\".\"ledger_id\" = \"financial_ledger\".\"id\") LEFT OUTE"
+    },
+    {
+      "time_ms": 17.0,
+      "sql": "SELECT \"financial_accountaddress\".\"id\", \"financial_accountaddress\".\"created_at\", \"financial_accountaddress\".\"updated_at\", \"financial_accountaddress\".\"isactive\", \"financial_accountaddress\".\"account_id\", \"financial_accountaddress\".\"entity_id\", \"financial_accountaddress\".\"createdby_id\", \"financial_accountaddress\".\"address_type\", \"financial_accountaddress\".\"line1\", \"financial_accountaddress\".\"line2\", \"financial_accountaddress\".\"floor_no\", \"financial_accountaddress\".\"street\", \"financial_accountaddress\".\"country_id\", \"financial_accountaddress\".\"state_id\", \"financial_accountaddress\".\"district_id\", \"financial_accountaddress\".\"city_id\", \"financial_accountaddress\".\"pincode\", \"financial_accountaddress\".\"isprimary\", \"geography_state\".\"id\", \"geography_state\".\"created_at\", \"geography_state\".\"updated_at\", \"geography_state\".\"isactive\", \"geography_state\".\"statename\", \"geography_state\".\"statecode\", \"geography_state\".\"country_id\" FROM \"financial_accountaddress\" LEFT OUTER JOIN \"geography_state\" ON (\"financial_accountaddress\".\"state_id\" = \"geography_state\".\"id\") WHERE (\"financial_accountaddress\".\"isactive\" AND \"financial_accountaddress\".\"isprimary\" AND \"financial_accountaddress\".\"account_id\" IN (687, "
+    },
+    {
+      "time_ms": 16.0,
+      "sql": "DECLARE \"_django_curs_8283676032_sync_5\" NO SCROLL CURSOR WITH HOLD FOR SELECT \"purchase_vendoradvancebalance\".\"id\", \"purchase_vendoradvancebalance\".\"subentity_id\", \"purchase_vendoradvancebalance\".\"vendor_id\", \"purchase_vendoradvancebalance\".\"credit_date\", \"purchase_vendoradvancebalance\".\"reference_no\", \"purchase_vendoradvancebalance\".\"original_amount\", \"purchase_vendoradvancebalance\".\"adjusted_amount\", \"purchase_vendoradvancebalance\".\"outstanding_amount\", \"purchase_vendoradvancebalance\".\"is_open\", \"purchase_vendoradvancebalance\".\"payment_voucher_id\", COALESCE(SUM(\"purchase_vendorsettlement\".\"total_amount\") FILTER (WHERE (\"purchase_vendorsettlement\".\"status\" = 2 AND \"purchase_vendorsettlement\".\"settlement_date\" > '2026-03-31'::date AND \"purchase_vendorsettlement\".\"entity_id\" = 10 AND \"purchase_vendorsettlement\".\"entityfinid_id\" = 8 AND (\"purchase_vendorsettlement\".\"subentity_id\" = 8 OR \"purchase_vendorsettlement\".\"subentity_id\" IS NULL))), 0.00) AS \"adjusted_after_asof\", (\"purchase_vendoradvancebalance\".\"adjusted_amount\" - COALESCE(SUM(\"purchase_vendorsettlement\".\"total_amount\") FILTER (WHERE (\"purchase_vendorsettlement\".\"status\" = 2 AND \"purchase_vendorsettlement\".\"settlement_date"
+    },
+    {
+      "time_ms": 1.0,
+      "sql": "SELECT \"purchase_vendorsettlement\".\"vendor_id\" AS \"vendor_id\", COALESCE(SUM(\"purchase_vendorsettlement\".\"total_amount\"), 0.00) AS \"total\", MAX(\"purchase_vendorsettlement\".\"settlement_date\") AS \"last_payment_date\" FROM \"purchase_vendorsettlement\" WHERE (\"purchase_vendorsettlement\".\"entity_id\" = 10 AND \"purchase_vendorsettlement\".\"settlement_date\" >= '2026-04-01'::date AND \"purchase_vendorsettlement\".\"settlement_date\" <= '2026-10-10'::date AND \"purchase_vendorsettlement\".\"settlement_type\" = 'payment' AND \"purchase_vendorsettlement\".\"status\" = 2 AND \"purchase_vendorsettlement\".\"entityfinid_id\" = 8 AND (\"purchase_vendorsettlement\".\"subentity_id\" = 8 OR \"purchase_vendorsettlement\".\"subentity_id\" IS NULL)) GROUP BY 1"
+    },
+    {
+      "time_ms": 1.0,
+      "sql": "SELECT \"purchase_vendorsettlement\".\"vendor_id\" AS \"vendor_id\", MAX(\"purchase_vendorsettlement\".\"settlement_date\") AS \"last_payment_date\" FROM \"purchase_vendorsettlement\" WHERE (\"purchase_vendorsettlement\".\"entity_id\" = 10 AND \"purchase_vendorsettlement\".\"settlement_date\" <= '2026-10-10'::date AND \"purchase_vendorsettlement\".\"settlement_type\" = 'payment' AND \"purchase_vendorsettlement\".\"status\" = 2 AND \"purchase_vendorsettlement\".\"entityfinid_id\" = 8 AND (\"purchase_vendorsettlement\".\"subentity_id\" = 8 OR \"purchase_vendorsettlement\".\"subentity_id\" IS NULL)) GROUP BY 1"
+    }
+  ]
+}

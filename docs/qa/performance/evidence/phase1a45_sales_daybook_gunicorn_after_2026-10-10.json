@@ -1,0 +1,26 @@
+[
+  {
+    "name": "sales_invoices_gunicorn_after",
+    "status_code": 200,
+    "elapsed_ms": 132.75,
+    "response_bytes": 14161,
+    "shape": "list",
+    "row_count": 25,
+    "total_count": null,
+    "totals": null
+  },
+  {
+    "name": "financial_daybook_gunicorn_after",
+    "status_code": 200,
+    "elapsed_ms": 429.2,
+    "response_bytes": 35533,
+    "shape": "dict",
+    "row_count": 50,
+    "total_count": 49074,
+    "totals": {
+      "transaction_count": 49074,
+      "debit_total": "245697566.11",
+      "credit_total": "245697566.11"
+    }
+  }
+]

@@ -1,0 +1,16 @@
+      datname      | numbackends | xact_commit | xact_rollback | deadlocks | temp_files | temp_bytes 
+-------------------+-------------+-------------+---------------+-----------+------------+------------
+ finacc_perf_local |           1 |      722929 |             3 |         0 |        114 | 8797289982
+(1 row)
+
+  pid  |   usename   | application_name | state  | wait_event_type | wait_event | xact_age |                                                                              query                                                                               
+-------+-------------+------------------+--------+-----------------+------------+----------+------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ 25709 | finacc_perf | psql             | active |                 |            | 00:00:00 | select datname,numbackends,xact_commit,xact_rollback,deadlocks,temp_files,temp_bytes from pg_stat_database where datname='finacc_perf_local'; select pid,usename
+(1 row)
+
+      mode       | granted | count 
+-----------------+---------+-------
+ AccessShareLock | t       |     9
+ ExclusiveLock   | t       |     1
+(2 rows)
+

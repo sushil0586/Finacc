@@ -1,0 +1,87 @@
+{
+  "database_after": {
+    "database": "finacc_perf_local",
+    "size_bytes": 102276119,
+    "user": "finacc_perf"
+  },
+  "database_before": {
+    "database": "finacc_perf_local",
+    "size_bytes": 102276119,
+    "user": "finacc_perf"
+  },
+  "dry_run": false,
+  "elapsed_seconds": 0.216,
+  "results": [
+    {
+      "entity_id": 5,
+      "purchase_inserted": 0,
+      "sales_inserted": 0,
+      "tenant": "P2B3B-SMALL-S",
+      "validation": {
+        "ap_open_total": "236000.00",
+        "ar_open_total": "472000.00",
+        "balanced": true,
+        "duplicate_purchase_doc_numbers": 0,
+        "duplicate_sales_doc_numbers": 0,
+        "journal_credit": "885000.00",
+        "journal_debit": "885000.00",
+        "purchase_count": 500,
+        "sales_count": 1000
+      }
+    },
+    {
+      "entity_id": 6,
+      "purchase_inserted": 0,
+      "sales_inserted": 0,
+      "tenant": "P2B3B-SMALL-M",
+      "validation": {
+        "ap_open_total": "236000.00",
+        "ar_open_total": "472000.00",
+        "balanced": true,
+        "duplicate_purchase_doc_numbers": 0,
+        "duplicate_sales_doc_numbers": 0,
+        "journal_credit": "885000.00",
+        "journal_debit": "885000.00",
+        "purchase_count": 500,
+        "sales_count": 1000
+      }
+    },
+    {
+      "entity_id": 7,
+      "purchase_inserted": 0,
+      "sales_inserted": 0,
+      "tenant": "P2B3B-SMALL-L",
+      "validation": {
+        "ap_open_total": "236000.00",
+        "ar_open_total": "472000.00",
+        "balanced": true,
+        "duplicate_purchase_doc_numbers": 0,
+        "duplicate_sales_doc_numbers": 0,
+        "journal_credit": "885000.00",
+        "journal_debit": "885000.00",
+        "purchase_count": 500,
+        "sales_count": 1000
+      }
+    }
+  ],
+  "targets": [
+    {
+      "code": "P2B3B-SMALL-S",
+      "label": "Phase2B3B small Small Tenant",
+      "purchase": 500,
+      "sales": 1000
+    },
+    {
+      "code": "P2B3B-SMALL-M",
+      "label": "Phase2B3B small Medium Tenant",
+      "purchase": 500,
+      "sales": 1000
+    },
+    {
+      "code": "P2B3B-SMALL-L",
+      "label": "Phase2B3B small Large Tenant",
+      "purchase": 500,
+      "sales": 1000
+    }
+  ]
+}

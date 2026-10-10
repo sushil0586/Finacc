@@ -1,0 +1,12 @@
+ id |          entityname           | sales | purchase 
+----+-------------------------------+-------+----------
+  5 | Phase2B3B small Small Tenant  |   100 |       50
+  6 | Phase2B3B small Medium Tenant |   100 |       50
+  7 | Phase2B3B small Large Tenant  |   100 |       50
+(3 rows)
+
+ db_size_bytes 
+---------------
+      73120791
+(1 row)
+

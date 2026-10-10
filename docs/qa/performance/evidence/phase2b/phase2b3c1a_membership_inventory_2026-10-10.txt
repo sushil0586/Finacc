@@ -1,0 +1,7 @@
+368 objects imported automatically (use -v 2 for details).
+
+users [('perf-api-large@local.invalid', True, False, False, True), ('perf-api-medium@local.invalid', True, False, False, True), ('perf-api-small@local.invalid', True, False, False, True)]
+memberships [('perf-api-small@local.invalid', 1, 'viewer', True), ('perf-api-medium@local.invalid', 2, 'viewer', True), ('perf-api-large@local.invalid', 3, 'viewer', True)]
+assignments [('perf-api-small@local.invalid', 5, 'perf_read_report_baseline', True, True), ('perf-api-medium@local.invalid', 6, 'perf_read_report_baseline', True, True), ('perf-api-large@local.invalid', 7, 'perf_read_report_baseline', True, True)]
+entities [(5, 1), (6, 2), (7, 3)]
+role_permission_count 849

@@ -1,0 +1,43 @@
+{
+  "name": "receivables_open_items_after_projection",
+  "elapsed_ms": 3052.42,
+  "query_count": 7,
+  "sql_ms": 263.0,
+  "rows": 100,
+  "total_rows": 10181,
+  "totals": {
+    "original_amount": "19624631.00",
+    "settled_amount": "116310.87",
+    "outstanding_amount": "19508320.13"
+  },
+  "slow_queries": [
+    {
+      "time_ms": 87.0,
+      "sql": "DECLARE \"_django_curs_8283676032_sync_2\" NO SCROLL CURSOR WITH HOLD FOR SELECT \"sales_customerbillopenitem\".\"id\", \"sales_customerbillopenitem\".\"header_id\", \"sales_customerbillopenitem\".\"subentity_id\", \"sales_customerbillopenitem\".\"customer_id\", \"sales_customerbillopenitem\".\"doc_type\", \"sales_customerbillopenitem\".\"bill_date\", \"sales_customerbillopenitem\".\"due_date\", \"sales_customerbillopenitem\".\"invoice_number\", \"sales_customerbillopenitem\".\"customer_reference_number\", \"sales_customerbillopenitem\".\"original_amount\", \"sales_customerbillopenitem\".\"settled_amount\", \"sales_customerbillopenitem\".\"outstanding_amount\", \"sales_customerbillopenitem\".\"is_open\", \"sales_invoice_header\".\"id\", \"sales_invoice_header\".\"doc_type\", \"entity_subentity\".\"id\", \"entity_subentity\".\"subentityname\", \"financial_account\".\"id\", \"financial_account\".\"ledger_id\", \"financial_account\".\"accountname\", \"financial_account\".\"legalname\", \"financial_ledger\".\"id\", \"financial_ledger\".\"ledger_code\", \"financial_ledger\".\"name\", \"f"
+    },
+    {
+      "time_ms": 58.0,
+      "sql": "SELECT DISTINCT \"sales_invoice_line\".\"header_id\" AS \"header_id\" FROM \"sales_invoice_line\" WHERE (\"sales_invoice_line\".\"header_id\" IN (65, 68, 78, 80, 82, 83, 84, 85, 87, 147, 148, 149, 150, 152, 154, 156, 158, 269, 271, 287, 289, 337, 339, 408, 410, 412, 414, 421, 424, 547, 597, 638, 640, 675, 677, 707, 708, 724, 727, 768, 770, 801, 803, 819, 822, 864, 866, 882, 885, 927, 928, 959, 960, 993, 997, 1019, 1021, 1049, 1051, 1196, 1197, 1199, 1214, 1216, 1305, 1307, 1329, 1332, 1388, 1390, 1412, 1415, 1473, 1475, 1510, 1512, 1534, 1537, 1594, 1596, 1626, 1628, 1658, 1660, 1690, 1692, 1714, 1717, 1774, 1776, 1806, 1808, 1838, 1840, 1859, 1861, 1910, 1913, 1970, 1972, 2002, 2004, 2026, 2028, 2057, 2058, 2067, 2081, 2084, 2141, 2143, 2165, 2168, 2225, 2227, 2268, 2272, 2292, 2294, 2313, 2335, 2338, 2408, 2410, 2469, 2471, 2511, 2513, 2553, 2555, 2587, 2590, 2629, 2632, 2671, 2674, 2724, 2726, 2757, 2759, 2791, 2794, 2983, 2985, 3025, 3027, 3075, 3078, 3141, 3143, 3191, 3194, 3254, 3256, 3314, "
+    },
+    {
+      "time_ms": 44.0,
+      "sql": "SELECT \"sales_customeradvancebalance\".\"id\", \"sales_customeradvancebalance\".\"created_at\", \"sales_customeradvancebalance\".\"updated_at\", \"sales_customeradvancebalance\".\"entity_id\", \"sales_customeradvancebalance\".\"entityfinid_id\", \"sales_customeradvancebalance\".\"subentity_id\", \"sales_customeradvancebalance\".\"customer_id\", \"sales_customeradvancebalance\".\"customer_ledger_id\", \"sales_customeradvancebalance\".\"source_type\", \"sales_customeradvancebalance\".\"credit_date\", \"sales_customeradvancebalance\".\"reference_no\", \"sales_customeradvancebalance\".\"remarks\", \"sales_customeradvancebalance\".\"original_amount\", \"sales_customeradvancebalance\".\"adjusted_amount\", \"sales_customeradvancebalance\".\"outstanding_amount\", \"sales_customeradvancebalance\".\"is_open\", \"sales_customeradvancebalance\".\"last_adjusted_at\", \"sales_customeradvancebalance\".\"receipt_voucher_id\", \"entity_subentity\".\"id\", \"entity_subentity\".\"created_at\", \"entity_subentity\".\"updated_at\", \"entity_subentity\".\"isactive\", \"entity_subentity\".\"suben"
+    },
+    {
+      "time_ms": 38.0,
+      "sql": "SELECT DISTINCT \"sales_customerbillopenitem\".\"header_id\" AS \"header_id\", \"sales_customerbillopenitem\".\"due_date\", \"sales_customerbillopenitem\".\"bill_date\", \"sales_customerbillopenitem\".\"id\" FROM \"sales_customerbillopenitem\" INNER JOIN \"sales_invoice_header\" ON (\"sales_customerbillopenitem\".\"header_id\" = \"sales_invoice_header\".\"id\") WHERE (\"sales_customerbillopenitem\".\"entity_id\" = 10 AND \"sales_customerbillopenitem\".\"entityfinid_id\" = 8 AND \"sales_customerbillopenitem\".\"subentity_id\" = 8 AND NOT (\"sales_invoice_header\".\"status\" = 9) AND NOT (\"sales_invoice_header\".\"status\" = 9) AND \"sales_customerbillopenitem\".\"bill_date\" <= '2026-10-10'::date) ORDER BY \"sales_customerbillopenitem\".\"due_date\" ASC, \"sales_customerbillopenitem\".\"bill_date\" ASC, \"sales_customerbillopenitem\".\"id\" ASC"
+    },
+    {
+      "time_ms": 32.0,
+      "sql": "SELECT DISTINCT \"sales_customerbillopenitem\".\"customer_id\" AS \"customer_id\", \"sales_customerbillopenitem\".\"due_date\", \"sales_customerbillopenitem\".\"bill_date\", \"sales_customerbillopenitem\".\"id\" FROM \"sales_customerbillopenitem\" INNER JOIN \"sales_invoice_header\" ON (\"sales_customerbillopenitem\".\"header_id\" = \"sales_invoice_header\".\"id\") WHERE (\"sales_customerbillopenitem\".\"entity_id\" = 10 AND \"sales_customerbillopenitem\".\"entityfinid_id\" = 8 AND \"sales_customerbillopenitem\".\"subentity_id\" = 8 AND NOT (\"sales_invoice_header\".\"status\" = 9) AND NOT (\"sales_invoice_header\".\"status\" = 9) AND \"sales_customerbillopenitem\".\"bill_date\" <= '2026-10-10'::date) ORDER BY \"sales_customerbillopenitem\".\"due_date\" ASC, \"sales_customerbillopenitem\".\"bill_date\" ASC, \"sales_customerbillopenitem\".\"id\" ASC"
+    },
+    {
+      "time_ms": 2.0,
+      "sql": "SELECT \"sales_customersettlementline\".\"open_item_id\" AS \"open_item_id\", SUM(\"sales_customersettlementline\".\"applied_amount_signed\") AS \"applied\", MAX(\"sales_customersettlement\".\"settlement_date\") AS \"last_settled_at\" FROM \"sales_customersettlementline\" INNER JOIN \"sales_customersettlement\" ON (\"sales_customersettlementline\".\"settlement_id\" = \"sales_customersettlement\".\"id\") WHERE (\"sales_customersettlement\".\"entity_id\" = 10 AND \"sales_customersettlement\".\"entityfinid_id\" = 8 AND \"sales_customersettlement\".\"settlement_date\" <= '2026-10-10'::date AND \"sales_customersettlement\".\"status\" = 2 AND \"sales_customersettlement\".\"subentity_id\" = 8) GROUP BY 1"
+    },
+    {
+      "time_ms": 2.0,
+      "sql": "SELECT \"sales_customersettlement\".\"advance_balance_id\" AS \"advance_balance_id\", SUM(\"sales_customersettlement\".\"total_amount\") AS \"applied\" FROM \"sales_customersettlement\" INNER JOIN \"sales_customeradvancebalance\" ON (\"sales_customersettlement\".\"advance_balance_id\" = \"sales_customeradvancebalance\".\"id\") WHERE (\"sales_customersettlement\".\"advance_balance_id\" IS NOT NULL AND \"sales_customersettlement\".\"entity_id\" = 10 AND \"sales_customersettlement\".\"settlement_date\" <= '2026-10-10'::date AND \"sales_customersettlement\".\"status\" = 2 AND \"sales_customersettlement\".\"entityfinid_id\" = 8 AND \"sales_customersettlement\".\"subentity_id\" = 8 AND \"sales_customeradvancebalance\".\"customer_id\" IN (11789, 11790, 11791, 11792, 529, 13843, 13844, 13846, 13847, 11801, 11802, 11803, 11804, 13399, 13400, 13407, 11880, 11881, 11882, 11883, 13963, 13964, 13966, 13967, 13972, 13973, 662, 13975, 13976, 671, 13984, 13985, 672, 13987, 13988, 13996, 13997, 13999, 14000, 1208, 14012, 14013, 14015, 14016, 14025, 1402"
+    }
+  ]
+}

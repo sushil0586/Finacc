@@ -1,0 +1,6 @@
+health
+200 3
+ok
+auth_me_no_credentials
+401 58
+{"detail":"Authentication credentials were not provided."}

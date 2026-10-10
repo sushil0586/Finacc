@@ -25,6 +25,7 @@ class FinaccDjangoUser(HttpUser):
     host = env("LOCUST_HOST", "")
     email = env("FINACC_USER_EMAIL", "")
     password = env("FINACC_USER_PASSWORD", "")
+    access_token = env("FINACC_ACCESS_TOKEN", "")
 
     entity_id = env("FINACC_ENTITY_ID", "1")
     entity_fin_id = env("FINACC_ENTITY_FIN_ID", "1")
@@ -59,6 +60,10 @@ class FinaccDjangoUser(HttpUser):
     receipt_voucher_approval_suffix = env("FINACC_RECEIPT_VOUCHER_APPROVAL_SUFFIX", "/approval/")
     payables_meta_path = env("FINACC_PAYABLES_META_PATH", "/api/reports/payables/meta/")
     ap_aging_path = env("FINACC_AP_AGING_PATH", "/api/reports/payables/aging/")
+    payables_vendor_outstanding_path = env(
+        "FINACC_PAYABLES_VENDOR_OUTSTANDING_PATH",
+        "/api/reports/payables/vendor-outstanding/",
+    )
     receivables_customer_outstanding_path = env("FINACC_RECEIVABLES_CUSTOMER_OUTSTANDING_PATH", "/api/reports/receivables/customer-outstanding/")
     receivables_open_items_path = env("FINACC_RECEIVABLES_OPEN_ITEMS_PATH", "/api/reports/receivables/open-items/")
     receivables_collections_history_path = env("FINACC_RECEIVABLES_COLLECTIONS_HISTORY_PATH", "/api/reports/receivables/collections-history/")
@@ -80,6 +85,7 @@ class FinaccDjangoUser(HttpUser):
     financial_trading_account_csv_path = env("FINACC_FINANCIAL_TRADING_ACCOUNT_CSV_PATH", "/api/reports/financial/trading-account/csv/")
     financial_ledger_book_path = env("FINACC_FINANCIAL_LEDGER_BOOK_PATH", "/api/reports/financial/ledger-book/")
     financial_ledger_book_csv_path = env("FINACC_FINANCIAL_LEDGER_BOOK_CSV_PATH", "/api/reports/financial/ledger-book/csv/")
+    financial_daybook_path = env("FINACC_FINANCIAL_DAYBOOK_PATH", "/api/reports/financial/daybook/")
     bank_reco_meta_path = env("FINACC_BANK_RECO_META_PATH", "/api/bank-reconciliation/meta/")
     bank_reco_sessions_path = env("FINACC_BANK_RECO_SESSIONS_PATH", "/api/bank-reconciliation/sessions/")
     sales_invoice_confirm_suffix = env("FINACC_SALES_INVOICE_CONFIRM_SUFFIX", "/confirm/")
@@ -113,8 +119,19 @@ class FinaccDjangoUser(HttpUser):
     _financial_meta_cache: Dict[str, Any] | None = None
 
     def on_start(self) -> None:
+        if self.access_token:
+            self.client.headers.update({"Authorization": f"Bearer {self.access_token}"})
+            with self.client.get(self.me_path, name="auth/me", catch_response=True) as me_response:
+                if me_response.status_code >= 400:
+                    me_response.failure(
+                        f"Token auth validation failed ({me_response.status_code}): {me_response.text[:2000]}"
+                    )
+                else:
+                    me_response.success()
+            return
+
         if not self.email or not self.password:
-            raise RuntimeError("Set FINACC_USER_EMAIL and FINACC_USER_PASSWORD in .env")
+            raise RuntimeError("Set FINACC_ACCESS_TOKEN or FINACC_USER_EMAIL and FINACC_USER_PASSWORD in .env")
 
         payload = {"email": self.email, "password": self.password}
         with self.client.post(self.login_path, json=payload, name="auth/login", catch_response=True) as response:
@@ -198,6 +215,17 @@ class FinaccDjangoUser(HttpUser):
         params["view"] = view
         return params
 
+    def _payables_vendor_outstanding_params(self, *, voucher_type: str = "") -> Dict[str, Any]:
+        params = self._entity_scope_params()
+        params["view"] = "summary"
+        params["page"] = 1
+        params["page_size"] = 100
+        if self.report_as_of_date:
+            params["as_of_date"] = self.report_as_of_date
+        if voucher_type:
+            params["voucher_type"] = voucher_type
+        return params
+
     def _financial_report_params(
         self,
         *,
@@ -229,6 +257,86 @@ class FinaccDjangoUser(HttpUser):
         if search:
             params["search"] = search
         return params
+
+    def _financial_daybook_params(self, *, page_size: int = 50) -> Dict[str, Any]:
+        params = self._entity_scope_params()
+        if self.financial_report_from_date:
+            params["from_date"] = self.financial_report_from_date
+        elif self.report_as_of_date:
+            params["from_date"] = self.report_as_of_date[:4] + "-04-01"
+        if self.financial_report_to_date:
+            params["to_date"] = self.financial_report_to_date
+        elif self.report_as_of_date:
+            params["to_date"] = self.report_as_of_date
+        params["page"] = 1
+        params["page_size"] = page_size
+        return params
+
+    @staticmethod
+    def _json_payload(response, *, expected_type: type | tuple[type, ...] | None = None) -> Any:
+        try:
+            payload = response.json()
+        except Exception:
+            response.failure(f"Invalid JSON payload: {response.text[:200]}")
+            return None
+        if expected_type is not None and not isinstance(payload, expected_type):
+            response.failure(f"Unexpected payload type {type(payload).__name__}")
+            return None
+        return payload
+
+    def _validate_list_payload(self, response, *, keys: tuple[str, ...] = ()) -> bool:
+        payload = self._json_payload(response, expected_type=(list, dict))
+        if payload is None:
+            return False
+        rows = payload if isinstance(payload, list) else None
+        if isinstance(payload, dict):
+            for key in ("results", "items", "rows", "data"):
+                if key in payload:
+                    rows = payload[key]
+                    break
+        if rows is None:
+            response.failure("Payload missing list rows")
+            return False
+        if not isinstance(rows, list):
+            response.failure("Payload rows are not a list")
+            return False
+        if keys and rows:
+            missing = [key for key in keys if key not in rows[0]]
+            if missing:
+                response.failure(f"Payload row missing keys: {', '.join(missing)}")
+                return False
+        return True
+
+    def _validate_report_payload(self, response, *, row_keys: tuple[str, ...] = ()) -> bool:
+        payload = self._json_payload(response, expected_type=dict)
+        if payload is None:
+            return False
+        rows = None
+        for key in ("results", "items", "rows", "data"):
+            if key in payload:
+                rows = payload[key]
+                break
+        if rows is None:
+            response.failure("Report payload missing rows")
+            return False
+        if not isinstance(rows, list):
+            response.failure("Report rows are not a list")
+            return False
+        if row_keys and rows:
+            missing = [key for key in row_keys if key not in rows[0]]
+            if missing:
+                response.failure(f"Report row missing keys: {', '.join(missing)}")
+                return False
+        return True
+
+    def _validate_object_payload(self, response) -> bool:
+        payload = self._json_payload(response, expected_type=dict)
+        if payload is None:
+            return False
+        if not payload:
+            response.failure("Payload object is empty")
+            return False
+        return True
 
     def _financial_statement_params(
         self,
@@ -1121,6 +1229,8 @@ class FinaccDjangoUser(HttpUser):
         ) as response:
             if response.status_code >= 400:
                 response.failure(f"{response.status_code}: {response.text[:200]}")
+            elif not self._validate_object_payload(response):
+                return
             else:
                 response.success()
 
@@ -1148,6 +1258,8 @@ class FinaccDjangoUser(HttpUser):
         ) as response:
             if response.status_code >= 400:
                 response.failure(f"{response.status_code}: {response.text[:200]}")
+            elif not self._validate_object_payload(response):
+                return
             else:
                 response.success()
 
@@ -1359,6 +1471,40 @@ class FinaccDjangoUser(HttpUser):
         ) as response:
             if response.status_code >= 400:
                 response.failure(f"{response.status_code}: {response.text[:200]}")
+            elif not self._validate_report_payload(response):
+                return
+            else:
+                response.success()
+
+    @tag("read", "report-heavy", "ap-ar-reports", "payables-reports", "phase1b-critical")
+    @task(2)
+    def get_payables_vendor_outstanding(self) -> None:
+        with self.client.get(
+            self.payables_vendor_outstanding_path,
+            params=self._payables_vendor_outstanding_params(),
+            name="reports/payables/vendor-outstanding [summary]",
+            catch_response=True,
+        ) as response:
+            if response.status_code >= 400:
+                response.failure(f"{response.status_code}: {response.text[:200]}")
+            elif not self._validate_report_payload(response):
+                return
+            else:
+                response.success()
+
+    @tag("read", "report-heavy", "ap-ar-reports", "payables-reports", "phase1b-residual-risk")
+    @task(1)
+    def get_payables_vendor_outstanding_voucher_filtered(self) -> None:
+        with self.client.get(
+            self.payables_vendor_outstanding_path,
+            params=self._payables_vendor_outstanding_params(voucher_type="PINV"),
+            name="reports/payables/vendor-outstanding [voucher-filter]",
+            catch_response=True,
+        ) as response:
+            if response.status_code >= 400:
+                response.failure(f"{response.status_code}: {response.text[:200]}")
+            elif not self._validate_report_payload(response):
+                return
             else:
                 response.success()
 
@@ -1373,6 +1519,8 @@ class FinaccDjangoUser(HttpUser):
         ) as response:
             if response.status_code >= 400:
                 response.failure(f"{response.status_code}: {response.text[:200]}")
+            elif not self._validate_report_payload(response):
+                return
             else:
                 response.success()
 
@@ -1387,6 +1535,8 @@ class FinaccDjangoUser(HttpUser):
         ) as response:
             if response.status_code >= 400:
                 response.failure(f"{response.status_code}: {response.text[:200]}")
+            elif not self._validate_report_payload(response):
+                return
             else:
                 response.success()
 
@@ -1401,6 +1551,8 @@ class FinaccDjangoUser(HttpUser):
         ) as response:
             if response.status_code >= 400:
                 response.failure(f"{response.status_code}: {response.text[:200]}")
+            elif not self._validate_report_payload(response):
+                return
             else:
                 response.success()
 
@@ -1415,6 +1567,8 @@ class FinaccDjangoUser(HttpUser):
         ) as response:
             if response.status_code >= 400:
                 response.failure(f"{response.status_code}: {response.text[:200]}")
+            elif not self._validate_report_payload(response):
+                return
             else:
                 response.success()
 
@@ -1527,6 +1681,22 @@ class FinaccDjangoUser(HttpUser):
         ) as response:
             if response.status_code >= 400:
                 response.failure(f"{response.status_code}: {response.text[:200]}")
+            else:
+                response.success()
+
+    @tag("read", "report-heavy", "financial-reports", "financial-reports-r1", "phase1b-critical")
+    @task(2)
+    def get_financial_daybook(self) -> None:
+        with self.client.get(
+            self.financial_daybook_path,
+            params=self._financial_daybook_params(page_size=50),
+            name="reports/financial/daybook [get]",
+            catch_response=True,
+        ) as response:
+            if response.status_code >= 400:
+                response.failure(f"{response.status_code}: {response.text[:200]}")
+            elif not self._validate_report_payload(response):
+                return
             else:
                 response.success()
 

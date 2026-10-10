@@ -1,0 +1,11 @@
+        datname         | numbackends | xact_commit | xact_rollback | deadlocks 
+------------------------+-------------+-------------+---------------+-----------
+ finacc_perf_local      |           1 |      723070 |             3 |         0
+ test_finacc_perf_local |           0 |       19059 |             0 |         0
+(2 rows)
+
+  pid  |      datname      | application_name | state  | wait_event_type | wait_event | xact_age |                                                                     left                                                                     
+-------+-------------------+------------------+--------+-----------------+------------+----------+----------------------------------------------------------------------------------------------------------------------------------------------
+ 26549 | finacc_perf_local | psql             | active |                 |            | 00:00:00 | select datname,numbackends,xact_commit,xact_rollback,deadlocks from pg_stat_database where datname in ('finacc_perf_local','test_finacc_perf
+(1 row)
+

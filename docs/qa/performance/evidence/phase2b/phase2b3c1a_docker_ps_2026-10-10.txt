@@ -1,0 +1,5 @@
+NAME                IMAGE                COMMAND                  SERVICE    CREATED              STATUS                        PORTS
+finacc-nginx-1      nginx:1.27-alpine    "/docker-entrypoint.…"   nginx      36 minutes ago       Up 36 minutes                 0.0.0.0:18080->80/tcp, [::]:18080->80/tcp
+finacc-postgres-1   postgres:16-alpine   "docker-entrypoint.s…"   postgres   About an hour ago    Up About an hour (healthy)    0.0.0.0:15432->5432/tcp, [::]:15432->5432/tcp
+finacc-redis-1      redis:7-alpine       "docker-entrypoint.s…"   redis      About an hour ago    Up About an hour (healthy)    0.0.0.0:16379->6379/tcp, [::]:16379->6379/tcp
+finacc-web-1        finacc-web           "/entrypoint.sh guni…"   web        About a minute ago   Up About a minute (healthy)   0.0.0.0:18000->8000/tcp, [::]:18000->8000/tcp

@@ -1,6 +1,127 @@
 from django.db import migrations, models
 
 
+def _sqlite_column_exists(schema_editor, table_name, column_name):
+    with schema_editor.connection.cursor() as cursor:
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        return any(row[1] == column_name for row in cursor.fetchall())
+
+
+def add_cess_columns(apps, schema_editor):
+    vendor = schema_editor.connection.vendor
+    with schema_editor.connection.cursor() as cursor:
+        if vendor == "sqlite":
+            if not _sqlite_column_exists(schema_editor, "sales_invoice_line", "cess_type"):
+                cursor.execute(
+                    "ALTER TABLE sales_invoice_line "
+                    "ADD COLUMN cess_type varchar(20) DEFAULT 'none'"
+                )
+            if not _sqlite_column_exists(schema_editor, "sales_invoice_line", "cess_specific_amount"):
+                cursor.execute(
+                    "ALTER TABLE sales_invoice_line "
+                    "ADD COLUMN cess_specific_amount decimal DEFAULT 0.00"
+                )
+            return
+
+        cursor.execute(
+            """
+            ALTER TABLE sales_invoice_line
+            ADD COLUMN IF NOT EXISTS cess_type varchar(20) DEFAULT 'none';
+            """
+        )
+        cursor.execute(
+            """
+            ALTER TABLE sales_invoice_line
+            ADD COLUMN IF NOT EXISTS cess_specific_amount numeric(18,2) DEFAULT 0.00;
+            """
+        )
+
+
+def remove_cess_columns(apps, schema_editor):
+    vendor = schema_editor.connection.vendor
+    if vendor == "sqlite":
+        return
+
+    with schema_editor.connection.cursor() as cursor:
+        cursor.execute(
+            """
+            ALTER TABLE sales_invoice_line
+            DROP COLUMN IF EXISTS cess_type;
+            """
+        )
+        cursor.execute(
+            """
+            ALTER TABLE sales_invoice_line
+            DROP COLUMN IF EXISTS cess_specific_amount;
+            """
+        )
+
+
+def refresh_sales_line_check_constraint(apps, schema_editor):
+    if schema_editor.connection.vendor == "sqlite":
+        return
+
+    with schema_editor.connection.cursor() as cursor:
+        cursor.execute(
+            """
+            ALTER TABLE sales_invoice_line
+            DROP CONSTRAINT IF EXISTS ck_sales_line_nonneg_and_rate;
+            ALTER TABLE sales_invoice_line
+            ADD CONSTRAINT ck_sales_line_nonneg_and_rate CHECK (
+                qty >= 0
+                AND free_qty >= 0
+                AND rate >= 0
+                AND discount_percent >= 0
+                AND discount_percent <= 100
+                AND discount_amount >= 0
+                AND gst_rate >= 0
+                AND gst_rate <= 100
+                AND cess_percent >= 0
+                AND cess_percent <= 100
+                AND cess_specific_amount >= 0
+                AND taxable_value >= 0
+                AND cgst_amount >= 0
+                AND sgst_amount >= 0
+                AND igst_amount >= 0
+                AND cess_amount >= 0
+                AND line_total >= 0
+            );
+            """
+        )
+
+
+def restore_sales_line_check_constraint(apps, schema_editor):
+    if schema_editor.connection.vendor == "sqlite":
+        return
+
+    with schema_editor.connection.cursor() as cursor:
+        cursor.execute(
+            """
+            ALTER TABLE sales_invoice_line
+            DROP CONSTRAINT IF EXISTS ck_sales_line_nonneg_and_rate;
+            ALTER TABLE sales_invoice_line
+            ADD CONSTRAINT ck_sales_line_nonneg_and_rate CHECK (
+                qty >= 0
+                AND free_qty >= 0
+                AND rate >= 0
+                AND discount_percent >= 0
+                AND discount_percent <= 100
+                AND discount_amount >= 0
+                AND gst_rate >= 0
+                AND gst_rate <= 100
+                AND cess_percent >= 0
+                AND cess_percent <= 100
+                AND taxable_value >= 0
+                AND cgst_amount >= 0
+                AND sgst_amount >= 0
+                AND igst_amount >= 0
+                AND cess_amount >= 0
+                AND line_total >= 0
+            );
+            """
+        )
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -10,26 +131,7 @@ class Migration(migrations.Migration):
     operations = [
         migrations.SeparateDatabaseAndState(
             database_operations=[
-                migrations.RunSQL(
-                    sql="""
-                    ALTER TABLE sales_invoice_line
-                    ADD COLUMN IF NOT EXISTS cess_type varchar(20) DEFAULT 'none';
-                    """,
-                    reverse_sql="""
-                    ALTER TABLE sales_invoice_line
-                    DROP COLUMN IF EXISTS cess_type;
-                    """,
-                ),
-                migrations.RunSQL(
-                    sql="""
-                    ALTER TABLE sales_invoice_line
-                    ADD COLUMN IF NOT EXISTS cess_specific_amount numeric(18,2) DEFAULT 0.00;
-                    """,
-                    reverse_sql="""
-                    ALTER TABLE sales_invoice_line
-                    DROP COLUMN IF EXISTS cess_specific_amount;
-                    """,
-                ),
+                migrations.RunPython(add_cess_columns, remove_cess_columns),
             ],
             state_operations=[
                 migrations.AddField(
@@ -82,53 +184,5 @@ class Migration(migrations.Migration):
                 ),
             ],
         ),
-        migrations.RunSQL(
-            sql="""
-            ALTER TABLE sales_invoice_line
-            DROP CONSTRAINT IF EXISTS ck_sales_line_nonneg_and_rate;
-            ALTER TABLE sales_invoice_line
-            ADD CONSTRAINT ck_sales_line_nonneg_and_rate CHECK (
-                qty >= 0
-                AND free_qty >= 0
-                AND rate >= 0
-                AND discount_percent >= 0
-                AND discount_percent <= 100
-                AND discount_amount >= 0
-                AND gst_rate >= 0
-                AND gst_rate <= 100
-                AND cess_percent >= 0
-                AND cess_percent <= 100
-                AND cess_specific_amount >= 0
-                AND taxable_value >= 0
-                AND cgst_amount >= 0
-                AND sgst_amount >= 0
-                AND igst_amount >= 0
-                AND cess_amount >= 0
-                AND line_total >= 0
-            );
-            """,
-            reverse_sql="""
-            ALTER TABLE sales_invoice_line
-            DROP CONSTRAINT IF EXISTS ck_sales_line_nonneg_and_rate;
-            ALTER TABLE sales_invoice_line
-            ADD CONSTRAINT ck_sales_line_nonneg_and_rate CHECK (
-                qty >= 0
-                AND free_qty >= 0
-                AND rate >= 0
-                AND discount_percent >= 0
-                AND discount_percent <= 100
-                AND discount_amount >= 0
-                AND gst_rate >= 0
-                AND gst_rate <= 100
-                AND cess_percent >= 0
-                AND cess_percent <= 100
-                AND taxable_value >= 0
-                AND cgst_amount >= 0
-                AND sgst_amount >= 0
-                AND igst_amount >= 0
-                AND cess_amount >= 0
-                AND line_total >= 0
-            );
-            """,
-        ),
+        migrations.RunPython(refresh_sales_line_check_constraint, restore_sales_line_check_constraint),
     ]

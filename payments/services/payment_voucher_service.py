@@ -1270,7 +1270,7 @@ class PaymentVoucherService(SettlementVoucherRuntimeMixin):
             "submitted_by": submitted_by_id,
             "submitted_at": timezone.now().isoformat(),
             "remarks": (remarks or "").strip() or None,
-        })
+        })  
         state.update(
             approval_submission_metadata(
                 entity_id=h.entity_id,

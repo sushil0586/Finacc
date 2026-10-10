@@ -1,0 +1,16 @@
+          captured_at          |      datname      | numbackends | xact_commit | xact_rollback | blks_read | blks_hit | tup_returned | tup_fetched | tup_inserted | tup_updated | tup_deleted 
+-------------------------------+-------------------+-------------+-------------+---------------+-----------+----------+--------------+-------------+--------------+-------------+-------------
+ 2026-10-10 14:24:32.672413+00 | finacc_perf_local |           1 |       14920 |             3 |      3479 |  9183850 |      9605209 |     6329021 |       112351 |       49103 |        4701
+(1 row)
+
+ state  | count 
+--------+-------
+ active |     1
+(1 row)
+
+  locktype  |      mode       | granted | count 
+------------+-----------------+---------+-------
+ relation   | AccessShareLock | t       |     1
+ virtualxid | ExclusiveLock   | t       |     1
+(2 rows)
+

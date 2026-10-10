@@ -1,0 +1,31 @@
+368 objects imported automatically (use -v 2 for details).
+
+{
+  "tenant_count": 3,
+  "tenants": [
+    {
+      "ap_open": "236000.00",
+      "ar_open": "472000.00",
+      "entity_id": 5,
+      "entity_name": "Phase2B3B small Small Tenant",
+      "purchase_invoices": 500,
+      "sales_invoices": 1000
+    },
+    {
+      "ap_open": "236000.00",
+      "ar_open": "472000.00",
+      "entity_id": 6,
+      "entity_name": "Phase2B3B small Medium Tenant",
+      "purchase_invoices": 500,
+      "sales_invoices": 1000
+    },
+    {
+      "ap_open": "236000.00",
+      "ar_open": "472000.00",
+      "entity_id": 7,
+      "entity_name": "Phase2B3B small Large Tenant",
+      "purchase_invoices": 500,
+      "sales_invoices": 1000
+    }
+  ]
+}

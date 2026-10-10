@@ -1,0 +1,13 @@
+Method,Name,Error,Occurrences
+GET,sales/service-lookup [seed-id],CatchResponseError('Lookup seed fetch failed (401)'),1
+GET,auth/me,"CatchResponseError('Token auth validation failed (401): {""detail"":""Token not valid."",""code"":""invalid_session"",""message"":""Token not valid.""}')",1
+GET,sales/goods-lookup [seed-id],CatchResponseError('Lookup seed fetch failed (401)'),2
+GET,purchase/purchase-invoices/lookup [list],"CatchResponseError('401: {""detail"":""Token not valid."",""code"":""invalid_session"",""message"":""Token not valid.""}')",3
+GET,reports/receivables/open-items [get],"CatchResponseError('401: {""detail"":""Token not valid."",""code"":""invalid_session"",""message"":""Token not valid.""}')",1
+GET,reports/payables/vendor-outstanding [summary],"CatchResponseError('401: {""detail"":""Token not valid."",""code"":""invalid_session"",""message"":""Token not valid.""}')",2
+GET,reports/payables/aging [get],"CatchResponseError('401: {""detail"":""Token not valid."",""code"":""invalid_session"",""message"":""Token not valid.""}')",2
+GET,reports/payables/meta [get],"CatchResponseError('401: {""detail"":""Token not valid."",""code"":""invalid_session"",""message"":""Token not valid.""}')",1
+GET,purchase/purchase-service-invoices/lookup [list],"CatchResponseError('401: {""detail"":""Token not valid."",""code"":""invalid_session"",""message"":""Token not valid.""}')",1
+GET,reports/receivables/customer-outstanding [get],"CatchResponseError('401: {""detail"":""Token not valid."",""code"":""invalid_session"",""message"":""Token not valid.""}')",1
+GET,reports/receivables/collections-history [get],"CatchResponseError('401: {""detail"":""Token not valid."",""code"":""invalid_session"",""message"":""Token not valid.""}')",2
+GET,sales/invoices/lookup [list],"CatchResponseError('401: {""detail"":""Token not valid."",""code"":""invalid_session"",""message"":""Token not valid.""}')",2

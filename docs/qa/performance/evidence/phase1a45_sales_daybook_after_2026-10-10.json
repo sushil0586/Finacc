@@ -1,0 +1,98 @@
+[
+  {
+    "name": "sales_invoices_after",
+    "status_code": 200,
+    "elapsed_ms": 127.59,
+    "query_count": 31,
+    "sql_ms": 62.0,
+    "response_bytes": 14161,
+    "shape": "list",
+    "row_count": 25,
+    "total_count": null,
+    "totals": null,
+    "slow_queries": [
+      {
+        "time_ms": 27.0,
+        "sql": "INSERT INTO \"auditlogger_auditlog\" (\"user_id\", \"method\", \"path\", \"ip_address\", \"timestamp\", \"action\", \"old_data\", \"new_data\") VALUES (NULL, 'GET', '/api/sales/invoices/', '127.0.0.1'::inet, '2026-10-10 10:18:59.392702+00:00'::timestamptz, 'GET on /api/sales/invoices/', NULL, '{\"entity_id\": \"10\", \"entityfinid\": \"8\", \"subentity_id\": \"8\", \"page\": \"1\", \"page_size\": \"25\"}'::jsonb) RETURNING \"auditlogger_auditlog\".\"id\""
+      },
+      {
+        "time_ms": 10.0,
+        "sql": "SELECT \"rbac_permission\".\"code\" AS \"permission__code\" FROM \"rbac_rolepermission\" INNER JOIN \"rbac_permission\" ON (\"rbac_rolepermission\".\"permission_id\" = \"rbac_permission\".\"id\") INNER JOIN \"rbac_role\" ON (\"rbac_rolepermission\".\"role_id\" = \"rbac_role\".\"id\") WHERE (\"rbac_rolepermission\".\"effect\" = 'allow' AND \"rbac_rolepermission\".\"isactive\" AND \"rbac_permission\".\"isactive\" AND \"rbac_rolepermission\".\"role_id\" IN (50)) ORDER BY \"rbac_role\".\"role_level\" ASC, \"rbac_role\".\"priority\" ASC, \"rbac_role\".\"name\" ASC, 1 ASC"
+      },
+      {
+        "time_ms": 2.0,
+        "sql": "SELECT \"Authentication_authsession\".\"id\", \"Authentication_authsession\".\"updated_at\", \"Authentication_authsession\".\"user_id\", \"Authentication_authsession\".\"session_key\", \"Authentication_authsession\".\"expires_at\", \"Authentication_authsession\".\"last_used_at\", \"Authentication_authsession\".\"revoked_at\", \"Authentication_user\".\"id\", \"Authentication_user\".\"username\", \"Authentication_user\".\"email\", \"Authentication_user\".\"is_active\", \"Authentication_user\".\"token_version\" FROM \"Authentication_authsession\" INNER JOIN \"Authentication_user\" ON (\"Authentication_authsession\".\"user_id\" = \"Authentication_user\".\"id\") WHERE (\"Authentication_authsession\".\"session_key\" = '45efecb92f987b9bc2c0b214e298e3a7dfaf36858ff1885a20dadea9a3faf4d5' AND \"Authentication_authsession\".\"user_id\" = 2) LIMIT 21"
+      },
+      {
+        "time_ms": 2.0,
+        "sql": "SELECT \"customer_subscriptions\".\"id\", \"customer_subscriptions\".\"created_at\", \"customer_subscriptions\".\"updated_at\", \"customer_subscriptions\".\"is_active\", \"customer_subscriptions\".\"customer_account_id\", \"customer_subscriptions\".\"plan_id\", \"customer_subscriptions\".\"status\", \"customer_subscriptions\".\"started_at\", \"customer_subscriptions\".\"trial_ends_at\", \"customer_subscriptions\".\"current_period_start\", \"customer_subscriptions\".\"current_period_end\", \"customer_subscriptions\".\"canceled_at\", \"customer_subscriptions\".\"ended_at\", \"customer_subscriptions\".\"auto_renew\", \"customer_subscriptions\".\"seats_purchased\", \"customer_subscriptions\".\"external_subscription_id\", \"customer_subscriptions\".\"billing_provider\", \"customer_subscriptions\".\"metadata\", \"subscription_plans\".\"id\", \"subscription_plans\".\"created_at\", \"subscription_plans\".\"updated_at\", \"subscription_plans\".\"is_active\", \"subscription_plans\".\"name\", \"subscription_plans\".\"code\", \"subscription_plans\".\"description\", \"subscription_plans\".\"tier\", \""
+      },
+      {
+        "time_ms": 2.0,
+        "sql": "SELECT \"plan_limits\".\"id\", \"plan_limits\".\"created_at\", \"plan_limits\".\"updated_at\", \"plan_limits\".\"plan_id\", \"plan_limits\".\"key\", \"plan_limits\".\"label\", \"plan_limits\".\"limit_type\", \"plan_limits\".\"int_value\", \"plan_limits\".\"bool_value\", \"plan_limits\".\"text_value\", \"plan_limits\".\"is_unlimited\", \"plan_limits\".\"metadata\" FROM \"plan_limits\" WHERE \"plan_limits\".\"plan_id\" IN (10) ORDER BY \"plan_limits\".\"plan_id\" ASC, \"plan_limits\".\"key\" ASC"
+      },
+      {
+        "time_ms": 2.0,
+        "sql": "SELECT \"customer_subscriptions\".\"id\", \"customer_subscriptions\".\"created_at\", \"customer_subscriptions\".\"updated_at\", \"customer_subscriptions\".\"is_active\", \"customer_subscriptions\".\"customer_account_id\", \"customer_subscriptions\".\"plan_id\", \"customer_subscriptions\".\"status\", \"customer_subscriptions\".\"started_at\", \"customer_subscriptions\".\"trial_ends_at\", \"customer_subscriptions\".\"current_period_start\", \"customer_subscriptions\".\"current_period_end\", \"customer_subscriptions\".\"canceled_at\", \"customer_subscriptions\".\"ended_at\", \"customer_subscriptions\".\"auto_renew\", \"customer_subscriptions\".\"seats_purchased\", \"customer_subscriptions\".\"external_subscription_id\", \"customer_subscriptions\".\"billing_provider\", \"customer_subscriptions\".\"metadata\", \"subscription_plans\".\"id\", \"subscription_plans\".\"created_at\", \"subscription_plans\".\"updated_at\", \"subscription_plans\".\"is_active\", \"subscription_plans\".\"name\", \"subscription_plans\".\"code\", \"subscription_plans\".\"description\", \"subscription_plans\".\"tier\", \""
+      },
+      {
+        "time_ms": 2.0,
+        "sql": "SELECT \"sales_invoice_header\".\"id\", \"sales_invoice_header\".\"subentity_id\", \"sales_invoice_header\".\"doc_type\", \"sales_invoice_header\".\"status\", \"sales_invoice_header\".\"bill_date\", \"sales_invoice_header\".\"doc_code\", \"sales_invoice_header\".\"invoice_number\", \"sales_invoice_header\".\"customer_id\", \"sales_invoice_header\".\"customer_name\", \"sales_invoice_header\".\"location_id\", \"sales_invoice_header\".\"grand_total\", \"sales_invoice_header\".\"outstanding_amount\", \"sales_invoice_header\".\"is_legacy_imported\", \"sales_invoice_header\".\"legacy_source_system\", \"sales_invoice_header\".\"legacy_source_key\", \"sales_invoice_header\".\"legacy_import_mode\", \"entity_subentity\".\"id\", \"entity_subentity\".\"subentityname\", \"financial_account\".\"id\", \"financial_account\".\"ledger_id\", \"financial_account\".\"accountname\", \"financial_ledger\".\"id\", \"financial_ledger\".\"ledger_code\", \"financial_ledger\".\"name\" FROM \"sales_invoice_header\" INNER JOIN \"entity_subentity\" ON (\"sales_invoice_header\".\"subentity_id\" = \"entity_subentity\".\"id\""
+      },
+      {
+        "time_ms": 1.0,
+        "sql": "SELECT \"entity_entity\".\"id\", \"entity_entity\".\"created_at\", \"entity_entity\".\"updated_at\", \"entity_entity\".\"isactive\", \"entity_entity\".\"entityname\", \"entity_entity\".\"entitydesc\", \"entity_entity\".\"legalname\", \"entity_entity\".\"entity_code\", \"entity_entity\".\"trade_name\", \"entity_entity\".\"short_name\", \"entity_entity\".\"organization_status\", \"entity_entity\".\"business_type\", \"entity_entity\".\"GstRegitrationType_id\", \"entity_entity\".\"gst_registration_status\", \"entity_entity\".\"website\", \"entity_entity\".\"parent_entity_id\", \"entity_entity\".\"customer_account_id\", \"entity_entity\".\"metadata\", \"entity_entity\".\"createdby_id\", \"customer_accounts\".\"id\", \"customer_accounts\".\"created_at\", \"customer_accounts\".\"updated_at\", \"customer_accounts\".\"is_active\", \"customer_accounts\".\"name\", \"customer_accounts\".\"slug\", \"customer_accounts\".\"account_type\", \"customer_accounts\".\"status\", \"customer_accounts\".\"owner_id\", \"customer_accounts\".\"legal_name\", \"customer_accounts\".\"trade_name\", \"customer_accounts\".\"primary_contact"
+      }
+    ]
+  },
+  {
+    "name": "financial_daybook_after",
+    "status_code": 200,
+    "elapsed_ms": 2662.65,
+    "query_count": 34,
+    "sql_ms": 2593.0,
+    "response_bytes": 35528,
+    "shape": "dict",
+    "row_count": 50,
+    "total_count": 49074,
+    "totals": {
+      "transaction_count": 49074,
+      "debit_total": "245697566.11",
+      "credit_total": "245697566.11"
+    },
+    "slow_queries": [
+      {
+        "time_ms": 1551.0,
+        "sql": "SELECT \"posting_entry\".\"id\", \"posting_entry\".\"entity_id\", \"posting_entry\".\"entityfin_id\", \"posting_entry\".\"subentity_id\", \"posting_entry\".\"txn_type\", \"posting_entry\".\"txn_id\", \"posting_entry\".\"voucher_no\", \"posting_entry\".\"voucher_date\", \"posting_entry\".\"posting_date\", \"posting_entry\".\"status\", \"posting_entry\".\"posted_at\", \"posting_entry\".\"posted_by_id\", \"posting_entry\".\"posting_batch_id\", \"posting_entry\".\"narration\", \"posting_entry\".\"created_at\", \"posting_entry\".\"created_by_id\", COALESCE(SUM(CASE WHEN \"posting_journalline\".\"drcr\" THEN \"posting_journalline\".\"amount\" ELSE 0.00 END), 0.00) AS \"debit_total\", COALESCE(SUM(CASE WHEN NOT \"posting_journalline\".\"drcr\" THEN \"posting_journalline\".\"amount\" ELSE 0.00 END), 0.00) AS \"credit_total\", COALESCE(CASE WHEN \"posting_entry\".\"txn_type\" IN ('J', 'C', 'B') THEN (SELECT U0.\"reference_number\" AS \"reference_number\" FROM \"vouchers_voucherheader\" U0 WHERE U0.\"id\" = (\"posting_entry\".\"txn_id\") LIMIT 1) WHEN \"posting_entry\".\"txn_type\" = 'RV' THEN (SE"
+      },
+      {
+        "time_ms": 818.0,
+        "sql": "SELECT COUNT(*) FROM (SELECT COALESCE(CASE WHEN \"posting_entry\".\"txn_type\" IN ('J', 'C', 'B') THEN (SELECT U0.\"reference_number\" AS \"reference_number\" FROM \"vouchers_voucherheader\" U0 WHERE U0.\"id\" = (\"posting_entry\".\"txn_id\") LIMIT 1) WHEN \"posting_entry\".\"txn_type\" = 'RV' THEN (SELECT U0.\"reference_number\" AS \"reference_number\" FROM \"receipts_receiptvoucherheader\" U0 WHERE U0.\"id\" = (\"posting_entry\".\"txn_id\") LIMIT 1) WHEN \"posting_entry\".\"txn_type\" = 'PV' THEN (SELECT U0.\"reference_number\" AS \"reference_number\" FROM \"payments_paymentvoucherheader\" U0 WHERE U0.\"id\" = (\"posting_entry\".\"txn_id\") LIMIT 1) WHEN \"posting_entry\".\"txn_type\" IN ('P', 'PCN', 'PDN') THEN (SELECT U0.\"supplier_invoice_number\" AS \"supplier_invoice_number\" FROM \"purchase_purchaseinvoiceheader\" U0 WHERE U0.\"id\" = (\"posting_entry\".\"txn_id\") LIMIT 1) ELSE '' END, '') AS \"reference_number\", COALESCE(CASE WHEN \"posting_entry\".\"txn_type\" IN ('P', 'PCN', 'PDN') THEN (SELECT U0.\"purchase_number\" AS \"purchase_number\" FROM "
+      },
+      {
+        "time_ms": 194.0,
+        "sql": "SELECT COALESCE(SUM(CASE WHEN \"posting_journalline\".\"drcr\" THEN \"posting_journalline\".\"amount\" ELSE 0.00 END), 0.00) AS \"debit_total\", COALESCE(SUM(CASE WHEN NOT \"posting_journalline\".\"drcr\" THEN \"posting_journalline\".\"amount\" ELSE 0.00 END), 0.00) AS \"credit_total\" FROM \"posting_journalline\" WHERE \"posting_journalline\".\"entry_id\" IN (SELECT V0.\"id\" AS \"id\" FROM \"posting_entry\" V0 LEFT OUTER JOIN \"posting_journalline\" V2 ON (V0.\"id\" = V2.\"entry_id\") WHERE (V0.\"entity_id\" = 10 AND NOT (V0.\"txn_type\" = 'OB') AND V0.\"entityfin_id\" = 8 AND V0.\"subentity_id\" = 8 AND V0.\"posting_date\" >= '2026-04-01'::date AND V0.\"posting_date\" <= '2026-10-10'::date AND NOT (((V0.\"txn_id\" IN (SELECT U0.\"id\" AS \"id\" FROM \"sales_invoice_header\" U0 WHERE (U0.\"entity_id\" = 10 AND U0.\"entityfinid_id\" = 8 AND U0.\"subentity_id\" = 8 AND U0.\"status\" = 9)) AND V0.\"txn_type\" = 'S') OR (V0.\"txn_id\" IN (SELECT U0.\"id\" AS \"id\" FROM \"sales_invoice_header\" U0 WHERE (U0.\"entity_id\" = 10 AND U0.\"entityfinid_id\" = 8 AND U0.\"su"
+      },
+      {
+        "time_ms": 11.0,
+        "sql": "SELECT \"rbac_permission\".\"code\" AS \"permission__code\" FROM \"rbac_rolepermission\" INNER JOIN \"rbac_permission\" ON (\"rbac_rolepermission\".\"permission_id\" = \"rbac_permission\".\"id\") INNER JOIN \"rbac_role\" ON (\"rbac_rolepermission\".\"role_id\" = \"rbac_role\".\"id\") WHERE (\"rbac_rolepermission\".\"effect\" = 'allow' AND \"rbac_rolepermission\".\"isactive\" AND \"rbac_permission\".\"isactive\" AND \"rbac_rolepermission\".\"role_id\" IN (50)) ORDER BY \"rbac_role\".\"role_level\" ASC, \"rbac_role\".\"priority\" ASC, \"rbac_role\".\"name\" ASC, 1 ASC"
+      },
+      {
+        "time_ms": 6.0,
+        "sql": "SELECT \"rbac_permission\".\"code\" AS \"permission__code\" FROM \"rbac_rolepermission\" INNER JOIN \"rbac_permission\" ON (\"rbac_rolepermission\".\"permission_id\" = \"rbac_permission\".\"id\") INNER JOIN \"rbac_role\" ON (\"rbac_rolepermission\".\"role_id\" = \"rbac_role\".\"id\") WHERE (\"rbac_rolepermission\".\"effect\" = 'allow' AND \"rbac_rolepermission\".\"isactive\" AND \"rbac_permission\".\"isactive\" AND \"rbac_rolepermission\".\"role_id\" IN (50)) ORDER BY \"rbac_role\".\"role_level\" ASC, \"rbac_role\".\"priority\" ASC, \"rbac_role\".\"name\" ASC, 1 ASC"
+      },
+      {
+        "time_ms": 2.0,
+        "sql": "INSERT INTO \"auditlogger_auditlog\" (\"user_id\", \"method\", \"path\", \"ip_address\", \"timestamp\", \"action\", \"old_data\", \"new_data\") VALUES (NULL, 'GET', '/api/reports/financial/daybook/', '127.0.0.1'::inet, '2026-10-10 10:19:03.283781+00:00'::timestamptz, 'GET on /api/reports/financial/daybook/', NULL, '{\"entity\": \"10\", \"entityfinid\": \"8\", \"subentity\": \"8\", \"from_date\": \"2026-04-01\", \"to_date\": \"2026-10-10\", \"page\": \"1\", \"page_size\": \"50\"}'::jsonb) RETURNING \"auditlogger_auditlog\".\"id\""
+      },
+      {
+        "time_ms": 2.0,
+        "sql": "SELECT \"entity_entity\".\"id\", \"entity_entity\".\"created_at\", \"entity_entity\".\"updated_at\", \"entity_entity\".\"isactive\", \"entity_entity\".\"entityname\", \"entity_entity\".\"entitydesc\", \"entity_entity\".\"legalname\", \"entity_entity\".\"entity_code\", \"entity_entity\".\"trade_name\", \"entity_entity\".\"short_name\", \"entity_entity\".\"organization_status\", \"entity_entity\".\"business_type\", \"entity_entity\".\"GstRegitrationType_id\", \"entity_entity\".\"gst_registration_status\", \"entity_entity\".\"website\", \"entity_entity\".\"parent_entity_id\", \"entity_entity\".\"customer_account_id\", \"entity_entity\".\"metadata\", \"entity_entity\".\"createdby_id\", \"customer_accounts\".\"id\", \"customer_accounts\".\"created_at\", \"customer_accounts\".\"updated_at\", \"customer_accounts\".\"is_active\", \"customer_accounts\".\"name\", \"customer_accounts\".\"slug\", \"customer_accounts\".\"account_type\", \"customer_accounts\".\"status\", \"customer_accounts\".\"owner_id\", \"customer_accounts\".\"legal_name\", \"customer_accounts\".\"trade_name\", \"customer_accounts\".\"primary_contact"
+      },
+      {
+        "time_ms": 2.0,
+        "sql": "SELECT \"customer_subscriptions\".\"id\", \"customer_subscriptions\".\"created_at\", \"customer_subscriptions\".\"updated_at\", \"customer_subscriptions\".\"is_active\", \"customer_subscriptions\".\"customer_account_id\", \"customer_subscriptions\".\"plan_id\", \"customer_subscriptions\".\"status\", \"customer_subscriptions\".\"started_at\", \"customer_subscriptions\".\"trial_ends_at\", \"customer_subscriptions\".\"current_period_start\", \"customer_subscriptions\".\"current_period_end\", \"customer_subscriptions\".\"canceled_at\", \"customer_subscriptions\".\"ended_at\", \"customer_subscriptions\".\"auto_renew\", \"customer_subscriptions\".\"seats_purchased\", \"customer_subscriptions\".\"external_subscription_id\", \"customer_subscriptions\".\"billing_provider\", \"customer_subscriptions\".\"metadata\", \"subscription_plans\".\"id\", \"subscription_plans\".\"created_at\", \"subscription_plans\".\"updated_at\", \"subscription_plans\".\"is_active\", \"subscription_plans\".\"name\", \"subscription_plans\".\"code\", \"subscription_plans\".\"description\", \"subscription_plans\".\"tier\", \""
+      }
+    ]
+  }
+]

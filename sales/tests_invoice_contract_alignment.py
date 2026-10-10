@@ -584,14 +584,26 @@ class SalesInvoiceContractAlignmentTests(APITestCase):
             is_open=False,
         )
 
-        result = SalesArService.customer_statement(
-            entity_id=self.entity.id,
-            entityfinid_id=self.entityfin.id,
-            subentity_id=self.subentity.id,
-            customer_id=self.customer.id,
-            include_closed=False,
-            as_of_date=datetime(2025, 4, 30).date(),
-        )
+        with (
+            patch.object(
+                SalesArService,
+                "_settlement_line_applied_maps",
+                wraps=SalesArService._settlement_line_applied_maps,
+            ) as settlement_maps,
+            patch.object(
+                SalesArService,
+                "_advance_adjustment_maps",
+                wraps=SalesArService._advance_adjustment_maps,
+            ) as advance_maps,
+        ):
+            result = SalesArService.customer_statement(
+                entity_id=self.entity.id,
+                entityfinid_id=self.entityfin.id,
+                subentity_id=self.subentity.id,
+                customer_id=self.customer.id,
+                include_closed=False,
+                as_of_date=datetime(2025, 4, 30).date(),
+            )
 
         self.assertEqual(result["totals"]["original_total"], Decimal("118.00"))
         self.assertEqual(result["totals"]["outstanding_total"], Decimal("118.00"))
@@ -599,6 +611,8 @@ class SalesInvoiceContractAlignmentTests(APITestCase):
         self.assertEqual(result["totals"]["net_ar_position"], Decimal("93.00"))
         self.assertEqual(len(result["open_items"]), 1)
         self.assertEqual(len(result["advances"]), 1)
+        self.assertEqual(settlement_maps.call_args.kwargs["customer_id"], self.customer.id)
+        self.assertEqual(advance_maps.call_args.kwargs["customer_id"], self.customer.id)
 
     @override_settings(META_CACHE_ENABLED=True, META_CACHE_FORM_TTL_SECONDS=600, META_CACHE_VERSION="test")
     def test_sales_form_meta_uses_cache_on_repeated_requests(self):

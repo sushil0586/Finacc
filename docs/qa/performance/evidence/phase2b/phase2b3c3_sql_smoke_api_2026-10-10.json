@@ -1,0 +1,3152 @@
+{
+  "base_url": "http://localhost:18080",
+  "cross_tenant_denials": [
+    {
+      "authorized_entity": 5,
+      "denied_entity": 6,
+      "sample": {
+        "bytes": 47,
+        "elapsed_ms": 61.492,
+        "row_count": 0,
+        "status": 404,
+        "total": null,
+        "validation_errors": []
+      },
+      "tenant": "small"
+    },
+    {
+      "authorized_entity": 6,
+      "denied_entity": 5,
+      "sample": {
+        "bytes": 47,
+        "elapsed_ms": 91.975,
+        "row_count": 0,
+        "status": 404,
+        "total": null,
+        "validation_errors": []
+      },
+      "tenant": "medium"
+    },
+    {
+      "authorized_entity": 7,
+      "denied_entity": 5,
+      "sample": {
+        "bytes": 47,
+        "elapsed_ms": 59.517,
+        "row_count": 0,
+        "status": 404,
+        "total": null,
+        "validation_errors": []
+      },
+      "tenant": "large"
+    }
+  ],
+  "endpoint_count": 18,
+  "p95_p99_note": "Indicative only: bounded single-user sample counts are intentionally small in Phase 2B.3C.1B.",
+  "results": [
+    {
+      "cold_sample": {
+        "bytes": 4245,
+        "elapsed_ms": 43.8,
+        "row_count": 0,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "auth/me",
+      "entity": 5,
+      "notes": "",
+      "params": {},
+      "path": "/api/auth/me",
+      "samples": [
+        {
+          "bytes": 4245,
+          "elapsed_ms": 43.8,
+          "row_count": 0,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 4245,
+          "elapsed_ms": 529.715,
+          "row_count": 0,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 4245,
+        "errors": 0,
+        "max_ms": 529.715,
+        "max_rows": 0,
+        "min_ms": 43.8,
+        "min_rows": 0,
+        "observed_totals": [],
+        "p50_ms": 286.757,
+        "p95_ms": 505.419,
+        "p99_ms": 524.856,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "small"
+    },
+    {
+      "cold_sample": {
+        "bytes": 766,
+        "elapsed_ms": 77.656,
+        "row_count": 1,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "entity/context",
+      "entity": 5,
+      "notes": "",
+      "params": {
+        "include": "financial_years,subentities"
+      },
+      "path": "/api/entity/me/entities",
+      "samples": [
+        {
+          "bytes": 766,
+          "elapsed_ms": 77.656,
+          "row_count": 1,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 766,
+          "elapsed_ms": 64.601,
+          "row_count": 1,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 766,
+        "errors": 0,
+        "max_ms": 77.656,
+        "max_rows": 1,
+        "min_ms": 64.601,
+        "min_rows": 1,
+        "observed_totals": [],
+        "p50_ms": 71.129,
+        "p95_ms": 77.003,
+        "p99_ms": 77.525,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "small"
+    },
+    {
+      "cold_sample": {
+        "bytes": 14589,
+        "elapsed_ms": 78.575,
+        "row_count": 0,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "dashboard/home-meta",
+      "entity": 5,
+      "notes": "Dashboard command center contract.",
+      "params": {
+        "entity": 5,
+        "entityfinid": 5,
+        "subentity": 5
+      },
+      "path": "/api/dashboard/home/meta/",
+      "samples": [
+        {
+          "bytes": 14589,
+          "elapsed_ms": 78.575,
+          "row_count": 0,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 14589,
+          "elapsed_ms": 670.67,
+          "row_count": 0,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 14589,
+        "errors": 0,
+        "max_ms": 670.67,
+        "max_rows": 0,
+        "min_ms": 78.575,
+        "min_rows": 0,
+        "observed_totals": [],
+        "p50_ms": 374.623,
+        "p95_ms": 641.065,
+        "p99_ms": 664.749,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "small"
+    },
+    {
+      "cold_sample": {
+        "bytes": 47650,
+        "elapsed_ms": 112.323,
+        "row_count": 100,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "sales/invoices/lookup",
+      "entity": 5,
+      "notes": "",
+      "params": {
+        "entity": 5,
+        "entityfinid": 5,
+        "limit": 100,
+        "subentity": 5
+      },
+      "path": "/api/sales/invoices/lookup/",
+      "samples": [
+        {
+          "bytes": 47650,
+          "elapsed_ms": 112.323,
+          "row_count": 100,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 47650,
+          "elapsed_ms": 102.578,
+          "row_count": 100,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 47650,
+        "errors": 0,
+        "max_ms": 112.323,
+        "max_rows": 100,
+        "min_ms": 102.578,
+        "min_rows": 100,
+        "observed_totals": [],
+        "p50_ms": 107.451,
+        "p95_ms": 111.836,
+        "p99_ms": 112.226,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "small"
+    },
+    {
+      "cold_sample": {
+        "bytes": 56962,
+        "elapsed_ms": 93.135,
+        "row_count": 100,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "sales/invoices/list",
+      "entity": 5,
+      "notes": "",
+      "params": {
+        "entity_id": 5,
+        "entityfinid": 5,
+        "limit": 100,
+        "subentity_id": 5
+      },
+      "path": "/api/sales/invoices/",
+      "samples": [
+        {
+          "bytes": 56962,
+          "elapsed_ms": 93.135,
+          "row_count": 100,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 56962,
+          "elapsed_ms": 90.441,
+          "row_count": 100,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 56962,
+        "errors": 0,
+        "max_ms": 93.135,
+        "max_rows": 100,
+        "min_ms": 90.441,
+        "min_rows": 100,
+        "observed_totals": [],
+        "p50_ms": 91.788,
+        "p95_ms": 93.0,
+        "p99_ms": 93.108,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "small"
+    },
+    {
+      "cold_sample": {
+        "bytes": 46545,
+        "elapsed_ms": 70.043,
+        "row_count": 100,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "purchase/invoices/lookup",
+      "entity": 5,
+      "notes": "",
+      "params": {
+        "entity": 5,
+        "entityfinid": 5,
+        "limit": 100,
+        "subentity": 5
+      },
+      "path": "/api/purchase/purchase-invoices/lookup/",
+      "samples": [
+        {
+          "bytes": 46545,
+          "elapsed_ms": 70.043,
+          "row_count": 100,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 46545,
+          "elapsed_ms": 69.114,
+          "row_count": 100,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 46545,
+        "errors": 0,
+        "max_ms": 70.043,
+        "max_rows": 100,
+        "min_ms": 69.114,
+        "min_rows": 100,
+        "observed_totals": [],
+        "p50_ms": 69.579,
+        "p95_ms": 69.997,
+        "p99_ms": 70.034,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "small"
+    },
+    {
+      "cold_sample": {
+        "bytes": 522235,
+        "elapsed_ms": 301.499,
+        "row_count": 500,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "purchase/invoices/list",
+      "entity": 5,
+      "notes": "",
+      "params": {
+        "entity": 5,
+        "entityfinid": 5,
+        "subentity": 5
+      },
+      "path": "/api/purchase/purchase-invoices/",
+      "samples": [
+        {
+          "bytes": 522235,
+          "elapsed_ms": 301.499,
+          "row_count": 500,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 522235,
+          "elapsed_ms": 430.422,
+          "row_count": 500,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 522235,
+        "errors": 0,
+        "max_ms": 430.422,
+        "max_rows": 500,
+        "min_ms": 301.499,
+        "min_rows": 500,
+        "observed_totals": [],
+        "p50_ms": 365.961,
+        "p95_ms": 423.976,
+        "p99_ms": 429.133,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "small"
+    },
+    {
+      "cold_sample": {
+        "bytes": 36469,
+        "elapsed_ms": 218.282,
+        "row_count": 50,
+        "status": 200,
+        "total": 1500,
+        "validation_errors": []
+      },
+      "endpoint": "reports/financial/daybook",
+      "entity": 5,
+      "notes": "",
+      "params": {
+        "entity": 5,
+        "entityfinid": 5,
+        "from_date": "2026-04-01",
+        "page": 1,
+        "page_size": 50,
+        "subentity": 5,
+        "to_date": "2026-10-10"
+      },
+      "path": "/api/reports/financial/daybook/",
+      "samples": [
+        {
+          "bytes": 36469,
+          "elapsed_ms": 218.282,
+          "row_count": 50,
+          "status": 200,
+          "total": 1500,
+          "validation_errors": []
+        },
+        {
+          "bytes": 36469,
+          "elapsed_ms": 230.821,
+          "row_count": 50,
+          "status": 200,
+          "total": 1500,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 36469,
+        "errors": 0,
+        "max_ms": 230.821,
+        "max_rows": 50,
+        "min_ms": 218.282,
+        "min_rows": 50,
+        "observed_totals": [
+          "1500"
+        ],
+        "p50_ms": 224.552,
+        "p95_ms": 230.194,
+        "p99_ms": 230.696,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "small"
+    },
+    {
+      "cold_sample": {
+        "bytes": 5534,
+        "elapsed_ms": 113.956,
+        "row_count": 6,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "reports/financial/ledger-summary",
+      "entity": 5,
+      "notes": "",
+      "params": {
+        "account_group": "ledger",
+        "entity": 5,
+        "entityfinid": 5,
+        "from_date": "2026-04-01",
+        "group_by": "ledger",
+        "include_opening": "true",
+        "include_zero_balances": "false",
+        "page": 1,
+        "page_size": 100,
+        "posted_only": "true",
+        "subentity": 5,
+        "to_date": "2026-10-10",
+        "view_type": "summary"
+      },
+      "path": "/api/reports/financial/ledger-summary/",
+      "samples": [
+        {
+          "bytes": 5534,
+          "elapsed_ms": 113.956,
+          "row_count": 6,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 5534,
+          "elapsed_ms": 131.376,
+          "row_count": 6,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 5534,
+        "errors": 0,
+        "max_ms": 131.376,
+        "max_rows": 6,
+        "min_ms": 113.956,
+        "min_rows": 6,
+        "observed_totals": [],
+        "p50_ms": 122.666,
+        "p95_ms": 130.505,
+        "p99_ms": 131.202,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "small"
+    },
+    {
+      "cold_sample": {
+        "bytes": 4557,
+        "elapsed_ms": 139.694,
+        "row_count": 1,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "reports/receivables/aging-summary",
+      "entity": 5,
+      "notes": "",
+      "params": {
+        "as_of_date": "2026-10-10",
+        "entity": 5,
+        "entityfinid": 5,
+        "from_date": "2026-04-01",
+        "page": 1,
+        "page_size": 100,
+        "subentity": 5,
+        "to_date": "2026-10-10",
+        "view": "summary"
+      },
+      "path": "/api/reports/receivables/aging/",
+      "samples": [
+        {
+          "bytes": 4557,
+          "elapsed_ms": 139.694,
+          "row_count": 1,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 4557,
+          "elapsed_ms": 245.61,
+          "row_count": 1,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 4557,
+        "errors": 0,
+        "max_ms": 245.61,
+        "max_rows": 1,
+        "min_ms": 139.694,
+        "min_rows": 1,
+        "observed_totals": [],
+        "p50_ms": 192.652,
+        "p95_ms": 240.314,
+        "p99_ms": 244.551,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "small"
+    },
+    {
+      "cold_sample": {
+        "bytes": 199537,
+        "elapsed_ms": 159.733,
+        "row_count": 100,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "reports/receivables/aging-invoice",
+      "entity": 5,
+      "notes": "",
+      "params": {
+        "as_of_date": "2026-10-10",
+        "entity": 5,
+        "entityfinid": 5,
+        "from_date": "2026-04-01",
+        "page": 1,
+        "page_size": 100,
+        "subentity": 5,
+        "to_date": "2026-10-10",
+        "view": "invoice"
+      },
+      "path": "/api/reports/receivables/aging/",
+      "samples": [
+        {
+          "bytes": 199537,
+          "elapsed_ms": 159.733,
+          "row_count": 100,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 199537,
+          "elapsed_ms": 154.97,
+          "row_count": 100,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 199537,
+        "errors": 0,
+        "max_ms": 159.733,
+        "max_rows": 100,
+        "min_ms": 154.97,
+        "min_rows": 100,
+        "observed_totals": [],
+        "p50_ms": 157.351,
+        "p95_ms": 159.495,
+        "p99_ms": 159.685,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "small"
+    },
+    {
+      "cold_sample": {
+        "bytes": 149334,
+        "elapsed_ms": 307.611,
+        "row_count": 100,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "reports/receivables/open-items",
+      "entity": 5,
+      "notes": "",
+      "params": {
+        "as_of_date": "2026-10-10",
+        "entity": 5,
+        "entityfinid": 5,
+        "from_date": "2026-04-01",
+        "page": 1,
+        "page_size": 100,
+        "subentity": 5,
+        "to_date": "2026-10-10"
+      },
+      "path": "/api/reports/receivables/open-items/",
+      "samples": [
+        {
+          "bytes": 149334,
+          "elapsed_ms": 307.611,
+          "row_count": 100,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 149334,
+          "elapsed_ms": 152.545,
+          "row_count": 100,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 149334,
+        "errors": 0,
+        "max_ms": 307.611,
+        "max_rows": 100,
+        "min_ms": 152.545,
+        "min_rows": 100,
+        "observed_totals": [],
+        "p50_ms": 230.078,
+        "p95_ms": 299.858,
+        "p99_ms": 306.06,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "small"
+    },
+    {
+      "cold_sample": {
+        "bytes": 14454,
+        "elapsed_ms": 140.572,
+        "row_count": 1,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "reports/payables/vendor-outstanding",
+      "entity": 5,
+      "notes": "",
+      "params": {
+        "as_of_date": "2026-10-10",
+        "entity": 5,
+        "entityfinid": 5,
+        "page": 1,
+        "page_size": 100,
+        "subentity": 5,
+        "view": "summary"
+      },
+      "path": "/api/reports/payables/vendor-outstanding/",
+      "samples": [
+        {
+          "bytes": 14454,
+          "elapsed_ms": 140.572,
+          "row_count": 1,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 14454,
+          "elapsed_ms": 147.396,
+          "row_count": 1,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 14454,
+        "errors": 0,
+        "max_ms": 147.396,
+        "max_rows": 1,
+        "min_ms": 140.572,
+        "min_rows": 1,
+        "observed_totals": [],
+        "p50_ms": 143.984,
+        "p95_ms": 147.055,
+        "p99_ms": 147.328,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "small"
+    },
+    {
+      "cold_sample": {
+        "bytes": 14538,
+        "elapsed_ms": 117.686,
+        "row_count": 1,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "reports/payables/vendor-outstanding-voucher",
+      "entity": 5,
+      "notes": "",
+      "params": {
+        "as_of_date": "2026-10-10",
+        "entity": 5,
+        "entityfinid": 5,
+        "page": 1,
+        "page_size": 100,
+        "subentity": 5,
+        "view": "summary",
+        "voucher_type": "PINV"
+      },
+      "path": "/api/reports/payables/vendor-outstanding/",
+      "samples": [
+        {
+          "bytes": 14538,
+          "elapsed_ms": 117.686,
+          "row_count": 1,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 14538,
+          "elapsed_ms": 117.2,
+          "row_count": 1,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 14538,
+        "errors": 0,
+        "max_ms": 117.686,
+        "max_rows": 1,
+        "min_ms": 117.2,
+        "min_rows": 1,
+        "observed_totals": [],
+        "p50_ms": 117.443,
+        "p95_ms": 117.662,
+        "p99_ms": 117.681,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "small"
+    },
+    {
+      "cold_sample": {
+        "bytes": 2718,
+        "elapsed_ms": 121.318,
+        "row_count": 0,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "reports/gstr1/summary",
+      "entity": 5,
+      "notes": "",
+      "params": {
+        "entity": 5,
+        "entityfinid": 5,
+        "from_date": "2026-04-01",
+        "page": 1,
+        "page_size": 100,
+        "subentity": 5,
+        "to_date": "2026-10-10"
+      },
+      "path": "/api/reports/gstr1/summary/",
+      "samples": [
+        {
+          "bytes": 2718,
+          "elapsed_ms": 121.318,
+          "row_count": 0,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 2718,
+          "elapsed_ms": 115.58,
+          "row_count": 0,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 2718,
+        "errors": 0,
+        "max_ms": 121.318,
+        "max_rows": 0,
+        "min_ms": 115.58,
+        "min_rows": 0,
+        "observed_totals": [],
+        "p50_ms": 118.449,
+        "p95_ms": 121.031,
+        "p99_ms": 121.261,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "small"
+    },
+    {
+      "cold_sample": {
+        "bytes": 3754,
+        "elapsed_ms": 338.242,
+        "row_count": 0,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "reports/gstr1/readiness",
+      "entity": 5,
+      "notes": "",
+      "params": {
+        "entity": 5,
+        "entityfinid": 5,
+        "from_date": "2026-04-01",
+        "subentity": 5,
+        "to_date": "2026-10-10"
+      },
+      "path": "/api/reports/gstr1/readiness/",
+      "samples": [
+        {
+          "bytes": 3754,
+          "elapsed_ms": 338.242,
+          "row_count": 0,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 3754,
+          "elapsed_ms": 246.666,
+          "row_count": 0,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 3754,
+        "errors": 0,
+        "max_ms": 338.242,
+        "max_rows": 0,
+        "min_ms": 246.666,
+        "min_rows": 0,
+        "observed_totals": [],
+        "p50_ms": 292.454,
+        "p95_ms": 333.663,
+        "p99_ms": 337.326,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "small"
+    },
+    {
+      "cold_sample": {
+        "bytes": 5015,
+        "elapsed_ms": 622.293,
+        "row_count": 0,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "reports/gstr3b/summary",
+      "entity": 5,
+      "notes": "",
+      "params": {
+        "entity": 5,
+        "entityfinid": 5,
+        "from_date": "2026-04-01",
+        "subentity": 5,
+        "to_date": "2026-10-10"
+      },
+      "path": "/api/reports/gstr3b/summary/",
+      "samples": [
+        {
+          "bytes": 5015,
+          "elapsed_ms": 622.293,
+          "row_count": 0,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 5015,
+          "elapsed_ms": 280.662,
+          "row_count": 0,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 5015,
+        "errors": 0,
+        "max_ms": 622.293,
+        "max_rows": 0,
+        "min_ms": 280.662,
+        "min_rows": 0,
+        "observed_totals": [],
+        "p50_ms": 451.477,
+        "p95_ms": 605.211,
+        "p99_ms": 618.877,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "small"
+    },
+    {
+      "cold_sample": {
+        "bytes": 1661,
+        "elapsed_ms": 46.502,
+        "row_count": 1,
+        "status": 200,
+        "total": 1,
+        "validation_errors": []
+      },
+      "endpoint": "reports/sales/gstin",
+      "entity": 5,
+      "notes": "",
+      "params": {
+        "entity": 5,
+        "entityfinid": 5,
+        "from_date": "2026-04-01",
+        "page": 1,
+        "page_size": 100,
+        "subentity": 5,
+        "to_date": "2026-10-10"
+      },
+      "path": "/api/reports/sales/gstin/",
+      "samples": [
+        {
+          "bytes": 1661,
+          "elapsed_ms": 46.502,
+          "row_count": 1,
+          "status": 200,
+          "total": 1,
+          "validation_errors": []
+        },
+        {
+          "bytes": 1661,
+          "elapsed_ms": 40.041,
+          "row_count": 1,
+          "status": 200,
+          "total": 1,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 1661,
+        "errors": 0,
+        "max_ms": 46.502,
+        "max_rows": 1,
+        "min_ms": 40.041,
+        "min_rows": 1,
+        "observed_totals": [
+          "1"
+        ],
+        "p50_ms": 43.272,
+        "p95_ms": 46.179,
+        "p99_ms": 46.437,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "small"
+    },
+    {
+      "cold_sample": {
+        "bytes": 4256,
+        "elapsed_ms": 44.957,
+        "row_count": 0,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "auth/me",
+      "entity": 6,
+      "notes": "",
+      "params": {},
+      "path": "/api/auth/me",
+      "samples": [
+        {
+          "bytes": 4256,
+          "elapsed_ms": 44.957,
+          "row_count": 0,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 4256,
+          "elapsed_ms": 45.525,
+          "row_count": 0,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 4256,
+        "errors": 0,
+        "max_ms": 45.525,
+        "max_rows": 0,
+        "min_ms": 44.957,
+        "min_rows": 0,
+        "observed_totals": [],
+        "p50_ms": 45.241,
+        "p95_ms": 45.497,
+        "p99_ms": 45.519,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "medium"
+    },
+    {
+      "cold_sample": {
+        "bytes": 768,
+        "elapsed_ms": 63.769,
+        "row_count": 1,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "entity/context",
+      "entity": 6,
+      "notes": "",
+      "params": {
+        "include": "financial_years,subentities"
+      },
+      "path": "/api/entity/me/entities",
+      "samples": [
+        {
+          "bytes": 768,
+          "elapsed_ms": 63.769,
+          "row_count": 1,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 768,
+          "elapsed_ms": 55.162,
+          "row_count": 1,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 768,
+        "errors": 0,
+        "max_ms": 63.769,
+        "max_rows": 1,
+        "min_ms": 55.162,
+        "min_rows": 1,
+        "observed_totals": [],
+        "p50_ms": 59.465,
+        "p95_ms": 63.339,
+        "p99_ms": 63.683,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "medium"
+    },
+    {
+      "cold_sample": {
+        "bytes": 14591,
+        "elapsed_ms": 69.626,
+        "row_count": 0,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "dashboard/home-meta",
+      "entity": 6,
+      "notes": "Dashboard command center contract.",
+      "params": {
+        "entity": 6,
+        "entityfinid": 6,
+        "subentity": 6
+      },
+      "path": "/api/dashboard/home/meta/",
+      "samples": [
+        {
+          "bytes": 14591,
+          "elapsed_ms": 69.626,
+          "row_count": 0,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 14591,
+          "elapsed_ms": 69.374,
+          "row_count": 0,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 14591,
+        "errors": 0,
+        "max_ms": 69.626,
+        "max_rows": 0,
+        "min_ms": 69.374,
+        "min_rows": 0,
+        "observed_totals": [],
+        "p50_ms": 69.5,
+        "p95_ms": 69.613,
+        "p99_ms": 69.623,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "medium"
+    },
+    {
+      "cold_sample": {
+        "bytes": 47732,
+        "elapsed_ms": 85.771,
+        "row_count": 100,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "sales/invoices/lookup",
+      "entity": 6,
+      "notes": "",
+      "params": {
+        "entity": 6,
+        "entityfinid": 6,
+        "limit": 100,
+        "subentity": 6
+      },
+      "path": "/api/sales/invoices/lookup/",
+      "samples": [
+        {
+          "bytes": 47732,
+          "elapsed_ms": 85.771,
+          "row_count": 100,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 47732,
+          "elapsed_ms": 85.746,
+          "row_count": 100,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 47732,
+        "errors": 0,
+        "max_ms": 85.771,
+        "max_rows": 100,
+        "min_ms": 85.746,
+        "min_rows": 100,
+        "observed_totals": [],
+        "p50_ms": 85.758,
+        "p95_ms": 85.77,
+        "p99_ms": 85.771,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "medium"
+    },
+    {
+      "cold_sample": {
+        "bytes": 56962,
+        "elapsed_ms": 84.941,
+        "row_count": 100,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "sales/invoices/list",
+      "entity": 6,
+      "notes": "",
+      "params": {
+        "entity_id": 6,
+        "entityfinid": 6,
+        "limit": 100,
+        "subentity_id": 6
+      },
+      "path": "/api/sales/invoices/",
+      "samples": [
+        {
+          "bytes": 56962,
+          "elapsed_ms": 84.941,
+          "row_count": 100,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 56962,
+          "elapsed_ms": 91.771,
+          "row_count": 100,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 56962,
+        "errors": 0,
+        "max_ms": 91.771,
+        "max_rows": 100,
+        "min_ms": 84.941,
+        "min_rows": 100,
+        "observed_totals": [],
+        "p50_ms": 88.356,
+        "p95_ms": 91.43,
+        "p99_ms": 91.703,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "medium"
+    },
+    {
+      "cold_sample": {
+        "bytes": 46573,
+        "elapsed_ms": 60.568,
+        "row_count": 100,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "purchase/invoices/lookup",
+      "entity": 6,
+      "notes": "",
+      "params": {
+        "entity": 6,
+        "entityfinid": 6,
+        "limit": 100,
+        "subentity": 6
+      },
+      "path": "/api/purchase/purchase-invoices/lookup/",
+      "samples": [
+        {
+          "bytes": 46573,
+          "elapsed_ms": 60.568,
+          "row_count": 100,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 46573,
+          "elapsed_ms": 60.208,
+          "row_count": 100,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 46573,
+        "errors": 0,
+        "max_ms": 60.568,
+        "max_rows": 100,
+        "min_ms": 60.208,
+        "min_rows": 100,
+        "observed_totals": [],
+        "p50_ms": 60.388,
+        "p95_ms": 60.55,
+        "p99_ms": 60.564,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "medium"
+    },
+    {
+      "cold_sample": {
+        "bytes": 522305,
+        "elapsed_ms": 244.65,
+        "row_count": 500,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "purchase/invoices/list",
+      "entity": 6,
+      "notes": "",
+      "params": {
+        "entity": 6,
+        "entityfinid": 6,
+        "subentity": 6
+      },
+      "path": "/api/purchase/purchase-invoices/",
+      "samples": [
+        {
+          "bytes": 522305,
+          "elapsed_ms": 244.65,
+          "row_count": 500,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 522305,
+          "elapsed_ms": 300.584,
+          "row_count": 500,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 522305,
+        "errors": 0,
+        "max_ms": 300.584,
+        "max_rows": 500,
+        "min_ms": 244.65,
+        "min_rows": 500,
+        "observed_totals": [],
+        "p50_ms": 272.617,
+        "p95_ms": 297.787,
+        "p99_ms": 300.025,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "medium"
+    },
+    {
+      "cold_sample": {
+        "bytes": 36670,
+        "elapsed_ms": 180.386,
+        "row_count": 50,
+        "status": 200,
+        "total": 1500,
+        "validation_errors": []
+      },
+      "endpoint": "reports/financial/daybook",
+      "entity": 6,
+      "notes": "",
+      "params": {
+        "entity": 6,
+        "entityfinid": 6,
+        "from_date": "2026-04-01",
+        "page": 1,
+        "page_size": 50,
+        "subentity": 6,
+        "to_date": "2026-10-10"
+      },
+      "path": "/api/reports/financial/daybook/",
+      "samples": [
+        {
+          "bytes": 36670,
+          "elapsed_ms": 180.386,
+          "row_count": 50,
+          "status": 200,
+          "total": 1500,
+          "validation_errors": []
+        },
+        {
+          "bytes": 36670,
+          "elapsed_ms": 172.583,
+          "row_count": 50,
+          "status": 200,
+          "total": 1500,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 36670,
+        "errors": 0,
+        "max_ms": 180.386,
+        "max_rows": 50,
+        "min_ms": 172.583,
+        "min_rows": 50,
+        "observed_totals": [
+          "1500"
+        ],
+        "p50_ms": 176.484,
+        "p95_ms": 179.996,
+        "p99_ms": 180.308,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "medium"
+    },
+    {
+      "cold_sample": {
+        "bytes": 5538,
+        "elapsed_ms": 84.613,
+        "row_count": 6,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "reports/financial/ledger-summary",
+      "entity": 6,
+      "notes": "",
+      "params": {
+        "account_group": "ledger",
+        "entity": 6,
+        "entityfinid": 6,
+        "from_date": "2026-04-01",
+        "group_by": "ledger",
+        "include_opening": "true",
+        "include_zero_balances": "false",
+        "page": 1,
+        "page_size": 100,
+        "posted_only": "true",
+        "subentity": 6,
+        "to_date": "2026-10-10",
+        "view_type": "summary"
+      },
+      "path": "/api/reports/financial/ledger-summary/",
+      "samples": [
+        {
+          "bytes": 5538,
+          "elapsed_ms": 84.613,
+          "row_count": 6,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 5538,
+          "elapsed_ms": 99.727,
+          "row_count": 6,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 5538,
+        "errors": 0,
+        "max_ms": 99.727,
+        "max_rows": 6,
+        "min_ms": 84.613,
+        "min_rows": 6,
+        "observed_totals": [],
+        "p50_ms": 92.17,
+        "p95_ms": 98.971,
+        "p99_ms": 99.576,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "medium"
+    },
+    {
+      "cold_sample": {
+        "bytes": 4557,
+        "elapsed_ms": 151.274,
+        "row_count": 1,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "reports/receivables/aging-summary",
+      "entity": 6,
+      "notes": "",
+      "params": {
+        "as_of_date": "2026-10-10",
+        "entity": 6,
+        "entityfinid": 6,
+        "from_date": "2026-04-01",
+        "page": 1,
+        "page_size": 100,
+        "subentity": 6,
+        "to_date": "2026-10-10",
+        "view": "summary"
+      },
+      "path": "/api/reports/receivables/aging/",
+      "samples": [
+        {
+          "bytes": 4557,
+          "elapsed_ms": 151.274,
+          "row_count": 1,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 4557,
+          "elapsed_ms": 140.376,
+          "row_count": 1,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 4557,
+        "errors": 0,
+        "max_ms": 151.274,
+        "max_rows": 1,
+        "min_ms": 140.376,
+        "min_rows": 1,
+        "observed_totals": [],
+        "p50_ms": 145.825,
+        "p95_ms": 150.729,
+        "p99_ms": 151.165,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "medium"
+    },
+    {
+      "cold_sample": {
+        "bytes": 200129,
+        "elapsed_ms": 204.01,
+        "row_count": 100,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "reports/receivables/aging-invoice",
+      "entity": 6,
+      "notes": "",
+      "params": {
+        "as_of_date": "2026-10-10",
+        "entity": 6,
+        "entityfinid": 6,
+        "from_date": "2026-04-01",
+        "page": 1,
+        "page_size": 100,
+        "subentity": 6,
+        "to_date": "2026-10-10",
+        "view": "invoice"
+      },
+      "path": "/api/reports/receivables/aging/",
+      "samples": [
+        {
+          "bytes": 200129,
+          "elapsed_ms": 204.01,
+          "row_count": 100,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 200129,
+          "elapsed_ms": 171.734,
+          "row_count": 100,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 200129,
+        "errors": 0,
+        "max_ms": 204.01,
+        "max_rows": 100,
+        "min_ms": 171.734,
+        "min_rows": 100,
+        "observed_totals": [],
+        "p50_ms": 187.872,
+        "p95_ms": 202.396,
+        "p99_ms": 203.687,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "medium"
+    },
+    {
+      "cold_sample": {
+        "bytes": 150006,
+        "elapsed_ms": 337.818,
+        "row_count": 100,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "reports/receivables/open-items",
+      "entity": 6,
+      "notes": "",
+      "params": {
+        "as_of_date": "2026-10-10",
+        "entity": 6,
+        "entityfinid": 6,
+        "from_date": "2026-04-01",
+        "page": 1,
+        "page_size": 100,
+        "subentity": 6,
+        "to_date": "2026-10-10"
+      },
+      "path": "/api/reports/receivables/open-items/",
+      "samples": [
+        {
+          "bytes": 150006,
+          "elapsed_ms": 337.818,
+          "row_count": 100,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 150006,
+          "elapsed_ms": 163.321,
+          "row_count": 100,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 150006,
+        "errors": 0,
+        "max_ms": 337.818,
+        "max_rows": 100,
+        "min_ms": 163.321,
+        "min_rows": 100,
+        "observed_totals": [],
+        "p50_ms": 250.57,
+        "p95_ms": 329.093,
+        "p99_ms": 336.073,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "medium"
+    },
+    {
+      "cold_sample": {
+        "bytes": 14454,
+        "elapsed_ms": 130.407,
+        "row_count": 1,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "reports/payables/vendor-outstanding",
+      "entity": 6,
+      "notes": "",
+      "params": {
+        "as_of_date": "2026-10-10",
+        "entity": 6,
+        "entityfinid": 6,
+        "page": 1,
+        "page_size": 100,
+        "subentity": 6,
+        "view": "summary"
+      },
+      "path": "/api/reports/payables/vendor-outstanding/",
+      "samples": [
+        {
+          "bytes": 14454,
+          "elapsed_ms": 130.407,
+          "row_count": 1,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 14454,
+          "elapsed_ms": 130.761,
+          "row_count": 1,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 14454,
+        "errors": 0,
+        "max_ms": 130.761,
+        "max_rows": 1,
+        "min_ms": 130.407,
+        "min_rows": 1,
+        "observed_totals": [],
+        "p50_ms": 130.584,
+        "p95_ms": 130.743,
+        "p99_ms": 130.757,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "medium"
+    },
+    {
+      "cold_sample": {
+        "bytes": 14538,
+        "elapsed_ms": 176.248,
+        "row_count": 1,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "reports/payables/vendor-outstanding-voucher",
+      "entity": 6,
+      "notes": "",
+      "params": {
+        "as_of_date": "2026-10-10",
+        "entity": 6,
+        "entityfinid": 6,
+        "page": 1,
+        "page_size": 100,
+        "subentity": 6,
+        "view": "summary",
+        "voucher_type": "PINV"
+      },
+      "path": "/api/reports/payables/vendor-outstanding/",
+      "samples": [
+        {
+          "bytes": 14538,
+          "elapsed_ms": 176.248,
+          "row_count": 1,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 14538,
+          "elapsed_ms": 124.832,
+          "row_count": 1,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 14538,
+        "errors": 0,
+        "max_ms": 176.248,
+        "max_rows": 1,
+        "min_ms": 124.832,
+        "min_rows": 1,
+        "observed_totals": [],
+        "p50_ms": 150.54,
+        "p95_ms": 173.677,
+        "p99_ms": 175.734,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "medium"
+    },
+    {
+      "cold_sample": {
+        "bytes": 2718,
+        "elapsed_ms": 114.959,
+        "row_count": 0,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "reports/gstr1/summary",
+      "entity": 6,
+      "notes": "",
+      "params": {
+        "entity": 6,
+        "entityfinid": 6,
+        "from_date": "2026-04-01",
+        "page": 1,
+        "page_size": 100,
+        "subentity": 6,
+        "to_date": "2026-10-10"
+      },
+      "path": "/api/reports/gstr1/summary/",
+      "samples": [
+        {
+          "bytes": 2718,
+          "elapsed_ms": 114.959,
+          "row_count": 0,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 2718,
+          "elapsed_ms": 113.236,
+          "row_count": 0,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 2718,
+        "errors": 0,
+        "max_ms": 114.959,
+        "max_rows": 0,
+        "min_ms": 113.236,
+        "min_rows": 0,
+        "observed_totals": [],
+        "p50_ms": 114.097,
+        "p95_ms": 114.873,
+        "p99_ms": 114.942,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "medium"
+    },
+    {
+      "cold_sample": {
+        "bytes": 3754,
+        "elapsed_ms": 247.157,
+        "row_count": 0,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "reports/gstr1/readiness",
+      "entity": 6,
+      "notes": "",
+      "params": {
+        "entity": 6,
+        "entityfinid": 6,
+        "from_date": "2026-04-01",
+        "subentity": 6,
+        "to_date": "2026-10-10"
+      },
+      "path": "/api/reports/gstr1/readiness/",
+      "samples": [
+        {
+          "bytes": 3754,
+          "elapsed_ms": 247.157,
+          "row_count": 0,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 3754,
+          "elapsed_ms": 347.416,
+          "row_count": 0,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 3754,
+        "errors": 0,
+        "max_ms": 347.416,
+        "max_rows": 0,
+        "min_ms": 247.157,
+        "min_rows": 0,
+        "observed_totals": [],
+        "p50_ms": 297.286,
+        "p95_ms": 342.403,
+        "p99_ms": 346.413,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "medium"
+    },
+    {
+      "cold_sample": {
+        "bytes": 5015,
+        "elapsed_ms": 294.936,
+        "row_count": 0,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "reports/gstr3b/summary",
+      "entity": 6,
+      "notes": "",
+      "params": {
+        "entity": 6,
+        "entityfinid": 6,
+        "from_date": "2026-04-01",
+        "subentity": 6,
+        "to_date": "2026-10-10"
+      },
+      "path": "/api/reports/gstr3b/summary/",
+      "samples": [
+        {
+          "bytes": 5015,
+          "elapsed_ms": 294.936,
+          "row_count": 0,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 5015,
+          "elapsed_ms": 424.288,
+          "row_count": 0,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 5015,
+        "errors": 0,
+        "max_ms": 424.288,
+        "max_rows": 0,
+        "min_ms": 294.936,
+        "min_rows": 0,
+        "observed_totals": [],
+        "p50_ms": 359.612,
+        "p95_ms": 417.82,
+        "p99_ms": 422.994,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "medium"
+    },
+    {
+      "cold_sample": {
+        "bytes": 1661,
+        "elapsed_ms": 39.653,
+        "row_count": 1,
+        "status": 200,
+        "total": 1,
+        "validation_errors": []
+      },
+      "endpoint": "reports/sales/gstin",
+      "entity": 6,
+      "notes": "",
+      "params": {
+        "entity": 6,
+        "entityfinid": 6,
+        "from_date": "2026-04-01",
+        "page": 1,
+        "page_size": 100,
+        "subentity": 6,
+        "to_date": "2026-10-10"
+      },
+      "path": "/api/reports/sales/gstin/",
+      "samples": [
+        {
+          "bytes": 1661,
+          "elapsed_ms": 39.653,
+          "row_count": 1,
+          "status": 200,
+          "total": 1,
+          "validation_errors": []
+        },
+        {
+          "bytes": 1661,
+          "elapsed_ms": 38.695,
+          "row_count": 1,
+          "status": 200,
+          "total": 1,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 1661,
+        "errors": 0,
+        "max_ms": 39.653,
+        "max_rows": 1,
+        "min_ms": 38.695,
+        "min_rows": 1,
+        "observed_totals": [
+          "1"
+        ],
+        "p50_ms": 39.174,
+        "p95_ms": 39.605,
+        "p99_ms": 39.643,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "medium"
+    },
+    {
+      "cold_sample": {
+        "bytes": 4245,
+        "elapsed_ms": 53.956,
+        "row_count": 0,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "auth/me",
+      "entity": 7,
+      "notes": "",
+      "params": {},
+      "path": "/api/auth/me",
+      "samples": [
+        {
+          "bytes": 4245,
+          "elapsed_ms": 53.956,
+          "row_count": 0,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 4245,
+          "elapsed_ms": 45.906,
+          "row_count": 0,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 4245,
+        "errors": 0,
+        "max_ms": 53.956,
+        "max_rows": 0,
+        "min_ms": 45.906,
+        "min_rows": 0,
+        "observed_totals": [],
+        "p50_ms": 49.931,
+        "p95_ms": 53.553,
+        "p99_ms": 53.876,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "large"
+    },
+    {
+      "cold_sample": {
+        "bytes": 766,
+        "elapsed_ms": 88.37,
+        "row_count": 1,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "entity/context",
+      "entity": 7,
+      "notes": "",
+      "params": {
+        "include": "financial_years,subentities"
+      },
+      "path": "/api/entity/me/entities",
+      "samples": [
+        {
+          "bytes": 766,
+          "elapsed_ms": 88.37,
+          "row_count": 1,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 766,
+          "elapsed_ms": 51.193,
+          "row_count": 1,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 766,
+        "errors": 0,
+        "max_ms": 88.37,
+        "max_rows": 1,
+        "min_ms": 51.193,
+        "min_rows": 1,
+        "observed_totals": [],
+        "p50_ms": 69.781,
+        "p95_ms": 86.511,
+        "p99_ms": 87.998,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "large"
+    },
+    {
+      "cold_sample": {
+        "bytes": 14589,
+        "elapsed_ms": 65.832,
+        "row_count": 0,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "dashboard/home-meta",
+      "entity": 7,
+      "notes": "Dashboard command center contract.",
+      "params": {
+        "entity": 7,
+        "entityfinid": 7,
+        "subentity": 7
+      },
+      "path": "/api/dashboard/home/meta/",
+      "samples": [
+        {
+          "bytes": 14589,
+          "elapsed_ms": 65.832,
+          "row_count": 0,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 14589,
+          "elapsed_ms": 68.233,
+          "row_count": 0,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 14589,
+        "errors": 0,
+        "max_ms": 68.233,
+        "max_rows": 0,
+        "min_ms": 65.832,
+        "min_rows": 0,
+        "observed_totals": [],
+        "p50_ms": 67.032,
+        "p95_ms": 68.113,
+        "p99_ms": 68.209,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "large"
+    },
+    {
+      "cold_sample": {
+        "bytes": 47721,
+        "elapsed_ms": 85.117,
+        "row_count": 100,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "sales/invoices/lookup",
+      "entity": 7,
+      "notes": "",
+      "params": {
+        "entity": 7,
+        "entityfinid": 7,
+        "limit": 100,
+        "subentity": 7
+      },
+      "path": "/api/sales/invoices/lookup/",
+      "samples": [
+        {
+          "bytes": 47721,
+          "elapsed_ms": 85.117,
+          "row_count": 100,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 47721,
+          "elapsed_ms": 85.41,
+          "row_count": 100,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 47721,
+        "errors": 0,
+        "max_ms": 85.41,
+        "max_rows": 100,
+        "min_ms": 85.117,
+        "min_rows": 100,
+        "observed_totals": [],
+        "p50_ms": 85.263,
+        "p95_ms": 85.395,
+        "p99_ms": 85.407,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "large"
+    },
+    {
+      "cold_sample": {
+        "bytes": 56962,
+        "elapsed_ms": 86.728,
+        "row_count": 100,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "sales/invoices/list",
+      "entity": 7,
+      "notes": "",
+      "params": {
+        "entity_id": 7,
+        "entityfinid": 7,
+        "limit": 100,
+        "subentity_id": 7
+      },
+      "path": "/api/sales/invoices/",
+      "samples": [
+        {
+          "bytes": 56962,
+          "elapsed_ms": 86.728,
+          "row_count": 100,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 56962,
+          "elapsed_ms": 84.973,
+          "row_count": 100,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 56962,
+        "errors": 0,
+        "max_ms": 86.728,
+        "max_rows": 100,
+        "min_ms": 84.973,
+        "min_rows": 100,
+        "observed_totals": [],
+        "p50_ms": 85.85,
+        "p95_ms": 86.64,
+        "p99_ms": 86.71,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "large"
+    },
+    {
+      "cold_sample": {
+        "bytes": 46662,
+        "elapsed_ms": 63.472,
+        "row_count": 100,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "purchase/invoices/lookup",
+      "entity": 7,
+      "notes": "",
+      "params": {
+        "entity": 7,
+        "entityfinid": 7,
+        "limit": 100,
+        "subentity": 7
+      },
+      "path": "/api/purchase/purchase-invoices/lookup/",
+      "samples": [
+        {
+          "bytes": 46662,
+          "elapsed_ms": 63.472,
+          "row_count": 100,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 46662,
+          "elapsed_ms": 60.542,
+          "row_count": 100,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 46662,
+        "errors": 0,
+        "max_ms": 63.472,
+        "max_rows": 100,
+        "min_ms": 60.542,
+        "min_rows": 100,
+        "observed_totals": [],
+        "p50_ms": 62.007,
+        "p95_ms": 63.325,
+        "p99_ms": 63.443,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "large"
+    },
+    {
+      "cold_sample": {
+        "bytes": 522735,
+        "elapsed_ms": 239.882,
+        "row_count": 500,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "purchase/invoices/list",
+      "entity": 7,
+      "notes": "",
+      "params": {
+        "entity": 7,
+        "entityfinid": 7,
+        "subentity": 7
+      },
+      "path": "/api/purchase/purchase-invoices/",
+      "samples": [
+        {
+          "bytes": 522735,
+          "elapsed_ms": 239.882,
+          "row_count": 500,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 522735,
+          "elapsed_ms": 232.401,
+          "row_count": 500,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 522735,
+        "errors": 0,
+        "max_ms": 239.882,
+        "max_rows": 500,
+        "min_ms": 232.401,
+        "min_rows": 500,
+        "observed_totals": [],
+        "p50_ms": 236.142,
+        "p95_ms": 239.508,
+        "p99_ms": 239.807,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "large"
+    },
+    {
+      "cold_sample": {
+        "bytes": 36667,
+        "elapsed_ms": 179.318,
+        "row_count": 50,
+        "status": 200,
+        "total": 1500,
+        "validation_errors": []
+      },
+      "endpoint": "reports/financial/daybook",
+      "entity": 7,
+      "notes": "",
+      "params": {
+        "entity": 7,
+        "entityfinid": 7,
+        "from_date": "2026-04-01",
+        "page": 1,
+        "page_size": 50,
+        "subentity": 7,
+        "to_date": "2026-10-10"
+      },
+      "path": "/api/reports/financial/daybook/",
+      "samples": [
+        {
+          "bytes": 36667,
+          "elapsed_ms": 179.318,
+          "row_count": 50,
+          "status": 200,
+          "total": 1500,
+          "validation_errors": []
+        },
+        {
+          "bytes": 36667,
+          "elapsed_ms": 167.419,
+          "row_count": 50,
+          "status": 200,
+          "total": 1500,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 36667,
+        "errors": 0,
+        "max_ms": 179.318,
+        "max_rows": 50,
+        "min_ms": 167.419,
+        "min_rows": 50,
+        "observed_totals": [
+          "1500"
+        ],
+        "p50_ms": 173.369,
+        "p95_ms": 178.723,
+        "p99_ms": 179.199,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "large"
+    },
+    {
+      "cold_sample": {
+        "bytes": 5540,
+        "elapsed_ms": 88.595,
+        "row_count": 6,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "reports/financial/ledger-summary",
+      "entity": 7,
+      "notes": "",
+      "params": {
+        "account_group": "ledger",
+        "entity": 7,
+        "entityfinid": 7,
+        "from_date": "2026-04-01",
+        "group_by": "ledger",
+        "include_opening": "true",
+        "include_zero_balances": "false",
+        "page": 1,
+        "page_size": 100,
+        "posted_only": "true",
+        "subentity": 7,
+        "to_date": "2026-10-10",
+        "view_type": "summary"
+      },
+      "path": "/api/reports/financial/ledger-summary/",
+      "samples": [
+        {
+          "bytes": 5540,
+          "elapsed_ms": 88.595,
+          "row_count": 6,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 5540,
+          "elapsed_ms": 86.761,
+          "row_count": 6,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 5540,
+        "errors": 0,
+        "max_ms": 88.595,
+        "max_rows": 6,
+        "min_ms": 86.761,
+        "min_rows": 6,
+        "observed_totals": [],
+        "p50_ms": 87.678,
+        "p95_ms": 88.503,
+        "p99_ms": 88.577,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "large"
+    },
+    {
+      "cold_sample": {
+        "bytes": 4557,
+        "elapsed_ms": 119.102,
+        "row_count": 1,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "reports/receivables/aging-summary",
+      "entity": 7,
+      "notes": "",
+      "params": {
+        "as_of_date": "2026-10-10",
+        "entity": 7,
+        "entityfinid": 7,
+        "from_date": "2026-04-01",
+        "page": 1,
+        "page_size": 100,
+        "subentity": 7,
+        "to_date": "2026-10-10",
+        "view": "summary"
+      },
+      "path": "/api/reports/receivables/aging/",
+      "samples": [
+        {
+          "bytes": 4557,
+          "elapsed_ms": 119.102,
+          "row_count": 1,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 4557,
+          "elapsed_ms": 118.442,
+          "row_count": 1,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 4557,
+        "errors": 0,
+        "max_ms": 119.102,
+        "max_rows": 1,
+        "min_ms": 118.442,
+        "min_rows": 1,
+        "observed_totals": [],
+        "p50_ms": 118.772,
+        "p95_ms": 119.069,
+        "p99_ms": 119.095,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "large"
+    },
+    {
+      "cold_sample": {
+        "bytes": 200185,
+        "elapsed_ms": 145.482,
+        "row_count": 100,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "reports/receivables/aging-invoice",
+      "entity": 7,
+      "notes": "",
+      "params": {
+        "as_of_date": "2026-10-10",
+        "entity": 7,
+        "entityfinid": 7,
+        "from_date": "2026-04-01",
+        "page": 1,
+        "page_size": 100,
+        "subentity": 7,
+        "to_date": "2026-10-10",
+        "view": "invoice"
+      },
+      "path": "/api/reports/receivables/aging/",
+      "samples": [
+        {
+          "bytes": 200185,
+          "elapsed_ms": 145.482,
+          "row_count": 100,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 200185,
+          "elapsed_ms": 149.455,
+          "row_count": 100,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 200185,
+        "errors": 0,
+        "max_ms": 149.455,
+        "max_rows": 100,
+        "min_ms": 145.482,
+        "min_rows": 100,
+        "observed_totals": [],
+        "p50_ms": 147.469,
+        "p95_ms": 149.256,
+        "p99_ms": 149.415,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "large"
+    },
+    {
+      "cold_sample": {
+        "bytes": 149982,
+        "elapsed_ms": 137.122,
+        "row_count": 100,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "reports/receivables/open-items",
+      "entity": 7,
+      "notes": "",
+      "params": {
+        "as_of_date": "2026-10-10",
+        "entity": 7,
+        "entityfinid": 7,
+        "from_date": "2026-04-01",
+        "page": 1,
+        "page_size": 100,
+        "subentity": 7,
+        "to_date": "2026-10-10"
+      },
+      "path": "/api/reports/receivables/open-items/",
+      "samples": [
+        {
+          "bytes": 149982,
+          "elapsed_ms": 137.122,
+          "row_count": 100,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 149982,
+          "elapsed_ms": 129.879,
+          "row_count": 100,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 149982,
+        "errors": 0,
+        "max_ms": 137.122,
+        "max_rows": 100,
+        "min_ms": 129.879,
+        "min_rows": 100,
+        "observed_totals": [],
+        "p50_ms": 133.5,
+        "p95_ms": 136.76,
+        "p99_ms": 137.05,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "large"
+    },
+    {
+      "cold_sample": {
+        "bytes": 14452,
+        "elapsed_ms": 113.617,
+        "row_count": 1,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "reports/payables/vendor-outstanding",
+      "entity": 7,
+      "notes": "",
+      "params": {
+        "as_of_date": "2026-10-10",
+        "entity": 7,
+        "entityfinid": 7,
+        "page": 1,
+        "page_size": 100,
+        "subentity": 7,
+        "view": "summary"
+      },
+      "path": "/api/reports/payables/vendor-outstanding/",
+      "samples": [
+        {
+          "bytes": 14452,
+          "elapsed_ms": 113.617,
+          "row_count": 1,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 14452,
+          "elapsed_ms": 113.622,
+          "row_count": 1,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 14452,
+        "errors": 0,
+        "max_ms": 113.622,
+        "max_rows": 1,
+        "min_ms": 113.617,
+        "min_rows": 1,
+        "observed_totals": [],
+        "p50_ms": 113.62,
+        "p95_ms": 113.622,
+        "p99_ms": 113.622,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "large"
+    },
+    {
+      "cold_sample": {
+        "bytes": 14536,
+        "elapsed_ms": 116.487,
+        "row_count": 1,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "reports/payables/vendor-outstanding-voucher",
+      "entity": 7,
+      "notes": "",
+      "params": {
+        "as_of_date": "2026-10-10",
+        "entity": 7,
+        "entityfinid": 7,
+        "page": 1,
+        "page_size": 100,
+        "subentity": 7,
+        "view": "summary",
+        "voucher_type": "PINV"
+      },
+      "path": "/api/reports/payables/vendor-outstanding/",
+      "samples": [
+        {
+          "bytes": 14536,
+          "elapsed_ms": 116.487,
+          "row_count": 1,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 14536,
+          "elapsed_ms": 114.834,
+          "row_count": 1,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 14536,
+        "errors": 0,
+        "max_ms": 116.487,
+        "max_rows": 1,
+        "min_ms": 114.834,
+        "min_rows": 1,
+        "observed_totals": [],
+        "p50_ms": 115.66,
+        "p95_ms": 116.404,
+        "p99_ms": 116.47,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "large"
+    },
+    {
+      "cold_sample": {
+        "bytes": 2718,
+        "elapsed_ms": 110.666,
+        "row_count": 0,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "reports/gstr1/summary",
+      "entity": 7,
+      "notes": "",
+      "params": {
+        "entity": 7,
+        "entityfinid": 7,
+        "from_date": "2026-04-01",
+        "page": 1,
+        "page_size": 100,
+        "subentity": 7,
+        "to_date": "2026-10-10"
+      },
+      "path": "/api/reports/gstr1/summary/",
+      "samples": [
+        {
+          "bytes": 2718,
+          "elapsed_ms": 110.666,
+          "row_count": 0,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 2718,
+          "elapsed_ms": 111.284,
+          "row_count": 0,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 2718,
+        "errors": 0,
+        "max_ms": 111.284,
+        "max_rows": 0,
+        "min_ms": 110.666,
+        "min_rows": 0,
+        "observed_totals": [],
+        "p50_ms": 110.975,
+        "p95_ms": 111.253,
+        "p99_ms": 111.278,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "large"
+    },
+    {
+      "cold_sample": {
+        "bytes": 3754,
+        "elapsed_ms": 223.023,
+        "row_count": 0,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "reports/gstr1/readiness",
+      "entity": 7,
+      "notes": "",
+      "params": {
+        "entity": 7,
+        "entityfinid": 7,
+        "from_date": "2026-04-01",
+        "subentity": 7,
+        "to_date": "2026-10-10"
+      },
+      "path": "/api/reports/gstr1/readiness/",
+      "samples": [
+        {
+          "bytes": 3754,
+          "elapsed_ms": 223.023,
+          "row_count": 0,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 3754,
+          "elapsed_ms": 224.308,
+          "row_count": 0,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 3754,
+        "errors": 0,
+        "max_ms": 224.308,
+        "max_rows": 0,
+        "min_ms": 223.023,
+        "min_rows": 0,
+        "observed_totals": [],
+        "p50_ms": 223.666,
+        "p95_ms": 224.244,
+        "p99_ms": 224.295,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "large"
+    },
+    {
+      "cold_sample": {
+        "bytes": 5015,
+        "elapsed_ms": 243.598,
+        "row_count": 0,
+        "status": 200,
+        "total": null,
+        "validation_errors": []
+      },
+      "endpoint": "reports/gstr3b/summary",
+      "entity": 7,
+      "notes": "",
+      "params": {
+        "entity": 7,
+        "entityfinid": 7,
+        "from_date": "2026-04-01",
+        "subentity": 7,
+        "to_date": "2026-10-10"
+      },
+      "path": "/api/reports/gstr3b/summary/",
+      "samples": [
+        {
+          "bytes": 5015,
+          "elapsed_ms": 243.598,
+          "row_count": 0,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        },
+        {
+          "bytes": 5015,
+          "elapsed_ms": 241.323,
+          "row_count": 0,
+          "status": 200,
+          "total": null,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 5015,
+        "errors": 0,
+        "max_ms": 243.598,
+        "max_rows": 0,
+        "min_ms": 241.323,
+        "min_rows": 0,
+        "observed_totals": [],
+        "p50_ms": 242.461,
+        "p95_ms": 243.484,
+        "p99_ms": 243.575,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "large"
+    },
+    {
+      "cold_sample": {
+        "bytes": 1661,
+        "elapsed_ms": 39.435,
+        "row_count": 1,
+        "status": 200,
+        "total": 1,
+        "validation_errors": []
+      },
+      "endpoint": "reports/sales/gstin",
+      "entity": 7,
+      "notes": "",
+      "params": {
+        "entity": 7,
+        "entityfinid": 7,
+        "from_date": "2026-04-01",
+        "page": 1,
+        "page_size": 100,
+        "subentity": 7,
+        "to_date": "2026-10-10"
+      },
+      "path": "/api/reports/sales/gstin/",
+      "samples": [
+        {
+          "bytes": 1661,
+          "elapsed_ms": 39.435,
+          "row_count": 1,
+          "status": 200,
+          "total": 1,
+          "validation_errors": []
+        },
+        {
+          "bytes": 1661,
+          "elapsed_ms": 38.339,
+          "row_count": 1,
+          "status": 200,
+          "total": 1,
+          "validation_errors": []
+        }
+      ],
+      "summary": {
+        "avg_bytes": 1661,
+        "errors": 0,
+        "max_ms": 39.435,
+        "max_rows": 1,
+        "min_ms": 38.339,
+        "min_rows": 1,
+        "observed_totals": [
+          "1"
+        ],
+        "p50_ms": 38.887,
+        "p95_ms": 39.38,
+        "p99_ms": 39.424,
+        "samples": 2,
+        "status_counts": {
+          "200": 2
+        }
+      },
+      "tenant": "large"
+    }
+  ],
+  "samples_per_endpoint_per_tenant": 2,
+  "secret_values_logged": false,
+  "tenants": [
+    {
+      "denied_entity": 6,
+      "email": "perf-api-small@local.invalid",
+      "entity": 5,
+      "entityfinid": 5,
+      "label": "small",
+      "subentity": 5
+    },
+    {
+      "denied_entity": 5,
+      "email": "perf-api-medium@local.invalid",
+      "entity": 6,
+      "entityfinid": 6,
+      "label": "medium",
+      "subentity": 6
+    },
+    {
+      "denied_entity": 5,
+      "email": "perf-api-large@local.invalid",
+      "entity": 7,
+      "entityfinid": 7,
+      "label": "large",
+      "subentity": 7
+    }
+  ],
+  "warm_samples_per_endpoint_per_tenant": 1
+}

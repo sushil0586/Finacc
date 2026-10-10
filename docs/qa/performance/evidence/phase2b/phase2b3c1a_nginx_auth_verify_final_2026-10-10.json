@@ -1,0 +1,66 @@
+{
+  "base_url": "http://localhost:18080",
+  "checks": [
+    {
+      "allowed_fy_status": 200,
+      "allowed_sales_lookup_bytes": 47650,
+      "allowed_sales_lookup_status": 200,
+      "auth_cookie_names": [
+        "fa_access",
+        "fa_refresh"
+      ],
+      "denied_fy_status": 404,
+      "denied_sales_lookup_status": 403,
+      "email": "perf-api-small@local.invalid",
+      "entities_status": 200,
+      "label": "small",
+      "login_ms": 313.91,
+      "login_status": 200,
+      "me_status": 200,
+      "visible_entity_ids": [
+        5
+      ]
+    },
+    {
+      "allowed_fy_status": 200,
+      "allowed_sales_lookup_bytes": 47732,
+      "allowed_sales_lookup_status": 200,
+      "auth_cookie_names": [
+        "fa_access",
+        "fa_refresh"
+      ],
+      "denied_fy_status": 404,
+      "denied_sales_lookup_status": 403,
+      "email": "perf-api-medium@local.invalid",
+      "entities_status": 200,
+      "label": "medium",
+      "login_ms": 258.96,
+      "login_status": 200,
+      "me_status": 200,
+      "visible_entity_ids": [
+        6
+      ]
+    },
+    {
+      "allowed_fy_status": 200,
+      "allowed_sales_lookup_bytes": 47721,
+      "allowed_sales_lookup_status": 200,
+      "auth_cookie_names": [
+        "fa_access",
+        "fa_refresh"
+      ],
+      "denied_fy_status": 404,
+      "denied_sales_lookup_status": 403,
+      "email": "perf-api-large@local.invalid",
+      "entities_status": 200,
+      "label": "large",
+      "login_ms": 289.17,
+      "login_status": 200,
+      "me_status": 200,
+      "visible_entity_ids": [
+        7
+      ]
+    }
+  ],
+  "secret_values_logged": false
+}

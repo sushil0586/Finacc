@@ -1,0 +1,419 @@
+{
+  "label": "phase1_api_baseline_2026-10-10",
+  "generated_at_epoch": 1791624602,
+  "scope": {
+    "entity": "10",
+    "entity_id": "10",
+    "entityfinid": "8",
+    "subentity": "8",
+    "subentity_id": "8",
+    "as_of_date": "2026-10-10",
+    "from_date": "2026-04-01",
+    "to_date": "2026-10-10"
+  },
+  "db_snapshot": {
+    "debug": false,
+    "db_engine": "django.db.backends.postgresql",
+    "db_name": "finacc_db",
+    "db_host": "127.0.0.1",
+    "db_conn_max_age": 0,
+    "db_conn_health_checks": true,
+    "cache_backend": "django.core.cache.backends.locmem.LocMemCache",
+    "cache_location": "finacc-cache",
+    "db_pool_enabled": false,
+    "meta_cache_enabled": false,
+    "payables_meta_cache_enabled": false,
+    "postgres_version": "PostgreSQL 16.12 (Homebrew) on aarch64-apple-darwin24.6.0, compiled by Apple clang version 17.0.0 (clang-1700.6.3.2), 64-bit",
+    "postgres_max_connections": "100",
+    "postgres_shared_buffers": "128MB",
+    "largest_tables": [
+      {
+        "table": "auditlogger_auditlog",
+        "live_rows_est": 5749692,
+        "dead_rows_est": 0
+      },
+      {
+        "table": "rbac_rolepermission",
+        "live_rows_est": 536063,
+        "dead_rows_est": 0
+      },
+      {
+        "table": "posting_journalline",
+        "live_rows_est": 180035,
+        "dead_rows_est": 4274
+      },
+      {
+        "table": "purchase_purchaseinvoiceheader",
+        "live_rows_est": 70891,
+        "dead_rows_est": 13743
+      },
+      {
+        "table": "purchase_purchaseinvoiceline",
+        "live_rows_est": 64807,
+        "dead_rows_est": 975
+      },
+      {
+        "table": "posting_postingbatch",
+        "live_rows_est": 55100,
+        "dead_rows_est": 1139
+      },
+      {
+        "table": "posting_entry",
+        "live_rows_est": 51164,
+        "dead_rows_est": 2007
+      },
+      {
+        "table": "purchase_purchasetaxsummary",
+        "live_rows_est": 49085,
+        "dead_rows_est": 8705
+      },
+      {
+        "table": "purchase_vendorbillopenitem",
+        "live_rows_est": 46329,
+        "dead_rows_est": 391
+      },
+      {
+        "table": "sales_invoice_header",
+        "live_rows_est": 30135,
+        "dead_rows_est": 1053
+      },
+      {
+        "table": "errorlogger_errorlog",
+        "live_rows_est": 27236,
+        "dead_rows_est": 0
+      },
+      {
+        "table": "invoice_import_importrow",
+        "live_rows_est": 26116,
+        "dead_rows_est": 0
+      },
+      {
+        "table": "Authentication_authauditlog",
+        "live_rows_est": 24723,
+        "dead_rows_est": 0
+      },
+      {
+        "table": "Authentication_authsession",
+        "live_rows_est": 23638,
+        "dead_rows_est": 259
+      },
+      {
+        "table": "sales_invoice_line",
+        "live_rows_est": 23176,
+        "dead_rows_est": 69
+      },
+      {
+        "table": "sales_tax_summary",
+        "live_rows_est": 22810,
+        "dead_rows_est": 600
+      },
+      {
+        "table": "financial_ledger",
+        "live_rows_est": 16524,
+        "dead_rows_est": 2849
+      },
+      {
+        "table": "withholding_tcs_computation",
+        "live_rows_est": 14583,
+        "dead_rows_est": 373
+      },
+      {
+        "table": "financial_account",
+        "live_rows_est": 13998,
+        "dead_rows_est": 2487
+      },
+      {
+        "table": "financial_accountcomplianceprofile",
+        "live_rows_est": 13726,
+        "dead_rows_est": 346
+      }
+    ],
+    "lock_summary": [
+      {
+        "mode": "AccessShareLock",
+        "granted": true,
+        "count": 1
+      },
+      {
+        "mode": "ExclusiveLock",
+        "granted": true,
+        "count": 1
+      }
+    ]
+  },
+  "results": [
+    {
+      "name": "auth/me",
+      "method": "GET",
+      "path": "/api/auth/me",
+      "status_code": 200,
+      "elapsed_ms": 37.64,
+      "query_count": 17,
+      "sql_ms": 22.0,
+      "response_bytes": 4302,
+      "slow_queries": []
+    },
+    {
+      "name": "dashboard/home-meta",
+      "method": "GET",
+      "path": "/api/dashboard/home/meta/",
+      "status_code": 200,
+      "elapsed_ms": 66.62,
+      "query_count": 41,
+      "sql_ms": 36.0,
+      "response_bytes": 14487,
+      "slow_queries": []
+    },
+    {
+      "name": "sales/invoices",
+      "method": "GET",
+      "path": "/api/sales/invoices/",
+      "status_code": 200,
+      "elapsed_ms": 4657.96,
+      "query_count": 31,
+      "sql_ms": 191.0,
+      "response_bytes": 14734470,
+      "slow_queries": [
+        {
+          "sql_ms": 167.0,
+          "sql": "SELECT \"sales_invoice_header\".\"id\", \"sales_invoice_header\".\"subentity_id\", \"sales_invoice_header\".\"doc_type\", \"sales_invoice_header\".\"status\", \"sales_invoice_header\".\"bill_date\", \"sales_invoice_header\".\"doc_code\", \"sales_invoice_header\".\"invoice_number\", \"sales_invoice_header\".\"customer_id\", \"sales_invoice_header\".\"customer_name\", \"sales_invoice_header\".\"location_id\", \"sales_invoice_header\".\"grand_total\", \"sales_invoice_header\".\"outstanding_amount\", \"sales_invoice_header\".\"is_legacy_imported\", \""
+        }
+      ]
+    },
+    {
+      "name": "sales/invoices-lookup",
+      "method": "GET",
+      "path": "/api/sales/invoices/lookup/",
+      "status_code": 200,
+      "elapsed_ms": 69.97,
+      "query_count": 31,
+      "sql_ms": 30.0,
+      "response_bytes": 49324,
+      "slow_queries": []
+    },
+    {
+      "name": "sales/service-invoices-lookup",
+      "method": "GET",
+      "path": "/api/sales/service-invoices/lookup/",
+      "status_code": 200,
+      "elapsed_ms": 89.97,
+      "query_count": 31,
+      "sql_ms": 52.0,
+      "response_bytes": 49473,
+      "slow_queries": []
+    },
+    {
+      "name": "purchase/invoices",
+      "method": "GET",
+      "path": "/api/purchase/purchase-invoices/",
+      "status_code": "SKIPPED",
+      "elapsed_ms": null,
+      "query_count": null,
+      "sql_ms": null,
+      "response_bytes": 0,
+      "slow_queries": [],
+      "note": "Skipped by --exclude after earlier Phase 1 probe exceeded the manual stop threshold."
+    },
+    {
+      "name": "purchase/invoices-lookup",
+      "method": "GET",
+      "path": "/api/purchase/purchase-invoices/lookup/",
+      "status_code": 200,
+      "elapsed_ms": 58.97,
+      "query_count": 17,
+      "sql_ms": 42.0,
+      "response_bytes": 48681,
+      "slow_queries": []
+    },
+    {
+      "name": "purchase/service-invoices-lookup",
+      "method": "GET",
+      "path": "/api/purchase/purchase-service-invoices/lookup/",
+      "status_code": 200,
+      "elapsed_ms": 49.44,
+      "query_count": 17,
+      "sql_ms": 28.0,
+      "response_bytes": 49411,
+      "slow_queries": []
+    },
+    {
+      "name": "payments/vouchers-lookup",
+      "method": "GET",
+      "path": "/api/payments/payment-vouchers/lookup/",
+      "status_code": 200,
+      "elapsed_ms": 117.05,
+      "query_count": 18,
+      "sql_ms": 57.0,
+      "response_bytes": 60990,
+      "slow_queries": []
+    },
+    {
+      "name": "receipts/vouchers-lookup",
+      "method": "GET",
+      "path": "/api/receipts/receipt-vouchers/lookup/",
+      "status_code": 200,
+      "elapsed_ms": 107.39,
+      "query_count": 18,
+      "sql_ms": 48.0,
+      "response_bytes": 61739,
+      "slow_queries": []
+    },
+    {
+      "name": "reports/payables/meta",
+      "method": "GET",
+      "path": "/api/reports/payables/meta/",
+      "status_code": 200,
+      "elapsed_ms": 164.51,
+      "query_count": 31,
+      "sql_ms": 79.0,
+      "response_bytes": 466662,
+      "slow_queries": []
+    },
+    {
+      "name": "reports/payables/aging",
+      "method": "GET",
+      "path": "/api/reports/payables/aging/",
+      "status_code": 200,
+      "elapsed_ms": 665.33,
+      "query_count": 41,
+      "sql_ms": 326.0,
+      "response_bytes": 1920162,
+      "slow_queries": [
+        {
+          "sql_ms": 116.0,
+          "sql": "SELECT vendor_id, COALESCE(SUM(CASE WHEN outstanding_asof > 0 AND summary_due_date >= '2026-10-10'::date THEN outstanding_asof ELSE 0 END), 0) AS current, COALESCE(SUM(CASE WHEN outstanding_asof > 0 AND summary_due_date < '2026-10-10'::date AND summary_due_date >= '2026-09-10'::date THEN outstanding_asof ELSE 0 END), 0) AS bucket_1_30, COALESCE(SUM(CASE WHEN outstanding_asof > 0 AND summary_due_date < '2026-09-10'::date AND summary_due_date >= '2026-08-11'::date THEN outstanding_asof ELSE 0 END)"
+        }
+      ]
+    },
+    {
+      "name": "reports/payables/vendor-outstanding",
+      "method": "GET",
+      "path": "/api/reports/payables/vendor-outstanding/",
+      "status_code": 200,
+      "elapsed_ms": 7440.61,
+      "query_count": 42,
+      "sql_ms": 408.0,
+      "response_bytes": 161793,
+      "slow_queries": [
+        {
+          "sql_ms": 188.0,
+          "sql": "DECLARE \"_django_curs_8283676032_sync_5\" NO SCROLL CURSOR WITH HOLD FOR SELECT \"purchase_vendorbillopenitem\".\"id\", \"purchase_vendorbillopenitem\".\"header_id\", \"purchase_vendorbillopenitem\".\"subentity_id\", \"purchase_vendorbillopenitem\".\"vendor_id\", \"purchase_vendorbillopenitem\".\"doc_type\", \"purchase_vendorbillopenitem\".\"bill_date\", \"purchase_vendorbillopenitem\".\"due_date\", \"purchase_vendorbillopenitem\".\"purchase_number\", \"purchase_vendorbillopenitem\".\"supplier_invoice_number\", \"purchase_vendorbill"
+        }
+      ]
+    },
+    {
+      "name": "reports/receivables/customer-outstanding",
+      "method": "GET",
+      "path": "/api/reports/receivables/customer-outstanding/",
+      "status_code": 200,
+      "elapsed_ms": 540.72,
+      "query_count": 42,
+      "sql_ms": 217.0,
+      "response_bytes": 106436,
+      "slow_queries": []
+    },
+    {
+      "name": "reports/receivables/aging",
+      "method": "GET",
+      "path": "/api/reports/receivables/aging/",
+      "status_code": 200,
+      "elapsed_ms": 1750.89,
+      "query_count": 37,
+      "sql_ms": 198.0,
+      "response_bytes": 80124,
+      "slow_queries": []
+    },
+    {
+      "name": "reports/receivables/open-items",
+      "method": "GET",
+      "path": "/api/reports/receivables/open-items/",
+      "status_code": 200,
+      "elapsed_ms": 6833.5,
+      "query_count": 37,
+      "sql_ms": 549.0,
+      "response_bytes": 77630,
+      "slow_queries": [
+        {
+          "sql_ms": 166.0,
+          "sql": "SELECT DISTINCT \"sales_invoice_line\".\"header_id\" AS \"header_id\" FROM \"sales_invoice_line\" WHERE (\"sales_invoice_line\".\"header_id\" IN (65, 68, 78, 80, 82, 83, 84, 85, 87, 147, 148, 149, 150, 152, 154, 156, 158, 269, 271, 287, 289, 337, 339, 408, 410, 412, 414, 421, 424, 547, 597, 638, 640, 675, 677, 707, 708, 724, 727, 768, 770, 801, 803, 819, 822, 864, 866, 882, 885, 927, 928, 959, 960, 993, 997, 1019, 1021, 1049, 1051, 1196, 1197, 1199, 1214, 1216, 1305, 1307, 1329, 1332, 1388, 1390, 1412, 1415"
+        },
+        {
+          "sql_ms": 207.0,
+          "sql": "DECLARE \"_django_curs_8283676032_sync_13\" NO SCROLL CURSOR WITH HOLD FOR SELECT \"sales_customerbillopenitem\".\"id\", \"sales_customerbillopenitem\".\"created_at\", \"sales_customerbillopenitem\".\"updated_at\", \"sales_customerbillopenitem\".\"header_id\", \"sales_customerbillopenitem\".\"entity_id\", \"sales_customerbillopenitem\".\"entityfinid_id\", \"sales_customerbillopenitem\".\"subentity_id\", \"sales_customerbillopenitem\".\"customer_id\", \"sales_customerbillopenitem\".\"customer_ledger_id\", \"sales_customerbillopenitem\""
+        }
+      ]
+    },
+    {
+      "name": "reports/financial/trial-balance",
+      "method": "GET",
+      "path": "/api/reports/financial/trial-balance/",
+      "status_code": 200,
+      "elapsed_ms": 793.13,
+      "query_count": 36,
+      "sql_ms": 281.0,
+      "response_bytes": 19728,
+      "slow_queries": [
+        {
+          "sql_ms": 175.0,
+          "sql": "SELECT COALESCE(\"posting_journalline\".\"ledger_id\", \"financial_account\".\"ledger_id\") AS \"resolved_ledger_id\", COALESCE(SUM(\"posting_journalline\".\"amount\") FILTER (WHERE (\"posting_journalline\".\"drcr\")), 0.00) AS \"debit\", COALESCE(SUM(\"posting_journalline\".\"amount\") FILTER (WHERE (NOT \"posting_journalline\".\"drcr\")), 0.00) AS \"credit\" FROM \"posting_journalline\" LEFT OUTER JOIN \"financial_account\" ON (\"posting_journalline\".\"account_id\" = \"financial_account\".\"id\") INNER JOIN \"posting_entry\" ON (\"posti"
+        }
+      ]
+    },
+    {
+      "name": "reports/financial/ledger-summary",
+      "method": "GET",
+      "path": "/api/reports/financial/ledger-summary/",
+      "status_code": 200,
+      "elapsed_ms": 643.78,
+      "query_count": 34,
+      "sql_ms": 226.0,
+      "response_bytes": 22423,
+      "slow_queries": [
+        {
+          "sql_ms": 137.0,
+          "sql": "SELECT COALESCE(\"posting_journalline\".\"ledger_id\", \"financial_account\".\"ledger_id\") AS \"resolved_ledger_id\", COALESCE(SUM(\"posting_journalline\".\"amount\") FILTER (WHERE (\"posting_journalline\".\"drcr\")), 0.00) AS \"debit\", COALESCE(SUM(\"posting_journalline\".\"amount\") FILTER (WHERE (NOT \"posting_journalline\".\"drcr\")), 0.00) AS \"credit\" FROM \"posting_journalline\" LEFT OUTER JOIN \"financial_account\" ON (\"posting_journalline\".\"account_id\" = \"financial_account\".\"id\") INNER JOIN \"posting_entry\" ON (\"posti"
+        }
+      ]
+    },
+    {
+      "name": "reports/financial/daybook",
+      "method": "GET",
+      "path": "/api/reports/financial/daybook/",
+      "status_code": 200,
+      "elapsed_ms": 3004.64,
+      "query_count": 34,
+      "sql_ms": 2933.0,
+      "response_bytes": 35528,
+      "slow_queries": [
+        {
+          "sql_ms": 277.0,
+          "sql": "SELECT COALESCE(SUM(CASE WHEN \"posting_journalline\".\"drcr\" THEN \"posting_journalline\".\"amount\" ELSE 0.00 END), 0.00) AS \"debit_total\", COALESCE(SUM(CASE WHEN NOT \"posting_journalline\".\"drcr\" THEN \"posting_journalline\".\"amount\" ELSE 0.00 END), 0.00) AS \"credit_total\" FROM \"posting_journalline\" WHERE \"posting_journalline\".\"entry_id\" IN (SELECT DISTINCT V0.\"id\" AS \"id\" FROM \"posting_entry\" V0 LEFT OUTER JOIN \"posting_journalline\" V2 ON (V0.\"id\" = V2.\"entry_id\") WHERE (V0.\"entity_id\" = 10 AND NOT (V"
+        },
+        {
+          "sql_ms": 940.0,
+          "sql": "SELECT COUNT(*) FROM (SELECT DISTINCT \"posting_entry\".\"id\" AS \"col1\", \"posting_entry\".\"entity_id\" AS \"col2\", \"posting_entry\".\"entityfin_id\" AS \"col3\", \"posting_entry\".\"subentity_id\" AS \"col4\", \"posting_entry\".\"txn_type\" AS \"col5\", \"posting_entry\".\"txn_id\" AS \"col6\", \"posting_entry\".\"voucher_no\" AS \"col7\", \"posting_entry\".\"voucher_date\" AS \"col8\", \"posting_entry\".\"posting_date\" AS \"col9\", \"posting_entry\".\"status\" AS \"col10\", \"posting_entry\".\"posted_at\" AS \"col11\", \"posting_entry\".\"posted_by_id\" A"
+        },
+        {
+          "sql_ms": 1649.0,
+          "sql": "SELECT DISTINCT \"posting_entry\".\"id\", \"posting_entry\".\"entity_id\", \"posting_entry\".\"entityfin_id\", \"posting_entry\".\"subentity_id\", \"posting_entry\".\"txn_type\", \"posting_entry\".\"txn_id\", \"posting_entry\".\"voucher_no\", \"posting_entry\".\"voucher_date\", \"posting_entry\".\"posting_date\", \"posting_entry\".\"status\", \"posting_entry\".\"posted_at\", \"posting_entry\".\"posted_by_id\", \"posting_entry\".\"posting_batch_id\", \"posting_entry\".\"narration\", \"posting_entry\".\"created_at\", \"posting_entry\".\"created_by_id\", COALES"
+        }
+      ]
+    },
+    {
+      "name": "reports/gstr1/summary",
+      "method": "GET",
+      "path": "/api/reports/gstr1/summary/",
+      "status_code": 200,
+      "elapsed_ms": 456.23,
+      "query_count": 37,
+      "sql_ms": 383.0,
+      "response_bytes": 62593,
+      "slow_queries": [
+        {
+          "sql_ms": 111.0,
+          "sql": "SELECT \"sales_tax_summary\".\"hsn_sac_code\" AS \"hsn_sac_code\", \"sales_tax_summary\".\"is_service\" AS \"is_service\", \"sales_tax_summary\".\"gst_rate\" AS \"gst_rate\", COALESCE(SUM((\"sales_tax_summary\".\"taxable_value\" * CASE WHEN \"sales_invoice_header\".\"status\" = 9 THEN 0 WHEN \"sales_invoice_header\".\"doc_type\" = 2 THEN -1 ELSE 1 END)), 0.00) AS \"taxable_value\", COALESCE(SUM((\"sales_tax_summary\".\"cgst_amount\" * CASE WHEN \"sales_invoice_header\".\"status\" = 9 THEN 0 WHEN \"sales_invoice_header\".\"doc_type\" = 2 T"
+        }
+      ]
+    }
+  ]
+}

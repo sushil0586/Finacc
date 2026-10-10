@@ -1,0 +1,5 @@
+ extname 
+---------
+ plpgsql
+(1 row)
+

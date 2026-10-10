@@ -1,0 +1,5 @@
+CONTAINER ID   NAME                CPU %     MEM USAGE / LIMIT     MEM %     NET I/O           BLOCK I/O         PIDS
+caa223f95c15   finacc-web-1        0.02%     557.6MiB / 7.748GiB   7.03%     2.51GB / 1.83GB   0B / 1.57MB       31
+5c0082e9c59b   finacc-postgres-1   0.00%     67.77MiB / 7.748GiB   0.85%     672MB / 2.48GB    16.9MB / 59.9MB   6
+e87fe22a2ee5   finacc-redis-1      2.73%     10.2MiB / 7.748GiB    0.13%     1.14MB / 607kB    0B / 0B           6
+5f50e12f45c4   finacc-nginx-1      0.00%     10.32MiB / 7.748GiB   0.13%     1.42GB / 110MB    0B / 4.1kB        11

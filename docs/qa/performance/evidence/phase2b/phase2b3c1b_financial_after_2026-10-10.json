@@ -1,0 +1,97 @@
+{
+  "dry_run": true,
+  "elapsed_seconds": 0.08,
+  "financial_counts_unchanged": true,
+  "financial_snapshot_after": {
+    "tenant_count": 3,
+    "tenants": [
+      {
+        "ap_open": "236000.00",
+        "ar_open": "472000.00",
+        "entity_id": 5,
+        "entity_name": "Phase2B3B small Small Tenant",
+        "purchase_invoices": 500,
+        "sales_invoices": 1000
+      },
+      {
+        "ap_open": "236000.00",
+        "ar_open": "472000.00",
+        "entity_id": 6,
+        "entity_name": "Phase2B3B small Medium Tenant",
+        "purchase_invoices": 500,
+        "sales_invoices": 1000
+      },
+      {
+        "ap_open": "236000.00",
+        "ar_open": "472000.00",
+        "entity_id": 7,
+        "entity_name": "Phase2B3B small Large Tenant",
+        "purchase_invoices": 500,
+        "sales_invoices": 1000
+      }
+    ]
+  },
+  "financial_snapshot_before": {
+    "tenant_count": 3,
+    "tenants": [
+      {
+        "ap_open": "236000.00",
+        "ar_open": "472000.00",
+        "entity_id": 5,
+        "entity_name": "Phase2B3B small Small Tenant",
+        "purchase_invoices": 500,
+        "sales_invoices": 1000
+      },
+      {
+        "ap_open": "236000.00",
+        "ar_open": "472000.00",
+        "entity_id": 6,
+        "entity_name": "Phase2B3B small Medium Tenant",
+        "purchase_invoices": 500,
+        "sales_invoices": 1000
+      },
+      {
+        "ap_open": "236000.00",
+        "ar_open": "472000.00",
+        "entity_id": 7,
+        "entity_name": "Phase2B3B small Large Tenant",
+        "purchase_invoices": 500,
+        "sales_invoices": 1000
+      }
+    ]
+  },
+  "password_logged": false,
+  "password_source": "FINACC_PERF_AUTH_PASSWORD",
+  "targets": [
+    {
+      "action": "would_provision",
+      "customer_account_id": 1,
+      "email": "perf-api-small@local.invalid",
+      "entity_id": 5,
+      "entity_name": "Phase2B3B small Small Tenant",
+      "entityfinid": 5,
+      "permission_count": 283,
+      "subentity_id": 5
+    },
+    {
+      "action": "would_provision",
+      "customer_account_id": 2,
+      "email": "perf-api-medium@local.invalid",
+      "entity_id": 6,
+      "entity_name": "Phase2B3B small Medium Tenant",
+      "entityfinid": 6,
+      "permission_count": 283,
+      "subentity_id": 6
+    },
+    {
+      "action": "would_provision",
+      "customer_account_id": 3,
+      "email": "perf-api-large@local.invalid",
+      "entity_id": 7,
+      "entity_name": "Phase2B3B small Large Tenant",
+      "entityfinid": 7,
+      "permission_count": 283,
+      "subentity_id": 7
+    }
+  ]
+}

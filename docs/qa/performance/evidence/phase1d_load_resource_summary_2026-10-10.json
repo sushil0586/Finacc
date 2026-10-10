@@ -1,0 +1,237 @@
+{
+  "1u_1m": {
+    "locust": {
+      "reports/financial/daybook [get]": {
+        "req": 1,
+        "fail": 0,
+        "avg": 472.5,
+        "p50": "470",
+        "p95": "470",
+        "p99": "470",
+        "max": 472.5,
+        "bytes": 35533.0
+      },
+      "reports/payables/vendor-outstanding [summary]": {
+        "req": 3,
+        "fail": 0,
+        "avg": 1107.8,
+        "p50": "1100",
+        "p95": "1200",
+        "p99": "1200",
+        "max": 1163.7,
+        "bytes": 312602.0
+      },
+      "reports/receivables/aging [summary]": {
+        "req": 1,
+        "fail": 0,
+        "avg": 1449.2,
+        "p50": "1400",
+        "p95": "1400",
+        "p99": "1400",
+        "max": 1449.2,
+        "bytes": 157692.0
+      },
+      "Aggregated": {
+        "req": 29,
+        "fail": 0,
+        "avg": 334.6,
+        "p50": "130",
+        "p95": "1200",
+        "p99": "1400",
+        "max": 1449.2,
+        "bytes": 211967.3
+      }
+    },
+    "resources": {
+      "samples": 173,
+      "app": {
+        "max_rss_mb": 261.8,
+        "min_rss_mb": 22.6,
+        "max_cpu_pct_per_process": 72.3,
+        "process_samples": 144
+      },
+      "loadgen": {
+        "max_rss_mb": 79.3,
+        "min_rss_mb": 66.3,
+        "max_cpu_pct_per_process": 11.7,
+        "process_samples": 29
+      },
+      "max_pg_total_connections": 2.0,
+      "max_pg_active_connections": 2.0,
+      "max_pg_idle_in_txn": 0.0,
+      "max_pg_waiting_connections": 1.0,
+      "max_pg_oldest_active_seconds": 0.106,
+      "max_pg_locks_not_granted": 0.0
+    }
+  },
+  "5u_2m": {
+    "locust": {
+      "reports/financial/daybook [get]": {
+        "req": 11,
+        "fail": 0,
+        "avg": 326.0,
+        "p50": "270",
+        "p95": "660",
+        "p99": "660",
+        "max": 658.4,
+        "bytes": 35533.0
+      },
+      "reports/payables/vendor-outstanding [summary]": {
+        "req": 5,
+        "fail": 0,
+        "avg": 1077.2,
+        "p50": "1100",
+        "p95": "1200",
+        "p99": "1200",
+        "max": 1154.8,
+        "bytes": 312602.0
+      },
+      "reports/receivables/aging [invoice]": {
+        "req": 11,
+        "fail": 0,
+        "avg": 1869.6,
+        "p50": "1800",
+        "p95": "2300",
+        "p99": "2300",
+        "max": 2255.7,
+        "bytes": 201860.0
+      },
+      "reports/receivables/aging [summary]": {
+        "req": 12,
+        "fail": 0,
+        "avg": 1464.0,
+        "p50": "1500",
+        "p95": "1600",
+        "p99": "1600",
+        "max": 1589.6,
+        "bytes": 157692.0
+      },
+      "reports/receivables/open-items [get]": {
+        "req": 8,
+        "fail": 0,
+        "avg": 1611.4,
+        "p50": "1600",
+        "p95": "2000",
+        "p99": "2000",
+        "max": 2016.2,
+        "bytes": 152261.0
+      },
+      "Aggregated": {
+        "req": 272,
+        "fail": 0,
+        "avg": 353.1,
+        "p50": "110",
+        "p95": "1600",
+        "p99": "2000",
+        "max": 2255.7,
+        "bytes": 228805.0
+      }
+    },
+    "resources": {
+      "samples": 330,
+      "app": {
+        "max_rss_mb": 293.6,
+        "min_rss_mb": 22.6,
+        "max_cpu_pct_per_process": 98.4,
+        "process_samples": 272
+      },
+      "loadgen": {
+        "max_rss_mb": 91.3,
+        "min_rss_mb": 66.8,
+        "max_cpu_pct_per_process": 11.6,
+        "process_samples": 58
+      },
+      "max_pg_total_connections": 4.0,
+      "max_pg_active_connections": 3.0,
+      "max_pg_idle_in_txn": 1.0,
+      "max_pg_waiting_connections": 3.0,
+      "max_pg_oldest_active_seconds": 0.016,
+      "max_pg_locks_not_granted": 0.0
+    }
+  },
+  "10u_3m": {
+    "locust": {
+      "reports/financial/daybook [get]": {
+        "req": 42,
+        "fail": 0,
+        "avg": 284.9,
+        "p50": "250",
+        "p95": "430",
+        "p99": "630",
+        "max": 632.6,
+        "bytes": 35533.0
+      },
+      "reports/payables/vendor-outstanding [summary]": {
+        "req": 34,
+        "fail": 0,
+        "avg": 1114.1,
+        "p50": "1100",
+        "p95": "1300",
+        "p99": "1400",
+        "max": 1364.3,
+        "bytes": 312602.0
+      },
+      "reports/receivables/aging [invoice]": {
+        "req": 22,
+        "fail": 0,
+        "avg": 1885.8,
+        "p50": "1800",
+        "p95": "2100",
+        "p99": "2300",
+        "max": 2300.5,
+        "bytes": 201860.0
+      },
+      "reports/receivables/aging [summary]": {
+        "req": 41,
+        "fail": 0,
+        "avg": 1550.6,
+        "p50": "1500",
+        "p95": "2100",
+        "p99": "2500",
+        "max": 2547.7,
+        "bytes": 157692.0
+      },
+      "reports/receivables/open-items [get]": {
+        "req": 21,
+        "fail": 0,
+        "avg": 1591.1,
+        "p50": "1600",
+        "p95": "1700",
+        "p99": "2400",
+        "max": 2439.4,
+        "bytes": 152261.0
+      },
+      "Aggregated": {
+        "req": 783,
+        "fail": 0,
+        "avg": 378.1,
+        "p50": "110",
+        "p95": "1600",
+        "p99": "2000",
+        "max": 2547.7,
+        "bytes": 233343.7
+      }
+    },
+    "resources": {
+      "samples": 470,
+      "app": {
+        "max_rss_mb": 296.9,
+        "min_rss_mb": 12.4,
+        "max_cpu_pct_per_process": 99.7,
+        "process_samples": 384
+      },
+      "loadgen": {
+        "max_rss_mb": 100.2,
+        "min_rss_mb": 66.7,
+        "max_cpu_pct_per_process": 8.6,
+        "process_samples": 86
+      },
+      "max_pg_total_connections": 6.0,
+      "max_pg_active_connections": 4.0,
+      "max_pg_idle_in_txn": 1.0,
+      "max_pg_waiting_connections": 3.0,
+      "max_pg_oldest_active_seconds": 0.111,
+      "max_pg_locks_not_granted": 0.0
+    }
+  }
+}

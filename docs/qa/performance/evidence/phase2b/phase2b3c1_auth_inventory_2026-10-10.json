@@ -1,0 +1,14 @@
+368 objects imported automatically (use -v 2 for details).
+
+{
+  "users": [
+    {
+      "id": 1,
+      "email": "perf-fixture@local.invalid",
+      "username": "perf-fixture",
+      "is_active": true,
+      "last_login": null
+    }
+  ],
+  "access": []
+}

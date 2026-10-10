@@ -640,6 +640,145 @@ def open_item_vendor_summary(*, entity_id, entityfin_id, subentity_id, upto_date
     return summary
 
 
+def open_item_vendor_outstanding_summary(
+    *,
+    entity_id,
+    entityfin_id,
+    subentity_id,
+    upto_date,
+    vendor_ids=None,
+    aging_basis="due_date",
+    doc_types=None,
+):
+    """Aggregate vendor outstanding report buckets database-side for summary mode."""
+    if vendor_ids is not None and not list(vendor_ids):
+        return {}
+
+    use_stored_balances = upto_date >= timezone.localdate()
+    reference_expr = "COALESCE(oi.due_date, oi.bill_date)" if aging_basis == "due_date" else "oi.bill_date"
+    where_parts = [
+        "oi.entity_id = %s",
+        "oi.entityfinid_id = %s",
+        "oi.bill_date <= %s",
+        "hdr.status <> %s",
+    ]
+    params = [entity_id, entityfin_id, upto_date, PurchaseInvoiceHeader.Status.CANCELLED]
+
+    if use_stored_balances:
+        where_parts.append("oi.is_open = TRUE")
+    if subentity_id is not None:
+        where_parts.append("(oi.subentity_id = %s OR oi.subentity_id IS NULL)")
+        params.append(subentity_id)
+    if vendor_ids:
+        vendor_ids_list = list(vendor_ids)
+        placeholders = ", ".join(["%s"] * len(vendor_ids_list))
+        where_parts.append(f"oi.vendor_id IN ({placeholders})")
+        params.extend(vendor_ids_list)
+    if doc_types:
+        doc_types_list = list(doc_types)
+        placeholders = ", ".join(["%s"] * len(doc_types_list))
+        where_parts.append(f"hdr.doc_type IN ({placeholders})")
+        params.extend(doc_types_list)
+
+    if use_stored_balances:
+        balance_sql = "COALESCE(oi.outstanding_amount, 0)"
+        settle_join_sql = ""
+        settle_params = []
+    else:
+        settle_filter_parts = [
+            "st.status = %s",
+            "st.settlement_date <= %s",
+            "st.entity_id = %s",
+        ]
+        settle_params = [VendorSettlement.Status.POSTED, upto_date, entity_id]
+        if entityfin_id:
+            settle_filter_parts.append("st.entityfinid_id = %s")
+            settle_params.append(entityfin_id)
+        if subentity_id is not None:
+            settle_filter_parts.append("(st.subentity_id = %s OR st.subentity_id IS NULL)")
+            settle_params.append(subentity_id)
+        balance_sql = f"""
+            (oi.original_amount - COALESCE(SUM(
+                CASE WHEN {" AND ".join(settle_filter_parts)} THEN sl.applied_amount_signed ELSE 0 END
+            ), 0))
+        """
+        settle_join_sql = """
+            LEFT JOIN purchase_vendorsettlementline sl ON sl.open_item_id = oi.id
+            LEFT JOIN purchase_vendorsettlement st ON st.id = sl.settlement_id
+        """
+
+    sql = f"""
+        SELECT
+            vendor_id,
+            COALESCE(SUM(CASE WHEN outstanding_asof > 0 THEN outstanding_asof ELSE 0 END), 0) AS positive_outstanding,
+            COALESCE(SUM(CASE WHEN outstanding_asof < 0 THEN ABS(outstanding_asof) ELSE 0 END), 0) AS credit_balance,
+            COALESCE(SUM(CASE WHEN outstanding_asof > 0 AND reference_date > %s THEN outstanding_asof ELSE 0 END), 0) AS not_due,
+            COALESCE(SUM(CASE WHEN outstanding_asof > 0 AND reference_date <= %s THEN outstanding_asof ELSE 0 END), 0) AS overdue_amount,
+            COALESCE(SUM(CASE WHEN outstanding_asof > 0 AND reference_date < %s AND reference_date >= %s THEN outstanding_asof ELSE 0 END), 0) AS bucket_0_30,
+            COALESCE(SUM(CASE WHEN outstanding_asof > 0 AND reference_date < %s AND reference_date >= %s THEN outstanding_asof ELSE 0 END), 0) AS bucket_31_60,
+            COALESCE(SUM(CASE WHEN outstanding_asof > 0 AND reference_date < %s AND reference_date >= %s THEN outstanding_asof ELSE 0 END), 0) AS bucket_61_90,
+            COALESCE(SUM(CASE WHEN outstanding_asof > 0 AND reference_date < %s AND reference_date >= %s THEN outstanding_asof ELSE 0 END), 0) AS bucket_91_180,
+            COALESCE(SUM(CASE WHEN outstanding_asof > 0 AND reference_date < %s THEN outstanding_asof ELSE 0 END), 0) AS bucket_181_plus,
+            MIN(CASE WHEN outstanding_asof > 0 AND reference_date <= %s THEN reference_date ELSE NULL END) AS oldest_due_date
+        FROM (
+            SELECT
+                oi.id,
+                oi.vendor_id,
+                {reference_expr} AS reference_date,
+                {balance_sql} AS outstanding_asof
+            FROM purchase_vendorbillopenitem oi
+            INNER JOIN purchase_purchaseinvoiceheader hdr ON hdr.id = oi.header_id
+            {settle_join_sql}
+            WHERE {" AND ".join(where_parts)}
+            GROUP BY oi.id
+        ) vendor_items
+        GROUP BY vendor_id
+    """
+    bucket_params = [
+        upto_date,
+        upto_date,
+        upto_date,
+        upto_date - timedelta(days=30),
+        upto_date - timedelta(days=30),
+        upto_date - timedelta(days=60),
+        upto_date - timedelta(days=60),
+        upto_date - timedelta(days=90),
+        upto_date - timedelta(days=90),
+        upto_date - timedelta(days=180),
+        upto_date - timedelta(days=180),
+        upto_date,
+    ]
+    with profile_payables_block(
+        "payables_selector.open_item_vendor_outstanding_summary",
+        entity_id=entity_id,
+        entityfin_id=entityfin_id,
+        subentity_id=subentity_id,
+        vendor_ids_count=len(vendor_ids or []),
+        aging_basis=aging_basis,
+        doc_types_count=len(doc_types or []),
+    ) as state:
+        with connection.cursor() as cursor:
+            cursor.execute(sql, [*bucket_params, *settle_params, *params])
+            rows = cursor.fetchall()
+        if state is not None:
+            state["vendor_row_count"] = len(rows)
+        return {
+            row[0]: {
+                "positive_outstanding": q2(row[1]),
+                "credit_balance": q2(row[2]),
+                "not_due": q2(row[3]),
+                "overdue_amount": q2(row[4]),
+                "bucket_0_30": q2(row[5]),
+                "bucket_31_60": q2(row[6]),
+                "bucket_61_90": q2(row[7]),
+                "bucket_91_180": q2(row[8]),
+                "bucket_181_plus": q2(row[9]),
+                "oldest_due_date": row[10],
+            }
+            for row in rows
+        }
+
+
 def asof_advances(*, entity_id, entityfin_id, subentity_id, upto_date, vendor_ids=None):
     """Return vendor advances with adjusted and outstanding values as of the date."""
     with profile_payables_block(

@@ -1,0 +1,9 @@
+Method,Name,Error,Occurrences
+GET,sales/service-lookup [seed-id],CatchResponseError('Lookup seed fetch failed (401)'),1
+GET,sales/goods-lookup [seed-id],CatchResponseError('Lookup seed fetch failed (401)'),1
+GET,sales/invoices/lookup [list],"CatchResponseError('401: {""detail"":""Authentication credentials were not provided.""}')",2
+GET,purchase/purchase-service-invoices/lookup [list],"CatchResponseError('401: {""detail"":""Authentication credentials were not provided.""}')",1
+GET,purchase/purchase-invoices/lookup [list],"CatchResponseError('401: {""detail"":""Authentication credentials were not provided.""}')",5
+POST,auth/login,"CatchResponseError('Login failed (403): {""detail"":""Invalid credentials."",""code"":""invalid_credentials"",""message"":""Invalid credentials.""}')",1
+GET,purchase/goods-lookup [seed-id],CatchResponseError('Purchase lookup seed fetch failed (401)'),1
+GET,sales/service-invoices/lookup [list],"CatchResponseError('401: {""detail"":""Authentication credentials were not provided.""}')",2

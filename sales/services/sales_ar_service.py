@@ -65,6 +65,7 @@ class SalesArService:
         entity_id: int,
         entityfinid_id: int,
         subentity_id: Optional[int],
+        customer_id: Optional[int] = None,
         upto_date: date,
     ) -> tuple[Dict[int, Decimal], Dict[int, date]]:
         qs = CustomerSettlementLine.objects.filter(
@@ -77,6 +78,8 @@ class SalesArService:
             qs = qs.filter(settlement__subentity__isnull=True)
         else:
             qs = qs.filter(settlement__subentity_id=subentity_id)
+        if customer_id is not None:
+            qs = qs.filter(settlement__customer_id=customer_id)
         rows = qs.values("open_item_id").annotate(
             applied=Sum("applied_amount_signed"),
             last_settled_at=Max("settlement__settlement_date"),
@@ -92,6 +95,7 @@ class SalesArService:
         entity_id: int,
         entityfinid_id: int,
         subentity_id: Optional[int],
+        customer_id: Optional[int] = None,
         upto_date: date,
     ) -> tuple[Dict[int, Decimal], Dict[int, date]]:
         qs = CustomerSettlement.objects.filter(
@@ -105,6 +109,8 @@ class SalesArService:
             qs = qs.filter(subentity__isnull=True)
         else:
             qs = qs.filter(subentity_id=subentity_id)
+        if customer_id is not None:
+            qs = qs.filter(customer_id=customer_id)
         rows = qs.values("advance_balance_id").annotate(
             applied=Sum("total_amount"),
             last_adjusted_at=Max("settlement_date"),
@@ -744,12 +750,14 @@ class SalesArService:
                 entity_id=entity_id,
                 entityfinid_id=entityfinid_id,
                 subentity_id=subentity_id,
+                customer_id=customer_id,
                 upto_date=as_of,
             )
             advance_map, last_adjusted_map = SalesArService._advance_adjustment_maps(
                 entity_id=entity_id,
                 entityfinid_id=entityfinid_id,
                 subentity_id=subentity_id,
+                customer_id=customer_id,
                 upto_date=as_of,
             )
 

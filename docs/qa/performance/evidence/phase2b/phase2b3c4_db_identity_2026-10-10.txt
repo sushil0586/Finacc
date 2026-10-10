@@ -1,0 +1,5 @@
+ current_database  | inet_server_addr |      preload       | track 
+-------------------+------------------+--------------------+-------
+ finacc_perf_local |                  | pg_stat_statements | all
+(1 row)
+
