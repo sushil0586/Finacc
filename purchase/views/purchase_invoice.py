@@ -56,6 +56,13 @@ class PurchaseInvoiceListCreateAPIView(generics.ListCreateAPIView):
     def _parse_page_window(self):
         raw_page = self.request.query_params.get("page")
         raw_page_size = self.request.query_params.get("page_size")
+        raw_limit = self.request.query_params.get("limit")
+        if (raw_page in (None, "", "null") or raw_page_size in (None, "", "null")) and raw_limit not in (None, "", "null"):
+            try:
+                limit = max(1, min(int(raw_limit), 250))
+            except (TypeError, ValueError):
+                return None
+            return 0, limit
         if raw_page in (None, "", "null") or raw_page_size in (None, "", "null"):
             return None
         try:

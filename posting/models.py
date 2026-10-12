@@ -267,17 +267,12 @@ class JournalLine(models.Model):
             ),
         ]
         indexes = [
-            Index(fields=["entity", "txn_type", "txn_id"], name="ix_jl_locator"),
             Index(fields=["entity", "txn_type", "txn_id", "detail_id"], name="ix_jl_locator_line"),
             Index(fields=["entity", "posting_date"], name="ix_jl_entity_postdate"),
             Index(fields=["entity", "entityfin", "subentity", "posting_date"], name="ix_jl_scope_postdt"),
             Index(fields=["entity", "ledger", "posting_date"], name="ix_jl_ent_ledger_dt"),
             Index(fields=["entity", "account", "posting_date"], name="ix_jl_ent_acct_dt"),
             Index(fields=["entity", "accounthead", "posting_date"], name="ix_jl_ent_head_dt"),
-            Index(fields=["account"], name="ix_jl_posting_account"),
-            Index(fields=["ledger"], name="ix_jl_posting_ledger"),
-            Index(fields=["accounthead"], name="ix_jl_head"),
-            Index(fields=["posting_batch"], name="ix_jl_batch"),
         ]
 
     def __str__(self) -> str:

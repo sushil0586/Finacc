@@ -22,6 +22,7 @@ from reports.services.payables import (
 from reports.services.payables_config import PAYABLE_REPORT_DEFAULTS, get_payables_report_config, resolve_report_columns
 from reports.services.payables_meta import build_payables_report_meta
 from reports.services.payables_perf import profile_payables_block
+from reports.services.report_response_cache import get_or_build_report_response
 from reports.services.report_preferences import list_user_report_preferences
 from reports.selectors.financial import resolve_scope_names
 from rbac.services import EffectivePermissionService
@@ -243,6 +244,15 @@ class VendorOutstandingReportAPIView(_BasePayableAPIView):
     def get(self, request):
         scope = self.get_scope(request)
         self.assert_report_permission(request, scope, "vendor_outstanding")
+        response, _cached = get_or_build_report_response(
+            request,
+            report_code=f"vendor_outstanding:{scope.get('view') or 'summary'}",
+            entity_id=scope["entity"],
+            builder=lambda: self._build_response(scope, request),
+        )
+        return Response(response)
+
+    def _build_response(self, scope, request):
         data = build_vendor_outstanding_report(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -278,8 +288,7 @@ class VendorOutstandingReportAPIView(_BasePayableAPIView):
             include_trace=scope.get("include_trace", True),
             user=request.user,
         )
-        return Response(
-            self.build_envelope(
+        return self.build_envelope(
                 report_code="vendor_outstanding",
                 report_name="Vendor Outstanding Report",
                 payload=data,
@@ -287,7 +296,6 @@ class VendorOutstandingReportAPIView(_BasePayableAPIView):
                 request=request,
                 export_base_path="/api/reports/payables/vendor-outstanding/",
             )
-        )
 
 
 class ApAgingReportAPIView(_BasePayableAPIView):

@@ -7,7 +7,7 @@ from django.db.models.functions import Coalesce
 
 from posting.common.static_accounts import StaticAccountCodes
 from posting.models import EntryStatus, EntityStaticAccountMap, JournalLine, TxnType
-from purchase.models import PurchaseInvoiceHeader
+from purchase.models import PurchaseInvoiceHeader, PurchaseTaxSummary
 from sales.models import SalesInvoiceHeader
 
 from reports.gstr3b.selectors import Gstr3bScope, parse_scope_params
@@ -190,7 +190,38 @@ def _sum_purchase_itc_buckets(qs) -> tuple[dict, dict]:
     available = {"taxable": ZERO, "cgst": ZERO, "sgst": ZERO, "igst": ZERO, "cess": ZERO}
     reversed_ = {"taxable": ZERO, "cgst": ZERO, "sgst": ZERO, "igst": ZERO, "cess": ZERO}
 
-    for header in qs.prefetch_related("tax_summaries"):
+    split_header_ids_qs = PurchaseTaxSummary.objects.filter(
+        header_id__in=qs.values("id"),
+    ).filter(
+        Q(itc_eligible_tax__gt=ZERO) | Q(itc_ineligible_tax__gt=ZERO)
+    ).values_list("header_id", flat=True).distinct()
+    split_header_ids = list(split_header_ids_qs)
+    simple_headers = qs.exclude(id__in=split_header_ids) if split_header_ids else qs
+    for eligible, target in ((True, available), (False, reversed_)):
+        row = _sum_dict(
+            simple_headers.filter(is_itc_eligible=eligible),
+            ["total_taxable", "total_cgst", "total_sgst", "total_igst", "total_cess"],
+        )
+        target["taxable"] += row["total_taxable"]
+        target["cgst"] += row["total_cgst"]
+        target["sgst"] += row["total_sgst"]
+        target["igst"] += row["total_igst"]
+        target["cess"] += row["total_cess"]
+
+    if not split_header_ids:
+        return _bucket(available), _bucket(reversed_)
+
+    for header in qs.filter(id__in=split_header_ids).only(
+        "id",
+        "doc_type",
+        "is_itc_eligible",
+        "total_taxable",
+        "total_cgst",
+        "total_sgst",
+        "total_igst",
+        "total_cess",
+        "total_gst",
+    ).prefetch_related("tax_summaries"):
         sign = Decimal("-1.00") if int(getattr(header, "doc_type", 0)) == int(PurchaseInvoiceHeader.DocType.CREDIT_NOTE) else Decimal("1.00")
         summaries = list(header.tax_summaries.all())
         eligible_tax = sum((Decimal(getattr(row, "itc_eligible_tax", ZERO) or ZERO) for row in summaries), ZERO)
@@ -224,23 +255,39 @@ def _sum_purchase_itc_buckets(qs) -> tuple[dict, dict]:
 
 def _sum_reverse_charge_buckets(qs) -> dict:
     total = {"taxable": ZERO, "cgst": ZERO, "sgst": ZERO, "igst": ZERO, "cess": ZERO}
+    summary_header_ids = list(
+        PurchaseTaxSummary.objects.filter(
+            header_id__in=qs.values("id"),
+            is_reverse_charge=True,
+        ).values_list("header_id", flat=True).distinct()
+    )
 
-    for header in qs.prefetch_related("tax_summaries"):
-        sign = Decimal("-1.00") if int(getattr(header, "doc_type", 0)) == int(PurchaseInvoiceHeader.DocType.CREDIT_NOTE) else Decimal("1.00")
-        summaries = [row for row in header.tax_summaries.all() if bool(getattr(row, "is_reverse_charge", False))]
-        if summaries:
-            total["taxable"] += sum((Decimal(getattr(row, "taxable_value", ZERO) or ZERO) for row in summaries), ZERO) * sign
-            total["cgst"] += sum((Decimal(getattr(row, "cgst_amount", ZERO) or ZERO) for row in summaries), ZERO) * sign
-            total["sgst"] += sum((Decimal(getattr(row, "sgst_amount", ZERO) or ZERO) for row in summaries), ZERO) * sign
-            total["igst"] += sum((Decimal(getattr(row, "igst_amount", ZERO) or ZERO) for row in summaries), ZERO) * sign
-            total["cess"] += sum((Decimal(getattr(row, "cess_amount", ZERO) or ZERO) for row in summaries), ZERO) * sign
-            continue
+    sign = Case(
+        When(header__doc_type=PurchaseInvoiceHeader.DocType.CREDIT_NOTE, then=Value(Decimal("-1.00"))),
+        default=Value(Decimal("1.00")),
+        output_field=DecimalField(max_digits=5, decimal_places=2),
+    )
+    if summary_header_ids:
+        summary_row = PurchaseTaxSummary.objects.filter(
+            header_id__in=summary_header_ids,
+            is_reverse_charge=True,
+        ).aggregate(
+            taxable=Coalesce(Sum(ExpressionWrapper(F("taxable_value") * sign, output_field=SUM_OUTPUT), output_field=SUM_OUTPUT), Value(ZERO)),
+            cgst=Coalesce(Sum(ExpressionWrapper(F("cgst_amount") * sign, output_field=SUM_OUTPUT), output_field=SUM_OUTPUT), Value(ZERO)),
+            sgst=Coalesce(Sum(ExpressionWrapper(F("sgst_amount") * sign, output_field=SUM_OUTPUT), output_field=SUM_OUTPUT), Value(ZERO)),
+            igst=Coalesce(Sum(ExpressionWrapper(F("igst_amount") * sign, output_field=SUM_OUTPUT), output_field=SUM_OUTPUT), Value(ZERO)),
+            cess=Coalesce(Sum(ExpressionWrapper(F("cess_amount") * sign, output_field=SUM_OUTPUT), output_field=SUM_OUTPUT), Value(ZERO)),
+        )
+        for key in total:
+            total[key] += summary_row[key] or ZERO
 
-        total["taxable"] += Decimal(getattr(header, "total_taxable", ZERO) or ZERO) * sign
-        total["cgst"] += Decimal(getattr(header, "total_cgst", ZERO) or ZERO) * sign
-        total["sgst"] += Decimal(getattr(header, "total_sgst", ZERO) or ZERO) * sign
-        total["igst"] += Decimal(getattr(header, "total_igst", ZERO) or ZERO) * sign
-        total["cess"] += Decimal(getattr(header, "total_cess", ZERO) or ZERO) * sign
+    fallback_headers = qs.exclude(id__in=summary_header_ids) if summary_header_ids else qs
+    fallback_row = _sum_dict(fallback_headers, ["total_taxable", "total_cgst", "total_sgst", "total_igst", "total_cess"])
+    total["taxable"] += fallback_row["total_taxable"]
+    total["cgst"] += fallback_row["total_cgst"]
+    total["sgst"] += fallback_row["total_sgst"]
+    total["igst"] += fallback_row["total_igst"]
+    total["cess"] += fallback_row["total_cess"]
 
     return _bucket(total)
 

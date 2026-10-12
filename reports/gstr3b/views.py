@@ -15,6 +15,7 @@ from reports.gstr3b.serializers import Gstr3bSummarySerializer, Gstr3bValidation
 from reports.gstr3b.services import Gstr3bSummaryService
 from reports.gst_portal.services import GstPortalService
 from reports.schemas.common import build_report_envelope
+from reports.services.report_response_cache import get_or_build_report_response
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
@@ -40,7 +41,15 @@ class Gstr3bSummaryAPIView(ScopedEntitlementMixin, APIView):
             return Response(exc.message_dict, status=400)
         self.enforce_scope(request, entity_id=scope.entity_id, entityfinid_id=scope.entityfinid_id, subentity_id=scope.subentity_id)
         current_permissions = self.enforce_report_permission(request, entity_id=scope.entity_id)
+        response, _cached = get_or_build_report_response(
+            request,
+            report_code="gstr3b-summary",
+            entity_id=scope.entity_id,
+            builder=lambda: self._build_summary_response(service, request, scope, current_permissions),
+        )
+        return Response(response)
 
+    def _build_summary_response(self, service, request, scope, current_permissions):
         payload = {
             "summary": Gstr3bSummarySerializer(service.build(scope)).data,
         }
@@ -75,7 +84,7 @@ class Gstr3bSummaryAPIView(ScopedEntitlementMixin, APIView):
         response["actions"]["can_export_excel"] = can_export
         response["actions"]["can_export_pdf"] = False
         response["actions"]["can_export_csv"] = can_export
-        return Response(response)
+        return response
 
 
 class Gstr3bMetaAPIView(ScopedEntitlementMixin, APIView):

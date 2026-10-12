@@ -173,8 +173,6 @@ class CustomerSettlementLine(TrackingModel):
             models.UniqueConstraint(fields=("settlement", "open_item"), name="uq_sales_ar_settleline_settlement_openitem"),
         ]
         indexes = [
-            models.Index(fields=["settlement"], name="ix_sales_stl_settle"),
-            models.Index(fields=["open_item"], name="ix_sales_stl_open"),
             models.Index(fields=["open_item", "settlement"], name="ix_sales_stl_oi_set"),
         ]
 

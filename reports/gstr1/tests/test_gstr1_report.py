@@ -4,8 +4,9 @@ from datetime import datetime
 from decimal import Decimal
 from unittest.mock import patch
 
-from django.db import IntegrityError
+from django.db import IntegrityError, connection
 from django.test import override_settings
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied
@@ -19,6 +20,7 @@ from financial.models import Ledger, account, accountHead, accounttype
 from financial.services import apply_normalized_profile_payload, create_account_with_synced_ledger
 from geography.models import City, Country, District, State
 from posting.models import Entry, EntryStatus, TxnType
+from reports.gstr1.services.validation import Gstr1ValidationService
 from sales.models import (
     SalesAdvanceAdjustment,
     SalesChargeLine,
@@ -637,6 +639,65 @@ class Gstr1ReportAPITests(APITestCase):
         self.assertIn("readiness", payload)
         self.assertEqual(payload["readiness"]["status"]["code"], "blocked")
         self.assertGreaterEqual(len(payload["readiness"]["validation_groups"]), 1)
+
+    def test_validation_header_rows_cache_is_scoped_and_single_query(self):
+        own_invoice = self._create_sales_document(customer=self.customer_alpha, invoice_number="OWN-GSTR1-001")
+        other_entity = Entity.objects.create(
+            entityname="Other GST Entity",
+            legalname="Other GST Entity Pvt Ltd",
+            GstRegitrationType=self.gst_type,
+            createdby=self.user,
+        )
+        other_subentity = SubEntity.objects.create(entity=other_entity, subentityname="Other Branch")
+        other_fin = EntityFinancialYear.objects.create(
+            entity=other_entity,
+            desc="FY Other 2025-26",
+            finstartyear=self.entityfin.finstartyear,
+            finendyear=self.entityfin.finendyear,
+            createdby=self.user,
+        )
+        SalesInvoiceHeader.objects.create(
+            entity=other_entity,
+            entityfinid=other_fin,
+            subentity=other_subentity,
+            customer=self.customer_alpha,
+            customer_name="Other Customer",
+            customer_gstin="27ABCDE1234F1Z5",
+            seller_gstin="27AAAAA1111A1Z1",
+            doc_type=SalesInvoiceHeader.DocType.TAX_INVOICE,
+            status=SalesInvoiceHeader.Status.POSTED,
+            bill_date="2025-04-05",
+            posting_date="2025-04-05",
+            doc_code="SINV",
+            doc_no=9001,
+            invoice_number="OTHER-GSTR1-001",
+            supply_category=SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B,
+            taxability=SalesInvoiceHeader.Taxability.TAXABLE,
+            tax_regime=SalesInvoiceHeader.TaxRegime.INTRA_STATE,
+            place_of_supply_state_code="27",
+            seller_state_code="27",
+            total_taxable_value=Decimal("100.00"),
+            total_cgst=Decimal("9.00"),
+            total_sgst=Decimal("9.00"),
+            grand_total=Decimal("118.00"),
+        )
+        base_queryset = SalesInvoiceHeader.objects.filter(
+            entity=self.entity,
+            entityfinid=self.entityfin,
+            subentity=self.subentity,
+        )
+        service = Gstr1ValidationService(base_queryset=base_queryset)
+
+        with CaptureQueriesContext(connection) as captured:
+            first_rows = service._header_rows()
+            second_rows = service._header_rows()
+
+        self.assertEqual(first_rows, second_rows)
+        self.assertEqual([row["id"] for row in first_rows], [own_invoice.id])
+        self.assertEqual(
+            sum(1 for query in captured if 'FROM "sales_invoice_header"' in query["sql"]),
+            1,
+        )
 
     def test_b2cl_threshold_boundary(self):
         self._create_sales_document(

@@ -44,6 +44,21 @@ class Gstr1ReportService:
             "nil_exempt_summary": summary_service.nil_exempt_summary(),
         }
 
+    def readiness_summary(self, scope, smart_filters=None):
+        qs = self.scoped_queryset(scope)
+        qs = apply_smart_filters(qs, smart_filters)
+        section_totals = Gstr1SummaryService(base_queryset=qs).build_section_totals()
+        return {
+            "sections": [
+                {
+                    "section": code,
+                    "label": SECTION_LABELS.get(code, code),
+                    **section_totals[code],
+                }
+                for code in Gstr1ClassificationService.section_codes()
+            ],
+        }
+
     def section(self, scope, section_code, smart_filters=None):
         section_code = (section_code or "").upper()
         if section_code not in Gstr1ClassificationService.section_codes():
@@ -63,7 +78,7 @@ class Gstr1ReportService:
         return warnings
 
     def readiness(self, scope, *, smart_filters=None, summary=None):
-        summary = summary or self.summary(scope, smart_filters=smart_filters)
+        summary = summary or self.readiness_summary(scope, smart_filters=smart_filters)
         warnings = self.validations(scope, smart_filters=smart_filters)
         return Gstr1ReadinessService().build(warnings=warnings, summary=summary)
 

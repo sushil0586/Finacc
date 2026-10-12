@@ -2003,6 +2003,29 @@ class PurchaseInvoiceViewUnitTests(SimpleTestCase):
         self.assertEqual(response.data, [{"id": 1}])
         mocked_require_permission.assert_not_called()
 
+    @patch("purchase.views.purchase_invoice.require_purchase_request_permission")
+    def test_list_honors_limit_without_changing_array_contract(self, mocked_require_permission):
+        request = self.factory.get("/api/purchase/purchase-invoices/?entity=1&entityfinid=1&limit=100")
+        force_authenticate(request, user=self.user)
+
+        view = PurchaseInvoiceListCreateAPIView()
+        view.request = view.initialize_request(request)
+        queryset = MagicMock(name="purchase-list-queryset")
+        filtered_queryset = MagicMock(name="filtered-purchase-list-queryset")
+        limited_queryset = MagicMock(name="limited-purchase-list-queryset")
+        filtered_queryset.__getitem__.return_value = limited_queryset
+        serializer = SimpleNamespace(data=[{"id": 1}])
+
+        with patch.object(view, "get_queryset", return_value=queryset), patch.object(
+            view, "filter_queryset", return_value=filtered_queryset
+        ), patch.object(view, "get_serializer", return_value=serializer) as mocked_get_serializer:
+            response = view.list(view.request)
+
+        filtered_queryset.__getitem__.assert_called_once_with(slice(0, 100, None))
+        mocked_get_serializer.assert_called_once_with(limited_queryset, many=True)
+        self.assertEqual(response.data, [{"id": 1}])
+        mocked_require_permission.assert_not_called()
+
     def test_nav_scope_queryset_uses_exists_for_line_mode_filter(self):
         queryset = PurchaseInvoiceNavService._scope_qs(
             entity_id=1,

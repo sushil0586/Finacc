@@ -221,7 +221,8 @@ WARNING_RULES = {
 
 class Gstr1ReadinessService:
     def build(self, *, warnings: list[dict], summary: dict) -> dict:
-        enriched = [self._enrich_warning(item) for item in warnings]
+        route_map = self._source_document_route_map(warnings)
+        enriched = [self._enrich_warning(item, route_map=route_map) for item in warnings]
         groups = self._group_warnings(enriched)
         status = self._derive_status(groups)
         counts = self._build_counts(groups)
@@ -235,7 +236,7 @@ class Gstr1ReadinessService:
             "warnings": enriched,
         }
 
-    def _enrich_warning(self, warning: dict) -> dict:
+    def _enrich_warning(self, warning: dict, *, route_map: dict[int, str] | None = None) -> dict:
         payload = dict(warning)
         rule = WARNING_RULES.get(payload.get("code"), {})
         group_code = rule.get("group_code", "tax_reconciliation")
@@ -249,13 +250,13 @@ class Gstr1ReadinessService:
         if invoice_id:
             payload["invoice_detail_url"] = f"/api/reports/gstr1/invoice/{invoice_id}/"
             payload["drilldowns"] = {
-                "source_document": self._build_source_document_drilldown(invoice_id=invoice_id),
+                "source_document": self._build_source_document_drilldown(invoice_id=invoice_id, route_map=route_map),
                 "posting_lookup": self._build_posting_lookup_drilldown(invoice_id=invoice_id),
             }
         return payload
 
-    def _build_source_document_drilldown(self, *, invoice_id: int) -> dict:
-        route = self._resolve_source_document_route(invoice_id=invoice_id)
+    def _build_source_document_drilldown(self, *, invoice_id: int, route_map: dict[int, str] | None = None) -> dict:
+        route = (route_map or {}).get(int(invoice_id)) or self._resolve_source_document_route(invoice_id=invoice_id)
         return {
             "target": "sales_invoice_detail",
             "label": "Open source invoice",
@@ -269,6 +270,20 @@ class Gstr1ReadinessService:
     def _resolve_source_document_route(self, *, invoice_id: int) -> str:
         has_service_lines = SalesInvoiceLine.objects.filter(header_id=invoice_id, is_service=True).exists()
         return "/saleserviceinvoice" if has_service_lines else "/saleinvoice"
+
+    def _source_document_route_map(self, warnings: list[dict]) -> dict[int, str]:
+        invoice_ids = sorted({int(item["invoice_id"]) for item in warnings if item.get("invoice_id")})
+        if not invoice_ids:
+            return {}
+        service_invoice_ids = set(
+            SalesInvoiceLine.objects.filter(header_id__in=invoice_ids, is_service=True)
+            .values_list("header_id", flat=True)
+            .distinct()
+        )
+        return {
+            invoice_id: ("/saleserviceinvoice" if invoice_id in service_invoice_ids else "/saleinvoice")
+            for invoice_id in invoice_ids
+        }
 
     def _build_posting_lookup_drilldown(self, *, invoice_id: int) -> dict:
         return {

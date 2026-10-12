@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import random
 import time
 from dataclasses import asdict, dataclass
@@ -65,7 +66,7 @@ class Command(BaseCommand):
         rng = random.Random(int(options["seed"]))
 
         if options["reset_fixture"]:
-            reset = self._reset_fixture(dry_run=options["dry_run"])
+            reset = self._reset_fixture(targets=targets, dry_run=options["dry_run"])
             self._write({"dry_run": options["dry_run"], "reset": reset}, options)
             return
 
@@ -232,6 +233,9 @@ class Command(BaseCommand):
         return acc
 
     def _numbering(self, entity, entityfin, subentity, module, doc_key, doc_code, prefix, actor):
+        if len(doc_key) > 50:
+            digest = hashlib.sha1(doc_key.encode("utf-8")).hexdigest()[:10]
+            doc_key = f"{doc_key[:39]}-{digest}"[:50]
         doc_type, _ = DocumentType.objects.get_or_create(module=module, doc_key=doc_key, defaults={"name": doc_key, "default_code": doc_code, "is_active": True})
         DocumentNumberSeries.objects.get_or_create(
             entity=entity,
@@ -243,15 +247,25 @@ class Command(BaseCommand):
         )
 
     def _seed_tenant(self, *, tenant, target: TenantTarget, batch_size: int, rng: random.Random, payment_ratio: Decimal) -> dict:
-        sales_inserted = self._seed_sales(tenant, target.sales, batch_size, rng, payment_ratio)
-        purchase_inserted = self._seed_purchase(tenant, target.purchase, batch_size, rng, payment_ratio)
-        return {"tenant": target.code, "entity_id": tenant["entity"].id, "sales_inserted": sales_inserted, "purchase_inserted": purchase_inserted}
+        sales_result = self._seed_sales(tenant, target.sales, batch_size, rng, payment_ratio)
+        purchase_result = self._seed_purchase(tenant, target.purchase, batch_size, rng, payment_ratio)
+        return {
+            "tenant": target.code,
+            "entity_id": tenant["entity"].id,
+            "sales_inserted": sales_result["inserted"],
+            "purchase_inserted": purchase_result["inserted"],
+            "sales_batches": sales_result["batches"],
+            "purchase_batches": purchase_result["batches"],
+        }
 
-    def _seed_sales(self, tenant, total: int, batch_size: int, rng: random.Random, payment_ratio: Decimal) -> int:
+    def _seed_sales(self, tenant, total: int, batch_size: int, rng: random.Random, payment_ratio: Decimal) -> dict:
         inserted = 0
-        existing = SalesInvoiceHeader.objects.filter(entity=tenant["entity"], legacy_source_system="phase2b3b").count()
+        batches = []
+        source_system = tenant.get("source_system", "phase2b3b")
+        existing = SalesInvoiceHeader.objects.filter(entity=tenant["entity"], legacy_source_system=source_system).count()
         for start in range(existing + 1, total + 1, batch_size):
             end = min(start + batch_size - 1, total)
+            batch_started = time.perf_counter()
             with transaction.atomic():
                 for n in range(start, end + 1):
                     bill_date = date(2026, 4, 1) + timedelta(days=rng.randrange(180))
@@ -271,7 +285,7 @@ class Command(BaseCommand):
                         settled_amount=paid, outstanding_amount=TOTAL - paid,
                         settlement_status=SalesInvoiceHeader.SettlementStatus.SETTLED if paid == TOTAL else SalesInvoiceHeader.SettlementStatus.OPEN,
                         reference=f"P2B3B-S-{n}", posted_at=timezone.now(), posted_by=tenant["actor"],
-                        legacy_source_system="phase2b3b", legacy_source_key=f"{tenant['target'].code}:sales:{n}",
+                        legacy_source_system=source_system, legacy_source_key=f"{tenant['target'].code}:sales:{n}",
                     )
                     SalesInvoiceLine.objects.create(entity=tenant["entity"], entityfinid=tenant["entityfin"], subentity=tenant["subentity"], header=header, line_no=1, productDesc="Performance service", hsn_sac_code="998311", is_service=True, qty=1, rate=TAXABLE, taxability=SalesInvoiceHeader.Taxability.TAXABLE, gst_rate=18, igst_amount=GST, taxable_value=TAXABLE, line_total=TOTAL, sales_account=tenant["sales"])
                     SalesTaxSummary.objects.create(entity=tenant["entity"], entityfinid=tenant["entityfin"], subentity=tenant["subentity"], header=header, taxability=SalesInvoiceHeader.Taxability.TAXABLE, hsn_sac_code="998311", is_service=True, gst_rate=18, taxable_value=TAXABLE, igst_amount=GST)
@@ -281,13 +295,17 @@ class Command(BaseCommand):
                         CustomerSettlementLine.objects.create(settlement=settlement, open_item=header.ap_open_item, amount=paid, applied_amount_signed=paid)
                     self._post_entry(tenant, TxnType.SALES, header.id, header.invoice_number, bill_date, [(tenant["customer"], True, TOTAL), (tenant["sales"], False, TAXABLE), (tenant["output_igst"], False, GST)])
                     inserted += 1
-        return inserted
+            batches.append({"start": start, "end": end, "inserted": end - start + 1, "elapsed_seconds": round(time.perf_counter() - batch_started, 3)})
+        return {"inserted": inserted, "batches": batches}
 
-    def _seed_purchase(self, tenant, total: int, batch_size: int, rng: random.Random, payment_ratio: Decimal) -> int:
+    def _seed_purchase(self, tenant, total: int, batch_size: int, rng: random.Random, payment_ratio: Decimal) -> dict:
         inserted = 0
-        existing = PurchaseInvoiceHeader.objects.filter(entity=tenant["entity"], legacy_source_system="phase2b3b").count()
+        batches = []
+        source_system = tenant.get("source_system", "phase2b3b")
+        existing = PurchaseInvoiceHeader.objects.filter(entity=tenant["entity"], legacy_source_system=source_system).count()
         for start in range(existing + 1, total + 1, batch_size):
             end = min(start + batch_size - 1, total)
+            batch_started = time.perf_counter()
             with transaction.atomic():
                 for n in range(start, end + 1):
                     bill_date = date(2026, 4, 1) + timedelta(days=rng.randrange(180))
@@ -304,7 +322,7 @@ class Command(BaseCommand):
                         supply_category=PurchaseInvoiceHeader.SupplyCategory.DOMESTIC, default_taxability=PurchaseInvoiceHeader.Taxability.TAXABLE,
                         tax_regime=PurchaseInvoiceHeader.TaxRegime.INTER, is_igst=True, total_taxable=TAXABLE, total_igst=GST, total_gst=GST, grand_total=TOTAL, grand_total_base_currency=TOTAL,
                         posted_at=timezone.now(), posted_by=tenant["actor"], created_by=tenant["actor"],
-                        legacy_source_system="phase2b3b", legacy_source_key=f"{tenant['target'].code}:purchase:{n}",
+                        legacy_source_system=source_system, legacy_source_key=f"{tenant['target'].code}:purchase:{n}",
                     )
                     PurchaseInvoiceLine.objects.create(header=header, line_no=1, purchase_account=tenant["expense"], product_desc="Performance service", is_service=True, hsn_sac="998311", qty=1, rate=TAXABLE, taxability=PurchaseInvoiceHeader.Taxability.TAXABLE, gst_rate=18, igst_percent=18, igst_amount=GST, taxable_value=TAXABLE, line_total=TOTAL)
                     PurchaseTaxSummary.objects.create(header=header, taxability=PurchaseInvoiceHeader.Taxability.TAXABLE, hsn_sac="998311", is_service=True, gst_rate=18, taxable_value=TAXABLE, igst_amount=GST, total_value=TOTAL, itc_eligible_tax=GST)
@@ -314,7 +332,8 @@ class Command(BaseCommand):
                         VendorSettlementLine.objects.create(settlement=settlement, open_item=open_item, amount=paid, applied_amount_signed=paid)
                     self._post_entry(tenant, TxnType.PURCHASE, header.id, header.purchase_number, bill_date, [(tenant["expense"], True, TAXABLE), (tenant["input_igst"], True, GST), (tenant["vendor"], False, TOTAL)])
                     inserted += 1
-        return inserted
+            batches.append({"start": start, "end": end, "inserted": end - start + 1, "elapsed_seconds": round(time.perf_counter() - batch_started, 3)})
+        return {"inserted": inserted, "batches": batches}
 
     def _post_entry(self, tenant, txn_type, txn_id, voucher_no, posting_date, lines):
         batch = PostingBatch.objects.create(entity=tenant["entity"], entityfin=tenant["entityfin"], subentity=tenant["subentity"], txn_type=txn_type, txn_id=txn_id, voucher_no=voucher_no, created_by=tenant["actor"])
@@ -324,8 +343,9 @@ class Command(BaseCommand):
 
     def _validate_tenant(self, tenant) -> dict:
         entity = tenant["entity"]
-        sales = SalesInvoiceHeader.objects.filter(entity=entity, legacy_source_system="phase2b3b")
-        purchase = PurchaseInvoiceHeader.objects.filter(entity=entity, legacy_source_system="phase2b3b")
+        source_system = tenant.get("source_system", "phase2b3b")
+        sales = SalesInvoiceHeader.objects.filter(entity=entity, legacy_source_system=source_system)
+        purchase = PurchaseInvoiceHeader.objects.filter(entity=entity, legacy_source_system=source_system)
         lines = JournalLine.objects.filter(entity=entity, txn_id__in=Entry.objects.filter(entity=entity).values("txn_id"))
         debit = lines.filter(drcr=True).aggregate(v=Sum("amount"))["v"] or ZERO
         credit = lines.filter(drcr=False).aggregate(v=Sum("amount"))["v"] or ZERO
@@ -343,18 +363,26 @@ class Command(BaseCommand):
             "duplicate_purchase_doc_numbers": duplicate_purchase,
         }
 
-    def _reset_fixture(self, *, dry_run: bool) -> dict:
-        sales = SalesInvoiceHeader.objects.filter(legacy_source_system="phase2b3b")
-        purchase = PurchaseInvoiceHeader.objects.filter(legacy_source_system="phase2b3b")
-        entity_ids = set(sales.values_list("entity_id", flat=True)) | set(purchase.values_list("entity_id", flat=True))
-        preview = {"sales_headers": sales.count(), "purchase_headers": purchase.count(), "entities": len(entity_ids)}
+    def _reset_fixture(self, *, targets: list[TenantTarget], dry_run: bool) -> dict:
+        target_labels = [target.label for target in targets]
+        entities = Entity.objects.filter(entityname__in=target_labels)
+        entity_ids = set(entities.values_list("id", flat=True))
+        sales = SalesInvoiceHeader.objects.filter(entity_id__in=entity_ids, legacy_source_system="phase2b3b")
+        purchase = PurchaseInvoiceHeader.objects.filter(entity_id__in=entity_ids, legacy_source_system="phase2b3b")
+        preview = {
+            "profile_scope": [asdict(target) for target in targets],
+            "sales_headers": sales.count(),
+            "purchase_headers": purchase.count(),
+            "entities": len(entity_ids),
+            "entity_ids": sorted(entity_ids),
+        }
         if dry_run:
             return preview
         with transaction.atomic():
             Entry.objects.filter(entity_id__in=entity_ids).delete()
             purchase.delete()
             sales.delete()
-            Entity.objects.filter(id__in=entity_ids, entityname__startswith="Phase2B3B").delete()
+            Entity.objects.filter(id__in=entity_ids, entityname__in=target_labels).delete()
         return preview
 
     def _database_snapshot(self):

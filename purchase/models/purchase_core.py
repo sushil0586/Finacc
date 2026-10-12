@@ -508,9 +508,6 @@ class PurchaseTaxSummary(models.Model):
                 name="uq_pur_taxsum_bucket",
             ),
         ]
-        indexes = [
-            models.Index(fields=["header"], name="ix_pur_taxsum_header"),
-        ]
 
     def __str__(self):
         return f"TaxSummary({self.header_id}, {self.hsn_sac}, {self.gst_rate})"

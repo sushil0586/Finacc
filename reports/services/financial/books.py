@@ -153,6 +153,47 @@ def _invoice_drilldown_route(txn_type: str | None, txn_id: int | None) -> str | 
     return None
 
 
+def _invoice_drilldown_route_maps(entries) -> tuple[dict[int, str], dict[int, str]]:
+    purchase_ids = {
+        int(entry.txn_id)
+        for entry in entries
+        if entry.txn_id
+        and entry.txn_type
+        in {
+            TxnType.PURCHASE,
+            TxnType.PURCHASE_CREDIT_NOTE,
+            TxnType.PURCHASE_DEBIT_NOTE,
+            TxnType.PURCHASE_RETURN,
+        }
+    }
+    sales_ids = {
+        int(entry.txn_id)
+        for entry in entries
+        if entry.txn_id
+        and entry.txn_type
+        in {
+            TxnType.SALES,
+            TxnType.SALES_CREDIT_NOTE,
+            TxnType.SALES_DEBIT_NOTE,
+            TxnType.SALES_RETURN,
+        }
+    }
+    purchase_service_ids = set(
+        PurchaseInvoiceLine.objects.filter(header_id__in=purchase_ids, is_service=True)
+        .values_list("header_id", flat=True)
+        .distinct()
+    ) if purchase_ids else set()
+    sales_service_ids = set(
+        SalesInvoiceLine.objects.filter(header_id__in=sales_ids, is_service=True)
+        .values_list("header_id", flat=True)
+        .distinct()
+    ) if sales_ids else set()
+    return (
+        {invoice_id: ("/purchaseserviceinvoice" if invoice_id in purchase_service_ids else "/purchaseinvoice") for invoice_id in purchase_ids},
+        {invoice_id: ("/saleserviceinvoice" if invoice_id in sales_service_ids else "/saleinvoice") for invoice_id in sales_ids},
+    )
+
+
 def _document_lookup_binding(document_type: str, source_module: str | None):
     document_type = str(document_type or "").strip().lower()
     source_module = str(source_module or "").strip().lower() or None
@@ -460,7 +501,7 @@ def _paginate_queryset(qs, *, page: int, page_size: int):
     }
 
 
-def _drilldown_payload(entry: Entry, *, entity_id, entityfin_id, subentity_id):
+def _drilldown_payload(entry: Entry, *, entity_id, entityfin_id, subentity_id, purchase_route_map=None, sales_route_map=None):
     """Stable drill-down identifiers used by the frontend to open source documents/details."""
     source_module, _ = _txn_source(entry.txn_type)
     drilldown_target = _drilldown_target_for_txn(entry.txn_type)
@@ -491,7 +532,25 @@ def _drilldown_payload(entry: Entry, *, entity_id, entityfin_id, subentity_id):
         "txn_id": entry.txn_id,
         "source_module": source_module,
         "drilldown_target": drilldown_target,
-        "drilldown_route": _invoice_drilldown_route(entry.txn_type, entry.txn_id),
+        "drilldown_route": (
+            (purchase_route_map or {}).get(int(entry.txn_id or 0))
+            if entry.txn_type
+            in {
+                TxnType.PURCHASE,
+                TxnType.PURCHASE_CREDIT_NOTE,
+                TxnType.PURCHASE_DEBIT_NOTE,
+                TxnType.PURCHASE_RETURN,
+            }
+            else (sales_route_map or {}).get(int(entry.txn_id or 0))
+            if entry.txn_type
+            in {
+                TxnType.SALES,
+                TxnType.SALES_CREDIT_NOTE,
+                TxnType.SALES_DEBIT_NOTE,
+                TxnType.SALES_RETURN,
+            }
+            else _invoice_drilldown_route(entry.txn_type, entry.txn_id)
+        ),
         "drilldown_params": drilldown_params,
     }
 
@@ -580,6 +639,7 @@ def build_daybook(
         )
         page_entry_map = {entry.id: entry for entry in page_entries}
         paged["results"] = [page_entry_map[entry_id] for entry_id in page_entry_ids if entry_id in page_entry_map]
+    purchase_route_map, sales_route_map = _invoice_drilldown_route_maps(paged["results"])
     rows = []
     for entry in paged["results"]:
         source_module, voucher_type_name = _txn_source(entry.txn_type)
@@ -606,6 +666,8 @@ def build_daybook(
                     entity_id=entity_id,
                     entityfin_id=entityfin_id,
                     subentity_id=subentity_id,
+                    purchase_route_map=purchase_route_map,
+                    sales_route_map=sales_route_map,
                 ),
             }
         )
@@ -1012,6 +1074,9 @@ def build_cashbook(
         visible_payments[key] += Decimal(line.amount if not line.drcr else ZERO)
         visible_counts[key] += 1
 
+    visible_entries = [line.entry for line in visible_in_range]
+    purchase_route_map, sales_route_map = _invoice_drilldown_route_maps(visible_entries)
+
     running_balance_scope = "account" if len(refs) == 1 else "combined_accounts"
     running_balance_by_line_id = {}
 
@@ -1091,6 +1156,8 @@ def build_cashbook(
                         entity_id=entity_id,
                         entityfin_id=entityfin_id,
                         subentity_id=subentity_id,
+                        purchase_route_map=purchase_route_map,
+                        sales_route_map=sales_route_map,
                     ),
                 }
             )
@@ -1146,6 +1213,8 @@ def build_cashbook(
                         entity_id=entity_id,
                         entityfin_id=entityfin_id,
                         subentity_id=subentity_id,
+                        purchase_route_map=purchase_route_map,
+                        sales_route_map=sales_route_map,
                     ),
                 }
             )

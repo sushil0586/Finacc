@@ -29,6 +29,38 @@ POS_RE = re.compile(r"^[0-9]{2}$")
 class Gstr1ValidationService:
     def __init__(self, *, base_queryset):
         self.base_queryset = base_queryset
+        self._header_rows_cache = None
+
+    def _header_rows(self):
+        if self._header_rows_cache is None:
+            self._header_rows_cache = list(
+                self.base_queryset.values(
+                    "id",
+                    "invoice_number",
+                    "customer_gstin",
+                    "seller_gstin",
+                    "supply_category",
+                    "place_of_supply_state_code",
+                    "seller_state_code",
+                    "tax_regime",
+                    "total_taxable_value",
+                    "total_cgst",
+                    "total_sgst",
+                    "total_igst",
+                    "total_cess",
+                    "grand_total",
+                    "round_off",
+                    "doc_type",
+                    "doc_code",
+                    "taxability",
+                    "status",
+                    "original_invoice_id",
+                    "entity_id",
+                    "entityfinid_id",
+                    "subentity_id",
+                )
+            )
+        return self._header_rows_cache
 
     def run(self) -> list[dict]:
         warnings = []
@@ -224,9 +256,10 @@ class Gstr1ValidationService:
     def _invalid_gstin_warnings(self):
         warnings = []
         checksum_enabled = enable_gstin_checksum()
-        qs = self.base_queryset.exclude(customer_gstin__in=[None, ""])
-        for row in qs.values("id", "invoice_number", "customer_gstin"):
+        for row in self._header_rows():
             gstin = row["customer_gstin"]
+            if not gstin:
+                continue
             if not gstin_format_valid(gstin) or (checksum_enabled and not gstin_valid(gstin, checksum_enabled=True)):
                 warnings.append(
                     _warning(
@@ -241,10 +274,10 @@ class Gstr1ValidationService:
 
     def _invalid_seller_gstin_warnings(self):
         warnings = []
-        qs = self.base_queryset.exclude(seller_gstin__in=[None, ""]).exclude(
-            seller_gstin__regex=GSTIN_RE.pattern
-        )
-        for row in qs.values("id", "invoice_number", "seller_gstin"):
+        for row in self._header_rows():
+            seller_gstin = row.get("seller_gstin")
+            if not seller_gstin or GSTIN_RE.match(str(seller_gstin)):
+                continue
             warnings.append(
                 _warning(
                     code="INVALID_SELLER_GSTIN",
@@ -258,18 +291,12 @@ class Gstr1ValidationService:
         return warnings
 
     def _missing_gstin_warnings(self):
-        b2b_supply = Q(
-            supply_category__in=[
-                SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B,
-                SalesInvoiceHeader.SupplyCategory.SEZ_WITH_IGST,
-                SalesInvoiceHeader.SupplyCategory.SEZ_WITHOUT_IGST,
-                SalesInvoiceHeader.SupplyCategory.DEEMED_EXPORT,
-            ]
-        )
-        checksum = enable_gstin_checksum()
-        qs = self.base_queryset.filter(b2b_supply).filter(
-            Q(customer_gstin__in=[None, ""]) | ~Q(customer_gstin__regex=GSTIN_RE.pattern)
-        )
+        b2b_supply = {
+            SalesInvoiceHeader.SupplyCategory.DOMESTIC_B2B,
+            SalesInvoiceHeader.SupplyCategory.SEZ_WITH_IGST,
+            SalesInvoiceHeader.SupplyCategory.SEZ_WITHOUT_IGST,
+            SalesInvoiceHeader.SupplyCategory.DEEMED_EXPORT,
+        }
         return [
             _warning(
                 code="B2B_GSTIN_REQUIRED",
@@ -279,26 +306,20 @@ class Gstr1ValidationService:
                 field="customer_gstin",
                 severity="warning",
             )
-            for row in qs.values("id", "invoice_number")
+            for row in self._header_rows()
+            if row.get("supply_category") in b2b_supply and not GSTIN_RE.match(str(row.get("customer_gstin") or ""))
         ]
 
     def _duplicate_invoice_warnings(self):
-        duplicates = (
-            self.base_queryset.exclude(invoice_number__in=[None, ""])
-            .exclude(seller_gstin__in=[None, ""])
-            .values("invoice_number", "doc_type", "seller_gstin")
-            .annotate(cnt=Count("id"))
-            .filter(cnt__gt=1)
-        )
-        duplicate_map = {(row["invoice_number"], row["doc_type"], row["seller_gstin"]) for row in duplicates}
-        if not duplicate_map:
+        counts = {}
+        for row in self._header_rows():
+            if not row.get("invoice_number") or not row.get("seller_gstin"):
+                continue
+            key = (row["invoice_number"], row["doc_type"], row["seller_gstin"])
+            counts[key] = counts.get(key, 0) + 1
+        duplicate_keys = {key for key, count in counts.items() if count > 1}
+        if not duplicate_keys:
             return []
-        qs = self.base_queryset.filter(
-            Q(invoice_number__in=[row[0] for row in duplicate_map]),
-            Q(doc_type__in=[row[1] for row in duplicate_map]),
-            Q(seller_gstin__in=[row[2] for row in duplicate_map]),
-        ).values("id", "invoice_number", "doc_type", "seller_gstin")
-        qs = [row for row in qs if (row["invoice_number"], row["doc_type"], row["seller_gstin"]) in duplicate_map]
         return [
             _warning(
                 code="DUPLICATE_INVOICE",
@@ -308,11 +329,11 @@ class Gstr1ValidationService:
                 field="invoice_number",
                 severity="warning",
             )
-            for row in qs
+            for row in self._header_rows()
+            if (row.get("invoice_number"), row.get("doc_type"), row.get("seller_gstin")) in duplicate_keys
         ]
 
     def _missing_place_of_supply_warnings(self):
-        qs = self.base_queryset.filter(place_of_supply_state_code__in=[None, ""])
         return [
             _warning(
                 code="MISSING_PLACE_OF_SUPPLY",
@@ -322,13 +343,11 @@ class Gstr1ValidationService:
                 field="place_of_supply_state_code",
                 severity="warning",
             )
-            for row in qs.values("id", "invoice_number")
+            for row in self._header_rows()
+            if not row.get("place_of_supply_state_code")
         ]
 
     def _invalid_place_of_supply_warnings(self):
-        qs = self.base_queryset.exclude(place_of_supply_state_code__in=[None, ""]).exclude(
-            place_of_supply_state_code__regex=POS_RE.pattern
-        )
         return [
             _warning(
                 code="INVALID_PLACE_OF_SUPPLY",
@@ -338,13 +357,13 @@ class Gstr1ValidationService:
                 field="place_of_supply_state_code",
                 severity="warning",
             )
-            for row in qs.values("id", "invoice_number")
+            for row in self._header_rows()
+            if row.get("place_of_supply_state_code") and not POS_RE.match(str(row.get("place_of_supply_state_code")))
         ]
 
     def _pos_tax_regime_mismatch_warnings(self):
-        qs = self.base_queryset.exclude(place_of_supply_state_code__in=[None, ""]).exclude(seller_state_code__in=[None, ""])
         warnings = []
-        for row in qs.values("id", "invoice_number", "place_of_supply_state_code", "seller_state_code", "tax_regime"):
+        for row in self._header_rows():
             pos = row.get("place_of_supply_state_code")
             seller = row.get("seller_state_code")
             if not pos or not seller:
@@ -372,14 +391,11 @@ class Gstr1ValidationService:
         return warnings
 
     def _export_pos_warnings(self):
-        export_supply = Q(
-            supply_category__in=[
-                SalesInvoiceHeader.SupplyCategory.EXPORT_WITH_IGST,
-                SalesInvoiceHeader.SupplyCategory.EXPORT_WITHOUT_IGST,
-            ]
-        )
+        export_supply = {
+            SalesInvoiceHeader.SupplyCategory.EXPORT_WITH_IGST,
+            SalesInvoiceHeader.SupplyCategory.EXPORT_WITHOUT_IGST,
+        }
         export_pos = export_pos_code()
-        qs = self.base_queryset.filter(export_supply).exclude(place_of_supply_state_code=export_pos)
         return [
             _warning(
                 code="EXPORT_POS_INVALID",
@@ -389,7 +405,8 @@ class Gstr1ValidationService:
                 field="place_of_supply_state_code",
                 severity="warning",
             )
-            for row in qs.values("id", "invoice_number")
+            for row in self._header_rows()
+            if row.get("supply_category") in export_supply and row.get("place_of_supply_state_code") != export_pos
         ]
 
     def _missing_hsn_warnings(self):
@@ -462,15 +479,7 @@ class Gstr1ValidationService:
         )
         summary_map = {row["header_id"]: row for row in tax_sums}
         warnings = []
-        for header in self.base_queryset.values(
-            "id",
-            "invoice_number",
-            "total_taxable_value",
-            "total_cgst",
-            "total_sgst",
-            "total_igst",
-            "total_cess",
-        ):
+        for header in self._header_rows():
             summary = summary_map.get(header["id"])
             if not summary:
                 continue
@@ -488,15 +497,7 @@ class Gstr1ValidationService:
 
     def _tax_split_mismatch_warnings(self):
         warnings = []
-        qs = self.base_queryset.values(
-            "id",
-            "invoice_number",
-            "tax_regime",
-            "total_cgst",
-            "total_sgst",
-            "total_igst",
-        )
-        for row in qs:
+        for row in self._header_rows():
             regime = row["tax_regime"]
             cgst = Decimal(row["total_cgst"] or 0)
             sgst = Decimal(row["total_sgst"] or 0)
@@ -537,7 +538,7 @@ class Gstr1ValidationService:
         sum_map = {row["header_id"]: row["total"] for row in line_sums}
         charge_map = {row["header_id"]: row["total"] for row in charge_sums}
         warnings = []
-        for header in self.base_queryset.values("id", "invoice_number", "grand_total", "round_off"):
+        for header in self._header_rows():
             line_total = sum_map.get(header["id"])
             charge_total = charge_map.get(header["id"]) or Decimal("0.00")
             round_off = header.get("round_off") or Decimal("0.00")
@@ -557,9 +558,12 @@ class Gstr1ValidationService:
         return warnings
 
     def _invalid_note_linkage_warnings(self):
-        qs = self.base_queryset.filter(doc_type__in=[SalesInvoiceHeader.DocType.CREDIT_NOTE, SalesInvoiceHeader.DocType.DEBIT_NOTE])
         warnings = []
-        rows = list(qs.values("id", "invoice_number", "original_invoice_id", "entity_id", "entityfinid_id", "subentity_id"))
+        rows = [
+            row
+            for row in self._header_rows()
+            if row.get("doc_type") in (SalesInvoiceHeader.DocType.CREDIT_NOTE, SalesInvoiceHeader.DocType.DEBIT_NOTE)
+        ]
         original_ids = {row["original_invoice_id"] for row in rows if row["original_invoice_id"]}
         originals = {
             row["id"]: row
@@ -584,10 +588,6 @@ class Gstr1ValidationService:
         return warnings
 
     def _non_positive_taxable_warnings(self):
-        qs = self.base_queryset.filter(
-            taxability=SalesInvoiceHeader.Taxability.TAXABLE,
-            doc_type__in=[SalesInvoiceHeader.DocType.TAX_INVOICE, SalesInvoiceHeader.DocType.DEBIT_NOTE],
-        ).filter(total_taxable_value__lte=0)
         return [
             _warning(
                 code="NON_POSITIVE_TAXABLE",
@@ -596,11 +596,13 @@ class Gstr1ValidationService:
                 invoice_number=row["invoice_number"],
                 severity="warning",
             )
-            for row in qs.values("id", "invoice_number")
+            for row in self._header_rows()
+            if row.get("taxability") == SalesInvoiceHeader.Taxability.TAXABLE
+            and row.get("doc_type") in [SalesInvoiceHeader.DocType.TAX_INVOICE, SalesInvoiceHeader.DocType.DEBIT_NOTE]
+            and Decimal(row.get("total_taxable_value") or 0) <= 0
         ]
 
     def _non_positive_total_warnings(self):
-        qs = self.base_queryset.filter(doc_type=SalesInvoiceHeader.DocType.TAX_INVOICE).filter(grand_total__lte=0)
         return [
             _warning(
                 code="NON_POSITIVE_TOTAL",
@@ -609,18 +611,11 @@ class Gstr1ValidationService:
                 invoice_number=row["invoice_number"],
                 severity="warning",
             )
-            for row in qs.values("id", "invoice_number")
+            for row in self._header_rows()
+            if row.get("doc_type") == SalesInvoiceHeader.DocType.TAX_INVOICE and Decimal(row.get("grand_total") or 0) <= 0
         ]
 
     def _cancelled_amount_warnings(self):
-        qs = self.base_queryset.filter(status=SalesInvoiceHeader.Status.CANCELLED).filter(
-            Q(total_taxable_value__gt=0)
-            | Q(total_cgst__gt=0)
-            | Q(total_sgst__gt=0)
-            | Q(total_igst__gt=0)
-            | Q(total_cess__gt=0)
-            | Q(grand_total__gt=0)
-        )
         return [
             _warning(
                 code="CANCELLED_HAS_AMOUNTS",
@@ -629,7 +624,12 @@ class Gstr1ValidationService:
                 invoice_number=row["invoice_number"],
                 severity="warning",
             )
-            for row in qs.values("id", "invoice_number")
+            for row in self._header_rows()
+            if row.get("status") == SalesInvoiceHeader.Status.CANCELLED
+            and any(
+                Decimal(row.get(field) or 0) > 0
+                for field in ("total_taxable_value", "total_cgst", "total_sgst", "total_igst", "total_cess", "grand_total")
+            )
         ]
 
 

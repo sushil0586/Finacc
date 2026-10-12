@@ -53,6 +53,12 @@ class Command(BaseCommand):
             default="local.invalid",
             help="Local-only email domain for generated performance users.",
         )
+        parser.add_argument(
+            "--profile",
+            choices=["small", "medium"],
+            default="small",
+            help="Fixture profile namespace to provision users for.",
+        )
 
     def handle(self, *args, **options):
         started = time.perf_counter()
@@ -65,8 +71,8 @@ class Command(BaseCommand):
                 f"Missing {password_env}. Supply the local-only password through an environment variable."
             )
 
-        targets = self._targets(options["email_domain"])
-        before = self._financial_snapshot()
+        targets = self._targets(options["email_domain"], options["profile"])
+        before = self._financial_snapshot(options["profile"])
         permission_ids = list(self._read_report_permissions().values_list("id", flat=True))
         if not permission_ids:
             raise CommandError("No active read/report permissions were found for the performance role.")
@@ -87,7 +93,7 @@ class Command(BaseCommand):
                     )
                 )
 
-        after = self._financial_snapshot()
+        after = self._financial_snapshot(options["profile"])
         payload = {
             "dry_run": bool(options["dry_run"]),
             "elapsed_seconds": round(time.perf_counter() - started, 3),
@@ -115,25 +121,26 @@ class Command(BaseCommand):
         if not payload.get("ready"):
             raise CommandError("Performance auth provisioning blocked because safety audit is not ready.")
 
-    def _targets(self, email_domain: str) -> list[PerfTenantTarget]:
+    def _targets(self, email_domain: str, profile: str) -> list[PerfTenantTarget]:
         domain = (email_domain or "local.invalid").strip().lower()
         if domain in {"gmail.com", "outlook.com", "hotmail.com", "yahoo.com"}:
             raise CommandError("Refusing to create performance users on a public email domain.")
+        prefix = f"Phase2B3B {profile}"
         return [
             PerfTenantTarget(
-                label="Phase2B3B small Small Tenant",
-                email=f"perf-api-small@{domain}",
-                username="perf-api-small",
+                label=f"{prefix} Small Tenant",
+                email=f"perf-api-{profile}-small@{domain}",
+                username=f"perf-api-{profile}-small",
             ),
             PerfTenantTarget(
-                label="Phase2B3B small Medium Tenant",
-                email=f"perf-api-medium@{domain}",
-                username="perf-api-medium",
+                label=f"{prefix} Medium Tenant",
+                email=f"perf-api-{profile}-medium@{domain}",
+                username=f"perf-api-{profile}-medium",
             ),
             PerfTenantTarget(
-                label="Phase2B3B small Large Tenant",
-                email=f"perf-api-large@{domain}",
-                username="perf-api-large",
+                label=f"{prefix} Large Tenant",
+                email=f"perf-api-{profile}-large@{domain}",
+                username=f"perf-api-{profile}-large",
             ),
         ]
 
@@ -324,9 +331,9 @@ class Command(BaseCommand):
     def _subentity(self, entity: Entity):
         return SubEntity.objects.filter(entity=entity, isactive=True).order_by("id").first()
 
-    def _financial_snapshot(self) -> dict:
+    def _financial_snapshot(self, profile: str = "small") -> dict:
         rows = []
-        for entity in Entity.objects.filter(entityname__startswith="Phase2B3B small", isactive=True).order_by("id"):
+        for entity in Entity.objects.filter(entityname__startswith=f"Phase2B3B {profile}", isactive=True).order_by("id"):
             rows.append(
                 {
                     "entity_id": entity.id,

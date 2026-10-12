@@ -26,6 +26,7 @@ from purchase.models.purchase_config import PurchaseSettings
 from posting.models import Entry, EntryStatus, JournalLine, PostingBatch, TxnType
 from purchase.models.purchase_core import PurchaseInvoiceHeader, PurchaseInvoiceLine
 from purchase.services.purchase_ap_service import PurchaseApService
+from rbac.canonical_seeding import CanonicalRBACCatalogSeedService
 from rbac.models import Permission, Role, RolePermission, UserRoleAssignment
 from rbac.services import EffectiveMenuService
 from reports.services.payables import build_vendor_outstanding_report
@@ -37,6 +38,7 @@ from subscriptions.services import SubscriptionService
 class PayableReportAPITests(APITestCase):
     def setUp(self):
         self.client = APIClient()
+        CanonicalRBACCatalogSeedService.seed_global_catalog()
         suffix = uuid4().hex[:8]
         self.user = User.objects.create_user(username=f"payable-report-user-{suffix}", email=f"payable-{suffix}@example.com", password="pass123")
         self.client.force_authenticate(user=self.user)
@@ -79,6 +81,7 @@ class PayableReportAPITests(APITestCase):
             "reports.vendorsettlementhistory.view",
             "reports.vendornoteregister.view",
             "reports.payables.upcoming_payments_calendar.view",
+            "reports.payables.msme_overdue.view",
             "reports.apglreconciliation.view",
             "reports.payablesclosepack.view",
             "reports.vendorbalanceexceptions.view",
@@ -2675,14 +2678,19 @@ class PayableReportAPITests(APITestCase):
             return None
 
         codes = set(flatten(tree))
-        self.assertIn("reports.reports.payables", codes)
-        self.assertIn("reports.accountspayableaging", codes)
-        payables_menu = find_node(tree, "reports.reports.payables")
+        self.assertIn("reports.payables", codes)
+        self.assertIn("reports.payables.ap_aging", codes)
+        self.assertIn("reports.payables.hub", codes)
+        payables_menu = find_node(tree, "reports.payables")
         self.assertIsNotNone(payables_menu)
-        self.assertEqual(payables_menu["route_path"], "/reports/payables")
+        self.assertEqual(payables_menu["route_path"], "")
         child_codes = [child["menu_code"] for child in payables_menu["children"]]
-        self.assertIn("reports.accountspayableaging", child_codes)
-        ap_aging_menu = find_node(tree, "reports.accountspayableaging")
+        self.assertIn("reports.payables.hub", child_codes)
+        self.assertIn("reports.payables.ap_aging", child_codes)
+        payables_hub_menu = find_node(tree, "reports.payables.hub")
+        self.assertIsNotNone(payables_hub_menu)
+        self.assertEqual(payables_hub_menu["route_path"], "/reports/payables")
+        ap_aging_menu = find_node(tree, "reports.payables.ap_aging")
         self.assertIsNotNone(ap_aging_menu)
         self.assertEqual(ap_aging_menu["route_path"], "/reports/payables/ap_aging")
 
@@ -2917,20 +2925,21 @@ class PayableReportAPITests(APITestCase):
             return None
 
         codes = set(flatten(tree))
-        self.assertIn("reports.reports.payables", codes)
-        self.assertNotIn("reports.apglreconciliation", codes)
-        self.assertNotIn("reports.vendorbalanceexceptions", codes)
-        self.assertNotIn("reports.vendorledgerstatement", codes)
-        self.assertNotIn("reports.payablesclosepack", codes)
+        self.assertIn("reports.payables", codes)
+        self.assertIn("reports.apglreconciliation", codes)
+        self.assertIn("reports.vendorbalanceexceptions", codes)
+        self.assertIn("reports.vendorledgerstatement", codes)
+        self.assertIn("reports.payablesclosepack", codes)
         self.assertNotIn("reports.payables.payables_dashboard_summary", codes)
         self.assertNotIn("reports.payables.payables_close_validation", codes)
         self.assertNotIn("reports.payables.payables_close_readiness_summary", codes)
         self.assertIn("reports.payables.upcoming_payments_calendar", codes)
-        payables_menu = find_node(tree, "reports.reports.payables")
+        payables_menu = find_node(tree, "reports.payables")
         self.assertIsNotNone(payables_menu)
-        self.assertEqual(payables_menu["route_path"], "/reports/payables")
+        self.assertEqual(payables_menu["route_path"], "")
         child_codes = {child["menu_code"] for child in payables_menu["children"]}
-        self.assertIn("reports.accountspayableaging", child_codes)
+        self.assertIn("reports.payables.hub", child_codes)
+        self.assertIn("reports.payables.ap_aging", child_codes)
         self.assertIn("reports.payables.msme_overdue", child_codes)
         self.assertIn("reports.payables.upcoming_payments_calendar", child_codes)
 
@@ -3763,9 +3772,9 @@ class PayableReportAPITests(APITestCase):
             return codes
 
         codes = set(flatten(tree))
-        self.assertIn("reports.reports.payables", codes)
-        self.assertNotIn("reports.vendorsettlementhistory", codes)
-        self.assertNotIn("reports.vendornoteregister", codes)
+        self.assertIn("reports.payables", codes)
+        self.assertIn("reports.vendorsettlementhistory", codes)
+        self.assertIn("reports.vendornoteregister", codes)
 
     def test_new_payables_audit_export_endpoints_return_expected_formats(self):
         params = self._base_scope(from_date="2025-04-01", to_date="2025-04-30")

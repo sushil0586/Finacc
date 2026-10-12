@@ -46,6 +46,7 @@ from reports.services.financial.books import (
     build_daybook_entry_detail,
     resolve_posting_entry_for_document,
 )
+from reports.services.report_response_cache import get_or_build_report_response
 from sales.models.sales_core import SalesInvoiceHeader
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 from vouchers.models.voucher_core import VoucherHeader
@@ -898,7 +899,8 @@ class DaybookAPIView(_BaseBookReportAPIView):
 
     def get(self, request):
         scope = self.get_scope(request)
-        try:
+
+        def build_response():
             data = build_daybook(
                 entity_id=scope["entity"],
                 entityfin_id=scope.get("entityfinid"),
@@ -913,40 +915,49 @@ class DaybookAPIView(_BaseBookReportAPIView):
                 page=scope.get("page", BOOK_REPORT_DEFAULTS["default_page_size_page"]),
                 page_size=scope.get("page_size", BOOK_REPORT_DEFAULTS["default_page_size"]),
             )
+            self.attach_pagination_links(request, data)
+            response = build_report_envelope(
+                report_code="daybook",
+                report_name="Daybook",
+                payload=data,
+                filters={
+                    "entity": scope["entity"],
+                    "entityfinid": scope.get("entityfinid"),
+                    "subentity": scope.get("subentity"),
+                    "scope_mode": scope.get("scope_mode"),
+                    "from_date": scope.get("from_date"),
+                    "to_date": scope.get("to_date"),
+                    "voucher_type": scope.get("voucher_types", []),
+                    "account": scope.get("account_ids", []),
+                    "status": scope.get("statuses", []),
+                    "posted": scope.get("posted"),
+                    "search": scope.get("search"),
+                    "page": scope.get("page", BOOK_REPORT_DEFAULTS["default_page_size_page"]),
+                    "page_size": scope.get("page_size", BOOK_REPORT_DEFAULTS["default_page_size"]),
+                },
+                defaults=BOOK_REPORT_DEFAULTS,
+            )
+            response = _attach_export_actions(
+                response,
+                request,
+                export_base_path="/api/reports/financial/daybook/",
+                can_export=_can_export_book_report(
+                    request,
+                    entity_id=scope["entity"],
+                    permission_codes=DAYBOOK_EXPORT_PERMISSIONS,
+                ),
+            )
+            return response
+
+        try:
+            response, _cached = get_or_build_report_response(
+                request,
+                report_code="daybook",
+                entity_id=scope["entity"],
+                builder=build_response,
+            )
         except ValueError as exc:
             return Response(exc.args[0], status=400)
-        self.attach_pagination_links(request, data)
-        response = build_report_envelope(
-            report_code="daybook",
-            report_name="Daybook",
-            payload=data,
-            filters={
-                "entity": scope["entity"],
-                "entityfinid": scope.get("entityfinid"),
-                "subentity": scope.get("subentity"),
-                "scope_mode": scope.get("scope_mode"),
-                "from_date": scope.get("from_date"),
-                "to_date": scope.get("to_date"),
-                "voucher_type": scope.get("voucher_types", []),
-                "account": scope.get("account_ids", []),
-                "status": scope.get("statuses", []),
-                "posted": scope.get("posted"),
-                "search": scope.get("search"),
-                "page": scope.get("page", BOOK_REPORT_DEFAULTS["default_page_size_page"]),
-                "page_size": scope.get("page_size", BOOK_REPORT_DEFAULTS["default_page_size"]),
-            },
-            defaults=BOOK_REPORT_DEFAULTS,
-        )
-        response = _attach_export_actions(
-            response,
-            request,
-            export_base_path="/api/reports/financial/daybook/",
-            can_export=_can_export_book_report(
-                request,
-                entity_id=scope["entity"],
-                permission_codes=DAYBOOK_EXPORT_PERMISSIONS,
-            ),
-        )
         return Response(response)
 
 

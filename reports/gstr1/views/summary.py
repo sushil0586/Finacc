@@ -8,6 +8,7 @@ from reports.schemas.common import build_report_envelope
 from reports.gstr1.serializers.summary import Gstr1SummarySerializer
 from reports.gstr1.services.report import Gstr1ReportService
 from reports.gstr1.views.utils import Gstr1ScopedReportMixin, attach_gstr1_export_actions, scope_filters
+from reports.services.report_response_cache import get_or_build_report_response
 
 
 class Gstr1SummaryAPIView(Gstr1ScopedReportMixin, APIView):
@@ -18,6 +19,15 @@ class Gstr1SummaryAPIView(Gstr1ScopedReportMixin, APIView):
         service = self.service_class()
         scope = service.build_scope(request.query_params)
         permission_codes = self.enforce_report_scope(request, scope)
+        response, _cached = get_or_build_report_response(
+            request,
+            report_code="gstr1-summary",
+            entity_id=scope.entity_id,
+            builder=lambda: self._build_response(service, request, scope, permission_codes),
+        )
+        return Response(response)
+
+    def _build_response(self, service, request, scope, permission_codes):
         smart_filters = service.build_smart_filters(request.query_params)
         payload = service.summary(scope, smart_filters=smart_filters)
         response_payload = {
@@ -36,4 +46,4 @@ class Gstr1SummaryAPIView(Gstr1ScopedReportMixin, APIView):
             },
         )
         attach_gstr1_export_actions(response, request, permission_codes=permission_codes)
-        return Response(response)
+        return response

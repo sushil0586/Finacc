@@ -1523,3 +1523,80 @@ class Godown(models.Model):
             else:
                 qs = qs.filter(subentity__isnull=True)
             qs.exclude(pk=self.pk).update(is_default=False)
+
+
+class PerformanceFixtureRun(models.Model):
+    class Status(models.TextChoices):
+        PLANNED = "planned", "Planned"
+        RUNNING = "running", "Running"
+        COMPLETED = "completed", "Completed"
+        FAILED = "failed", "Failed"
+        ABORTED = "aborted", "Aborted"
+
+    namespace = models.CharField(max_length=64, unique=True)
+    profile = models.CharField(max_length=32)
+    source_system = models.CharField(max_length=100)
+    generator_version = models.CharField(max_length=32)
+    config_fingerprint = models.CharField(max_length=64)
+    database_name = models.CharField(max_length=128)
+    database_host = models.CharField(max_length=255)
+    target_tenants = models.PositiveIntegerField(default=0)
+    target_sales = models.PositiveIntegerField(default=0)
+    target_purchase = models.PositiveIntegerField(default=0)
+    target_invoices = models.PositiveIntegerField(default=0)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PLANNED)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.TextField(blank=True, default="")
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["namespace", "status"], name="ix_perf_run_ns_status"),
+            models.Index(fields=["status", "updated_at"], name="ix_perf_run_status_upd"),
+        ]
+
+    def __str__(self):
+        return f"{self.namespace} ({self.status})"
+
+
+class PerformanceFixtureCheckpoint(models.Model):
+    class Status(models.TextChoices):
+        PLANNED = "planned", "Planned"
+        RUNNING = "running", "Running"
+        COMPLETED = "completed", "Completed"
+        FAILED = "failed", "Failed"
+
+    run = models.ForeignKey(PerformanceFixtureRun, on_delete=models.CASCADE, related_name="checkpoints")
+    tenant_code = models.CharField(max_length=80)
+    tenant_label = models.CharField(max_length=180)
+    tenant_size = models.CharField(max_length=32)
+    sequence = models.PositiveIntegerField()
+    target_sales = models.PositiveIntegerField(default=0)
+    target_purchase = models.PositiveIntegerField(default=0)
+    committed_sales = models.PositiveIntegerField(default=0)
+    committed_purchase = models.PositiveIntegerField(default=0)
+    entity = models.ForeignKey("Entity", on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PLANNED)
+    reconciliation_hash = models.CharField(max_length=64, blank=True, default="")
+    reconciliation = models.JSONField(default=dict, blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["run", "tenant_code"], name="uq_perf_ckpt_run_tenant"),
+            models.UniqueConstraint(fields=["run", "sequence"], name="uq_perf_ckpt_run_seq"),
+        ]
+        indexes = [
+            models.Index(fields=["run", "status"], name="ix_perf_ckpt_run_status"),
+            models.Index(fields=["tenant_code"], name="ix_perf_ckpt_tenant_code"),
+        ]
+
+    def __str__(self):
+        return f"{self.run.namespace}:{self.tenant_code} ({self.status})"

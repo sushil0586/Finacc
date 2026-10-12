@@ -2,9 +2,11 @@ from django.utils.deprecation import MiddlewareMixin
 from .models import AuditLog
 import logging
 import json
+import time
 
 class AuditMiddleware(MiddlewareMixin):
     def process_view(self, request, view_func, view_args, view_kwargs):
+        started = time.perf_counter()
         # Only log after AuthenticationMiddleware has set request.user
         user = getattr(request, 'user', None)
         ip = request.META.get('REMOTE_ADDR')
@@ -37,5 +39,7 @@ class AuditMiddleware(MiddlewareMixin):
             )
         except Exception as e:
             logging.getLogger('audit').error(f"Audit logging failed: {str(e)}")
+        finally:
+            request._finacc_audit_ms = (time.perf_counter() - started) * 1000.0
 
         return None

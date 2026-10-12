@@ -29,6 +29,7 @@ from reports.schemas.common import build_report_envelope
 from reports.selectors.financial import resolve_scope_names
 from reports.schemas.receivables_reports import CollectionsHistoryScopeSerializer, ReceivableAgingScopeSerializer, ReceivableReportScopeSerializer
 from reports.services.receivables import build_collections_history_report, build_customer_outstanding_report, build_open_items_report, build_receivable_aging_report
+from reports.services.report_response_cache import get_or_build_report_response
 from subscriptions.services import SubscriptionLimitCodes, SubscriptionService
 
 
@@ -667,6 +668,15 @@ class ReceivableAgingReportAPIView(_BaseReceivableAPIView):
 
     def get(self, request):
         scope = self.get_scope(request)
+        response, _cached = get_or_build_report_response(
+            request,
+            report_code=f"receivable_aging:{scope.get('view') or 'summary'}",
+            entity_id=scope["entity"],
+            builder=lambda: self._build_response(scope, request),
+        )
+        return Response(response)
+
+    def _build_response(self, scope, request):
         data = build_receivable_aging_report(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -685,8 +695,7 @@ class ReceivableAgingReportAPIView(_BaseReceivableAPIView):
             page_size=scope.get("page_size", RECEIVABLE_DEFAULTS["default_page_size"]),
             view=scope.get("view") or "summary",
         )
-        return Response(
-            self.build_envelope(
+        return self.build_envelope(
                 report_code="receivable_aging",
                 report_name="Receivable Aging Report",
                 payload=data,
@@ -694,7 +703,6 @@ class ReceivableAgingReportAPIView(_BaseReceivableAPIView):
                 request=request,
                 export_base_path="/api/reports/receivables/aging/",
             )
-        )
 
 
 class _BaseReceivableExportAPIView(_BaseReceivableAPIView):
@@ -876,6 +884,15 @@ class OpenItemsReportAPIView(_BaseReceivableAPIView):
 
     def get(self, request):
         scope = self.get_scope(request)
+        response, _cached = get_or_build_report_response(
+            request,
+            report_code="open_items",
+            entity_id=scope["entity"],
+            builder=lambda: self._build_response(scope, request),
+        )
+        return Response(response)
+
+    def _build_response(self, scope, request):
         data = build_open_items_report(
             entity_id=scope["entity"],
             entityfin_id=scope.get("entityfinid"),
@@ -888,8 +905,7 @@ class OpenItemsReportAPIView(_BaseReceivableAPIView):
             page=scope.get("page", 1),
             page_size=scope.get("page_size", RECEIVABLE_DEFAULTS["default_page_size"]),
         )
-        return Response(
-            self.build_envelope(
+        return self.build_envelope(
                 report_code="open_items",
                 report_name="Open Items Report",
                 payload=data,
@@ -897,7 +913,6 @@ class OpenItemsReportAPIView(_BaseReceivableAPIView):
                 request=request,
                 export_base_path="/api/reports/receivables/open-items/",
             )
-        )
 
 
 class _OpenItemsExportMixin(_BaseReceivableExportAPIView):

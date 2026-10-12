@@ -274,6 +274,9 @@ MIDDLEWARE = [
 
 MIDDLEWARE.insert(0, 'auditlogger.middleware.AuditMiddleware')
 
+if config('FINACC_REQUEST_PROFILING_ENABLED', default=False, cast=_cast_boolish_env):
+    MIDDLEWARE.insert(0, 'perf.request_profile_middleware.RequestProfileMiddleware')
+
 # ---------------------------------------------------------------------------
 # CORS
 # ---------------------------------------------------------------------------
@@ -411,6 +414,16 @@ else:
 if CACHES['default']['BACKEND'].endswith('.LocMemCache'):
     META_CACHE_ENABLED = False
     PAYABLES_META_CACHE_ENABLED = False
+
+REPORT_RESPONSE_CACHE_TTL_SECONDS = config(
+    'REPORT_RESPONSE_CACHE_TTL_SECONDS',
+    default=0,
+    cast=int,
+)
+REPORT_RESPONSE_CACHE_VERSION = config(
+    'REPORT_RESPONSE_CACHE_VERSION',
+    default='v1',
+)
 
 if FILE_STORAGE_BACKEND == 's3':
     AWS_STORAGE_BUCKET_NAME = _require_config('AWS_STORAGE_BUCKET_NAME')
