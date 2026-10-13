@@ -1,0 +1,99 @@
+{
+  "blocked_count": 0,
+  "gates": [
+    {
+      "expected": "DEBUG must be False for staging performance tests.",
+      "key": "DEBUG_DISABLED",
+      "message": "DEBUG is disabled.",
+      "observed": "False",
+      "status": "verified"
+    },
+    {
+      "expected": "DB name must match FINACC_PERF_ALLOWED_DB_NAMES or --allow-db-name.",
+      "key": "DB_NAME_ALLOWLIST",
+      "message": "Database name is explicitly allowlisted for performance staging.",
+      "observed": "fin...cal length=17",
+      "status": "verified"
+    },
+    {
+      "expected": "DB host must match FINACC_PERF_ALLOWED_DB_HOSTS or --allow-db-host.",
+      "key": "DB_HOST_ALLOWLIST",
+      "message": "Database host is explicitly allowlisted for performance staging.",
+      "observed": "pos...res length=8",
+      "status": "verified"
+    },
+    {
+      "expected": "DB name must not contain prod/production/live.",
+      "key": "DB_PRODUCTION_NAME_GUARD",
+      "message": "Database name does not look production-like.",
+      "observed": "fin...cal length=17",
+      "status": "verified"
+    },
+    {
+      "expected": "DB host must not contain prod/production/live.",
+      "key": "DB_PRODUCTION_HOST_GUARD",
+      "message": "Database host does not look production-like.",
+      "observed": "pos...res length=8",
+      "status": "verified"
+    },
+    {
+      "expected": "Performance certification uses PostgreSQL.",
+      "key": "DB_VENDOR_POSTGRESQL",
+      "message": "Database vendor is PostgreSQL.",
+      "observed": "postgresql",
+      "status": "verified"
+    },
+    {
+      "expected": "WHITEBOOKS_SANDBOX_MODE=True and sandbox base URL required.",
+      "key": "GST_WHITEBOOKS_SANDBOX",
+      "message": "Whitebooks GST is sandbox-routed.",
+      "observed": "sandbox_mode=True, host=apisandbox.whitebooks.in",
+      "status": "verified"
+    },
+    {
+      "expected": "All live save/file/offset flags must be False.",
+      "key": "GST_LIVE_FLAGS_DISABLED",
+      "message": "All Whitebooks live GSTR mutation flags are disabled.",
+      "observed": "WHITEBOOKS_ENABLE_GSTR1_SAVE_LIVE=False, WHITEBOOKS_ENABLE_GSTR1_FILE_LIVE=False, WHITEBOOKS_ENABLE_GSTR3B_SAVE_LIVE=False, WHITEBOOKS_ENABLE_GSTR3B_OFFSET_LIVE=False, WHITEBOOKS_ENABLE_GSTR3B_FILE_LIVE=False",
+      "status": "verified"
+    },
+    {
+      "expected": "MASTERGST_ENV must not be production/live for staging performance tests.",
+      "key": "MASTERGST_SANDBOX_OR_DISABLED",
+      "message": "MasterGST environment is sandbox/test/disabled.",
+      "observed": "SANDBOX",
+      "status": "verified"
+    },
+    {
+      "expected": "Use locmem, console, dummy, or filebased email backend in staging load windows.",
+      "key": "EMAIL_SAFE_SINK",
+      "message": "Email backend is a non-delivery safe sink.",
+      "observed": "django.core.mail.backends.locmem.EmailBackend",
+      "status": "verified"
+    },
+    {
+      "expected": "Redis cache is required for representative multi-worker cache behavior.",
+      "key": "CACHE_MULTI_WORKER_READY",
+      "message": "Redis cache backend is configured for multi-worker staging.",
+      "observed": "backend=django.core.cache.backends.redis.RedisCache, location=redis://redis:6379/...",
+      "status": "verified"
+    },
+    {
+      "expected": "S3 buckets for performance staging must be staging/test/perf named.",
+      "key": "STORAGE_SAFE_TARGET",
+      "message": "Storage target is local or staging-named S3.",
+      "observed": "backend=local",
+      "status": "verified"
+    },
+    {
+      "expected": "FINACC_ENABLE_WRITE_TESTS and FINACC_ENABLE_LIFECYCLE_TESTS must be unset/false before read-only gates.",
+      "key": "WRITE_TESTS_EXPLICITLY_GATED",
+      "message": "Locust write/lifecycle tests are disabled by default.",
+      "observed": "FINACC_ENABLE_WRITE_TESTS=false, FINACC_ENABLE_LIFECYCLE_TESTS=false",
+      "status": "verified"
+    }
+  ],
+  "not_applicable_count": 0,
+  "ready": true,
+  "verified_count": 13
+}
